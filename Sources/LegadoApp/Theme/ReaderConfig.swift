@@ -31,6 +31,7 @@ public enum PageMode: String, CaseIterable, Identifiable {
     case scroll = "连续滚动"
     case pageByPage = "左右翻页"
     case cover = "覆盖翻页"
+    case slide = "滑动翻页"
     case simulation = "仿真翻页"
     case none = "无动画"
 
@@ -38,6 +39,53 @@ public enum PageMode: String, CaseIterable, Identifiable {
 
     /// 按页翻的模式（左右、仿真）共用分页逻辑。
     public var isPaged: Bool { self != .scroll }
+}
+
+/// 正文字重档位
+public enum ReaderWeight: String, CaseIterable, Identifiable {
+    case light = "细"
+    case regular = "中"
+    case bold = "粗"
+
+    public var id: String { rawValue }
+
+    public var level: Int {
+        switch self {
+        case .light: return 0
+        case .regular: return 1
+        case .bold: return 2
+        }
+    }
+
+    public static func from(level: Int) -> ReaderWeight {
+        switch level {
+        case 0: return .light
+        case 2: return .bold
+        default: return .regular
+        }
+    }
+}
+
+/// 简繁转换
+public enum ChineseConversion: String, CaseIterable, Identifiable {
+    case none = "原文"
+    case simplified = "转简体"
+    case traditional = "转繁体"
+
+    public var id: String { rawValue }
+
+    var transform: StringTransform? {
+        switch self {
+        case .none: return nil
+        case .simplified: return StringTransform("Traditional-Simplified")
+        case .traditional: return StringTransform("Simplified-Traditional")
+        }
+    }
+
+    public func apply(_ text: String) -> String {
+        guard let transform else { return text }
+        return text.applyingTransform(transform, reverse: false) ?? text
+    }
 }
 
 /// 页眉页脚每栏能填什么
@@ -86,6 +134,19 @@ public class ReaderConfig: ObservableObject {
     /// 正文字体（PostScript 名）
     @Published public var fontName: String = ReaderFont.default.postScriptName {
         didSet { Self.defaults.set(fontName, forKey: "reader_font_name") }
+    }
+    /// 字重档位：细 / 中 / 粗
+    @Published public var weightLevel: Int = 1 {
+        didSet { Self.defaults.set(weightLevel, forKey: "reader_weight_level") }
+    }
+    /// 简繁转换
+    @Published public var chineseConversion: ChineseConversion = .none {
+        didSet { Self.defaults.set(chineseConversion.rawValue, forKey: "reader_chinese_conversion") }
+    }
+
+    public var weight: ReaderWeight {
+        get { ReaderWeight.from(level: weightLevel) }
+        set { weightLevel = newValue.level }
     }
 
     // MARK: - 页眉页脚
@@ -166,6 +227,10 @@ public class ReaderConfig: ObservableObject {
         if d.object(forKey: "reader_first_line_indent") != nil { firstLineIndent = CGFloat(d.double(forKey: "reader_first_line_indent")) }
         if d.object(forKey: "reader_bold_text") != nil { boldText = d.bool(forKey: "reader_bold_text") }
         if let name = d.string(forKey: "reader_font_name") { fontName = name }
+        if d.object(forKey: "reader_weight_level") != nil { weightLevel = d.integer(forKey: "reader_weight_level") }
+        if let v = d.string(forKey: "reader_chinese_conversion"), let c = ChineseConversion(rawValue: v) {
+            chineseConversion = c
+        }
         if d.object(forKey: "reader_vertical_padding") != nil { verticalPadding = CGFloat(d.double(forKey: "reader_vertical_padding")) }
         if let v = d.string(forKey: "reader_title_alignment"), let t = ReaderTitleAlignment(rawValue: v) { titleAlignment = t }
         if d.object(forKey: "reader_header_enabled") != nil { headerEnabled = d.bool(forKey: "reader_header_enabled") }
@@ -184,6 +249,40 @@ public class ReaderConfig: ObservableObject {
 
     private func persist(_ value: CGFloat, _ key: String) {
         Self.defaults.set(Double(value), forKey: key)
+    }
+}
+
+/// 预设配色对（背景 + 文字），对应安卓那排色块
+public enum ReaderPresetColor: String, CaseIterable, Identifiable {
+    case paper = "米黄"
+    case warm = "暖棕"
+    case olive = "豆绿"
+    case lilac = "浅紫"
+    case night = "暗夜"
+    case plain = "素白"
+
+    public var id: String { rawValue }
+
+    public var backgroundHex: String {
+        switch self {
+        case .paper: return "#F2E6CE"
+        case .warm: return "#E8D6B8"
+        case .olive: return "#CFE0C3"
+        case .lilac: return "#E8D8F0"
+        case .night: return "#12202E"
+        case .plain: return "#F7F6F3"
+        }
+    }
+
+    public var textHex: String {
+        switch self {
+        case .paper: return "#4A3F2F"
+        case .warm: return "#5A4326"
+        case .olive: return "#33452C"
+        case .lilac: return "#4A3560"
+        case .night: return "#D6DEE6"
+        case .plain: return "#23282D"
+        }
     }
 }
 

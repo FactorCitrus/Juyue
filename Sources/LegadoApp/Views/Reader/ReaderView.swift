@@ -11,26 +11,33 @@ public enum ReaderFontFactory {
         postScriptName: String,
         boldPostScriptName: String?,
         size: CGFloat,
-        bold: Bool
+        weightLevel: Int
     ) -> CTFont {
         let baseName = postScriptName.isEmpty ? "PingFangSC-Regular" : postScriptName
-        var font = CTFontCreateWithName(baseName as CFString, size, nil)
-        guard bold else { return font }
+        let font = CTFontCreateWithName(baseName as CFString, size, nil)
+
+        if weightLevel <= 0 {
+            // kCTFontWeightTrait 的刻度：-0.4 细、0 常规、0.4 粗
+            return applyWeight(-0.4, to: font, size: size)
+        }
+
+        guard weightLevel >= 2 else { return font }
 
         if let boldName = boldPostScriptName, !boldName.isEmpty {
             let candidate = CTFontCreateWithName(boldName as CFString, size, nil)
             let resolved = CTFontCopyPostScriptName(candidate) as String
             if resolved.caseInsensitiveCompare(boldName) == .orderedSame {
-                font = candidate
-                return font
+                return candidate
             }
         }
+        return applyWeight(0.4, to: font, size: size)
+    }
 
-        let traits = CTFontSymbolicTraits.traitBold
-        if let derived = CTFontCreateCopyWithSymbolicTraits(font, size, nil, traits, traits) {
-            font = derived
-        }
-        return font
+    private static func applyWeight(_ weight: CGFloat, to font: CTFont, size: CGFloat) -> CTFont {
+        let traits: [CFString: Any] = [kCTFontWeightTrait: weight]
+        let attributes: [CFString: Any] = [kCTFontTraitsAttribute: traits]
+        let descriptor = CTFontDescriptorCreateWithAttributes(attributes as CFDictionary)
+        return CTFontCreateCopyWithAttributes(font, size, nil, descriptor)
     }
 }
 
@@ -561,7 +568,8 @@ public struct ReaderView: View {
                 letterSpacing: readerConfig.letterSpacing,
                 paragraphSpacing: readerConfig.paragraphSpacing,
                 firstLineIndent: readerConfig.firstLineIndent,
-                bold: readerConfig.boldText,
+                weightLevel: readerConfig.weightLevel,
+                chineseConversion: readerConfig.chineseConversion,
                 fontPostScriptName: readerConfig.font.postScriptName,
                 boldPostScriptName: readerConfig.font.boldPostScriptName,
                 textColor: readerConfig.textColor,
@@ -647,7 +655,8 @@ public struct ReaderView: View {
                                 letterSpacing: readerConfig.letterSpacing,
                                 paragraphSpacing: readerConfig.paragraphSpacing,
                                 firstLineIndent: readerConfig.firstLineIndent,
-                                bold: readerConfig.boldText,
+                                weightLevel: readerConfig.weightLevel,
+                                chineseConversion: readerConfig.chineseConversion,
                                 fontPostScriptName: readerConfig.font.postScriptName,
                                 boldPostScriptName: readerConfig.font.boldPostScriptName
                             )
@@ -752,6 +761,8 @@ public struct ReaderView: View {
             return nil
         case .cover:
             return .easeOut(duration: 0.22)
+        case .slide:
+            return .easeInOut(duration: 0.24)
         default:
             return .easeInOut(duration: 0.18)
         }
@@ -763,6 +774,11 @@ public struct ReaderView: View {
             return .asymmetric(
                 insertion: .move(edge: pageTurnForward ? .trailing : .leading),
                 removal: .opacity
+            )
+        case .slide:
+            return .asymmetric(
+                insertion: .move(edge: pageTurnForward ? .trailing : .leading),
+                removal: .move(edge: pageTurnForward ? .leading : .trailing)
             )
         case .none:
             return .identity
@@ -1433,12 +1449,32 @@ public struct ReaderView: View {
             settingSlider("左右页边距", value: $readerConfig.horizontalPadding, range: 8...48, step: 2)
             settingSlider("首行缩进", value: $readerConfig.firstLineIndent, range: 0...4, step: 1, suffix: " 字")
 
-            Toggle(isOn: $readerConfig.boldText) {
-                Text("正文加粗")
+            HStack(spacing: 8) {
+                Text("字重")
                     .font(.system(size: 12, weight: .medium))
                     .foregroundColor(readerConfig.textColor.opacity(0.7))
+                Picker("字重", selection: Binding(
+                    get: { readerConfig.weight },
+                    set: { readerConfig.weight = $0 }
+                )) {
+                    ForEach(ReaderWeight.allCases) { weight in
+                        Text(weight.rawValue).tag(weight)
+                    }
+                }
+                .pickerStyle(.segmented)
             }
-            .toggleStyle(.switch)
+
+            HStack(spacing: 8) {
+                Text("简繁")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundColor(readerConfig.textColor.opacity(0.7))
+                Picker("简繁", selection: $readerConfig.chineseConversion) {
+                    ForEach(ChineseConversion.allCases) { mode in
+                        Text(mode.rawValue).tag(mode)
+                    }
+                }
+                .pickerStyle(.segmented)
+            }
         }
     }
 
@@ -1455,6 +1491,30 @@ public struct ReaderView: View {
                     .foregroundColor(readerConfig.textColor.opacity(0.7))
             }
             .toggleStyle(.switch)
+
+            // 预设配色，点一下同时设定背景和文字
+            HStack(spacing: 10) {
+                ForEach(ReaderPresetColor.allCases) { preset in
+                    Button {
+                        readerConfig.useCustomColors = true
+                        readerConfig.customBackgroundHex = preset.backgroundHex
+                        readerConfig.customTextHex = preset.textHex
+                    } label: {
+                        Circle()
+                            .fill(Color(hex: preset.backgroundHex) ?? .gray)
+                            .frame(width: 30, height: 30)
+                            .overlay(
+                                Circle().stroke(readerConfig.textColor.opacity(0.25), lineWidth: 1)
+                            )
+                            .overlay(
+                                Text("文")
+                                    .font(.system(size: 12, weight: .medium))
+                                    .foregroundColor(Color(hex: preset.textHex) ?? .black)
+                            )
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
 
             if readerConfig.useCustomColors {
                 ColorPicker("背景颜色", selection: customBackgroundBinding, supportsOpacity: false)
@@ -2437,7 +2497,8 @@ public struct CoreTextPageView: NSViewRepresentable {
     public var letterSpacing: CGFloat = 0
     public var paragraphSpacing: CGFloat = 0
     public var firstLineIndent: CGFloat = 0
-    public var bold: Bool = false
+    public var weightLevel: Int = 1
+    public var chineseConversion: ChineseConversion = .none
     public var fontPostScriptName: String = "PingFangSC-Regular"
     public var boldPostScriptName: String? = "PingFangSC-Semibold"
 
@@ -2455,7 +2516,8 @@ public struct CoreTextPageView: NSViewRepresentable {
         nsView.letterSpacing = letterSpacing
         nsView.paragraphSpacing = paragraphSpacing
         nsView.firstLineIndent = firstLineIndent
-        nsView.bold = bold
+        nsView.weightLevel = weightLevel
+        nsView.chineseConversion = chineseConversion
         nsView.fontPostScriptName = fontPostScriptName
         nsView.boldPostScriptName = boldPostScriptName
         nsView.textColor = NSColor(textColor)
@@ -2473,7 +2535,8 @@ public class CoreTextNSView: NSView {
     public var letterSpacing: CGFloat = 0
     public var paragraphSpacing: CGFloat = 0
     public var firstLineIndent: CGFloat = 0
-    public var bold: Bool = false
+    public var weightLevel: Int = 1
+    public var chineseConversion: ChineseConversion = .none
     public var fontPostScriptName: String = "PingFangSC-Regular"
     public var boldPostScriptName: String? = "PingFangSC-Semibold"
     public var textColor: NSColor = .textColor
@@ -2489,7 +2552,7 @@ public class CoreTextNSView: NSView {
             postScriptName: fontPostScriptName,
             boldPostScriptName: boldPostScriptName,
             size: fontSize,
-            bold: bold
+            weightLevel: weightLevel
         )
         let effectiveLineHeight = fontSize * 1.25 + lineSpacing
         let targetWidth = Double(max(100, containerWidth))
@@ -2498,7 +2561,8 @@ public class CoreTextNSView: NSView {
         for (index, lineText) in lines.enumerated() {
             guard !lineText.isEmpty else { continue }
             let isParagraphStart = index == 0 || (index - 1 < isParagraphEnd.count && isParagraphEnd[index - 1])
-            let renderedText = isParagraphStart ? String(repeating: "　", count: Int(firstLineIndent.rounded())) + lineText : lineText
+            let convertedText = chineseConversion.apply(lineText)
+            let renderedText = isParagraphStart ? String(repeating: "　", count: Int(firstLineIndent.rounded())) + convertedText : convertedText
             let attrs: [CFString: Any] = [
                 kCTFontAttributeName: ctFont,
                 kCTForegroundColorAttributeName: textColor.cgColor,
@@ -2552,7 +2616,8 @@ public struct CoreTextPageView: UIViewRepresentable {
     public var letterSpacing: CGFloat = 0
     public var paragraphSpacing: CGFloat = 0
     public var firstLineIndent: CGFloat = 0
-    public var bold: Bool = false
+    public var weightLevel: Int = 1
+    public var chineseConversion: ChineseConversion = .none
     public var fontPostScriptName: String = "PingFangSC-Regular"
     public var boldPostScriptName: String? = "PingFangSC-Semibold"
 
@@ -2570,7 +2635,8 @@ public struct CoreTextPageView: UIViewRepresentable {
         uiView.letterSpacing = letterSpacing
         uiView.paragraphSpacing = paragraphSpacing
         uiView.firstLineIndent = firstLineIndent
-        uiView.bold = bold
+        uiView.weightLevel = weightLevel
+        uiView.chineseConversion = chineseConversion
         uiView.fontPostScriptName = fontPostScriptName
         uiView.boldPostScriptName = boldPostScriptName
         uiView.textColor = UIColor(textColor)
@@ -2589,7 +2655,8 @@ public class CoreTextUIView: UIView {
     public var letterSpacing: CGFloat = 0
     public var paragraphSpacing: CGFloat = 0
     public var firstLineIndent: CGFloat = 0
-    public var bold: Bool = false
+    public var weightLevel: Int = 1
+    public var chineseConversion: ChineseConversion = .none
     public var fontPostScriptName: String = "PingFangSC-Regular"
     public var boldPostScriptName: String? = "PingFangSC-Semibold"
     public var textColor: UIColor = .label
@@ -2603,7 +2670,7 @@ public class CoreTextUIView: UIView {
             postScriptName: fontPostScriptName,
             boldPostScriptName: boldPostScriptName,
             size: fontSize,
-            bold: bold
+            weightLevel: weightLevel
         )
         let effectiveLineHeight = fontSize * 1.25 + lineSpacing
         let targetWidth = Double(max(100, containerWidth))
@@ -2612,7 +2679,8 @@ public class CoreTextUIView: UIView {
         for (index, lineText) in lines.enumerated() {
             guard !lineText.isEmpty else { continue }
             let isParagraphStart = index == 0 || (index - 1 < isParagraphEnd.count && isParagraphEnd[index - 1])
-            let renderedText = isParagraphStart ? String(repeating: "　", count: Int(firstLineIndent.rounded())) + lineText : lineText
+            let convertedText = chineseConversion.apply(lineText)
+            let renderedText = isParagraphStart ? String(repeating: "　", count: Int(firstLineIndent.rounded())) + convertedText : convertedText
             let attrs: [CFString: Any] = [
                 kCTFontAttributeName: ctFont,
                 kCTForegroundColorAttributeName: textColor.cgColor,

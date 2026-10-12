@@ -13,7 +13,8 @@ public struct PageCurlPager: UIViewControllerRepresentable {
     public let letterSpacing: CGFloat
     public let paragraphSpacing: CGFloat
     public let firstLineIndent: CGFloat
-    public let bold: Bool
+    public let weightLevel: Int
+    public let chineseConversion: ChineseConversion
     public let fontPostScriptName: String
     public let boldPostScriptName: String?
     public let textColor: Color
@@ -35,7 +36,8 @@ public struct PageCurlPager: UIViewControllerRepresentable {
         letterSpacing: CGFloat,
         paragraphSpacing: CGFloat,
         firstLineIndent: CGFloat,
-        bold: Bool,
+        weightLevel: Int,
+        chineseConversion: ChineseConversion,
         fontPostScriptName: String,
         boldPostScriptName: String?,
         textColor: Color,
@@ -56,7 +58,8 @@ public struct PageCurlPager: UIViewControllerRepresentable {
         self.letterSpacing = letterSpacing
         self.paragraphSpacing = paragraphSpacing
         self.firstLineIndent = firstLineIndent
-        self.bold = bold
+        self.weightLevel = weightLevel
+        self.chineseConversion = chineseConversion
         self.fontPostScriptName = fontPostScriptName
         self.boldPostScriptName = boldPostScriptName
         self.textColor = textColor
@@ -127,7 +130,8 @@ public struct PageCurlPager: UIViewControllerRepresentable {
                 letterSpacing: parent.letterSpacing,
                 paragraphSpacing: parent.paragraphSpacing,
                 firstLineIndent: parent.firstLineIndent,
-                bold: parent.bold,
+                weightLevel: parent.weightLevel,
+                chineseConversion: parent.chineseConversion,
                 fontPostScriptName: parent.fontPostScriptName,
                 boldPostScriptName: parent.boldPostScriptName,
                 textColor: parent.textColor,
@@ -235,7 +239,8 @@ struct PageCurlContent: View {
     let letterSpacing: CGFloat
     let paragraphSpacing: CGFloat
     let firstLineIndent: CGFloat
-    let bold: Bool
+    let weightLevel: Int
+    let chineseConversion: ChineseConversion
     let fontPostScriptName: String
     let boldPostScriptName: String?
     let textColor: Color
@@ -278,7 +283,8 @@ struct PageCurlContent: View {
                         letterSpacing: letterSpacing,
                         paragraphSpacing: paragraphSpacing,
                         firstLineIndent: firstLineIndent,
-                        bold: bold,
+                        weightLevel: weightLevel,
+                        chineseConversion: chineseConversion,
                         fontPostScriptName: fontPostScriptName,
                         boldPostScriptName: boldPostScriptName
                     )
