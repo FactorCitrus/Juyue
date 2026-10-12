@@ -14,6 +14,8 @@ public struct PageCurlPager: UIViewControllerRepresentable {
     public let paragraphSpacing: CGFloat
     public let firstLineIndent: CGFloat
     public let bold: Bool
+    public let fontPostScriptName: String
+    public let boldPostScriptName: String?
     public let textColor: Color
     public let backgroundColor: Color
     public let horizontalPadding: CGFloat
@@ -32,6 +34,8 @@ public struct PageCurlPager: UIViewControllerRepresentable {
         paragraphSpacing: CGFloat,
         firstLineIndent: CGFloat,
         bold: Bool,
+        fontPostScriptName: String,
+        boldPostScriptName: String?,
         textColor: Color,
         backgroundColor: Color,
         horizontalPadding: CGFloat,
@@ -49,6 +53,8 @@ public struct PageCurlPager: UIViewControllerRepresentable {
         self.paragraphSpacing = paragraphSpacing
         self.firstLineIndent = firstLineIndent
         self.bold = bold
+        self.fontPostScriptName = fontPostScriptName
+        self.boldPostScriptName = boldPostScriptName
         self.textColor = textColor
         self.backgroundColor = backgroundColor
         self.horizontalPadding = horizontalPadding
@@ -116,6 +122,8 @@ public struct PageCurlPager: UIViewControllerRepresentable {
                 paragraphSpacing: parent.paragraphSpacing,
                 firstLineIndent: parent.firstLineIndent,
                 bold: parent.bold,
+                fontPostScriptName: parent.fontPostScriptName,
+                boldPostScriptName: parent.boldPostScriptName,
                 textColor: parent.textColor,
                 backgroundColor: parent.backgroundColor,
                 horizontalPadding: parent.horizontalPadding
@@ -220,6 +228,8 @@ struct PageCurlContent: View {
     let paragraphSpacing: CGFloat
     let firstLineIndent: CGFloat
     let bold: Bool
+    let fontPostScriptName: String
+    let boldPostScriptName: String?
     let textColor: Color
     let backgroundColor: Color
     let horizontalPadding: CGFloat
@@ -256,7 +266,9 @@ struct PageCurlContent: View {
                         letterSpacing: letterSpacing,
                         paragraphSpacing: paragraphSpacing,
                         firstLineIndent: firstLineIndent,
-                        bold: bold
+                        bold: bold,
+                        fontPostScriptName: fontPostScriptName,
+                        boldPostScriptName: boldPostScriptName
                     )
                     .frame(width: usableWidth, height: contentHeight, alignment: .topLeading)
                 }

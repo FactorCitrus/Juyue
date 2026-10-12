@@ -58,6 +58,16 @@ public class ReaderConfig: ObservableObject {
     @Published public var firstLineIndent: CGFloat = 0 { didSet { persist(firstLineIndent, "reader_first_line_indent") } }
     /// 正文加粗
     @Published public var boldText: Bool = false { didSet { Self.defaults.set(boldText, forKey: "reader_bold_text") } }
+    /// 正文字体（PostScript 名）
+    @Published public var fontName: String = ReaderFont.default.postScriptName {
+        didSet { Self.defaults.set(fontName, forKey: "reader_font_name") }
+    }
+
+    /// 当前字体，找不到就退回默认
+    public var font: ReaderFont {
+        let candidate = ReaderFont.font(named: fontName)
+        return candidate.isAvailable ? candidate : ReaderFont.default
+    }
 
     // MARK: - 配色
     @Published public var theme: ReaderTheme = .parchment { didSet { Self.defaults.set(theme.rawValue, forKey: "reader_theme") } }
@@ -98,6 +108,7 @@ public class ReaderConfig: ObservableObject {
         if d.object(forKey: "reader_horizontal_padding") != nil { horizontalPadding = CGFloat(d.double(forKey: "reader_horizontal_padding")) }
         if d.object(forKey: "reader_first_line_indent") != nil { firstLineIndent = CGFloat(d.double(forKey: "reader_first_line_indent")) }
         if d.object(forKey: "reader_bold_text") != nil { boldText = d.bool(forKey: "reader_bold_text") }
+        if let name = d.string(forKey: "reader_font_name") { fontName = name }
         if d.object(forKey: "reader_custom_colors") != nil { useCustomColors = d.bool(forKey: "reader_custom_colors") }
         if let hex = d.string(forKey: "reader_bg_hex") { customBackgroundHex = hex }
         if let hex = d.string(forKey: "reader_text_hex") { customTextHex = hex }

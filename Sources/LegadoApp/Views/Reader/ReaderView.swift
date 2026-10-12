@@ -5,6 +5,35 @@ import CoreText
 import LegadoCore
 #endif
 
+/// 按配置挑正文字体：优先用对应字重，找不到就派生加粗，再不行退回系统默认。
+public enum ReaderFontFactory {
+    public static func ctFont(
+        postScriptName: String,
+        boldPostScriptName: String?,
+        size: CGFloat,
+        bold: Bool
+    ) -> CTFont {
+        let baseName = postScriptName.isEmpty ? "PingFangSC-Regular" : postScriptName
+        var font = CTFontCreateWithName(baseName as CFString, size, nil)
+        guard bold else { return font }
+
+        if let boldName = boldPostScriptName, !boldName.isEmpty {
+            let candidate = CTFontCreateWithName(boldName as CFString, size, nil)
+            let resolved = CTFontCopyPostScriptName(candidate) as String
+            if resolved.caseInsensitiveCompare(boldName) == .orderedSame {
+                font = candidate
+                return font
+            }
+        }
+
+        let traits = CTFontSymbolicTraits.traitBold
+        if let derived = CTFontCreateCopyWithSymbolicTraits(font, size, nil, traits, traits) {
+            font = derived
+        }
+        return font
+    }
+}
+
 public struct ContentBlock: Identifiable {
     public let id: Int
     public let isImage: Bool
@@ -526,6 +555,8 @@ public struct ReaderView: View {
                 paragraphSpacing: readerConfig.paragraphSpacing,
                 firstLineIndent: readerConfig.firstLineIndent,
                 bold: readerConfig.boldText,
+                fontPostScriptName: readerConfig.font.postScriptName,
+                boldPostScriptName: readerConfig.font.boldPostScriptName,
                 textColor: readerConfig.textColor,
                 backgroundColor: readerConfig.backgroundColor,
                 horizontalPadding: readerConfig.horizontalPadding,
@@ -605,7 +636,9 @@ public struct ReaderView: View {
                                 letterSpacing: readerConfig.letterSpacing,
                                 paragraphSpacing: readerConfig.paragraphSpacing,
                                 firstLineIndent: readerConfig.firstLineIndent,
-                                bold: readerConfig.boldText
+                                bold: readerConfig.boldText,
+                                fontPostScriptName: readerConfig.font.postScriptName,
+                                boldPostScriptName: readerConfig.font.boldPostScriptName
                             )
                             .frame(width: usableWidth, height: pageContentHeight, alignment: .topLeading)
                         }
@@ -1262,6 +1295,33 @@ public struct ReaderView: View {
             Text("排版")
                 .font(.system(size: 12, weight: .semibold))
                 .foregroundColor(readerConfig.textColor.opacity(0.6))
+
+            Menu {
+                ForEach(ReaderFont.available) { font in
+                    Button(font.displayName) {
+                        readerConfig.fontName = font.postScriptName
+                    }
+                }
+            } label: {
+                HStack {
+                    Text("字体")
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundColor(readerConfig.textColor.opacity(0.7))
+                    Spacer()
+                    Text(readerConfig.font.displayName)
+                        .font(.system(size: 12))
+                        .foregroundColor(readerConfig.textColor.opacity(0.55))
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 11))
+                        .foregroundColor(readerConfig.textColor.opacity(0.4))
+                }
+            }
+
+            Text("天地玄黄，宇宙洪荒。日月盈昃，辰宿列张。")
+                .font(.custom(readerConfig.font.postScriptName, size: 15))
+                .foregroundColor(readerConfig.textColor.opacity(0.85))
+                .lineLimit(2)
+                .padding(.vertical, 2)
 
             settingSlider("字间距", value: $readerConfig.letterSpacing, range: 0...4, step: 0.5)
             settingSlider("段间距", value: $readerConfig.paragraphSpacing, range: 0...30, step: 1)
@@ -2188,6 +2248,7 @@ public struct ReaderSearchSheet: View {
 #if os(macOS)
 import AppKit
 
+
 public struct CoreTextPageView: NSViewRepresentable {
     public let lines: [String]
     public let isParagraphEnd: [Bool]
@@ -2200,6 +2261,8 @@ public struct CoreTextPageView: NSViewRepresentable {
     public var paragraphSpacing: CGFloat = 0
     public var firstLineIndent: CGFloat = 0
     public var bold: Bool = false
+    public var fontPostScriptName: String = "PingFangSC-Regular"
+    public var boldPostScriptName: String? = "PingFangSC-Semibold"
 
     public func makeNSView(context: Context) -> CoreTextNSView {
         let view = CoreTextNSView()
@@ -2216,6 +2279,8 @@ public struct CoreTextPageView: NSViewRepresentable {
         nsView.paragraphSpacing = paragraphSpacing
         nsView.firstLineIndent = firstLineIndent
         nsView.bold = bold
+        nsView.fontPostScriptName = fontPostScriptName
+        nsView.boldPostScriptName = boldPostScriptName
         nsView.textColor = NSColor(textColor)
         nsView.containerWidth = width
         nsView.containerHeight = height
@@ -2232,6 +2297,8 @@ public class CoreTextNSView: NSView {
     public var paragraphSpacing: CGFloat = 0
     public var firstLineIndent: CGFloat = 0
     public var bold: Bool = false
+    public var fontPostScriptName: String = "PingFangSC-Regular"
+    public var boldPostScriptName: String? = "PingFangSC-Semibold"
     public var textColor: NSColor = .textColor
     public var containerWidth: CGFloat = 340
     public var containerHeight: CGFloat = 600
@@ -2241,8 +2308,12 @@ public class CoreTextNSView: NSView {
     public override func draw(_ dirtyRect: NSRect) {
         guard let ctx = NSGraphicsContext.current?.cgContext, !lines.isEmpty else { return }
 
-        let fontName = bold ? "PingFangSC-Semibold" : "PingFangSC-Regular"
-        let ctFont = CTFontCreateWithName(fontName as CFString, fontSize, nil)
+        let ctFont = ReaderFontFactory.ctFont(
+            postScriptName: fontPostScriptName,
+            boldPostScriptName: boldPostScriptName,
+            size: fontSize,
+            bold: bold
+        )
         let effectiveLineHeight = fontSize * 1.25 + lineSpacing
         let targetWidth = Double(max(100, containerWidth))
         var paragraphOffset: CGFloat = 0
@@ -2305,6 +2376,8 @@ public struct CoreTextPageView: UIViewRepresentable {
     public var paragraphSpacing: CGFloat = 0
     public var firstLineIndent: CGFloat = 0
     public var bold: Bool = false
+    public var fontPostScriptName: String = "PingFangSC-Regular"
+    public var boldPostScriptName: String? = "PingFangSC-Semibold"
 
     public func makeUIView(context: Context) -> CoreTextUIView {
         let view = CoreTextUIView()
@@ -2321,6 +2394,8 @@ public struct CoreTextPageView: UIViewRepresentable {
         uiView.paragraphSpacing = paragraphSpacing
         uiView.firstLineIndent = firstLineIndent
         uiView.bold = bold
+        uiView.fontPostScriptName = fontPostScriptName
+        uiView.boldPostScriptName = boldPostScriptName
         uiView.textColor = UIColor(textColor)
         uiView.containerWidth = width
         uiView.containerHeight = height
@@ -2338,6 +2413,8 @@ public class CoreTextUIView: UIView {
     public var paragraphSpacing: CGFloat = 0
     public var firstLineIndent: CGFloat = 0
     public var bold: Bool = false
+    public var fontPostScriptName: String = "PingFangSC-Regular"
+    public var boldPostScriptName: String? = "PingFangSC-Semibold"
     public var textColor: UIColor = .label
     public var containerWidth: CGFloat = 340
     public var containerHeight: CGFloat = 600
@@ -2345,8 +2422,12 @@ public class CoreTextUIView: UIView {
     public override func draw(_ rect: CGRect) {
         guard let ctx = UIGraphicsGetCurrentContext(), !lines.isEmpty else { return }
 
-        let fontName = bold ? "PingFangSC-Semibold" : "PingFangSC-Regular"
-        let ctFont = CTFontCreateWithName(fontName as CFString, fontSize, nil)
+        let ctFont = ReaderFontFactory.ctFont(
+            postScriptName: fontPostScriptName,
+            boldPostScriptName: boldPostScriptName,
+            size: fontSize,
+            bold: bold
+        )
         let effectiveLineHeight = fontSize * 1.25 + lineSpacing
         let targetWidth = Double(max(100, containerWidth))
         var paragraphOffset: CGFloat = 0
