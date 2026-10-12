@@ -115,6 +115,8 @@ public struct PageCurlPager: UIViewControllerRepresentable {
         controller.dataSource = context.coordinator
         controller.delegate = context.coordinator
         controller.isDoubleSided = false
+        // 卷页背面是系统拿页面视图渲染的，容器底色不设就会露白
+        controller.view.backgroundColor = UIColor(backgroundColor)
         if let first = context.coordinator.controller(at: clampedIndex) {
             controller.setViewControllers([first], direction: .forward, animated: false)
         }
@@ -123,6 +125,7 @@ public struct PageCurlPager: UIViewControllerRepresentable {
 
     public func updateUIViewController(_ controller: UIPageViewController, context: Context) {
         context.coordinator.parent = self
+        controller.view.backgroundColor = UIColor(backgroundColor)
         guard !pages.isEmpty else { return }
 
         // 配色、字体、排版这些变了要重建当前页，否则托管的页面还是旧样式
