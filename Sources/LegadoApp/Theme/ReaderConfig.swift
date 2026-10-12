@@ -12,7 +12,8 @@ public enum ReaderTheme: String, CaseIterable, Identifiable {
         switch self {
         case .white: return Color(red: 0.98, green: 0.98, blue: 0.98)
         case .parchment: return Color(red: 0.95, green: 0.90, blue: 0.82)
-        case .eyeCare: return Color(red: 0.88, green: 0.94, blue: 0.88)
+        // 取自安卓阅读器护眼绿的实测值
+        case .eyeCare: return Color(red: 187.0 / 255.0, green: 200.0 / 255.0, blue: 149.0 / 255.0)
         case .dark: return Color(red: 0.12, green: 0.12, blue: 0.12)
         }
     }
@@ -21,7 +22,7 @@ public enum ReaderTheme: String, CaseIterable, Identifiable {
         switch self {
         case .white: return Color(red: 0.15, green: 0.15, blue: 0.15)
         case .parchment: return Color(red: 0.22, green: 0.18, blue: 0.15)
-        case .eyeCare: return Color(red: 0.15, green: 0.25, blue: 0.15)
+        case .eyeCare: return Color(red: 57.0 / 255.0, green: 67.0 / 255.0, blue: 33.0 / 255.0)
         case .dark: return Color(red: 0.80, green: 0.80, blue: 0.80)
         }
     }
@@ -353,7 +354,7 @@ public enum ReaderPresetColor: String, CaseIterable, Identifiable {
         switch self {
         case .paper: return "#F2E6CE"
         case .warm: return "#E8D6B8"
-        case .olive: return "#CFE0C3"
+        case .olive: return "#BBC895"
         case .lilac: return "#E8D8F0"
         case .night: return "#12202E"
         case .plain: return "#F7F6F3"
@@ -364,7 +365,7 @@ public enum ReaderPresetColor: String, CaseIterable, Identifiable {
         switch self {
         case .paper: return "#4A3F2F"
         case .warm: return "#5A4326"
-        case .olive: return "#33452C"
+        case .olive: return "#394321"
         case .lilac: return "#4A3560"
         case .night: return "#D6DEE6"
         case .plain: return "#23282D"
