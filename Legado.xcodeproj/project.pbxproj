@@ -23,6 +23,14 @@
 			<array>
 				<string>7DDCBADA68C253C10B4B67C2</string>
 				<string>1BABC9FE70385367B81EC546</string>
+				<string>A420489B4D5FD5C83B54912E</string>
+				<string>BD3DFF7BCEA3EA7CA248AED7</string>
+				<string>6A57748CD65012CA00505CAB</string>
+				<string>5CD7D00A9390F2E29469DC32</string>
+				<string>F971A65979AEDFFC1916C1B3</string>
+				<string>EE017F7802981DA6891DF806</string>
+				<string>4A8CF64E36DA2115737EA636</string>
+				<string>0884BDDF5B3132B8F0C7271E</string>
 			</array>
 			<key>isa</key>
 			<string>PBXGroup</string>
@@ -657,6 +665,14 @@
 				<string>B40C9798457DF5AC871DEAC9</string>
 				<string>00A53D3303BC693F605060C5</string>
 				<string>40889BD1C636DBE44D05E1D0</string>
+				<string>4033E6695861F37D8F5CFE04</string>
+				<string>41CAD0DEF8CFD7D9ECF1EF94</string>
+				<string>AD69C09C8A234D4E9450226C</string>
+				<string>B7A35946EC4A20898E6DF707</string>
+				<string>530BB37EF7AEFF11A87473CA</string>
+				<string>774AD7690C4AE61EEECAA0D7</string>
+				<string>ACC5B8F3A024DDD339032F9E</string>
+				<string>9AC198F36B8CABBCA3FEDC81</string>
 			</array>
 			<key>isa</key>
 			<string>PBXSourcesBuildPhase</string>
@@ -1065,6 +1081,150 @@
 			<string>Sources/LegadoApp/Views/BookshelfView.swift</string>
 			<key>sourceTree</key>
 			<string>&lt;group&gt;</string>
+		</dict>
+		<key>A420489B4D5FD5C83B54912E</key>
+		<dict>
+			<key>isa</key>
+			<string>PBXFileReference</string>
+			<key>lastKnownFileType</key>
+			<string>sourcecode.swift</string>
+			<key>path</key>
+			<string>Sources/LegadoCore/Models/HttpTTS.swift</string>
+			<key>sourceTree</key>
+			<string>&lt;group&gt;</string>
+		</dict>
+		<key>4033E6695861F37D8F5CFE04</key>
+		<dict>
+			<key>isa</key>
+			<string>PBXBuildFile</string>
+			<key>fileRef</key>
+			<string>A420489B4D5FD5C83B54912E</string>
+		</dict>
+		<key>BD3DFF7BCEA3EA7CA248AED7</key>
+		<dict>
+			<key>isa</key>
+			<string>PBXFileReference</string>
+			<key>lastKnownFileType</key>
+			<string>sourcecode.swift</string>
+			<key>path</key>
+			<string>Sources/LegadoCore/Engine/TTSTemplateRenderer.swift</string>
+			<key>sourceTree</key>
+			<string>&lt;group&gt;</string>
+		</dict>
+		<key>41CAD0DEF8CFD7D9ECF1EF94</key>
+		<dict>
+			<key>isa</key>
+			<string>PBXBuildFile</string>
+			<key>fileRef</key>
+			<string>BD3DFF7BCEA3EA7CA248AED7</string>
+		</dict>
+		<key>6A57748CD65012CA00505CAB</key>
+		<dict>
+			<key>isa</key>
+			<string>PBXFileReference</string>
+			<key>lastKnownFileType</key>
+			<string>sourcecode.swift</string>
+			<key>path</key>
+			<string>Sources/LegadoCore/Service/HttpTTSEngine.swift</string>
+			<key>sourceTree</key>
+			<string>&lt;group&gt;</string>
+		</dict>
+		<key>AD69C09C8A234D4E9450226C</key>
+		<dict>
+			<key>isa</key>
+			<string>PBXBuildFile</string>
+			<key>fileRef</key>
+			<string>6A57748CD65012CA00505CAB</string>
+		</dict>
+		<key>5CD7D00A9390F2E29469DC32</key>
+		<dict>
+			<key>isa</key>
+			<string>PBXFileReference</string>
+			<key>lastKnownFileType</key>
+			<string>sourcecode.swift</string>
+			<key>path</key>
+			<string>Sources/LegadoCore/Service/HttpTTSPlayer.swift</string>
+			<key>sourceTree</key>
+			<string>&lt;group&gt;</string>
+		</dict>
+		<key>B7A35946EC4A20898E6DF707</key>
+		<dict>
+			<key>isa</key>
+			<string>PBXBuildFile</string>
+			<key>fileRef</key>
+			<string>5CD7D00A9390F2E29469DC32</string>
+		</dict>
+		<key>F971A65979AEDFFC1916C1B3</key>
+		<dict>
+			<key>isa</key>
+			<string>PBXFileReference</string>
+			<key>lastKnownFileType</key>
+			<string>sourcecode.swift</string>
+			<key>path</key>
+			<string>Sources/LegadoCore/Service/HttpTTSStore.swift</string>
+			<key>sourceTree</key>
+			<string>&lt;group&gt;</string>
+		</dict>
+		<key>530BB37EF7AEFF11A87473CA</key>
+		<dict>
+			<key>isa</key>
+			<string>PBXBuildFile</string>
+			<key>fileRef</key>
+			<string>F971A65979AEDFFC1916C1B3</string>
+		</dict>
+		<key>EE017F7802981DA6891DF806</key>
+		<dict>
+			<key>isa</key>
+			<string>PBXFileReference</string>
+			<key>lastKnownFileType</key>
+			<string>sourcecode.swift</string>
+			<key>path</key>
+			<string>Sources/LegadoCore/Utils/TTSTextChunker.swift</string>
+			<key>sourceTree</key>
+			<string>&lt;group&gt;</string>
+		</dict>
+		<key>774AD7690C4AE61EEECAA0D7</key>
+		<dict>
+			<key>isa</key>
+			<string>PBXBuildFile</string>
+			<key>fileRef</key>
+			<string>EE017F7802981DA6891DF806</string>
+		</dict>
+		<key>4A8CF64E36DA2115737EA636</key>
+		<dict>
+			<key>isa</key>
+			<string>PBXFileReference</string>
+			<key>lastKnownFileType</key>
+			<string>sourcecode.swift</string>
+			<key>path</key>
+			<string>Sources/LegadoApp/Views/TTSourceManagerView.swift</string>
+			<key>sourceTree</key>
+			<string>&lt;group&gt;</string>
+		</dict>
+		<key>ACC5B8F3A024DDD339032F9E</key>
+		<dict>
+			<key>isa</key>
+			<string>PBXBuildFile</string>
+			<key>fileRef</key>
+			<string>4A8CF64E36DA2115737EA636</string>
+		</dict>
+		<key>0884BDDF5B3132B8F0C7271E</key>
+		<dict>
+			<key>isa</key>
+			<string>PBXFileReference</string>
+			<key>lastKnownFileType</key>
+			<string>sourcecode.swift</string>
+			<key>path</key>
+			<string>Sources/LegadoApp/Views/Reader/SourceSwitchSheet.swift</string>
+			<key>sourceTree</key>
+			<string>&lt;group&gt;</string>
+		</dict>
+		<key>9AC198F36B8CABBCA3FEDC81</key>
+		<dict>
+			<key>isa</key>
+			<string>PBXBuildFile</string>
+			<key>fileRef</key>
+			<string>0884BDDF5B3132B8F0C7271E</string>
 		</dict>
 	</dict>
 	<key>rootObject</key>
