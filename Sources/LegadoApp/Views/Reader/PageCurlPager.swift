@@ -130,11 +130,30 @@ public struct PageCurlPager: UIViewControllerRepresentable {
         controller.isDoubleSided = true
         controller.view.backgroundColor = UIColor(backgroundColor)
         // 双面模式下必须一次给两张（正面 + 背面），只给一张 UIKit 会直接抛异常
-        let initial = context.coordinator.pagePair(at: clampedIndex)
-        if !initial.isEmpty {
-            controller.setViewControllers(initial, direction: .forward, animated: false)
-        }
+        apply(
+            context.coordinator.pagePair(at: clampedIndex),
+            to: controller,
+            direction: .forward,
+            animated: false
+        )
         return controller
+    }
+
+    /// 双面模式下投递页面必须重新声明一次 `isDoubleSided`。
+    ///
+    /// UIKit 的规则是：spine 不是 .mid 时，`doubleSided` 为 YES 才要求一次给两张，
+    /// 为 NO 就只收一张。过渡结束后 UIKit 会把 `doubleSided` 复位成 NO，
+    /// 之后照旧给两张就会抛
+    /// "The number of provided view controllers (2) doesn't match the number required (1)"。
+    private func apply(
+        _ target: [UIViewController],
+        to controller: UIPageViewController,
+        direction: UIPageViewController.NavigationDirection,
+        animated: Bool
+    ) {
+        guard !target.isEmpty else { return }
+        controller.isDoubleSided = true
+        controller.setViewControllers(target, direction: direction, animated: animated)
     }
 
     public func updateUIViewController(_ controller: UIPageViewController, context: Context) {
@@ -147,21 +166,25 @@ public struct PageCurlPager: UIViewControllerRepresentable {
         if context.coordinator.lastSignature != signature {
             context.coordinator.lastSignature = signature
             let current = context.coordinator.index
-            let rebuilt = context.coordinator.pagePair(at: current)
-            if !rebuilt.isEmpty {
-                controller.setViewControllers(rebuilt, direction: .forward, animated: false)
-            }
+            apply(
+                context.coordinator.pagePair(at: current),
+                to: controller,
+                direction: .forward,
+                animated: false
+            )
             return
         }
 
         let current = context.coordinator.index
         guard current != clampedIndex else { return }
         let direction: UIPageViewController.NavigationDirection = clampedIndex > current ? .forward : .reverse
-        let target = context.coordinator.pagePair(at: clampedIndex)
-        if !target.isEmpty {
-            controller.setViewControllers(target, direction: direction, animated: true)
-            context.coordinator.index = clampedIndex
-        }
+        apply(
+            context.coordinator.pagePair(at: clampedIndex),
+            to: controller,
+            direction: direction,
+            animated: true
+        )
+        context.coordinator.index = clampedIndex
     }
 
     private var clampedIndex: Int {
