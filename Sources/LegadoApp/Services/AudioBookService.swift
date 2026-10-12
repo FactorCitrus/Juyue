@@ -15,14 +15,41 @@ public class AudioBookService: NSObject, ObservableObject, AVSpeechSynthesizerDe
 
     @Published public var isPlaying: Bool = false
     @Published public var isPaused: Bool = false
-    @Published public var speechRate: Float = AVSpeechUtteranceDefaultSpeechRate
+    /// 语速倍率，1.0 是系统默认。系统语音和在线语音源都按它换算。
+    @Published public var speechRate: Float = AVSpeechUtteranceDefaultSpeechRate {
+        didSet { UserDefaults.standard.set(Double(speechRate), forKey: "tts_speech_rate") }
+    }
+    /// 单次合成的最大字数，段落太长就切段，避免接口超时或截断。
+    @Published public var chunkLength: Int = 150 {
+        didSet { UserDefaults.standard.set(chunkLength, forKey: "tts_chunk_length") }
+    }
     @Published public var currentText: String = ""
+
+    /// 试听用的固定句子
+    public static let sampleText = "这是一段试听，用来确认音色和语速是否合适。"
 
     public override init() {
         super.init()
         synthesizer.delegate = self
+        let defaults = UserDefaults.standard
+        if defaults.object(forKey: "tts_speech_rate") != nil {
+            speechRate = Float(defaults.double(forKey: "tts_speech_rate"))
+        }
+        if defaults.object(forKey: "tts_chunk_length") != nil {
+            chunkLength = defaults.integer(forKey: "tts_chunk_length")
+        }
         setupAudioSession()
         mirrorHttpPlayerState()
+    }
+
+    /// 当前引擎名，设置面板和阅读界面都用它显示
+    public var currentEngineName: String {
+        TTSourceSelection.activeSource?.name ?? "系统语音"
+    }
+
+    /// 试听一句话
+    public func preview() {
+        speak(text: AudioBookService.sampleText)
     }
 
     /// 在线语音源的播放状态要同步给界面。
@@ -68,7 +95,7 @@ public class AudioBookService: NSObject, ObservableObject, AVSpeechSynthesizerDe
         self.currentText = text
 
         if let source = TTSourceSelection.activeSource {
-            httpPlayer.start(source: source, text: text, speed: httpSpeed)
+            httpPlayer.start(source: source, text: text, speed: httpSpeed, maxChunkLength: chunkLength)
             DispatchQueue.main.async {
                 self.isPlaying = true
                 self.isPaused = false

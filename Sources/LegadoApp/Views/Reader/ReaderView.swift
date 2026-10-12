@@ -1,4 +1,5 @@
 import SwiftUI
+import AVFoundation
 import CoreText
 #if canImport(LegadoCore)
 import LegadoCore
@@ -79,6 +80,7 @@ public struct ReaderView: View {
     @State private var showTOC: Bool = false
     @State private var showSettings: Bool = false
     @State private var showSearch: Bool = false
+    @State private var showTTSSettings: Bool = false
     @State private var showSourceSwitch: Bool = false
     @State private var showControls: Bool = false
 
@@ -263,6 +265,9 @@ public struct ReaderView: View {
         }
         .sheet(isPresented: $showSearch) {
             searchSheet
+        }
+        .sheet(isPresented: $showTTSSettings) {
+            TTSSettingsSheet()
         }
         .sheet(isPresented: $showSourceSwitch) {
             SourceSwitchSheet(
@@ -1055,6 +1060,9 @@ public struct ReaderView: View {
                 .foregroundColor(readerConfig.textColor)
                 .frame(maxWidth: .infinity)
             }
+            .onLongPressGesture {
+                showTTSSettings = true
+            }
 
             // Switch Book Source (换源)
             Button(action: { showSourceSwitch = true }) {
@@ -1187,6 +1195,7 @@ public struct ReaderView: View {
                     typographySection
                     themeRow
                     colorSection
+                    ttsSection
                 }
                 .padding(.bottom, 4)
             }
@@ -1303,6 +1312,38 @@ public struct ReaderView: View {
         }
     }
 
+    // MARK: 听书
+    private var ttsSection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("听书")
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundColor(readerConfig.textColor.opacity(0.6))
+
+            HStack(spacing: 8) {
+                Text(audioService.currentEngineName)
+                    .font(.system(size: 12))
+                    .foregroundColor(readerConfig.textColor.opacity(0.75))
+                    .lineLimit(1)
+                Spacer()
+                Button("听书设置") {
+                    showTTSSettings = true
+                }
+                .font(.system(size: 12, weight: .medium))
+            }
+
+            settingSlider(
+                "语速",
+                value: Binding(
+                    get: { CGFloat(audioService.speechRate / AVSpeechUtteranceDefaultSpeechRate) },
+                    set: { audioService.speechRate = Float($0) * AVSpeechUtteranceDefaultSpeechRate }
+                ),
+                range: 0.5...2.0,
+                step: 0.05,
+                suffix: "×"
+            )
+        }
+    }
+
     private var customBackgroundBinding: Binding<Color> {
         Binding(
             get: { Color(hex: readerConfig.customBackgroundHex) ?? readerConfig.theme.backgroundColor },
@@ -1330,12 +1371,19 @@ public struct ReaderView: View {
                     .font(.system(size: 12, weight: .medium))
                     .foregroundColor(readerConfig.textColor.opacity(0.7))
                 Spacer()
-                Text("\(Int(value.wrappedValue))\(suffix)")
+                Text(settingValueText(value.wrappedValue, step: step, suffix: suffix))
                     .font(.system(size: 11))
                     .foregroundColor(readerConfig.textColor.opacity(0.5))
             }
             Slider(value: value, in: range, step: step)
         }
+    }
+
+    private func settingValueText(_ value: CGFloat, step: CGFloat, suffix: String) -> String {
+        if step < 1 {
+            return String(format: "%.1f%@", Double(value), suffix)
+        }
+        return "\(Int(value))\(suffix)"
     }
 
     private var fontSizeRow: some View {
