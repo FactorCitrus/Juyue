@@ -499,7 +499,8 @@ struct PageCurlContent: View {
                 } else {
                     let lines = blocks.map { $0.text }
                     let isParagraphEnd = blocks.map { $0.imageUrl == "p_end" }
-                    let paragraphCount = CGFloat(isParagraphEnd.filter { $0 }.count)
+                    let trailingSpacing = isParagraphEnd.last == true ? 1 : 0
+                    let paragraphCount = CGFloat(isParagraphEnd.filter { $0 }.count - trailingSpacing)
                     let contentHeight = CGFloat(lines.count) * (fontSize * 1.25 + lineSpacing)
                         + paragraphCount * paragraphSpacing
 

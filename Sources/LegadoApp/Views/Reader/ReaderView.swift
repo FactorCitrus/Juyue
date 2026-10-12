@@ -685,7 +685,9 @@ public struct ReaderView: View {
                             let lines = pageBlocks.map { $0.text }
                             let isParagraphEnd = pageBlocks.map { $0.imageUrl == "p_end" }
                             let effectiveLineHeight = readerConfig.fontSize * 1.25 + readerConfig.lineSpacing
-                            let paragraphCount = CGFloat(isParagraphEnd.filter { $0 }.count)
+                            // 页面最后一行是段尾的话，它后面的段间距是看不见的空白，不该占高度
+                            let trailingSpacing = isParagraphEnd.last == true ? 1 : 0
+                            let paragraphCount = CGFloat(isParagraphEnd.filter { $0 }.count - trailingSpacing)
                             let pageContentHeight = CGFloat(lines.count) * effectiveLineHeight
                                 + paragraphCount * readerConfig.paragraphSpacing
 
@@ -1989,7 +1991,7 @@ public struct ReaderView: View {
         do {
             let content = try await BookContentService.shared.fetchChapterContent(chapter: targetChapter, source: effectiveSource)
             let blocks = parseContentBlocks(from: content)
-            let pages = paginate(blocks: blocks)
+            let pages = paginate(blocks: blocks, title: targetChapter.title)
             let loaded = LoadedChapter(chapter: targetChapter, content: content, blocks: blocks, pages: pages)
             self.chapterCache[index] = loaded
             return loaded
@@ -2006,7 +2008,7 @@ public struct ReaderView: View {
             Task { @MainActor in
                 if let content = try? await BookContentService.shared.fetchChapterContent(chapter: prevCh, source: source) {
                     let blocks = parseContentBlocks(from: content)
-                    let pages = paginate(blocks: blocks)
+                    let pages = paginate(blocks: blocks, title: prevCh.title)
                     let loaded = LoadedChapter(chapter: prevCh, content: content, blocks: blocks, pages: pages)
                     self.chapterCache[index - 1] = loaded
                 }
@@ -2018,7 +2020,7 @@ public struct ReaderView: View {
             Task { @MainActor in
                 if let content = try? await BookContentService.shared.fetchChapterContent(chapter: nextCh, source: source) {
                     let blocks = parseContentBlocks(from: content)
-                    let pages = paginate(blocks: blocks)
+                    let pages = paginate(blocks: blocks, title: nextCh.title)
                     let loaded = LoadedChapter(chapter: nextCh, content: content, blocks: blocks, pages: pages)
                     self.chapterCache[index + 1] = loaded
                 }
@@ -2046,7 +2048,7 @@ public struct ReaderView: View {
                 } else {
                     let content = try await BookContentService.shared.fetchChapterContent(chapter: currentChapter, source: source)
                     let blocks = parseContentBlocks(from: content)
-                    let pages = paginate(blocks: blocks)
+                    let pages = paginate(blocks: blocks, title: currentChapter.title)
                     loaded = LoadedChapter(chapter: currentChapter, content: content, blocks: blocks, pages: pages)
                     self.chapterCache[index] = loaded
                 }
@@ -2147,7 +2149,7 @@ public struct ReaderView: View {
             do {
                 let content = try await BookContentService.shared.fetchChapterContent(chapter: nextChapter, source: source)
                 let blocks = parseContentBlocks(from: content)
-                let pages = paginate(blocks: blocks)
+                let pages = paginate(blocks: blocks, title: nextChapter.title)
                 let loaded = LoadedChapter(chapter: nextChapter, content: content, blocks: blocks, pages: pages)
 
                 self.loadedChapters.append(loaded)
@@ -2165,7 +2167,7 @@ public struct ReaderView: View {
         let charPos = currentChapterCharOffset()
 
         for i in 0..<loadedChapters.count {
-            loadedChapters[i].pages = paginate(blocks: loadedChapters[i].blocks)
+            loadedChapters[i].pages = paginate(blocks: loadedChapters[i].blocks, title: loadedChapters[i].chapter.title)
         }
 
         if let cur = currentLoadedChapter, !cur.pages.isEmpty {
@@ -2273,7 +2275,7 @@ public struct ReaderView: View {
     /// 一页能放多高（点）：先扣掉页眉页脚和上下边距。
     /// 这里必须返回高度而不是行数——段间距也要占地方，按行数算会低估，
     /// 渲染出来超出预算的那半行就会压到页脚上（正文糊在页脚上）。
-    private func calculateLayoutMetrics() -> (pageHeight: CGFloat, firstPageHeight: CGFloat) {
+    private func calculateLayoutMetrics(title: String? = nil) -> (pageHeight: CGFloat, firstPageHeight: CGFloat) {
         let height = max(400, readerContainerSize.height)
 
         let barHeight: CGFloat = 19
@@ -2283,12 +2285,18 @@ public struct ReaderView: View {
             + (readerConfig.footerEnabled ? readerConfig.footerOffset : 0)
             + readerConfig.paddingTop
             + readerConfig.paddingBottom
-        let usableHeight = max(200, height - reserved - 6)
+        let usableHeight = max(200, height - reserved - 2)
 
         // First page has chapter title (+ title padding)
         let titleLineHeight = (readerConfig.fontSize + 3) * 1.3 + readerConfig.lineSpacing
-        // 标题只占一行时按一行算：以前乘 1.5 多留一截，导致首页底部空一大块
-        let titleHeight = titleLineHeight + 10.0
+        // 标题按实际宽度估行数：窄屏长标题会折行，留太少会把正文顶到页脚上，
+        // 留太多首页底部就空一大块
+        let titleWidth = max(120, readerContainerSize.width - readerConfig.paddingLeft - readerConfig.paddingRight)
+        let charsPerLine = max(4, Int(titleWidth / (readerConfig.fontSize + 3)))
+        let titleLines = title.map { max(1, min(3, Int(ceil(Double($0.count) / Double(charsPerLine))))) } ?? 1
+        let titleHeight = readerConfig.titleAlignment == .hidden
+            ? 0
+            : titleLineHeight * CGFloat(titleLines) + 10.0
         let firstPageUsableHeight = max(100, usableHeight - titleHeight)
 
         return (pageHeight: usableHeight, firstPageHeight: firstPageUsableHeight)
@@ -2330,8 +2338,8 @@ public struct ReaderView: View {
         return blocks
     }
 
-    private func paginate(blocks: [ContentBlock]) -> [[ContentBlock]] {
-        let metrics = calculateLayoutMetrics()
+    private func paginate(blocks: [ContentBlock], title: String? = nil) -> [[ContentBlock]] {
+        let metrics = calculateLayoutMetrics(title: title)
         let normalHeight = metrics.pageHeight
         let firstPageHeight = metrics.firstPageHeight
         let lineHeight = readerConfig.fontSize * 1.25 + readerConfig.lineSpacing
@@ -2358,8 +2366,12 @@ public struct ReaderView: View {
             } else {
                 let pLines = splitParagraphIntoLines(text: block.text, width: usableWidth, fontSize: readerConfig.fontSize)
                 for lineInfo in pLines {
-                    let lineHeightWithSpacing = lineHeight
-                        + (lineInfo.isParagraphEnd ? readerConfig.paragraphSpacing : 0)
+                    // 段间距算在两个段落之间：上一行是段尾时，这一行之前才加间距，
+                    // 页面最后一行后面不会白留一截
+                    var lineHeightWithSpacing = lineHeight
+                    if currentPageLines.last?.isParagraphEnd == true {
+                        lineHeightWithSpacing += readerConfig.paragraphSpacing
+                    }
                     if !currentPageLines.isEmpty,
                        currentPageHeight + lineHeightWithSpacing > maxHeightForCurrentPage {
                         pages.append(buildPageBlocks(from: currentPageLines, startingId: &blockIdCounter))
