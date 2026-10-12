@@ -2225,11 +2225,12 @@ public struct ReaderView: View {
         )
     }
 
-    /// 一页排几行：先扣掉页眉页脚和上下边距，正文撑不出去，页脚才留得住。
-    private func calculateLayoutMetrics() -> (linesPerPage: Int, firstPageLines: Int) {
+    /// 一页能放多高（点）：先扣掉页眉页脚和上下边距。
+    /// 这里必须返回高度而不是行数——段间距也要占地方，按行数算会低估，
+    /// 渲染出来超出预算的那半行就会压到页脚上（正文糊在页脚上）。
+    private func calculateLayoutMetrics() -> (pageHeight: CGFloat, firstPageHeight: CGFloat) {
         let height = max(400, readerContainerSize.height)
 
-        let lineHeight = readerConfig.fontSize * 1.25 + readerConfig.lineSpacing
         let barHeight: CGFloat = 19
         let reserved = (readerConfig.headerEnabled ? barHeight : 0)
             + (readerConfig.footerEnabled ? barHeight : 0)
@@ -2241,10 +2242,7 @@ public struct ReaderView: View {
         let titleHeight = titleLineHeight * 1.5 + 16.0
         let firstPageUsableHeight = max(100, usableHeight - titleHeight)
 
-        let normalLines = max(6, Int(usableHeight / lineHeight))
-        let firstPageLines = max(3, Int(firstPageUsableHeight / lineHeight))
-
-        return (linesPerPage: normalLines, firstPageLines: firstPageLines)
+        return (pageHeight: usableHeight, firstPageHeight: firstPageUsableHeight)
     }
 
     private func splitParagraphIntoLines(text: String, width: Double, fontSize: CGFloat) -> [(text: String, isParagraphEnd: Bool)] {
@@ -2285,14 +2283,16 @@ public struct ReaderView: View {
 
     private func paginate(blocks: [ContentBlock]) -> [[ContentBlock]] {
         let metrics = calculateLayoutMetrics()
-        let normalLines = metrics.linesPerPage
-        let firstPageLines = metrics.firstPageLines
+        let normalHeight = metrics.pageHeight
+        let firstPageHeight = metrics.firstPageHeight
+        let lineHeight = readerConfig.fontSize * 1.25 + readerConfig.lineSpacing
         // 断行的宽度必须和渲染时用的一致，不然一行排得比页宽，右边就被切掉
         let usableWidth = Double(max(200, readerContainerSize.width - readerConfig.horizontalPadding * 2))
 
         var pages: [[ContentBlock]] = []
         var currentPageLines: [(text: String, isParagraphEnd: Bool)] = []
-        var maxLinesForCurrentPage = firstPageLines
+        var currentPageHeight: CGFloat = 0
+        var maxHeightForCurrentPage = firstPageHeight
         var blockIdCounter = 10000
 
         for block in blocks {
@@ -2300,19 +2300,26 @@ public struct ReaderView: View {
                 if !currentPageLines.isEmpty {
                     pages.append(buildPageBlocks(from: currentPageLines, startingId: &blockIdCounter))
                     currentPageLines = []
-                    maxLinesForCurrentPage = normalLines
+                    currentPageHeight = 0
+                    maxHeightForCurrentPage = normalHeight
                 }
                 pages.append([block])
-                maxLinesForCurrentPage = normalLines
+                currentPageHeight = 0
+                maxHeightForCurrentPage = normalHeight
             } else {
                 let pLines = splitParagraphIntoLines(text: block.text, width: usableWidth, fontSize: readerConfig.fontSize)
                 for lineInfo in pLines {
-                    currentPageLines.append(lineInfo)
-                    if currentPageLines.count >= maxLinesForCurrentPage {
+                    let lineHeightWithSpacing = lineHeight
+                        + (lineInfo.isParagraphEnd ? readerConfig.paragraphSpacing : 0)
+                    if !currentPageLines.isEmpty,
+                       currentPageHeight + lineHeightWithSpacing > maxHeightForCurrentPage {
                         pages.append(buildPageBlocks(from: currentPageLines, startingId: &blockIdCounter))
                         currentPageLines = []
-                        maxLinesForCurrentPage = normalLines
+                        currentPageHeight = 0
+                        maxHeightForCurrentPage = normalHeight
                     }
+                    currentPageLines.append(lineInfo)
+                    currentPageHeight += lineHeightWithSpacing
                 }
             }
         }
