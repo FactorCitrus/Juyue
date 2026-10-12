@@ -51,6 +51,9 @@ public struct ReaderView: View {
     /// 换源后原地替换，不退出阅读界面。
     @State private var switchedBook: Book?
     @State private var switchedSource: BookSource?
+    /// 换源失败要能退回原来的书源，不然会卡在错误页出不来。
+    @State private var previousBook: Book?
+    @State private var previousSource: BookSource?
 
     private var activeBook: Book { switchedBook ?? book }
 
@@ -126,10 +129,24 @@ public struct ReaderView: View {
                                     .foregroundColor(.secondary)
                                     .multilineTextAlignment(.center)
                                     .padding(.horizontal)
-                                Button("重试") {
-                                    loadInitialChapter(at: currentChapterIndex)
+                                HStack(spacing: 12) {
+                                    Button("重试") {
+                                        Task { await loadTOCAndStart() }
+                                    }
+                                    .buttonStyle(.borderedProminent)
+
+                                    Button("返回书架") {
+                                        dismiss()
+                                    }
+                                    .buttonStyle(.bordered)
                                 }
-                                .buttonStyle(.borderedProminent)
+                                if previousBook != nil {
+                                    Button("换回原书源") {
+                                        revertSourceSwitch()
+                                    }
+                                    .buttonStyle(.plain)
+                                    .foregroundColor(.accentColor)
+                                }
                                 Spacer()
                             }
                         } else {
@@ -987,6 +1004,8 @@ public struct ReaderView: View {
 
     /// 换源：把阅读进度搬到新书源，然后在同一个阅读界面里重拉目录和正文。
     private func switchToSource(_ newSource: BookSource, _ candidate: SearchBook) {
+        previousBook = activeBook
+        previousSource = effectiveSource
         let newBook = Book(
             bookUrl: candidate.bookUrl,
             name: candidate.name,
@@ -1005,6 +1024,24 @@ public struct ReaderView: View {
         chapterCache.removeAll()
         loadedChapters = []
         currentChapterIndex = applied.durChapterIndex
+        isLoadingInitial = true
+        errorMessage = nil
+        Task { await loadTOCAndStart() }
+    }
+
+    /// 新书源解析不出目录时退回原书源，避免卡在错误页。
+    private func revertSourceSwitch() {
+        guard let target = previousBook else { return }
+        let current = activeBook
+        switchedBook = target
+        switchedSource = previousSource
+        previousBook = nil
+        previousSource = nil
+        BookStore.shared.changeBookSource(from: current, to: target)
+        chapters = []
+        chapterCache.removeAll()
+        loadedChapters = []
+        currentChapterIndex = target.durChapterIndex
         isLoadingInitial = true
         errorMessage = nil
         Task { await loadTOCAndStart() }
@@ -1229,11 +1266,25 @@ public struct ReaderView: View {
                 fetchedChapters[i].index = i
             }
             self.chapters = fetchedChapters
+            guard !fetchedChapters.isEmpty else {
+                // 换源之后目录空，说明这个源用不了，直接退回原来的源
+                if previousBook != nil {
+                    revertSourceSwitch()
+                    return
+                }
+                self.errorMessage = "目录为空：书源的目录规则没有匹配到章节，请检查「\(source.bookSourceName)」的目录规则。"
+                self.isLoadingInitial = false
+                return
+            }
             if currentChapterIndex >= fetchedChapters.count {
                 currentChapterIndex = max(0, fetchedChapters.count - 1)
             }
             loadInitialChapter(at: currentChapterIndex)
         } catch {
+            if previousBook != nil {
+                revertSourceSwitch()
+                return
+            }
             self.errorMessage = "目录解析失败: \(error.localizedDescription)"
             self.isLoadingInitial = false
         }
