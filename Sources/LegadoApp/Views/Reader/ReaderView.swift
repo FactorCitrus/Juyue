@@ -71,6 +71,7 @@ public struct ReaderView: View {
 
     @State private var isLoadingInitial: Bool = true
     @State private var isLoadingNextChapter: Bool = false
+    @State private var loadingNote: String = "正在加载章节内容..."
     @State private var scrollSessionId: UUID = UUID()
     @State private var scrollToChapterId: String? = nil
     @State private var errorMessage: String? = nil
@@ -111,7 +112,7 @@ public struct ReaderView: View {
                             VStack(spacing: 16) {
                                 Spacer()
                                 ProgressView()
-                                Text("正在加载章节内容...")
+                                Text(loadingNote)
                                     .font(.subheadline)
                                     .foregroundColor(readerConfig.textColor.opacity(0.7))
                                 Spacer()
@@ -1420,7 +1421,16 @@ public struct ReaderView: View {
         }
 
         do {
-            var fetchedChapters = try await BookContentService.shared.fetchChapterList(book: activeBook, source: source)
+            self.loadingNote = "正在加载目录..."
+            var fetchedChapters = try await BookContentService.shared.fetchChapterList(
+                book: activeBook,
+                source: source
+            ) { fetchedPages, _ in
+                Task { @MainActor in
+                    self.loadingNote = "正在加载目录…已抓 \(fetchedPages) 页"
+                }
+            }
+            self.loadingNote = "正在加载章节内容..."
             for i in 0..<fetchedChapters.count {
                 fetchedChapters[i].index = i
             }

@@ -7,7 +7,11 @@ public class BookContentService {
     public init() {}
 
     /// Fetches detailed book information (author, intro, tags, word count) and TOC chapters in a unified request
-    public func fetchBookDetail(book: Book, source: BookSource) async throws -> (book: Book, chapters: [BookChapter]) {
+    public func fetchBookDetail(
+        book: Book,
+        source: BookSource,
+        onProgress: ((Int, Int) -> Void)? = nil
+    ) async throws -> (book: Book, chapters: [BookChapter]) {
         guard let tocRule = source.ruleToc else {
             return (book, [])
         }
@@ -64,52 +68,64 @@ public class BookContentService {
             chapters.append(chapter)
         }
 
-        // 目录分页：有的站点一页只给 40 章，靠 nextTocUrl 把后面的翻出来
+        // 目录分页：有的站点一页只给 40 章，靠 nextTocUrl 把后面的翻出来。
+        // 各页之间没有依赖（每页的页码表都列全），所以并发抓，不能一页一页等。
         if let nextRule = tocRule.nextTocUrl?.trimmingCharacters(in: .whitespacesAndNewlines), !nextRule.isEmpty {
-            var seenPages: Set<String> = [parsedReq.url.absoluteString]
-            var pending = BookContentService.extractURLs(from: analyzer, rule: nextRule, baseUrl: parsedReq.url.absoluteString)
-            var fetchedPages = 0
-            while let nextUrl = pending.first, fetchedPages < 60 {
-                pending.removeFirst()
-                guard !seenPages.contains(nextUrl) else { continue }
-                seenPages.insert(nextUrl)
-                fetchedPages += 1
+            let pageLimit = 60
+            let pageTimeout: TimeInterval = 20
 
-                guard let nextReq = NetworkClient.parseLegadoUrl(
-                    nextUrl,
-                    defaultHeader: headerToUse,
-                    baseUrl: source.bookSourceUrl
-                ) else { continue }
-                guard let nextResponse = try? await NetworkClient.shared.request(parsed: nextReq) else { continue }
+            var chapterURLs = Set(chapters.map(\.url))
+            var discovered: Set<String> = [parsedReq.url.absoluteString]
+            var frontier = BookContentService.extractURLs(from: analyzer, rule: nextRule, baseUrl: parsedReq.url.absoluteString)
+            var round = 0
 
-                let nextAnalyzer = RuleAnalyzer(
-                    content: nextResponse.bodyString,
-                    baseUrl: nextReq.url.absoluteString,
-                    bookSource: source,
-                    jsEngine: jsEngine
+            while !frontier.isEmpty, discovered.count < pageLimit, round < 4 {
+                round += 1
+                let urls = Array(frontier
+                    .filter { !discovered.contains($0) }
+                    .prefix(pageLimit - discovered.count))
+                if urls.isEmpty { break }
+                urls.forEach { discovered.insert($0) }
+
+                let bodies = await BookContentService.fetchBodies(
+                    urls: urls,
+                    header: headerToUse,
+                    baseUrl: source.bookSourceUrl,
+                    concurrency: 5,
+                    timeout: pageTimeout
                 )
-                for item in nextAnalyzer.getElements(tocRule.chapterList) {
-                    let itemAnalyzer = RuleAnalyzer(
-                        content: item,
-                        baseUrl: nextReq.url.absoluteString,
+
+                var nextURLs: [String] = []
+                for (pageURL, body) in bodies {
+                    let pageAnalyzer = RuleAnalyzer(
+                        content: body,
+                        baseUrl: pageURL,
                         bookSource: source,
                         jsEngine: jsEngine
                     )
-                    let title = itemAnalyzer.getString(tocRule.chapterName)
-                    let url = itemAnalyzer.getString(tocRule.chapterUrl, isUrl: true)
-                    guard !title.isEmpty, !url.isEmpty else { continue }
-                    guard !chapters.contains(where: { $0.url == url }) else { continue }
-                    chapters.append(BookChapter(bookUrl: book.bookUrl, url: url, title: title, index: chapters.count))
+                    for item in pageAnalyzer.getElements(tocRule.chapterList) {
+                        let itemAnalyzer = RuleAnalyzer(
+                            content: item,
+                            baseUrl: pageURL,
+                            bookSource: source,
+                            jsEngine: jsEngine
+                        )
+                        let title = itemAnalyzer.getString(tocRule.chapterName)
+                        let url = itemAnalyzer.getString(tocRule.chapterUrl, isUrl: true)
+                        guard !title.isEmpty, !url.isEmpty else { continue }
+                        guard chapterURLs.insert(url).inserted else { continue }
+                        chapters.append(BookChapter(bookUrl: book.bookUrl, url: url, title: title, index: chapters.count))
+                    }
+                    nextURLs.append(contentsOf: BookContentService.extractURLs(
+                        from: pageAnalyzer,
+                        rule: nextRule,
+                        baseUrl: pageURL
+                    ))
                 }
-
-                let morePages = BookContentService.extractURLs(
-                    from: nextAnalyzer,
-                    rule: nextRule,
-                    baseUrl: nextReq.url.absoluteString
-                )
-                pending.append(contentsOf: morePages.filter { !seenPages.contains($0) })
+                frontier = nextURLs
+                onProgress?(discovered.count, pageLimit)
             }
-            print("[BookDetail] 📚 [\(source.bookSourceName)] 目录分页抓完，共 \(chapters.count) 章，翻了 \(fetchedPages) 页")
+            print("[BookDetail] 📚 [\(source.bookSourceName)] 目录抓完 \(chapters.count) 章 / \(discovered.count) 页 / \(round) 轮")
         }
 
         // 2. Parse Book Metadata (Author, Intro, Kind, WordCount)
@@ -191,9 +207,59 @@ public class BookContentService {
     }
 
     /// Fetches and parses the chapter list (Table of Contents)
-    public func fetchChapterList(book: Book, source: BookSource) async throws -> [BookChapter] {
-        let result = try await fetchBookDetail(book: book, source: source)
+    public func fetchChapterList(
+        book: Book,
+        source: BookSource,
+        onProgress: ((Int, Int) -> Void)? = nil
+    ) async throws -> [BookChapter] {
+        let result = try await fetchBookDetail(book: book, source: source, onProgress: onProgress)
         return result.chapters
+    }
+
+    /// 并发抓一批页面，返回顺序与入参一致；抓失败的页直接跳过。
+    public static func fetchBodies(
+        urls: [String],
+        header: String?,
+        baseUrl: String,
+        concurrency: Int,
+        timeout: TimeInterval
+    ) async -> [(String, String)] {
+        var results: [(String, String)] = []
+        var index = 0
+        let batchSize = max(1, concurrency)
+
+        while index < urls.count {
+            let slice = Array(urls[index..<min(index + batchSize, urls.count)])
+            index += slice.count
+
+            let batch = await withTaskGroup(of: (Int, String, String?).self) { group -> [(String, String)] in
+                for (offset, url) in slice.enumerated() {
+                    group.addTask {
+                        guard let parsed = NetworkClient.parseLegadoUrl(
+                            url,
+                            defaultHeader: header,
+                            baseUrl: baseUrl
+                        ) else {
+                            return (offset, url, nil)
+                        }
+                        let response = try? await NetworkClient.shared.request(parsed: parsed, timeout: timeout)
+                        return (offset, url, response?.bodyString)
+                    }
+                }
+                var collected: [(Int, String, String?)] = []
+                for await item in group {
+                    collected.append(item)
+                }
+                return collected
+                    .sorted { $0.0 < $1.0 }
+                    .compactMap { item in
+                        guard let body = item.2, !body.isEmpty else { return nil }
+                        return (item.1, body)
+                    }
+            }
+            results.append(contentsOf: batch)
+        }
+        return results
     }
 
     /// 从规则里取出下一页目录地址，href、value、纯文本三种写法都收。

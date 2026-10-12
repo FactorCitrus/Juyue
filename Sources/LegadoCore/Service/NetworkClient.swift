@@ -112,9 +112,17 @@ public class NetworkClient {
 
     /// Performs an asynchronous HTTP request
     public func request(parsed: ParsedRequest) async throws -> NetworkResponse {
+        try await request(parsed: parsed, timeout: nil)
+    }
+
+    /// 带超时的异步请求，目录分页这种批量抓取用它，避免单页卡住拖死整轮。
+    public func request(parsed: ParsedRequest, timeout: TimeInterval?) async throws -> NetworkResponse {
         var req = URLRequest(url: parsed.url)
         req.httpMethod = parsed.method
         req.httpBody = parsed.body
+        if let timeout {
+            req.timeoutInterval = timeout
+        }
         for (k, v) in parsed.headers {
             req.setValue(v, forHTTPHeaderField: k)
         }
