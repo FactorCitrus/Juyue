@@ -1771,6 +1771,8 @@ public struct ReaderView: View {
         return Button(action: {
             withAnimation(.easeInOut(duration: 0.15)) {
                 readerConfig.theme = t
+                // 选主题就回到主题配色，不然自定义色会一直压着主题不放
+                readerConfig.useCustomColors = false
             }
         }) {
             HStack(spacing: 4) {
