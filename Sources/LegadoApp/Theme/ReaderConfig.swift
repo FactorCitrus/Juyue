@@ -30,12 +30,35 @@ public enum ReaderTheme: String, CaseIterable, Identifiable {
 public enum PageMode: String, CaseIterable, Identifiable {
     case scroll = "连续滚动"
     case pageByPage = "左右翻页"
+    case cover = "覆盖翻页"
     case simulation = "仿真翻页"
+    case none = "无动画"
 
     public var id: String { rawValue }
 
     /// 按页翻的模式（左右、仿真）共用分页逻辑。
     public var isPaged: Bool { self != .scroll }
+}
+
+/// 页眉页脚每栏能填什么
+public enum ReaderBarContent: String, CaseIterable, Identifiable {
+    case none = "无"
+    case chapterTitle = "标题"
+    case bookName = "书名"
+    case progress = "进度(%)"
+    case pageInfo = "页码"
+    case time = "时间"
+
+    public var id: String { rawValue }
+}
+
+/// 每页顶部那行章节标题怎么放
+public enum ReaderTitleAlignment: String, CaseIterable, Identifiable {
+    case leading = "靠左"
+    case center = "居中"
+    case hidden = "隐藏"
+
+    public var id: String { rawValue }
 }
 
 public class ReaderConfig: ObservableObject {
@@ -54,6 +77,8 @@ public class ReaderConfig: ObservableObject {
     @Published public var paragraphSpacing: CGFloat = 12.0 { didSet { persist(paragraphSpacing, "reader_paragraph_spacing") } }
     /// 左右页边距
     @Published public var horizontalPadding: CGFloat = 24.0 { didSet { persist(horizontalPadding, "reader_horizontal_padding") } }
+    /// 上下边距
+    @Published public var verticalPadding: CGFloat = 24.0 { didSet { persist(verticalPadding, "reader_vertical_padding") } }
     /// 首行缩进，按字数算
     @Published public var firstLineIndent: CGFloat = 0 { didSet { persist(firstLineIndent, "reader_first_line_indent") } }
     /// 正文加粗
@@ -61,6 +86,38 @@ public class ReaderConfig: ObservableObject {
     /// 正文字体（PostScript 名）
     @Published public var fontName: String = ReaderFont.default.postScriptName {
         didSet { Self.defaults.set(fontName, forKey: "reader_font_name") }
+    }
+
+    // MARK: - 页眉页脚
+    @Published public var titleAlignment: ReaderTitleAlignment = .leading {
+        didSet { Self.defaults.set(titleAlignment.rawValue, forKey: "reader_title_alignment") }
+    }
+    @Published public var headerEnabled: Bool = false {
+        didSet { Self.defaults.set(headerEnabled, forKey: "reader_header_enabled") }
+    }
+    @Published public var headerLeft: ReaderBarContent = .bookName {
+        didSet { Self.defaults.set(headerLeft.rawValue, forKey: "reader_header_left") }
+    }
+    @Published public var headerCenter: ReaderBarContent = .none {
+        didSet { Self.defaults.set(headerCenter.rawValue, forKey: "reader_header_center") }
+    }
+    @Published public var headerRight: ReaderBarContent = .progress {
+        didSet { Self.defaults.set(headerRight.rawValue, forKey: "reader_header_right") }
+    }
+    @Published public var footerEnabled: Bool = true {
+        didSet { Self.defaults.set(footerEnabled, forKey: "reader_footer_enabled") }
+    }
+    @Published public var footerLeft: ReaderBarContent = .chapterTitle {
+        didSet { Self.defaults.set(footerLeft.rawValue, forKey: "reader_footer_left") }
+    }
+    @Published public var footerCenter: ReaderBarContent = .none {
+        didSet { Self.defaults.set(footerCenter.rawValue, forKey: "reader_footer_center") }
+    }
+    @Published public var footerRight: ReaderBarContent = .pageInfo {
+        didSet { Self.defaults.set(footerRight.rawValue, forKey: "reader_footer_right") }
+    }
+    @Published public var barDivider: Bool = false {
+        didSet { Self.defaults.set(barDivider, forKey: "reader_bar_divider") }
     }
 
     /// 当前字体，找不到就退回默认
@@ -109,6 +166,17 @@ public class ReaderConfig: ObservableObject {
         if d.object(forKey: "reader_first_line_indent") != nil { firstLineIndent = CGFloat(d.double(forKey: "reader_first_line_indent")) }
         if d.object(forKey: "reader_bold_text") != nil { boldText = d.bool(forKey: "reader_bold_text") }
         if let name = d.string(forKey: "reader_font_name") { fontName = name }
+        if d.object(forKey: "reader_vertical_padding") != nil { verticalPadding = CGFloat(d.double(forKey: "reader_vertical_padding")) }
+        if let v = d.string(forKey: "reader_title_alignment"), let t = ReaderTitleAlignment(rawValue: v) { titleAlignment = t }
+        if d.object(forKey: "reader_header_enabled") != nil { headerEnabled = d.bool(forKey: "reader_header_enabled") }
+        if let v = d.string(forKey: "reader_header_left"), let c = ReaderBarContent(rawValue: v) { headerLeft = c }
+        if let v = d.string(forKey: "reader_header_center"), let c = ReaderBarContent(rawValue: v) { headerCenter = c }
+        if let v = d.string(forKey: "reader_header_right"), let c = ReaderBarContent(rawValue: v) { headerRight = c }
+        if d.object(forKey: "reader_footer_enabled") != nil { footerEnabled = d.bool(forKey: "reader_footer_enabled") }
+        if let v = d.string(forKey: "reader_footer_left"), let c = ReaderBarContent(rawValue: v) { footerLeft = c }
+        if let v = d.string(forKey: "reader_footer_center"), let c = ReaderBarContent(rawValue: v) { footerCenter = c }
+        if let v = d.string(forKey: "reader_footer_right"), let c = ReaderBarContent(rawValue: v) { footerRight = c }
+        if d.object(forKey: "reader_bar_divider") != nil { barDivider = d.bool(forKey: "reader_bar_divider") }
         if d.object(forKey: "reader_custom_colors") != nil { useCustomColors = d.bool(forKey: "reader_custom_colors") }
         if let hex = d.string(forKey: "reader_bg_hex") { customBackgroundHex = hex }
         if let hex = d.string(forKey: "reader_text_hex") { customTextHex = hex }

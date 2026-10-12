@@ -95,6 +95,7 @@ public struct ReaderView: View {
     @State private var currentChapterIndex: Int = 0
     @State private var loadedChapters: [LoadedChapter] = []
     @State private var currentPageIndex: Int = 0
+    @State private var pageTurnForward: Bool = true
     @State private var currentReadingBlockId: Int = 0
     @State private var chapterCache: [Int: LoadedChapter] = [:]
     @State private var readerContainerSize: CGSize = CGSize(width: 390, height: 700)
@@ -138,6 +139,10 @@ public struct ReaderView: View {
 
                 // 1. Reading Canvas with Permanent Fixed Bottom Info Bar
                 VStack(spacing: 0) {
+                    if readerConfig.headerEnabled {
+                        statusBar(left: readerConfig.headerLeft, center: readerConfig.headerCenter, right: readerConfig.headerRight)
+                    }
+
                     Group {
                         if isLoadingInitial {
                             VStack(spacing: 16) {
@@ -215,7 +220,9 @@ public struct ReaderView: View {
                     }
 
                     // Fixed Bottom Information Bar (Apple Books Style)
-                    fixedBottomStatusBar
+                    if readerConfig.footerEnabled {
+                        statusBar(left: readerConfig.footerLeft, center: readerConfig.footerCenter, right: readerConfig.footerRight)
+                    }
                 }
 
                 // 2. Dismiss Backdrop (when controls are open, tapping anywhere outside bars dismisses them)
@@ -560,6 +567,8 @@ public struct ReaderView: View {
                 textColor: readerConfig.textColor,
                 backgroundColor: readerConfig.backgroundColor,
                 horizontalPadding: readerConfig.horizontalPadding,
+                verticalPadding: readerConfig.verticalPadding,
+                titleAlignment: readerConfig.titleAlignment,
                 startIndex: currentPageIndex,
                 onIndexChange: { newIndex in
                     currentPageIndex = newIndex
@@ -606,12 +615,14 @@ public struct ReaderView: View {
 
                     VStack(alignment: .leading, spacing: 0) {
                         // If it's page 0, display Chapter Title at top
-                        if currentPageIndex == 0, let cur = currentLoadedChapter {
+                        if currentPageIndex == 0, readerConfig.titleAlignment != .hidden, let cur = currentLoadedChapter {
                             Text(cur.chapter.title)
                                 .font(.system(size: readerConfig.fontSize + 3, weight: .bold))
                                 .foregroundColor(readerConfig.textColor)
                                 .padding(.bottom, 8)
                                 .fixedSize(horizontal: false, vertical: true)
+                                .frame(maxWidth: .infinity, alignment: readerConfig.titleAlignment == .center ? .center : .leading)
+                                .multilineTextAlignment(readerConfig.titleAlignment == .center ? .center : .leading)
                         }
 
                         // Page Content
@@ -646,9 +657,10 @@ public struct ReaderView: View {
                         Spacer(minLength: 0)
                     }
                     .padding(.horizontal, readerConfig.horizontalPadding)
-                    .padding(.top, 24)
-                    .padding(.bottom, 24)
+                    .padding(.top, readerConfig.verticalPadding)
+                    .padding(.bottom, readerConfig.verticalPadding)
                     .id("page_\(currentChapterIndex)_\(currentPageIndex)")
+                    .transition(pageTransition)
                 }
 
                 // Three-Zone Tap Controller & Drag Gesture
@@ -733,13 +745,40 @@ public struct ReaderView: View {
     }
 
     // MARK: - Page Turn Handler (Once chapter ends, next chapter starts next page)
+    /// 翻页动画：覆盖是滑入盖住旧页，无动画就是一帧切换。
+    private var pageTurnAnimation: Animation? {
+        switch readerConfig.pageMode {
+        case .none:
+            return nil
+        case .cover:
+            return .easeOut(duration: 0.22)
+        default:
+            return .easeInOut(duration: 0.18)
+        }
+    }
+
+    private var pageTransition: AnyTransition {
+        switch readerConfig.pageMode {
+        case .cover:
+            return .asymmetric(
+                insertion: .move(edge: pageTurnForward ? .trailing : .leading),
+                removal: .opacity
+            )
+        case .none:
+            return .identity
+        default:
+            return .opacity
+        }
+    }
+
     private func turnPage(forward: Bool) {
         guard let current = currentLoadedChapter else { return }
         let totalPages = current.pages.count
 
         if forward {
-            if currentPageIndex < totalPages - 1 {
-                withAnimation(.easeInOut(duration: 0.18)) {
+                if currentPageIndex < totalPages - 1 {
+                pageTurnForward = true
+                withAnimation(pageTurnAnimation) {
                     currentPageIndex += 1
                 }
                 updateReadingBlockIdFromCurrentPage()
@@ -757,7 +796,8 @@ public struct ReaderView: View {
             }
         } else {
             if currentPageIndex > 0 {
-                withAnimation(.easeInOut(duration: 0.18)) {
+                pageTurnForward = false
+                withAnimation(pageTurnAnimation) {
                     currentPageIndex -= 1
                 }
                 updateReadingBlockIdFromCurrentPage()
@@ -848,6 +888,70 @@ public struct ReaderView: View {
     }
 
     // MARK: - Permanent Fixed Bottom Status Bar
+    /// 页眉页脚：左中右三栏，内容按配置来，跟安卓那套一致。
+    private func statusBar(left: ReaderBarContent, center: ReaderBarContent, right: ReaderBarContent) -> some View {
+        VStack(spacing: 0) {
+            if readerConfig.barDivider {
+                Rectangle()
+                    .fill(readerConfig.textColor.opacity(0.12))
+                    .frame(height: 0.5)
+            }
+            HStack(spacing: 8) {
+                statusSlot(left, alignment: .leading)
+                statusSlot(center, alignment: .center)
+                statusSlot(right, alignment: .trailing)
+            }
+            .font(.system(size: 11))
+            .foregroundColor(readerConfig.textColor.opacity(0.55))
+            .padding(.horizontal, 16)
+            .frame(height: 18)
+        }
+        .frame(height: 19)
+        .background(readerConfig.backgroundColor)
+        .contentShape(Rectangle())
+        .onTapGesture {
+            withAnimation(.easeInOut(duration: 0.2)) {
+                showControls.toggle()
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func statusSlot(_ content: ReaderBarContent, alignment: Alignment) -> some View {
+        Text(statusText(content))
+            .lineLimit(1)
+            .truncationMode(.tail)
+            .frame(maxWidth: .infinity, alignment: alignment)
+    }
+
+    private func statusText(_ content: ReaderBarContent) -> String {
+        switch content {
+        case .none:
+            return ""
+        case .chapterTitle:
+            if !chapters.isEmpty, currentChapterIndex < chapters.count {
+                return chapters[currentChapterIndex].title
+            }
+            return ""
+        case .bookName:
+            return activeBook.name
+        case .progress:
+            guard !chapters.isEmpty else { return "" }
+            let percent = Double(currentChapterIndex + 1) / Double(chapters.count) * 100
+            return String(format: "%.1f%%", percent)
+        case .pageInfo:
+            if readerConfig.pageMode.isPaged, let cur = currentLoadedChapter, !cur.pages.isEmpty {
+                return "\(currentPageIndex + 1)/\(cur.pages.count)"
+            }
+            guard !chapters.isEmpty else { return "" }
+            return "\(currentChapterIndex + 1)/\(chapters.count)"
+        case .time:
+            let formatter = DateFormatter()
+            formatter.dateFormat = "HH:mm"
+            return formatter.string(from: Date())
+        }
+    }
+
     private var fixedBottomStatusBar: some View {
         HStack(alignment: .center, spacing: 12) {
             // Chapter Name
@@ -1228,6 +1332,7 @@ public struct ReaderView: View {
                     typographySection
                     themeRow
                     colorSection
+                    headerFooterSection
                     ttsSection
                 }
                 .padding(.bottom, 4)
@@ -1368,6 +1473,78 @@ public struct ReaderView: View {
                         .background(readerConfig.backgroundColor)
                         .cornerRadius(6)
                 }
+            }
+        }
+    }
+
+    // MARK: 页眉页脚
+    private var headerFooterSection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("正文标题")
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundColor(readerConfig.textColor.opacity(0.6))
+
+            Picker("正文标题", selection: $readerConfig.titleAlignment) {
+                ForEach(ReaderTitleAlignment.allCases) { mode in
+                    Text(mode.rawValue).tag(mode)
+                }
+            }
+            .pickerStyle(.segmented)
+
+            settingSlider("上下边距", value: $readerConfig.verticalPadding, range: 8...56, step: 2)
+
+            Divider().opacity(0.4)
+
+            Toggle(isOn: $readerConfig.headerEnabled) {
+                Text("页眉")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundColor(readerConfig.textColor.opacity(0.7))
+            }
+            .toggleStyle(.switch)
+            if readerConfig.headerEnabled {
+                barContentRow("左", selection: $readerConfig.headerLeft)
+                barContentRow("中", selection: $readerConfig.headerCenter)
+                barContentRow("右", selection: $readerConfig.headerRight)
+            }
+
+            Toggle(isOn: $readerConfig.footerEnabled) {
+                Text("页脚")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundColor(readerConfig.textColor.opacity(0.7))
+            }
+            .toggleStyle(.switch)
+            if readerConfig.footerEnabled {
+                barContentRow("左", selection: $readerConfig.footerLeft)
+                barContentRow("中", selection: $readerConfig.footerCenter)
+                barContentRow("右", selection: $readerConfig.footerRight)
+            }
+
+            Toggle(isOn: $readerConfig.barDivider) {
+                Text("显示分隔线")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundColor(readerConfig.textColor.opacity(0.7))
+            }
+            .toggleStyle(.switch)
+        }
+    }
+
+    private func barContentRow(_ title: String, selection: Binding<ReaderBarContent>) -> some View {
+        Menu {
+            ForEach(ReaderBarContent.allCases) { content in
+                Button(content.rawValue) { selection.wrappedValue = content }
+            }
+        } label: {
+            HStack {
+                Text(title)
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundColor(readerConfig.textColor.opacity(0.7))
+                Spacer()
+                Text(selection.wrappedValue.rawValue)
+                    .font(.system(size: 12))
+                    .foregroundColor(readerConfig.textColor.opacity(0.55))
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 11))
+                    .foregroundColor(readerConfig.textColor.opacity(0.4))
             }
         }
     }

@@ -19,6 +19,8 @@ public struct PageCurlPager: UIViewControllerRepresentable {
     public let textColor: Color
     public let backgroundColor: Color
     public let horizontalPadding: CGFloat
+    public let verticalPadding: CGFloat
+    public let titleAlignment: ReaderTitleAlignment
     public let startIndex: Int
     public let onIndexChange: (Int) -> Void
     public let onReachEnd: () -> Void
@@ -39,6 +41,8 @@ public struct PageCurlPager: UIViewControllerRepresentable {
         textColor: Color,
         backgroundColor: Color,
         horizontalPadding: CGFloat,
+        verticalPadding: CGFloat,
+        titleAlignment: ReaderTitleAlignment,
         startIndex: Int,
         onIndexChange: @escaping (Int) -> Void,
         onReachEnd: @escaping () -> Void,
@@ -58,6 +62,8 @@ public struct PageCurlPager: UIViewControllerRepresentable {
         self.textColor = textColor
         self.backgroundColor = backgroundColor
         self.horizontalPadding = horizontalPadding
+        self.verticalPadding = verticalPadding
+        self.titleAlignment = titleAlignment
         self.startIndex = startIndex
         self.onIndexChange = onIndexChange
         self.onReachEnd = onReachEnd
@@ -126,7 +132,9 @@ public struct PageCurlPager: UIViewControllerRepresentable {
                 boldPostScriptName: parent.boldPostScriptName,
                 textColor: parent.textColor,
                 backgroundColor: parent.backgroundColor,
-                horizontalPadding: parent.horizontalPadding
+                horizontalPadding: parent.horizontalPadding,
+                verticalPadding: parent.verticalPadding,
+                titleAlignment: parent.titleAlignment
             ))
             host.view.backgroundColor = UIColor(parent.backgroundColor)
             host.view.tag = index
@@ -233,17 +241,21 @@ struct PageCurlContent: View {
     let textColor: Color
     let backgroundColor: Color
     let horizontalPadding: CGFloat
+    let verticalPadding: CGFloat
+    let titleAlignment: ReaderTitleAlignment
 
     var body: some View {
         GeometryReader { geo in
             let usableWidth = max(200, geo.size.width - horizontalPadding * 2)
             VStack(alignment: .leading, spacing: 0) {
-                if let chapterTitle {
+                if let chapterTitle, titleAlignment != .hidden {
                     Text(chapterTitle)
                         .font(.system(size: fontSize + 3, weight: .bold))
                         .foregroundColor(textColor)
                         .padding(.bottom, 8)
                         .fixedSize(horizontal: false, vertical: true)
+                        .frame(maxWidth: .infinity, alignment: titleAlignment == .center ? .center : .leading)
+                        .multilineTextAlignment(titleAlignment == .center ? .center : .leading)
                 }
 
                 if blocks.first?.isImage == true, let urlStr = blocks.first?.imageUrl {
@@ -276,8 +288,8 @@ struct PageCurlContent: View {
                 Spacer(minLength: 0)
             }
             .padding(.horizontal, horizontalPadding)
-            .padding(.top, 24)
-            .padding(.bottom, 24)
+            .padding(.top, verticalPadding)
+            .padding(.bottom, verticalPadding)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         }
         .background(backgroundColor)
