@@ -19,8 +19,12 @@ public struct PageCurlPager: UIViewControllerRepresentable {
     public let boldPostScriptName: String?
     public let textColor: Color
     public let backgroundColor: Color
-    public let horizontalPadding: CGFloat
-    public let verticalPadding: CGFloat
+    public let paddingTop: CGFloat
+    public let paddingBottom: CGFloat
+    public let paddingLeft: CGFloat
+    public let paddingRight: CGFloat
+    public let headerOffset: CGFloat
+    public let footerOffset: CGFloat
     public let titleAlignment: ReaderTitleAlignment
     /// 页眉页脚：仿真模式下要画在每一页里，跟着卷页一起动
     public let showHeader: Bool
@@ -52,8 +56,12 @@ public struct PageCurlPager: UIViewControllerRepresentable {
         boldPostScriptName: String?,
         textColor: Color,
         backgroundColor: Color,
-        horizontalPadding: CGFloat,
-        verticalPadding: CGFloat,
+        paddingTop: CGFloat,
+        paddingBottom: CGFloat,
+        paddingLeft: CGFloat,
+        paddingRight: CGFloat,
+        headerOffset: CGFloat,
+        footerOffset: CGFloat,
         titleAlignment: ReaderTitleAlignment,
         showHeader: Bool,
         showFooter: Bool,
@@ -83,8 +91,12 @@ public struct PageCurlPager: UIViewControllerRepresentable {
         self.boldPostScriptName = boldPostScriptName
         self.textColor = textColor
         self.backgroundColor = backgroundColor
-        self.horizontalPadding = horizontalPadding
-        self.verticalPadding = verticalPadding
+        self.paddingTop = paddingTop
+        self.paddingBottom = paddingBottom
+        self.paddingLeft = paddingLeft
+        self.paddingRight = paddingRight
+        self.headerOffset = headerOffset
+        self.footerOffset = footerOffset
         self.titleAlignment = titleAlignment
         self.showHeader = showHeader
         self.showFooter = showFooter
@@ -114,8 +126,8 @@ public struct PageCurlPager: UIViewControllerRepresentable {
         )
         controller.dataSource = context.coordinator
         controller.delegate = context.coordinator
-        controller.isDoubleSided = false
-        // 卷页背面是系统拿页面视图渲染的，容器底色不设就会露白
+        // 双面翻页：背面由 dataSource 提供，才不会出现系统那张白纸
+        controller.isDoubleSided = true
         controller.view.backgroundColor = UIColor(backgroundColor)
         if let first = context.coordinator.controller(at: clampedIndex) {
             controller.setViewControllers([first], direction: .forward, animated: false)
@@ -169,8 +181,8 @@ public struct PageCurlPager: UIViewControllerRepresentable {
         parts.append(chineseConversion.rawValue)
         parts.append(titleAlignment.rawValue)
         parts.append("\(showHeader)\(showFooter)\(barDivider)")
-        parts.append("\(horizontalPadding)")
-        parts.append("\(verticalPadding)")
+        parts.append("\(paddingTop)/\(paddingBottom)/\(paddingLeft)/\(paddingRight)")
+        parts.append("\(headerOffset)/\(footerOffset)")
         parts.append(headerSlots.map { $0.rawValue }.joined(separator: ","))
         parts.append(footerSlots.map { $0.rawValue }.joined(separator: ","))
         parts.append(chapterTitleText)
@@ -207,8 +219,12 @@ public struct PageCurlPager: UIViewControllerRepresentable {
                 boldPostScriptName: parent.boldPostScriptName,
                 textColor: parent.textColor,
                 backgroundColor: parent.backgroundColor,
-                horizontalPadding: parent.horizontalPadding,
-                verticalPadding: parent.verticalPadding,
+                paddingTop: parent.paddingTop,
+                paddingBottom: parent.paddingBottom,
+                paddingLeft: parent.paddingLeft,
+                paddingRight: parent.paddingRight,
+                headerOffset: parent.headerOffset,
+                footerOffset: parent.footerOffset,
                 titleAlignment: parent.titleAlignment,
                 showHeader: parent.showHeader,
                 showFooter: parent.showFooter,
@@ -227,6 +243,18 @@ public struct PageCurlPager: UIViewControllerRepresentable {
             host.view.tag = index
             installTapZones(on: host.view)
             return host
+        }
+
+        /// 卷起来时露出的那一面：用主题底色 + 靠书脊的浅阴影，不再是一张白纸
+        func backController(at index: Int) -> UIViewController? {
+            guard index >= 0, index < parent.pages.count else { return nil }
+            let back = UIHostingController(rootView: PageCurlBackPage(
+                backgroundColor: parent.backgroundColor,
+                spineOnRight: false
+            ))
+            back.view.backgroundColor = UIColor(parent.backgroundColor)
+            back.view.tag = index
+            return back
         }
 
         /// 左 30% 上一页、右 30% 下一页、中间切换控制栏
@@ -288,16 +316,23 @@ public struct PageCurlPager: UIViewControllerRepresentable {
             _ pageViewController: UIPageViewController,
             viewControllerBefore viewController: UIViewController
         ) -> UIViewController? {
+            // 背面往左就是同一页的正面
+            if viewController is UIHostingController<PageCurlBackPage> {
+                return controller(at: viewController.view.tag)
+            }
             let target = viewController.view.tag - 1
-            return controller(at: target)
+            return target >= 0 ? backController(at: target) : nil
         }
 
         public func pageViewController(
             _ pageViewController: UIPageViewController,
             viewControllerAfter viewController: UIViewController
         ) -> UIViewController? {
-            let target = viewController.view.tag + 1
-            return controller(at: target)
+            if viewController is UIHostingController<PageCurlBackPage> {
+                let next = viewController.view.tag + 1
+                return next < parent.pages.count ? controller(at: next) : nil
+            }
+            return backController(at: viewController.view.tag)
         }
 
         public func pageViewController(
@@ -306,8 +341,10 @@ public struct PageCurlPager: UIViewControllerRepresentable {
             previousViewControllers: [UIViewController],
             transitionCompleted completed: Bool
         ) {
-            guard completed, let current = pageViewController.viewControllers?.first else { return }
-            index = current.view.tag
+            guard completed, let controllers = pageViewController.viewControllers, !controllers.isEmpty else { return }
+            // 双面模式下 viewControllers 可能同时含正面和背面，取正面那页的页码
+            let front = controllers.first { $0 is UIHostingController<PageCurlContent> } ?? controllers[0]
+            index = front.view.tag
             parent.onIndexChange(index)
         }
     }
@@ -328,8 +365,12 @@ struct PageCurlContent: View {
     let boldPostScriptName: String?
     let textColor: Color
     let backgroundColor: Color
-    let horizontalPadding: CGFloat
-    let verticalPadding: CGFloat
+    let paddingTop: CGFloat
+    let paddingBottom: CGFloat
+    let paddingLeft: CGFloat
+    let paddingRight: CGFloat
+    let headerOffset: CGFloat
+    let footerOffset: CGFloat
     let titleAlignment: ReaderTitleAlignment
     let showHeader: Bool
     let showFooter: Bool
@@ -369,7 +410,12 @@ struct PageCurlContent: View {
     }
 
     @ViewBuilder
-    private func pageBar(_ slots: [ReaderBarContent], pageIndex: Int, pageCount: Int) -> some View {
+    private func pageBar(
+        _ slots: [ReaderBarContent],
+        pageIndex: Int,
+        pageCount: Int,
+        extendEdge: Edge.Set? = nil
+    ) -> some View {
         VStack(spacing: 0) {
             if barDivider {
                 Rectangle()
@@ -391,20 +437,30 @@ struct PageCurlContent: View {
             .frame(height: 18)
         }
         .frame(height: 19)
-        .background(backgroundColor)
+        .background(
+            Group {
+                if let edge = extendEdge {
+                    backgroundColor.ignoresSafeArea(edges: edge)
+                } else {
+                    backgroundColor
+                }
+            }
+        )
     }
 
     var body: some View {
         GeometryReader { geo in
-            let usableWidth = max(200, geo.size.width - horizontalPadding * 2)
+            let usableWidth = max(200, geo.size.width - paddingLeft - paddingRight)
             VStack(alignment: .leading, spacing: 0) {
                 if showHeader, headerSlots.count == 3 {
-                    pageBar(headerSlots, pageIndex: pageIndex, pageCount: pageCount)
+                    pageBar(headerSlots, pageIndex: pageIndex, pageCount: pageCount, extendEdge: .top)
+                        .padding(.top, headerOffset)
                 }
                 contentBody(usableWidth: usableWidth)
                 Spacer(minLength: 0)
                 if showFooter, footerSlots.count == 3 {
-                    pageBar(footerSlots, pageIndex: pageIndex, pageCount: pageCount)
+                    pageBar(footerSlots, pageIndex: pageIndex, pageCount: pageCount, extendEdge: .bottom)
+                        .padding(.bottom, footerOffset)
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
@@ -454,9 +510,30 @@ struct PageCurlContent: View {
                 }
 
             }
-            .padding(.horizontal, horizontalPadding)
-            .padding(.top, verticalPadding)
-            .padding(.bottom, verticalPadding)
+            .padding(.leading, paddingLeft)
+            .padding(.trailing, paddingRight)
+            .padding(.top, paddingTop)
+            .padding(.bottom, paddingBottom)
+    }
+}
+
+/// 仿真翻页翻开后露出的背面：跟主题同色，靠书脊一侧压一道浅影
+struct PageCurlBackPage: View {
+    let backgroundColor: Color
+    let spineOnRight: Bool
+
+    var body: some View {
+        ZStack {
+            backgroundColor
+            LinearGradient(
+                colors: [Color.black.opacity(0.10), Color.black.opacity(0.0)],
+                startPoint: spineOnRight ? .trailing : .leading,
+                endPoint: spineOnRight ? .leading : .trailing
+            )
+            .frame(width: 26)
+            .frame(maxWidth: .infinity, alignment: spineOnRight ? .trailing : .leading)
+        }
+        .ignoresSafeArea()
     }
 }
 #endif

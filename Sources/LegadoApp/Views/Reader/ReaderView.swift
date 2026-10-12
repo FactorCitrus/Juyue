@@ -151,7 +151,8 @@ public struct ReaderView: View {
                 VStack(spacing: 0) {
                     // 按页翻的模式（左右/覆盖/滑动/仿真）页眉页脚画在每页里，跟着一起翻
                     if readerConfig.headerEnabled, readerConfig.pageMode == .scroll {
-                        statusBar(left: readerConfig.headerLeft, center: readerConfig.headerCenter, right: readerConfig.headerRight)
+                        statusBar(left: readerConfig.headerLeft, center: readerConfig.headerCenter, right: readerConfig.headerRight, extendEdge: .top)
+                            .padding(.top, readerConfig.headerOffset)
                     }
 
                     Group {
@@ -232,7 +233,8 @@ public struct ReaderView: View {
 
                     // Fixed Bottom Information Bar (Apple Books Style)
                     if readerConfig.footerEnabled, readerConfig.pageMode == .scroll {
-                        statusBar(left: readerConfig.footerLeft, center: readerConfig.footerCenter, right: readerConfig.footerRight)
+                        statusBar(left: readerConfig.footerLeft, center: readerConfig.footerCenter, right: readerConfig.footerRight, extendEdge: .bottom)
+                            .padding(.bottom, readerConfig.footerOffset)
                     }
                 }
 
@@ -589,8 +591,12 @@ public struct ReaderView: View {
                 boldPostScriptName: readerConfig.font.boldPostScriptName,
                 textColor: readerConfig.textColor,
                 backgroundColor: readerConfig.backgroundColor,
-                horizontalPadding: readerConfig.horizontalPadding,
-                verticalPadding: readerConfig.verticalPadding,
+                paddingTop: readerConfig.paddingTop,
+                paddingBottom: readerConfig.paddingBottom,
+                paddingLeft: readerConfig.paddingLeft,
+                paddingRight: readerConfig.paddingRight,
+                headerOffset: readerConfig.headerOffset,
+                footerOffset: readerConfig.footerOffset,
                 titleAlignment: readerConfig.titleAlignment,
                 showHeader: readerConfig.headerEnabled,
                 showFooter: readerConfig.footerEnabled,
@@ -643,7 +649,7 @@ public struct ReaderView: View {
                     }
                 } else {
                     let pageBlocks = pages[currentPageIndex]
-                    let usableWidth = max(200, readerContainerSize.width - readerConfig.horizontalPadding * 2)
+                    let usableWidth = max(200, readerContainerSize.width - readerConfig.paddingLeft - readerConfig.paddingRight)
 
                     // GeometryReader 是贪高的：不把正文这块钉死高度，它会吃掉整页，
                     // 把 19pt 的页脚挤出可视区（页脚"看不见"就是这么来的）
@@ -654,7 +660,8 @@ public struct ReaderView: View {
 
                     VStack(spacing: 0) {
                         if readerConfig.headerEnabled {
-                            statusBar(left: readerConfig.headerLeft, center: readerConfig.headerCenter, right: readerConfig.headerRight)
+                            statusBar(left: readerConfig.headerLeft, center: readerConfig.headerCenter, right: readerConfig.headerRight, extendEdge: .top)
+                                .padding(.top, readerConfig.headerOffset)
                         }
 
                         // 正文放进固定高度的容器里：正文再长也只在这块里截，顶不飞页脚
@@ -703,16 +710,18 @@ public struct ReaderView: View {
 
                         Spacer(minLength: 0)
                         }
-                        .padding(.horizontal, readerConfig.horizontalPadding)
-                        .padding(.top, readerConfig.verticalPadding)
-                        .padding(.bottom, readerConfig.verticalPadding)
+                        .padding(.leading, readerConfig.paddingLeft)
+                        .padding(.trailing, readerConfig.paddingRight)
+                        .padding(.top, readerConfig.paddingTop)
+                        .padding(.bottom, readerConfig.paddingBottom)
                         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                         }
                         .frame(height: contentHeight)
                         .clipped()
 
                         if readerConfig.footerEnabled {
-                            statusBar(left: readerConfig.footerLeft, center: readerConfig.footerCenter, right: readerConfig.footerRight)
+                            statusBar(left: readerConfig.footerLeft, center: readerConfig.footerCenter, right: readerConfig.footerRight, extendEdge: .bottom)
+                                .padding(.bottom, readerConfig.footerOffset)
                         }
                     }
                     .offset(x: dragOffset)
@@ -996,7 +1005,13 @@ public struct ReaderView: View {
 
     // MARK: - Permanent Fixed Bottom Status Bar
     /// 页眉页脚：左中右三栏，内容按配置来，跟安卓那套一致。
-    private func statusBar(left: ReaderBarContent, center: ReaderBarContent, right: ReaderBarContent) -> some View {
+    /// extendEdge：把这条栏的底色顶到屏幕边缘（顶栏顶到最上面，底栏顶到最下面），文字仍留在安全区里
+    private func statusBar(
+        left: ReaderBarContent,
+        center: ReaderBarContent,
+        right: ReaderBarContent,
+        extendEdge: Edge.Set? = nil
+    ) -> some View {
         VStack(spacing: 0) {
             if readerConfig.barDivider {
                 Rectangle()
@@ -1014,7 +1029,15 @@ public struct ReaderView: View {
             .frame(height: 18)
         }
         .frame(height: 19)
-        .background(readerConfig.backgroundColor)
+        .background(
+            Group {
+                if let edge = extendEdge {
+                    readerConfig.backgroundColor.ignoresSafeArea(edges: edge)
+                } else {
+                    readerConfig.backgroundColor
+                }
+            }
+        )
         .contentShape(Rectangle())
         .onTapGesture {
             withAnimation(.easeInOut(duration: 0.2)) {
@@ -1437,6 +1460,7 @@ public struct ReaderView: View {
                     pageModeRow
                     fontSizeRow
                     typographySection
+                    marginSection
                     themeRow
                     colorSection
                     headerFooterSection
@@ -1444,21 +1468,21 @@ public struct ReaderView: View {
                 }
                 .padding(.bottom, 4)
             }
-            .frame(maxHeight: 380)
+            .frame(maxHeight: 420)
         }
-        .padding(.horizontal, 20)
-        .padding(.top, 16)
-        .padding(.bottom, 20)
+        .padding(.horizontal, 18)
+        .padding(.top, 14)
+        .padding(.bottom, 22)
         .background(
             readerConfig.backgroundColor
                 .opacity(0.98)
                 .shadow(color: Color.black.opacity(0.2), radius: 16, x: 0, y: -6)
                 .ignoresSafeArea(edges: .bottom)
         )
-        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
         .overlay(
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .stroke(readerConfig.textColor.opacity(0.12), lineWidth: 0.5)
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .stroke(readerConfig.textColor.opacity(0.10), lineWidth: 0.5)
         )
         .padding(.horizontal, 10)
         .padding(.bottom, 6)
@@ -1467,7 +1491,7 @@ public struct ReaderView: View {
     private var settingsHeader: some View {
         HStack {
             Text("阅读设置")
-                .font(.system(size: 15, weight: .bold))
+                .font(.system(size: 16, weight: .semibold))
                 .foregroundColor(readerConfig.textColor)
 
             Spacer()
@@ -1485,13 +1509,36 @@ public struct ReaderView: View {
         }
     }
 
-    private var pageModeRow: some View {
-        HStack(spacing: 12) {
-            Text("模式")
-                .font(.system(size: 13, weight: .medium))
-                .foregroundColor(readerConfig.textColor.opacity(0.7))
-                .frame(width: 36, alignment: .leading)
+    /// 分节标题：小号、加字距、压暗，配合上面的细线把设置分块
+    private func sectionTitle(_ text: String) -> some View {
+        Text(text)
+            .font(.system(size: 11, weight: .semibold))
+            .tracking(0.6)
+            .foregroundColor(readerConfig.textColor.opacity(0.45))
+    }
 
+    private var sectionDivider: some View {
+        Rectangle()
+            .fill(readerConfig.textColor.opacity(0.08))
+            .frame(height: 0.5)
+            .padding(.top, 12)
+    }
+
+    /// 页边距：上下左右四向分开调
+    private var marginSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            sectionDivider
+            sectionTitle("页边距")
+            settingSlider("上", value: $readerConfig.paddingTop, range: 0...64, step: 2)
+            settingSlider("下", value: $readerConfig.paddingBottom, range: 0...64, step: 2)
+            settingSlider("左", value: $readerConfig.paddingLeft, range: 0...64, step: 2)
+            settingSlider("右", value: $readerConfig.paddingRight, range: 0...64, step: 2)
+        }
+    }
+
+    private var pageModeRow: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            sectionTitle("阅读模式")
             Picker("阅读模式", selection: $readerConfig.pageMode) {
                 ForEach(PageMode.allCases) { mode in
                     Text(mode.rawValue).tag(mode)
@@ -1504,9 +1551,8 @@ public struct ReaderView: View {
     // MARK: 排版
     private var typographySection: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text("排版")
-                .font(.system(size: 12, weight: .semibold))
-                .foregroundColor(readerConfig.textColor.opacity(0.6))
+            sectionDivider
+            sectionTitle("排版")
 
             Menu {
                 ForEach(ReaderFont.available) { font in
@@ -1537,7 +1583,6 @@ public struct ReaderView: View {
 
             settingSlider("字间距", value: $readerConfig.letterSpacing, range: 0...4, step: 0.5)
             settingSlider("段间距", value: $readerConfig.paragraphSpacing, range: 0...30, step: 1)
-            settingSlider("左右页边距", value: $readerConfig.horizontalPadding, range: 8...48, step: 2)
             settingSlider("首行缩进", value: $readerConfig.firstLineIndent, range: 0...4, step: 1, suffix: " 字")
 
             HStack(spacing: 8) {
@@ -1572,9 +1617,8 @@ public struct ReaderView: View {
     // MARK: 自定义配色
     private var colorSection: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text("配色")
-                .font(.system(size: 12, weight: .semibold))
-                .foregroundColor(readerConfig.textColor.opacity(0.6))
+            sectionDivider
+            sectionTitle("配色")
 
             Toggle(isOn: $readerConfig.useCustomColors) {
                 Text("自定义背景与文字颜色")
@@ -1631,9 +1675,8 @@ public struct ReaderView: View {
     // MARK: 页眉页脚
     private var headerFooterSection: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text("正文标题")
-                .font(.system(size: 12, weight: .semibold))
-                .foregroundColor(readerConfig.textColor.opacity(0.6))
+            sectionDivider
+            sectionTitle("正文标题")
 
             Picker("正文标题", selection: $readerConfig.titleAlignment) {
                 ForEach(ReaderTitleAlignment.allCases) { mode in
@@ -1642,9 +1685,8 @@ public struct ReaderView: View {
             }
             .pickerStyle(.segmented)
 
-            settingSlider("上下边距", value: $readerConfig.verticalPadding, range: 8...56, step: 2)
-
-            Divider().opacity(0.4)
+            sectionTitle("页眉页脚")
+                .padding(.top, 4)
 
             Toggle(isOn: $readerConfig.sharedLayout) {
                 Text("共享布局")
@@ -1671,6 +1713,7 @@ public struct ReaderView: View {
             }
             .toggleStyle(.switch)
             if readerConfig.headerEnabled {
+                settingSlider("距顶", value: $readerConfig.headerOffset, range: 0...40, step: 2)
                 barContentRow("左", selection: $readerConfig.headerLeft)
                 barContentRow("中", selection: $readerConfig.headerCenter)
                 barContentRow("右", selection: $readerConfig.headerRight)
@@ -1683,6 +1726,7 @@ public struct ReaderView: View {
             }
             .toggleStyle(.switch)
             if readerConfig.footerEnabled {
+                settingSlider("距底", value: $readerConfig.footerOffset, range: 0...40, step: 2)
                 barContentRow("左", selection: $readerConfig.footerLeft)
                 barContentRow("中", selection: $readerConfig.footerCenter)
                 barContentRow("右", selection: $readerConfig.footerRight)
@@ -1721,9 +1765,8 @@ public struct ReaderView: View {
     // MARK: 听书
     private var ttsSection: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text("听书")
-                .font(.system(size: 12, weight: .semibold))
-                .foregroundColor(readerConfig.textColor.opacity(0.6))
+            sectionDivider
+            sectionTitle("听书")
 
             HStack(spacing: 8) {
                 Text(audioService.currentEngineName)
@@ -1771,18 +1814,23 @@ public struct ReaderView: View {
         step: CGFloat,
         suffix: String = " pt"
     ) -> some View {
-        VStack(alignment: .leading, spacing: 2) {
-            HStack {
-                Text(title)
-                    .font(.system(size: 12, weight: .medium))
-                    .foregroundColor(readerConfig.textColor.opacity(0.7))
-                Spacer()
-                Text(settingValueText(value.wrappedValue, step: step, suffix: suffix))
-                    .font(.system(size: 11))
-                    .foregroundColor(readerConfig.textColor.opacity(0.5))
-            }
+        HStack(spacing: 10) {
+            Text(title)
+                .font(.system(size: 12, weight: .medium))
+                .foregroundColor(readerConfig.textColor.opacity(0.75))
+                .lineLimit(1)
+                .frame(width: 46, alignment: .leading)
             Slider(value: value, in: range, step: step)
+                .tint(readerConfig.textColor.opacity(0.65))
+            Text(settingValueText(value.wrappedValue, step: step, suffix: suffix))
+                .font(.system(size: 11, weight: .medium, design: .monospaced))
+                .foregroundColor(readerConfig.textColor.opacity(0.6))
+                .frame(width: 50, alignment: .trailing)
+                .padding(.vertical, 2)
+                .padding(.horizontal, 6)
+                .background(Capsule().fill(readerConfig.textColor.opacity(0.07)))
         }
+        .padding(.vertical, 1)
     }
 
     private func settingValueText(_ value: CGFloat, step: CGFloat, suffix: String) -> String {
@@ -1821,12 +1869,9 @@ public struct ReaderView: View {
     }
 
     private var themeRow: some View {
-        HStack(spacing: 12) {
-            Text("主题")
-                .font(.system(size: 13, weight: .medium))
-                .foregroundColor(readerConfig.textColor.opacity(0.7))
-                .frame(width: 36, alignment: .leading)
-
+        VStack(alignment: .leading, spacing: 10) {
+            sectionDivider
+            sectionTitle("主题")
             HStack(spacing: 8) {
                 ForEach(ReaderTheme.allCases) { t in
                     themeButton(for: t)
@@ -2234,12 +2279,16 @@ public struct ReaderView: View {
         let barHeight: CGFloat = 19
         let reserved = (readerConfig.headerEnabled ? barHeight : 0)
             + (readerConfig.footerEnabled ? barHeight : 0)
-            + readerConfig.verticalPadding * 2
-        let usableHeight = max(200, height - reserved - 10)
+            + (readerConfig.headerEnabled ? readerConfig.headerOffset : 0)
+            + (readerConfig.footerEnabled ? readerConfig.footerOffset : 0)
+            + readerConfig.paddingTop
+            + readerConfig.paddingBottom
+        let usableHeight = max(200, height - reserved - 6)
 
         // First page has chapter title (+ title padding)
         let titleLineHeight = (readerConfig.fontSize + 3) * 1.3 + readerConfig.lineSpacing
-        let titleHeight = titleLineHeight * 1.5 + 16.0
+        // 标题只占一行时按一行算：以前乘 1.5 多留一截，导致首页底部空一大块
+        let titleHeight = titleLineHeight + 10.0
         let firstPageUsableHeight = max(100, usableHeight - titleHeight)
 
         return (pageHeight: usableHeight, firstPageHeight: firstPageUsableHeight)
@@ -2287,7 +2336,7 @@ public struct ReaderView: View {
         let firstPageHeight = metrics.firstPageHeight
         let lineHeight = readerConfig.fontSize * 1.25 + readerConfig.lineSpacing
         // 断行的宽度必须和渲染时用的一致，不然一行排得比页宽，右边就被切掉
-        let usableWidth = Double(max(200, readerContainerSize.width - readerConfig.horizontalPadding * 2))
+        let usableWidth = Double(max(200, readerContainerSize.width - readerConfig.paddingLeft - readerConfig.paddingRight))
 
         var pages: [[ContentBlock]] = []
         var currentPageLines: [(text: String, isParagraphEnd: Bool)] = []

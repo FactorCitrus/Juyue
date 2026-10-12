@@ -127,6 +127,14 @@ public class ReaderConfig: ObservableObject {
     @Published public var paragraphSpacing: CGFloat = 12.0 { didSet { persist(paragraphSpacing, "reader_paragraph_spacing") } }
     /// 左右页边距
     @Published public var horizontalPadding: CGFloat = 24.0 { didSet { persist(horizontalPadding, "reader_horizontal_padding") } }
+    /// 上下左右分开调（旧的两个键只用来做一次性迁移）
+    @Published public var paddingTop: CGFloat = 24.0 { didSet { persist(paddingTop, "reader_padding_top") } }
+    @Published public var paddingBottom: CGFloat = 24.0 { didSet { persist(paddingBottom, "reader_padding_bottom") } }
+    @Published public var paddingLeft: CGFloat = 24.0 { didSet { persist(paddingLeft, "reader_padding_left") } }
+    @Published public var paddingRight: CGFloat = 24.0 { didSet { persist(paddingRight, "reader_padding_right") } }
+    /// 页眉/页脚离屏幕边缘的距离
+    @Published public var headerOffset: CGFloat = 0.0 { didSet { persist(headerOffset, "reader_header_offset") } }
+    @Published public var footerOffset: CGFloat = 0.0 { didSet { persist(footerOffset, "reader_footer_offset") } }
     /// 上下边距
     @Published public var verticalPadding: CGFloat = 24.0 { didSet { persist(verticalPadding, "reader_vertical_padding") } }
     /// 首行缩进，按字数算
@@ -197,6 +205,10 @@ public class ReaderConfig: ObservableObject {
         public var paragraphSpacing: Double
         public var horizontalPadding: Double
         public var verticalPadding: Double
+        public var paddingTop: Double?
+        public var paddingBottom: Double?
+        public var paddingLeft: Double?
+        public var paddingRight: Double?
         public var firstLineIndent: Double
         public var weightLevel: Int
         public var fontName: String
@@ -219,6 +231,10 @@ public class ReaderConfig: ObservableObject {
             paragraphSpacing: Double(paragraphSpacing),
             horizontalPadding: Double(horizontalPadding),
             verticalPadding: Double(verticalPadding),
+            paddingTop: Double(paddingTop),
+            paddingBottom: Double(paddingBottom),
+            paddingLeft: Double(paddingLeft),
+            paddingRight: Double(paddingRight),
             firstLineIndent: Double(firstLineIndent),
             weightLevel: weightLevel,
             fontName: fontName,
@@ -241,6 +257,10 @@ public class ReaderConfig: ObservableObject {
         paragraphSpacing = CGFloat(snapshot.paragraphSpacing)
         horizontalPadding = CGFloat(snapshot.horizontalPadding)
         verticalPadding = CGFloat(snapshot.verticalPadding)
+        paddingTop = CGFloat(snapshot.paddingTop ?? snapshot.verticalPadding)
+        paddingBottom = CGFloat(snapshot.paddingBottom ?? snapshot.verticalPadding)
+        paddingLeft = CGFloat(snapshot.paddingLeft ?? snapshot.horizontalPadding)
+        paddingRight = CGFloat(snapshot.paddingRight ?? snapshot.horizontalPadding)
         firstLineIndent = CGFloat(snapshot.firstLineIndent)
         weightLevel = snapshot.weightLevel
         fontName = snapshot.fontName
@@ -320,6 +340,15 @@ public class ReaderConfig: ObservableObject {
             chineseConversion = c
         }
         if d.object(forKey: "reader_vertical_padding") != nil { verticalPadding = CGFloat(d.double(forKey: "reader_vertical_padding")) }
+        // 老版本只有上下/左右两个边距：没有新键就沿用旧值，之后互不影响
+        let legacyVertical = CGFloat(d.object(forKey: "reader_vertical_padding") != nil ? d.double(forKey: "reader_vertical_padding") : Double(verticalPadding))
+        let legacyHorizontal = CGFloat(d.object(forKey: "reader_horizontal_padding") != nil ? d.double(forKey: "reader_horizontal_padding") : Double(horizontalPadding))
+        paddingTop = d.object(forKey: "reader_padding_top") != nil ? CGFloat(d.double(forKey: "reader_padding_top")) : legacyVertical
+        paddingBottom = d.object(forKey: "reader_padding_bottom") != nil ? CGFloat(d.double(forKey: "reader_padding_bottom")) : legacyVertical
+        paddingLeft = d.object(forKey: "reader_padding_left") != nil ? CGFloat(d.double(forKey: "reader_padding_left")) : legacyHorizontal
+        paddingRight = d.object(forKey: "reader_padding_right") != nil ? CGFloat(d.double(forKey: "reader_padding_right")) : legacyHorizontal
+        if d.object(forKey: "reader_header_offset") != nil { headerOffset = CGFloat(d.double(forKey: "reader_header_offset")) }
+        if d.object(forKey: "reader_footer_offset") != nil { footerOffset = CGFloat(d.double(forKey: "reader_footer_offset")) }
         if let v = d.string(forKey: "reader_title_alignment"), let t = ReaderTitleAlignment(rawValue: v) { titleAlignment = t }
         if d.object(forKey: "reader_header_enabled") != nil { headerEnabled = d.bool(forKey: "reader_header_enabled") }
         if let v = d.string(forKey: "reader_header_left"), let c = ReaderBarContent(rawValue: v) { headerLeft = c }
