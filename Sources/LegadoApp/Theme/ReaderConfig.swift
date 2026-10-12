@@ -24,7 +24,8 @@ public enum ReaderTheme: String, CaseIterable, Identifiable {
         switch self {
         case .white: return Color(red: 0.15, green: 0.15, blue: 0.15)
         case .parchment: return Color(red: 0.22, green: 0.18, blue: 0.15)
-        case .eyeCare: return Color(red: 57.0 / 255.0, green: 67.0 / 255.0, blue: 33.0 / 255.0)
+        // 两张安卓截图取样一致：背景 rgb(188,200,150)、正文 rgb(68,77,43)
+        case .eyeCare: return Color(red: 68.0 / 255.0, green: 77.0 / 255.0, blue: 43.0 / 255.0)
         case .deepGreen: return Color(red: 230.0 / 255.0, green: 232.0 / 255.0, blue: 220.0 / 255.0)
         case .dark: return Color(red: 0.80, green: 0.80, blue: 0.80)
         }
