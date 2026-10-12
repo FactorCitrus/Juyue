@@ -115,7 +115,19 @@ public struct ReaderView: View {
                                 Text(loadingNote)
                                     .font(.subheadline)
                                     .foregroundColor(readerConfig.textColor.opacity(0.7))
+                                Button("返回书架") {
+                                    dismiss()
+                                }
+                                .buttonStyle(.bordered)
+                                .padding(.top, 4)
                                 Spacer()
+                            }
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                            .contentShape(Rectangle())
+                            .onTapGesture {
+                                withAnimation(.easeInOut(duration: 0.2)) {
+                                    showControls.toggle()
+                                }
                             }
                         } else if let error = errorMessage {
                             VStack(spacing: 12) {
@@ -149,6 +161,13 @@ public struct ReaderView: View {
                                     .foregroundColor(.accentColor)
                                 }
                                 Spacer()
+                            }
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                            .contentShape(Rectangle())
+                            .onTapGesture {
+                                withAnimation(.easeInOut(duration: 0.2)) {
+                                    showControls.toggle()
+                                }
                             }
                         } else {
                             ZStack {
