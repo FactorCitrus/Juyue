@@ -1,0 +1,29 @@
+# Xcode
+## User settings
+xcuserdata/
+*.xcuserdatad/
+*.xcscmblueprint
+
+## Build products
+DerivedData/
+build/
+*.ipa
+*.dSYM.zip
+*.dSYM
+
+# Swift Package Manager
+.build/
+.swiftpm/
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+Icon
+._*
+
+# Temporary files
+*.swp
+*~
+*.bak
+*.tmp

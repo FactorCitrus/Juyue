@@ -1,0 +1,100 @@
+name: Build & Release
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+    inputs:
+      tag_name:
+        description: 'Tag name for release (e.g. v0.2.0)'
+        required: false
+        default: 'v0.2.0'
+
+jobs:
+  build-and-release:
+    name: Build & Release IPA
+    runs-on: macos-14
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Select Xcode
+        run: |
+          sudo xcode-select -s /Applications/Xcode_15.4.app || sudo xcode-select -s /Applications/Xcode.app
+          xcodebuild -version
+
+      - name: Run Tests
+        run: |
+          swift test
+
+      - name: Determine Release Tag
+        id: version_step
+        run: |
+          if [ -n "${{ github.event.inputs.tag_name }}" ]; then
+            TAG="${{ github.event.inputs.tag_name }}"
+          elif [ -f "VERSION" ]; then
+            TAG=$(cat VERSION | tr -d '[:space:]')
+          else
+            TAG="v0.2.0"
+          fi
+          echo "tag=${TAG}" >> $GITHUB_OUTPUT
+
+      - name: Build Archive (Unsigned)
+        run: |
+          xcodebuild -project Legado.xcodeproj \
+            -scheme LegadoApp \
+            -configuration Release \
+            -destination 'generic/platform=iOS' \
+            -archivePath build/LegadoApp.xcarchive \
+            archive \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY=""
+
+      - name: Package IPA
+        id: package
+        run: |
+          mkdir -p build/Payload
+          cp -R build/LegadoApp.xcarchive/Products/Applications/LegadoApp.app build/Payload/
+          cd build
+          RELEASE_TAG="${{ steps.version_step.outputs.tag }}"
+          zip -r "Legado-${RELEASE_TAG}.ipa" Payload
+          ls -la "Legado-${RELEASE_TAG}.ipa"
+          cd ..
+
+      - name: Upload IPA Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Legado-${{ steps.version_step.outputs.tag }}-ipa
+          path: build/Legado-*.ipa
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version_step.outputs.tag }}
+          name: "Legado iOS ${{ steps.version_step.outputs.tag }}"
+          prerelease: false
+          draft: false
+          generate_release_notes: true
+          files: build/Legado-*.ipa
+          body: |
+            ### Legado iOS (开源阅读 iOS 版) ${{ steps.version_step.outputs.tag }}
+
+            #### 🌟 核心更新与特性
+            - **WebDAV Android 兼容 ZIP 备份**：完整对齐 Android Legado 标准的 `backupYYYY-MM-DD-deviceName.zip` 归档格式，保留全部书籍元数据与精确阅读进度（`durChapterIndex`, `durChapterPos`, `durChapterTime`）。
+            - **云端历史备份选择**：支持一键检索 WebDAV 云端所有历史备份包（包括 Android 手机与 iOS 备份），展示日期、体积并支持自由点选合并恢复。
+            - **秒级极速 WebDAV 备份**：彻底移除全量备份时的阻塞请求，备份由 30+ 秒降至 1 秒内完成。
+            - **连续滚动无缝翻页**：滚动模式下下拉预加载上一章并无缝衔接阅读断点，不再跳回章节首页。
+            - **分卷书籍目录连贯修复**：完美解决分卷小说因卷标导致的目录断章与前后翻页问题。
+            - **全屏沉浸阅读器**：各入口（详情页、目录跳转等）进入阅读器均规范为原生全屏展示。
+            - **书源与预设更新**：示例书源书源新增“阅读历史”与“默认收藏夹”个人中心发现流；规范书源命名。
+
+            #### 📱 安装说明
+            下载下方的 `Legado-*.ipa` 附件，支持通过以下方式进行侧载安装：
+            - **TrollStore**（巨魔商店，推荐，免签名永不过期）
+            - **AltStore / SideStore**（个人免费证书签名）
+            - **Sideloadly / 爱思助手**
