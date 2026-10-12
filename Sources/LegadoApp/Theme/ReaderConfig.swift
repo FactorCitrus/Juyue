@@ -4,6 +4,7 @@ public enum ReaderTheme: String, CaseIterable, Identifiable {
     case white = "默认白"
     case parchment = "复古羊皮纸"
     case eyeCare = "护眼绿"
+    case deepGreen = "墨绿护眼"
     case dark = "夜间暗黑"
 
     public var id: String { rawValue }
@@ -13,7 +14,8 @@ public enum ReaderTheme: String, CaseIterable, Identifiable {
         case .white: return Color(red: 0.98, green: 0.98, blue: 0.98)
         case .parchment: return Color(red: 0.95, green: 0.90, blue: 0.82)
         // 取自安卓阅读器护眼绿的实测值
-        case .eyeCare: return Color(red: 187.0 / 255.0, green: 200.0 / 255.0, blue: 149.0 / 255.0)
+        case .eyeCare: return Color(red: 188.0 / 255.0, green: 200.0 / 255.0, blue: 150.0 / 255.0)
+        case .deepGreen: return Color(red: 74.0 / 255.0, green: 79.0 / 255.0, blue: 60.0 / 255.0)
         case .dark: return Color(red: 0.12, green: 0.12, blue: 0.12)
         }
     }
@@ -23,6 +25,7 @@ public enum ReaderTheme: String, CaseIterable, Identifiable {
         case .white: return Color(red: 0.15, green: 0.15, blue: 0.15)
         case .parchment: return Color(red: 0.22, green: 0.18, blue: 0.15)
         case .eyeCare: return Color(red: 57.0 / 255.0, green: 67.0 / 255.0, blue: 33.0 / 255.0)
+        case .deepGreen: return Color(red: 230.0 / 255.0, green: 232.0 / 255.0, blue: 220.0 / 255.0)
         case .dark: return Color(red: 0.80, green: 0.80, blue: 0.80)
         }
     }
