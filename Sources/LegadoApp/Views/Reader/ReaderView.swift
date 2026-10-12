@@ -103,6 +103,8 @@ public struct ReaderView: View {
     @State private var loadedChapters: [LoadedChapter] = []
     @State private var currentPageIndex: Int = 0
     @State private var pageTurnForward: Bool = true
+    /// 手指拖动时整页（含页眉页脚）跟着走的位移，松手后归零
+    @State private var dragOffset: CGFloat = 0
     @State private var currentReadingBlockId: Int = 0
     @State private var chapterCache: [Int: LoadedChapter] = [:]
     @State private var readerContainerSize: CGSize = CGSize(width: 390, height: 700)
@@ -648,6 +650,8 @@ public struct ReaderView: View {
                             statusBar(left: readerConfig.headerLeft, center: readerConfig.headerCenter, right: readerConfig.headerRight)
                         }
 
+                        // 正文放进固定高度的容器里：正文再长也只在这块里截，顶不飞页脚
+                        GeometryReader { _ in
                         VStack(alignment: .leading, spacing: 0) {
                         // If it's page 0, display Chapter Title at top
                         if currentPageIndex == 0, readerConfig.titleAlignment != .hidden, let cur = currentLoadedChapter {
@@ -696,11 +700,14 @@ public struct ReaderView: View {
                         .padding(.top, readerConfig.verticalPadding)
                         .padding(.bottom, readerConfig.verticalPadding)
                         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                        }
+                        .clipped()
 
                         if readerConfig.footerEnabled {
                             statusBar(left: readerConfig.footerLeft, center: readerConfig.footerCenter, right: readerConfig.footerRight)
                         }
                     }
+                    .offset(x: dragOffset)
                     .id("page_\(currentChapterIndex)_\(currentPageIndex)")
                     .transition(pageTransition)
                 }
@@ -742,12 +749,32 @@ public struct ReaderView: View {
                 updateContainerSizeIfNeeded(newSize)
             }
             .gesture(
-                DragGesture(minimumDistance: 30)
+                DragGesture(minimumDistance: 8)
+                    .onChanged { value in
+                        // 横着拖才跟手，竖着划过名单不算翻页
+                        guard abs(value.translation.width) > abs(value.translation.height) else { return }
+                        var dx = value.translation.width
+                        let total = pages.count
+                        let canForward = currentPageIndex < total - 1 || currentChapterIndex < chapters.count - 1
+                        let canBackward = currentPageIndex > 0 || currentChapterIndex > 0
+                        // 到头了就拖不动，只给一点点回弹的手感
+                        if (dx < 0 && !canForward) || (dx > 0 && !canBackward) {
+                            dx *= 0.22
+                        }
+                        dragOffset = dx
+                    }
                     .onEnded { value in
-                        if value.translation.width < -40 {
+                        let width = max(200, geo.size.width)
+                        let projected = value.predictedEndTranslation.width
+                        let threshold = width * 0.22
+                        if projected < -threshold {
                             turnPage(forward: true)
-                        } else if value.translation.width > 40 {
+                        } else if projected > threshold {
                             turnPage(forward: false)
+                        } else {
+                            withAnimation(.spring(response: 0.3, dampingFraction: 0.85)) {
+                                dragOffset = 0
+                            }
                         }
                     }
             )
@@ -787,14 +814,17 @@ public struct ReaderView: View {
     }
 
     // MARK: - Page Turn Handler (Once chapter ends, next chapter starts next page)
-    /// 翻页动画：覆盖是滑入盖住旧页，无动画就是一帧切换。
+    /// 翻页动画：覆盖是滑入盖住旧页，左右和滑动是新页推进来、旧页退出去，
+    /// 无动画就是一帧切换。
     private var pageTurnAnimation: Animation? {
         switch readerConfig.pageMode {
         case .none:
             return nil
         case .cover:
-            return .easeOut(duration: 0.22)
+            return .easeOut(duration: 0.24)
         case .slide:
+            return .spring(response: 0.34, dampingFraction: 0.9)
+        case .pageByPage:
             return .easeInOut(duration: 0.24)
         default:
             return .easeInOut(duration: 0.18)
@@ -824,7 +854,7 @@ public struct ReaderView: View {
                 insertion: .move(edge: pageTurnForward ? .trailing : .leading),
                 removal: .opacity
             )
-        case .slide:
+        case .slide, .pageByPage:
             return .asymmetric(
                 insertion: .move(edge: pageTurnForward ? .trailing : .leading),
                 removal: .move(edge: pageTurnForward ? .leading : .trailing)
@@ -845,6 +875,7 @@ public struct ReaderView: View {
                 pageTurnForward = true
                 withAnimation(pageTurnAnimation) {
                     currentPageIndex += 1
+                    dragOffset = 0
                 }
                 updateReadingBlockIdFromCurrentPage()
                 saveCurrentProgress()
@@ -852,6 +883,7 @@ public struct ReaderView: View {
                 // Chapter ended! Once one chapter ends, the new chapter starts the next page!
                 if currentChapterIndex < chapters.count - 1 {
                     audioService.stop()
+                    dragOffset = 0
                     let nextIdx = currentChapterIndex + 1
                     currentChapterIndex = nextIdx
                     currentPageIndex = 0
@@ -864,6 +896,7 @@ public struct ReaderView: View {
                 pageTurnForward = false
                 withAnimation(pageTurnAnimation) {
                     currentPageIndex -= 1
+                    dragOffset = 0
                 }
                 updateReadingBlockIdFromCurrentPage()
                 saveCurrentProgress()
@@ -871,6 +904,7 @@ public struct ReaderView: View {
                 // Return to previous chapter's last page!
                 if currentChapterIndex > 0 {
                     audioService.stop()
+                    dragOffset = 0
                     let prevIdx = currentChapterIndex - 1
                     currentChapterIndex = prevIdx
                     loadInitialChapter(at: prevIdx, targetPageIndex: -1) // -1 indicates last page
@@ -2183,11 +2217,16 @@ public struct ReaderView: View {
         )
     }
 
+    /// 一页排几行：先扣掉页眉页脚和上下边距，正文撑不出去，页脚才留得住。
     private func calculateLayoutMetrics() -> (linesPerPage: Int, firstPageLines: Int) {
         let height = max(400, readerContainerSize.height)
 
         let lineHeight = readerConfig.fontSize * 1.25 + readerConfig.lineSpacing
-        let usableHeight = max(200, height - 48)
+        let barHeight: CGFloat = 19
+        let reserved = (readerConfig.headerEnabled ? barHeight : 0)
+            + (readerConfig.footerEnabled ? barHeight : 0)
+            + readerConfig.verticalPadding * 2
+        let usableHeight = max(200, height - reserved - 10)
 
         // First page has chapter title (+ title padding)
         let titleLineHeight = (readerConfig.fontSize + 3) * 1.3 + readerConfig.lineSpacing
@@ -2240,7 +2279,8 @@ public struct ReaderView: View {
         let metrics = calculateLayoutMetrics()
         let normalLines = metrics.linesPerPage
         let firstPageLines = metrics.firstPageLines
-        let usableWidth = Double(max(200, readerContainerSize.width - 48))
+        // 断行的宽度必须和渲染时用的一致，不然一行排得比页宽，右边就被切掉
+        let usableWidth = Double(max(200, readerContainerSize.width - readerConfig.horizontalPadding * 2))
 
         var pages: [[ContentBlock]] = []
         var currentPageLines: [(text: String, isParagraphEnd: Bool)] = []
