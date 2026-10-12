@@ -219,9 +219,9 @@ public struct ReaderView: View {
                                 if readerConfig.pageMode == .scroll {
                                     infiniteScrollView
                                 } else if readerConfig.pageMode == .simulation {
-                                    simulationPageView
+                                    simulationPageView.id("sim_\(themeRenderKey)")
                                 } else {
-                                    pageByPageView
+                                    pageByPageView.id("paged_\(themeRenderKey)")
                                 }
                             }
                             .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -788,6 +788,22 @@ public struct ReaderView: View {
         default:
             return .easeInOut(duration: 0.18)
         }
+    }
+
+    /// 影响正文渲染的样式指纹。变了就让按页的阅读容器整个重建，
+    /// 免得托管的页面拿着旧配色不放。
+    private var themeRenderKey: String {
+        let colors = readerConfig.useCustomColors
+            ? "\(readerConfig.customBackgroundHex)|\(readerConfig.customTextHex)"
+            : readerConfig.theme.rawValue
+        return [
+            colors,
+            readerConfig.fontName,
+            "\(readerConfig.weightLevel)",
+            readerConfig.chineseConversion.rawValue,
+            readerConfig.titleAlignment.rawValue,
+            "\(readerConfig.headerEnabled)\(readerConfig.footerEnabled)\(readerConfig.barDivider)"
+        ].joined(separator: "|")
     }
 
     private var pageTransition: AnyTransition {
