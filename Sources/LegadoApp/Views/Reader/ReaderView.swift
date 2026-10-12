@@ -118,6 +118,7 @@ public struct ReaderView: View {
     @State private var showSettings: Bool = false
     @State private var showSearch: Bool = false
     @State private var showTTSSettings: Bool = false
+    @State private var showBookInfo: Bool = false
     @State private var showSourceSwitch: Bool = false
     @State private var showControls: Bool = false
 
@@ -312,6 +313,15 @@ public struct ReaderView: View {
         .sheet(isPresented: $showTTSSettings) {
             TTSSettingsSheet()
         }
+        .sheet(isPresented: $showBookInfo) {
+            BookInfoSheet(
+                book: activeBook,
+                chapterCount: chapters.count,
+                currentChapterIndex: currentChapterIndex,
+                currentChapterTitle: (!chapters.isEmpty && currentChapterIndex < chapters.count) ? chapters[currentChapterIndex].title : "",
+                sourceName: effectiveSource?.bookSourceName ?? activeBook.originName
+            )
+        }
         .sheet(isPresented: $showSourceSwitch) {
             SourceSwitchSheet(
                 book: activeBook,
@@ -322,10 +332,12 @@ public struct ReaderView: View {
             )
         }
         .task {
+            readerConfig.loadLayout(for: activeBook.bookUrl)
             await loadTOCAndStart()
         }
         .onDisappear {
             saveCurrentProgress()
+            readerConfig.saveLayout(for: activeBook.bookUrl)
             audioService.stop()
         }
         .onChange(of: readerConfig.pageMode) { newMode in
@@ -1554,6 +1566,24 @@ public struct ReaderView: View {
             settingSlider("上下边距", value: $readerConfig.verticalPadding, range: 8...56, step: 2)
 
             Divider().opacity(0.4)
+
+            Toggle(isOn: $readerConfig.sharedLayout) {
+                Text("共享布局")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundColor(readerConfig.textColor.opacity(0.7))
+            }
+            .toggleStyle(.switch)
+
+            HStack(spacing: 8) {
+                Text("共享布局开着一套排版给所有书用；关掉后每本书各存一份。")
+                    .font(.system(size: 11))
+                    .foregroundColor(readerConfig.textColor.opacity(0.5))
+                Spacer()
+                Button("信息") {
+                    showBookInfo = true
+                }
+                .font(.system(size: 12, weight: .medium))
+            }
 
             Toggle(isOn: $readerConfig.headerEnabled) {
                 Text("页眉")

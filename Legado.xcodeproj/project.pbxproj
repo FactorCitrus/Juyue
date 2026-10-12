@@ -35,6 +35,7 @@
 				<string>58F4DD9F18FFD2E853399AD6</string>
 				<string>F7D8DE57A44495342278811B</string>
 				<string>9E009C4C103DE998A87C5276</string>
+				<string>1879949E281D92B487685A97</string>
 			</array>
 			<key>isa</key>
 			<string>PBXGroup</string>
@@ -681,6 +682,7 @@
 				<string>46981FEC0E60691EF058FE58</string>
 				<string>49894AE7A79E3943DC288583</string>
 				<string>6D66130FEFCB34F929D68B79</string>
+				<string>782B4C6BAD3FD51D78E1607C</string>
 			</array>
 			<key>isa</key>
 			<string>PBXSourcesBuildPhase</string>
@@ -1305,6 +1307,24 @@
 			<string>PBXBuildFile</string>
 			<key>fileRef</key>
 			<string>9E009C4C103DE998A87C5276</string>
+		</dict>
+		<key>1879949E281D92B487685A97</key>
+		<dict>
+			<key>isa</key>
+			<string>PBXFileReference</string>
+			<key>lastKnownFileType</key>
+			<string>sourcecode.swift</string>
+			<key>path</key>
+			<string>Sources/LegadoApp/Views/Reader/BookInfoSheet.swift</string>
+			<key>sourceTree</key>
+			<string>&lt;group&gt;</string>
+		</dict>
+		<key>782B4C6BAD3FD51D78E1607C</key>
+		<dict>
+			<key>isa</key>
+			<string>PBXBuildFile</string>
+			<key>fileRef</key>
+			<string>1879949E281D92B487685A97</string>
 		</dict>
 	</dict>
 	<key>rootObject</key>

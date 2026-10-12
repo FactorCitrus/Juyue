@@ -181,6 +181,91 @@ public class ReaderConfig: ObservableObject {
         didSet { Self.defaults.set(barDivider, forKey: "reader_bar_divider") }
     }
 
+    /// 共享布局：开着就是所有书共用一套排版；关掉后每本书各存一份。
+    @Published public var sharedLayout: Bool = true {
+        didSet { Self.defaults.set(sharedLayout, forKey: "reader_shared_layout") }
+    }
+
+    /// 与书无关的排版快照，用于按书存取
+    public struct LayoutSnapshot: Codable, Equatable {
+        public var fontSize: Double
+        public var lineSpacing: Double
+        public var letterSpacing: Double
+        public var paragraphSpacing: Double
+        public var horizontalPadding: Double
+        public var verticalPadding: Double
+        public var firstLineIndent: Double
+        public var weightLevel: Int
+        public var fontName: String
+        public var chineseConversion: String
+        public var theme: String
+        public var useCustomColors: Bool
+        public var customBackgroundHex: String
+        public var customTextHex: String
+        public var titleAlignment: String
+        public var headerEnabled: Bool
+        public var footerEnabled: Bool
+        public var barDivider: Bool
+    }
+
+    public var layoutSnapshot: LayoutSnapshot {
+        LayoutSnapshot(
+            fontSize: Double(fontSize),
+            lineSpacing: Double(lineSpacing),
+            letterSpacing: Double(letterSpacing),
+            paragraphSpacing: Double(paragraphSpacing),
+            horizontalPadding: Double(horizontalPadding),
+            verticalPadding: Double(verticalPadding),
+            firstLineIndent: Double(firstLineIndent),
+            weightLevel: weightLevel,
+            fontName: fontName,
+            chineseConversion: chineseConversion.rawValue,
+            theme: theme.rawValue,
+            useCustomColors: useCustomColors,
+            customBackgroundHex: customBackgroundHex,
+            customTextHex: customTextHex,
+            titleAlignment: titleAlignment.rawValue,
+            headerEnabled: headerEnabled,
+            footerEnabled: footerEnabled,
+            barDivider: barDivider
+        )
+    }
+
+    public func apply(_ snapshot: LayoutSnapshot) {
+        fontSize = CGFloat(snapshot.fontSize)
+        lineSpacing = CGFloat(snapshot.lineSpacing)
+        letterSpacing = CGFloat(snapshot.letterSpacing)
+        paragraphSpacing = CGFloat(snapshot.paragraphSpacing)
+        horizontalPadding = CGFloat(snapshot.horizontalPadding)
+        verticalPadding = CGFloat(snapshot.verticalPadding)
+        firstLineIndent = CGFloat(snapshot.firstLineIndent)
+        weightLevel = snapshot.weightLevel
+        fontName = snapshot.fontName
+        chineseConversion = ChineseConversion(rawValue: snapshot.chineseConversion) ?? .none
+        theme = ReaderTheme(rawValue: snapshot.theme) ?? .parchment
+        useCustomColors = snapshot.useCustomColors
+        customBackgroundHex = snapshot.customBackgroundHex
+        customTextHex = snapshot.customTextHex
+        titleAlignment = ReaderTitleAlignment(rawValue: snapshot.titleAlignment) ?? .leading
+        headerEnabled = snapshot.headerEnabled
+        footerEnabled = snapshot.footerEnabled
+        barDivider = snapshot.barDivider
+    }
+
+    /// 按书存排版，key 用书的 URL 的哈希
+    public func saveLayout(for bookUrl: String) {
+        guard !sharedLayout, !bookUrl.isEmpty else { return }
+        guard let data = try? JSONEncoder().encode(layoutSnapshot) else { return }
+        Self.defaults.set(data, forKey: "reader_layout_\(abs(bookUrl.hashValue))")
+    }
+
+    public func loadLayout(for bookUrl: String) {
+        guard !sharedLayout, !bookUrl.isEmpty else { return }
+        guard let data = Self.defaults.data(forKey: "reader_layout_\(abs(bookUrl.hashValue))"),
+              let snapshot = try? JSONDecoder().decode(LayoutSnapshot.self, from: data) else { return }
+        apply(snapshot)
+    }
+
     /// 当前字体，找不到就退回默认
     public var font: ReaderFont {
         let candidate = ReaderFont.font(named: fontName)
@@ -242,6 +327,7 @@ public class ReaderConfig: ObservableObject {
         if let v = d.string(forKey: "reader_footer_center"), let c = ReaderBarContent(rawValue: v) { footerCenter = c }
         if let v = d.string(forKey: "reader_footer_right"), let c = ReaderBarContent(rawValue: v) { footerRight = c }
         if d.object(forKey: "reader_bar_divider") != nil { barDivider = d.bool(forKey: "reader_bar_divider") }
+        if d.object(forKey: "reader_shared_layout") != nil { sharedLayout = d.bool(forKey: "reader_shared_layout") }
         if d.object(forKey: "reader_custom_colors") != nil { useCustomColors = d.bool(forKey: "reader_custom_colors") }
         if let hex = d.string(forKey: "reader_bg_hex") { customBackgroundHex = hex }
         if let hex = d.string(forKey: "reader_text_hex") { customTextHex = hex }
