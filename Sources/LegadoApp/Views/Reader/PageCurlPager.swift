@@ -129,8 +129,10 @@ public struct PageCurlPager: UIViewControllerRepresentable {
         // 双面翻页：背面由 dataSource 提供，才不会出现系统那张白纸
         controller.isDoubleSided = true
         controller.view.backgroundColor = UIColor(backgroundColor)
-        if let first = context.coordinator.controller(at: clampedIndex) {
-            controller.setViewControllers([first], direction: .forward, animated: false)
+        // 双面模式下必须一次给两张（正面 + 背面），只给一张 UIKit 会直接抛异常
+        let initial = context.coordinator.pagePair(at: clampedIndex)
+        if !initial.isEmpty {
+            controller.setViewControllers(initial, direction: .forward, animated: false)
         }
         return controller
     }
@@ -145,8 +147,9 @@ public struct PageCurlPager: UIViewControllerRepresentable {
         if context.coordinator.lastSignature != signature {
             context.coordinator.lastSignature = signature
             let current = context.coordinator.index
-            if let rebuilt = context.coordinator.controller(at: current) {
-                controller.setViewControllers([rebuilt], direction: .forward, animated: false)
+            let rebuilt = context.coordinator.pagePair(at: current)
+            if !rebuilt.isEmpty {
+                controller.setViewControllers(rebuilt, direction: .forward, animated: false)
             }
             return
         }
@@ -154,8 +157,9 @@ public struct PageCurlPager: UIViewControllerRepresentable {
         let current = context.coordinator.index
         guard current != clampedIndex else { return }
         let direction: UIPageViewController.NavigationDirection = clampedIndex > current ? .forward : .reverse
-        if let target = context.coordinator.controller(at: clampedIndex) {
-            controller.setViewControllers([target], direction: direction, animated: true)
+        let target = context.coordinator.pagePair(at: clampedIndex)
+        if !target.isEmpty {
+            controller.setViewControllers(target, direction: direction, animated: true)
             context.coordinator.index = clampedIndex
         }
     }
@@ -243,6 +247,15 @@ public struct PageCurlPager: UIViewControllerRepresentable {
             host.view.tag = index
             installTapZones(on: host.view)
             return host
+        }
+
+        /// 双面模式下要成对给：正面在前、背面在后
+        func pagePair(at index: Int) -> [UIViewController] {
+            guard let front = controller(at: index) else { return [] }
+            if let back = backController(at: index) {
+                return [front, back]
+            }
+            return [front]
         }
 
         /// 卷起来时露出的那一面：用主题底色 + 靠书脊的浅阴影，不再是一张白纸
