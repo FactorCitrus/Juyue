@@ -179,7 +179,8 @@ public class ReaderConfig: ObservableObject {
     @Published public var footerRight: ReaderBarContent = .pageInfo {
         didSet { Self.defaults.set(footerRight.rawValue, forKey: "reader_footer_right") }
     }
-    @Published public var barDivider: Bool = false {
+    /// 页眉页脚和正文之间的分隔线：默认开着，否则同色背景下页脚等于看不见
+    @Published public var barDivider: Bool = true {
         didSet { Self.defaults.set(barDivider, forKey: "reader_bar_divider") }
     }
 

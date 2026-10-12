@@ -380,7 +380,7 @@ struct PageCurlContent: View {
                 ForEach(Array(slots.enumerated()), id: \.offset) { index, slot in
                     Text(barText(slot, pageIndex: pageIndex, pageCount: pageCount))
                         .font(.system(size: 11))
-                        .foregroundColor(textColor.opacity(0.55))
+                        .foregroundColor(textColor.opacity(0.8))
                         .lineLimit(1)
                         .truncationMode(.tail)
                         .frame(maxWidth: .infinity,

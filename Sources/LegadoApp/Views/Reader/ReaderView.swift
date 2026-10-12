@@ -645,6 +645,13 @@ public struct ReaderView: View {
                     let pageBlocks = pages[currentPageIndex]
                     let usableWidth = max(200, readerContainerSize.width - readerConfig.horizontalPadding * 2)
 
+                    // GeometryReader 是贪高的：不把正文这块钉死高度，它会吃掉整页，
+                    // 把 19pt 的页脚挤出可视区（页脚"看不见"就是这么来的）
+                    let barHeight: CGFloat = 19
+                    let reservedForBars = (readerConfig.headerEnabled ? barHeight : 0)
+                        + (readerConfig.footerEnabled ? barHeight : 0)
+                    let contentHeight = max(80, geo.size.height - reservedForBars)
+
                     VStack(spacing: 0) {
                         if readerConfig.headerEnabled {
                             statusBar(left: readerConfig.headerLeft, center: readerConfig.headerCenter, right: readerConfig.headerRight)
@@ -701,6 +708,7 @@ public struct ReaderView: View {
                         .padding(.bottom, readerConfig.verticalPadding)
                         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                         }
+                        .frame(height: contentHeight)
                         .clipped()
 
                         if readerConfig.footerEnabled {
@@ -1001,7 +1009,7 @@ public struct ReaderView: View {
                 statusSlot(right, alignment: .trailing)
             }
             .font(.system(size: 11))
-            .foregroundColor(readerConfig.textColor.opacity(0.55))
+            .foregroundColor(readerConfig.textColor.opacity(0.8))
             .padding(.horizontal, 16)
             .frame(height: 18)
         }
