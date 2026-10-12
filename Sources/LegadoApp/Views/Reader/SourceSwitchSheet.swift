@@ -30,7 +30,23 @@ public struct SourceSwitchSheet: View {
     }
 
     public var body: some View {
-        NavigationView {
+        // A NavigationView here turns the sheet into a sidebar + empty detail pane on
+        // macOS, which renders as a black panel with an unusable list. Use one column.
+        VStack(spacing: 0) {
+            HStack(spacing: 8) {
+                Text("换源")
+                    .font(.headline)
+                Spacer()
+                Button("关闭") {
+                    searchTask?.cancel()
+                    dismiss()
+                }
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 10)
+
+            Divider()
+
             List {
                 Section {
                     VStack(alignment: .leading, spacing: 4) {
@@ -106,24 +122,18 @@ public struct SourceSwitchSheet: View {
                     }
                 }
             }
-            .navigationTitle("换源")
             #if os(iOS)
-            .navigationBarTitleDisplayMode(.inline)
+            .listStyle(.insetGrouped)
             #endif
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("关闭") {
-                        searchTask?.cancel()
-                        dismiss()
-                    }
-                }
-            }
-            .task {
-                startSearch()
-            }
-            .onDisappear {
-                searchTask?.cancel()
-            }
+        }
+        #if os(macOS)
+        .frame(minWidth: 520, minHeight: 560)
+        #endif
+        .task {
+            startSearch()
+        }
+        .onDisappear {
+            searchTask?.cancel()
         }
     }
 

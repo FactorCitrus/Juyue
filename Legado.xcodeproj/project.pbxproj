@@ -31,6 +31,7 @@
 				<string>EE017F7802981DA6891DF806</string>
 				<string>4A8CF64E36DA2115737EA636</string>
 				<string>0884BDDF5B3132B8F0C7271E</string>
+				<string>1ADA90710EF9AC0F0170D6CE</string>
 			</array>
 			<key>isa</key>
 			<string>PBXGroup</string>
@@ -673,6 +674,7 @@
 				<string>774AD7690C4AE61EEECAA0D7</string>
 				<string>ACC5B8F3A024DDD339032F9E</string>
 				<string>9AC198F36B8CABBCA3FEDC81</string>
+				<string>CAA9CB4A5E1A991D6894AC1D</string>
 			</array>
 			<key>isa</key>
 			<string>PBXSourcesBuildPhase</string>
@@ -1225,6 +1227,24 @@
 			<string>PBXBuildFile</string>
 			<key>fileRef</key>
 			<string>0884BDDF5B3132B8F0C7271E</string>
+		</dict>
+		<key>1ADA90710EF9AC0F0170D6CE</key>
+		<dict>
+			<key>isa</key>
+			<string>PBXFileReference</string>
+			<key>lastKnownFileType</key>
+			<string>sourcecode.swift</string>
+			<key>path</key>
+			<string>Sources/LegadoCore/Engine/XPathToCSS.swift</string>
+			<key>sourceTree</key>
+			<string>&lt;group&gt;</string>
+		</dict>
+		<key>CAA9CB4A5E1A991D6894AC1D</key>
+		<dict>
+			<key>isa</key>
+			<string>PBXBuildFile</string>
+			<key>fileRef</key>
+			<string>1ADA90710EF9AC0F0170D6CE</string>
 		</dict>
 	</dict>
 	<key>rootObject</key>

@@ -1,4 +1,5 @@
 import Foundation
+import SwiftSoup
 
 public class BookContentService {
     public static let shared = BookContentService()
@@ -61,6 +62,54 @@ public class BookContentService {
                 index: chapters.count
             )
             chapters.append(chapter)
+        }
+
+        // 目录分页：有的站点一页只给 40 章，靠 nextTocUrl 把后面的翻出来
+        if let nextRule = tocRule.nextTocUrl?.trimmingCharacters(in: .whitespacesAndNewlines), !nextRule.isEmpty {
+            var seenPages: Set<String> = [parsedReq.url.absoluteString]
+            var pending = BookContentService.extractURLs(from: analyzer, rule: nextRule, baseUrl: parsedReq.url.absoluteString)
+            var fetchedPages = 0
+            while let nextUrl = pending.first, fetchedPages < 60 {
+                pending.removeFirst()
+                guard !seenPages.contains(nextUrl) else { continue }
+                seenPages.insert(nextUrl)
+                fetchedPages += 1
+
+                guard let nextReq = NetworkClient.parseLegadoUrl(
+                    nextUrl,
+                    defaultHeader: headerToUse,
+                    baseUrl: source.bookSourceUrl
+                ) else { continue }
+                guard let nextResponse = try? await NetworkClient.shared.request(parsed: nextReq) else { continue }
+
+                let nextAnalyzer = RuleAnalyzer(
+                    content: nextResponse.bodyString,
+                    baseUrl: nextReq.url.absoluteString,
+                    bookSource: source,
+                    jsEngine: jsEngine
+                )
+                for item in nextAnalyzer.getElements(tocRule.chapterList) {
+                    let itemAnalyzer = RuleAnalyzer(
+                        content: item,
+                        baseUrl: nextReq.url.absoluteString,
+                        bookSource: source,
+                        jsEngine: jsEngine
+                    )
+                    let title = itemAnalyzer.getString(tocRule.chapterName)
+                    let url = itemAnalyzer.getString(tocRule.chapterUrl, isUrl: true)
+                    guard !title.isEmpty, !url.isEmpty else { continue }
+                    guard !chapters.contains(where: { $0.url == url }) else { continue }
+                    chapters.append(BookChapter(bookUrl: book.bookUrl, url: url, title: title, index: chapters.count))
+                }
+
+                let morePages = BookContentService.extractURLs(
+                    from: nextAnalyzer,
+                    rule: nextRule,
+                    baseUrl: nextReq.url.absoluteString
+                )
+                pending.append(contentsOf: morePages.filter { !seenPages.contains($0) })
+            }
+            print("[BookDetail] 📚 [\(source.bookSourceName)] 目录分页抓完，共 \(chapters.count) 章，翻了 \(fetchedPages) 页")
         }
 
         // 2. Parse Book Metadata (Author, Intro, Kind, WordCount)
@@ -145,6 +194,45 @@ public class BookContentService {
     public func fetchChapterList(book: Book, source: BookSource) async throws -> [BookChapter] {
         let result = try await fetchBookDetail(book: book, source: source)
         return result.chapters
+    }
+
+    /// 从规则里取出下一页目录地址，href、value、纯文本三种写法都收。
+    public static func extractURLs(from analyzer: RuleAnalyzer, rule: String, baseUrl: String) -> [String] {
+        func resolve(_ raw: String) -> String? {
+            let value = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !value.isEmpty else { return nil }
+            if value.hasPrefix("http") { return value }
+            return URL(string: value, relativeTo: URL(string: baseUrl))?.absoluteString
+        }
+
+        var results: [String] = []
+        for element in analyzer.getElements(rule) {
+            if let el = element as? Element {
+                var resolved: String?
+                for key in ["href", "value", "data-url"] {
+                    if let raw = try? el.attr(key), !raw.isEmpty, let url = resolve(raw) {
+                        resolved = url
+                        break
+                    }
+                }
+                if resolved == nil, let text = try? el.text(), let url = resolve(text) {
+                    resolved = url
+                }
+                if let resolved, !results.contains(resolved) {
+                    results.append(resolved)
+                }
+            } else if let text = element as? String, let url = resolve(text), !results.contains(url) {
+                results.append(url)
+            }
+        }
+
+        if results.isEmpty {
+            let single = analyzer.getString(rule)
+            if let url = resolve(single), !results.contains(url) {
+                results.append(url)
+            }
+        }
+        return results
     }
 
     /// Fetches and cleans chapter text content

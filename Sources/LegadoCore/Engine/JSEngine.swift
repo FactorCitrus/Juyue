@@ -1,5 +1,6 @@
 import Foundation
 import JavaScriptCore
+import SwiftSoup
 
 @objc public protocol JavaShimProtocol: JSExport {
     func ajax(_ url: String) -> String
@@ -263,7 +264,7 @@ public class JSEngine {
     /// Evaluates a JavaScript snippet with optional `result` value
     public func eval(script: String, result: Any? = nil) -> Any? {
         if let result = result {
-            context.setObject(result, forKeyedSubscript: "result" as NSString)
+            context.setObject(JSEngine.jsSafeValue(result), forKeyedSubscript: "result" as NSString)
         }
         let val = context.evaluateScript(script)
         if val?.isUndefined == true || val?.isNull == true {
@@ -290,7 +291,7 @@ public class JSEngine {
     /// Evaluates template strings containing `{{ ... }}`
     public func renderTemplate(_ text: String, variables: [String: Any] = [:]) -> String {
         for (k, v) in variables {
-            context.setObject(v, forKeyedSubscript: k as NSString)
+            context.setObject(JSEngine.jsSafeValue(v), forKeyedSubscript: k as NSString)
         }
 
         var result = text
@@ -313,5 +314,33 @@ public class JSEngine {
         }
 
         return result
+    }
+
+    /// JavaScriptCore can only bridge Objective-C classes. Handing it a Swift-only
+    /// class (e.g. SwiftSoup.Element) aborts the process inside `classInfoForClass:`,
+    /// so every value crossing into JS is converted here first.
+    static func jsSafeValue(_ value: Any) -> Any {
+        switch value {
+        case let js as JSValue:
+            return js
+        case let element as Element:
+            return (try? element.outerHtml()) ?? ""
+        case let elements as Elements:
+            return elements.array().map { (try? $0.outerHtml()) ?? "" }
+        case let string as String:
+            return string
+        case let number as NSNumber:
+            return number
+        case is NSNull:
+            return NSNull()
+        case let array as [Any]:
+            return array.map { jsSafeValue($0) }
+        case let dict as [String: Any]:
+            var out: [String: Any] = [:]
+            for (k, v) in dict { out[k] = jsSafeValue(v) }
+            return out
+        default:
+            return String(describing: value)
+        }
     }
 }

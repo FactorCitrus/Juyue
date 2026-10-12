@@ -293,7 +293,17 @@ public class RuleAnalyzer {
             }
 
             for step in steps {
-                if case .css(let selector) = step.type {
+                var selector: String?
+                switch step.type {
+                case .css(let rawSelector):
+                    selector = rawSelector
+                case .xpath(let rawXPath):
+                    // 引擎只有 CSS，能翻译的 XPath 先转成 CSS，翻不动的保持返回空
+                    selector = XPathToCSS.css(from: rawXPath)
+                default:
+                    selector = nil
+                }
+                if let selector {
                     var next: [Element] = []
                     for el in currentElements {
                         next.append(contentsOf: selectElements(from: el, selector: selector))
