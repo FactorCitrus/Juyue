@@ -147,7 +147,8 @@ public struct ReaderView: View {
 
                 // 1. Reading Canvas with Permanent Fixed Bottom Info Bar
                 VStack(spacing: 0) {
-                    if readerConfig.headerEnabled {
+                    // 仿真翻页时页眉页脚画在每一页里，跟着卷页一起动
+                    if readerConfig.headerEnabled, readerConfig.pageMode != .simulation {
                         statusBar(left: readerConfig.headerLeft, center: readerConfig.headerCenter, right: readerConfig.headerRight)
                     }
 
@@ -228,7 +229,7 @@ public struct ReaderView: View {
                     }
 
                     // Fixed Bottom Information Bar (Apple Books Style)
-                    if readerConfig.footerEnabled {
+                    if readerConfig.footerEnabled, readerConfig.pageMode != .simulation {
                         statusBar(left: readerConfig.footerLeft, center: readerConfig.footerCenter, right: readerConfig.footerRight)
                     }
                 }
@@ -589,6 +590,15 @@ public struct ReaderView: View {
                 horizontalPadding: readerConfig.horizontalPadding,
                 verticalPadding: readerConfig.verticalPadding,
                 titleAlignment: readerConfig.titleAlignment,
+                showHeader: readerConfig.headerEnabled,
+                showFooter: readerConfig.footerEnabled,
+                barDivider: readerConfig.barDivider,
+                headerSlots: [readerConfig.headerLeft, readerConfig.headerCenter, readerConfig.headerRight],
+                footerSlots: [readerConfig.footerLeft, readerConfig.footerCenter, readerConfig.footerRight],
+                bookName: activeBook.name,
+                chapterTitleText: (!chapters.isEmpty && currentChapterIndex < chapters.count) ? chapters[currentChapterIndex].title : "",
+                chapterIndex: currentChapterIndex,
+                chapterCount: chapters.count,
                 startIndex: currentPageIndex,
                 onIndexChange: { newIndex in
                     currentPageIndex = newIndex

@@ -22,6 +22,16 @@ public struct PageCurlPager: UIViewControllerRepresentable {
     public let horizontalPadding: CGFloat
     public let verticalPadding: CGFloat
     public let titleAlignment: ReaderTitleAlignment
+    /// 页眉页脚：仿真模式下要画在每一页里，跟着卷页一起动
+    public let showHeader: Bool
+    public let showFooter: Bool
+    public let barDivider: Bool
+    public let headerSlots: [ReaderBarContent]
+    public let footerSlots: [ReaderBarContent]
+    public let bookName: String
+    public let chapterTitleText: String
+    public let chapterIndex: Int
+    public let chapterCount: Int
     public let startIndex: Int
     public let onIndexChange: (Int) -> Void
     public let onReachEnd: () -> Void
@@ -45,6 +55,15 @@ public struct PageCurlPager: UIViewControllerRepresentable {
         horizontalPadding: CGFloat,
         verticalPadding: CGFloat,
         titleAlignment: ReaderTitleAlignment,
+        showHeader: Bool,
+        showFooter: Bool,
+        barDivider: Bool,
+        headerSlots: [ReaderBarContent],
+        footerSlots: [ReaderBarContent],
+        bookName: String,
+        chapterTitleText: String,
+        chapterIndex: Int,
+        chapterCount: Int,
         startIndex: Int,
         onIndexChange: @escaping (Int) -> Void,
         onReachEnd: @escaping () -> Void,
@@ -67,6 +86,15 @@ public struct PageCurlPager: UIViewControllerRepresentable {
         self.horizontalPadding = horizontalPadding
         self.verticalPadding = verticalPadding
         self.titleAlignment = titleAlignment
+        self.showHeader = showHeader
+        self.showFooter = showFooter
+        self.barDivider = barDivider
+        self.headerSlots = headerSlots
+        self.footerSlots = footerSlots
+        self.bookName = bookName
+        self.chapterTitleText = chapterTitleText
+        self.chapterIndex = chapterIndex
+        self.chapterCount = chapterCount
         self.startIndex = startIndex
         self.onIndexChange = onIndexChange
         self.onReachEnd = onReachEnd
@@ -138,7 +166,19 @@ public struct PageCurlPager: UIViewControllerRepresentable {
                 backgroundColor: parent.backgroundColor,
                 horizontalPadding: parent.horizontalPadding,
                 verticalPadding: parent.verticalPadding,
-                titleAlignment: parent.titleAlignment
+                titleAlignment: parent.titleAlignment,
+                showHeader: parent.showHeader,
+                showFooter: parent.showFooter,
+                barDivider: parent.barDivider,
+                headerSlots: parent.headerSlots,
+                footerSlots: parent.footerSlots,
+                bookName: parent.bookName,
+                chapterTitleText: parent.chapterTitleText,
+                chapterIndex: parent.chapterIndex,
+                chapterCount: parent.chapterCount
+                ,
+                pageIndex: index,
+                pageCount: parent.pages.count
             ))
             host.view.backgroundColor = UIColor(parent.backgroundColor)
             host.view.tag = index
@@ -248,11 +288,90 @@ struct PageCurlContent: View {
     let horizontalPadding: CGFloat
     let verticalPadding: CGFloat
     let titleAlignment: ReaderTitleAlignment
+    let showHeader: Bool
+    let showFooter: Bool
+    let barDivider: Bool
+    let headerSlots: [ReaderBarContent]
+    let footerSlots: [ReaderBarContent]
+    let bookName: String
+    let chapterTitleText: String
+    let chapterIndex: Int
+    let chapterCount: Int
+    let pageIndex: Int
+    let pageCount: Int
+
+    /// 页眉页脚每栏要显示的文字
+    private func barText(_ content: ReaderBarContent, pageIndex: Int, pageCount: Int) -> String {
+        switch content {
+        case .none:
+            return ""
+        case .chapterTitle:
+            return chapterTitleText
+        case .bookName:
+            return bookName
+        case .progress:
+            guard chapterCount > 0 else { return "" }
+            let percent = Double(chapterIndex + 1) / Double(chapterCount) * 100
+            return String(format: "%.1f%%", percent)
+        case .pageInfo:
+            if pageCount > 0 {
+                return "\(pageIndex + 1)/\(pageCount)"
+            }
+            return chapterCount > 0 ? "\(chapterIndex + 1)/\(chapterCount)" : ""
+        case .time:
+            let formatter = DateFormatter()
+            formatter.dateFormat = "HH:mm"
+            return formatter.string(from: Date())
+        }
+    }
+
+    @ViewBuilder
+    private func pageBar(_ slots: [ReaderBarContent], pageIndex: Int, pageCount: Int) -> some View {
+        VStack(spacing: 0) {
+            if barDivider {
+                Rectangle()
+                    .fill(textColor.opacity(0.12))
+                    .frame(height: 0.5)
+            }
+            HStack(spacing: 8) {
+                ForEach(Array(slots.enumerated()), id: \.offset) { index, slot in
+                    Text(barText(slot, pageIndex: pageIndex, pageCount: pageCount))
+                        .font(.system(size: 11))
+                        .foregroundColor(textColor.opacity(0.55))
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                        .frame(maxWidth: .infinity,
+                               alignment: index == 0 ? .leading : (index == 1 ? .center : .trailing))
+                }
+            }
+            .padding(.horizontal, 16)
+            .frame(height: 18)
+        }
+        .frame(height: 19)
+        .background(backgroundColor)
+    }
 
     var body: some View {
         GeometryReader { geo in
             let usableWidth = max(200, geo.size.width - horizontalPadding * 2)
             VStack(alignment: .leading, spacing: 0) {
+                if showHeader, headerSlots.count == 3 {
+                    pageBar(headerSlots, pageIndex: pageIndex, pageCount: pageCount)
+                }
+                contentBody(usableWidth: usableWidth)
+                Spacer(minLength: 0)
+                if showFooter, footerSlots.count == 3 {
+                    pageBar(footerSlots, pageIndex: pageIndex, pageCount: pageCount)
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        }
+        .background(backgroundColor)
+    }
+
+    @ViewBuilder
+    private func contentBody(usableWidth: CGFloat) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
                 if let chapterTitle, titleAlignment != .hidden {
                     Text(chapterTitle)
                         .font(.system(size: fontSize + 3, weight: .bold))
@@ -291,14 +410,10 @@ struct PageCurlContent: View {
                     .frame(width: usableWidth, height: contentHeight, alignment: .topLeading)
                 }
 
-                Spacer(minLength: 0)
             }
             .padding(.horizontal, horizontalPadding)
             .padding(.top, verticalPadding)
             .padding(.bottom, verticalPadding)
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        }
-        .background(backgroundColor)
     }
 }
 #endif
