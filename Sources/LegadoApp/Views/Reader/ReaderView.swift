@@ -101,7 +101,7 @@ public struct ReaderView: View {
     public var body: some View {
         GeometryReader { outerGeo in
             ZStack {
-                readerConfig.theme.backgroundColor
+                readerConfig.backgroundColor
                     .ignoresSafeArea()
 
                 // 1. Reading Canvas with Permanent Fixed Bottom Info Bar
@@ -113,7 +113,7 @@ public struct ReaderView: View {
                                 ProgressView()
                                 Text("正在加载章节内容...")
                                     .font(.subheadline)
-                                    .foregroundColor(readerConfig.theme.textColor.opacity(0.7))
+                                    .foregroundColor(readerConfig.textColor.opacity(0.7))
                                 Spacer()
                             }
                         } else if let error = errorMessage {
@@ -153,6 +153,8 @@ public struct ReaderView: View {
                             ZStack {
                                 if readerConfig.pageMode == .scroll {
                                     infiniteScrollView
+                                } else if readerConfig.pageMode == .simulation {
+                                    simulationPageView
                                 } else {
                                     pageByPageView
                                 }
@@ -284,7 +286,7 @@ public struct ReaderView: View {
                                 // Chapter Title
                                 Text(loadedCh.chapter.title)
                                     .font(.system(size: readerConfig.fontSize + 4, weight: .bold))
-                                    .foregroundColor(readerConfig.theme.textColor)
+                                    .foregroundColor(readerConfig.textColor)
                                     .padding(.horizontal, 20)
                                     .padding(.top, 20)
                                     .padding(.bottom, 10)
@@ -321,7 +323,7 @@ public struct ReaderView: View {
                                         Text(block.text)
                                             .font(.system(size: readerConfig.fontSize))
                                             .lineSpacing(readerConfig.lineSpacing)
-                                            .foregroundColor(readerConfig.theme.textColor)
+                                            .foregroundColor(readerConfig.textColor)
                                             .frame(maxWidth: .infinity, alignment: .leading)
                                             .padding(.horizontal, 20)
                                             .padding(.vertical, readerConfig.lineSpacing / 3)
@@ -478,6 +480,58 @@ public struct ReaderView: View {
         }
     }
 
+    // MARK: - Mode 3: Simulation (仿真翻页，系统卷页效果)
+    @ViewBuilder
+    private var simulationPageView: some View {
+        #if os(iOS)
+        let pages = currentLoadedChapter?.pages ?? []
+        if pages.isEmpty {
+            VStack {
+                Spacer()
+                ProgressView()
+                Spacer()
+            }
+        } else {
+            PageCurlPager(
+                pages: pages,
+                chapterTitle: currentLoadedChapter?.chapter.title,
+                fontSize: readerConfig.fontSize,
+                lineSpacing: readerConfig.lineSpacing,
+                letterSpacing: readerConfig.letterSpacing,
+                paragraphSpacing: readerConfig.paragraphSpacing,
+                firstLineIndent: readerConfig.firstLineIndent,
+                bold: readerConfig.boldText,
+                textColor: readerConfig.textColor,
+                backgroundColor: readerConfig.backgroundColor,
+                horizontalPadding: readerConfig.horizontalPadding,
+                startIndex: currentPageIndex,
+                onIndexChange: { newIndex in
+                    currentPageIndex = newIndex
+                    saveCurrentProgress()
+                },
+                onReachEnd: {
+                    if currentChapterIndex < chapters.count - 1 {
+                        jumpToChapter(currentChapterIndex + 1)
+                    }
+                },
+                onReachStart: {
+                    if currentChapterIndex > 0 {
+                        jumpToChapter(currentChapterIndex - 1, toEnd: true)
+                    }
+                },
+                onTapCenter: {
+                    withAnimation(.easeInOut(duration: 0.2)) {
+                        showControls.toggle()
+                    }
+                }
+            )
+            .ignoresSafeArea(edges: .bottom)
+        }
+        #else
+        pageByPageView
+        #endif
+    }
+
     // MARK: - Mode 2: Page by Page (左右翻页)
     private var pageByPageView: some View {
         GeometryReader { geo in
@@ -492,14 +546,14 @@ public struct ReaderView: View {
                     }
                 } else {
                     let pageBlocks = pages[currentPageIndex]
-                    let usableWidth = max(200, readerContainerSize.width - 48)
+                    let usableWidth = max(200, readerContainerSize.width - readerConfig.horizontalPadding * 2)
 
                     VStack(alignment: .leading, spacing: 0) {
                         // If it's page 0, display Chapter Title at top
                         if currentPageIndex == 0, let cur = currentLoadedChapter {
                             Text(cur.chapter.title)
                                 .font(.system(size: readerConfig.fontSize + 3, weight: .bold))
-                                .foregroundColor(readerConfig.theme.textColor)
+                                .foregroundColor(readerConfig.textColor)
                                 .padding(.bottom, 8)
                                 .fixedSize(horizontal: false, vertical: true)
                         }
@@ -511,23 +565,29 @@ public struct ReaderView: View {
                             let lines = pageBlocks.map { $0.text }
                             let isParagraphEnd = pageBlocks.map { $0.imageUrl == "p_end" }
                             let effectiveLineHeight = readerConfig.fontSize * 1.25 + readerConfig.lineSpacing
+                            let paragraphCount = CGFloat(isParagraphEnd.filter { $0 }.count)
                             let pageContentHeight = CGFloat(lines.count) * effectiveLineHeight
+                                + paragraphCount * readerConfig.paragraphSpacing
 
                             CoreTextPageView(
                                 lines: lines,
                                 isParagraphEnd: isParagraphEnd,
                                 fontSize: readerConfig.fontSize,
                                 lineSpacing: readerConfig.lineSpacing,
-                                textColor: readerConfig.theme.textColor,
+                                textColor: readerConfig.textColor,
                                 width: usableWidth,
-                                height: pageContentHeight
+                                height: pageContentHeight,
+                                letterSpacing: readerConfig.letterSpacing,
+                                paragraphSpacing: readerConfig.paragraphSpacing,
+                                firstLineIndent: readerConfig.firstLineIndent,
+                                bold: readerConfig.boldText
                             )
                             .frame(width: usableWidth, height: pageContentHeight, alignment: .topLeading)
                         }
 
                         Spacer(minLength: 0)
                     }
-                    .padding(.horizontal, 24)
+                    .padding(.horizontal, readerConfig.horizontalPadding)
                     .padding(.top, 24)
                     .padding(.bottom, 24)
                     .id("page_\(currentChapterIndex)_\(currentPageIndex)")
@@ -673,7 +733,7 @@ public struct ReaderView: View {
                     Text("书架")
                         .font(.system(size: 16))
                 }
-                .foregroundColor(readerConfig.theme.textColor)
+                .foregroundColor(readerConfig.textColor)
                 .contentShape(Rectangle())
             }
 
@@ -682,7 +742,7 @@ public struct ReaderView: View {
             // Book Title in Center (No reading progress/chapter info)
             Text(activeBook.name)
                 .font(.system(size: 15, weight: .semibold))
-                .foregroundColor(readerConfig.theme.textColor)
+                .foregroundColor(readerConfig.textColor)
                 .lineLimit(1)
                 .frame(maxWidth: 240)
 
@@ -695,14 +755,14 @@ public struct ReaderView: View {
         .padding(.horizontal, 16)
         .padding(.vertical, 10)
         .background(
-            readerConfig.theme.backgroundColor
+            readerConfig.backgroundColor
                 .opacity(0.97)
                 .shadow(color: Color.black.opacity(0.08), radius: 8, x: 0, y: 3)
                 .ignoresSafeArea(edges: .top)
         )
         .overlay(
             Rectangle()
-                .fill(readerConfig.theme.textColor.opacity(0.12))
+                .fill(readerConfig.textColor.opacity(0.12))
                 .frame(height: 0.5),
             alignment: .bottom
         )
@@ -713,7 +773,7 @@ public struct ReaderView: View {
             chapterNavigationRow
 
             Rectangle()
-                .fill(readerConfig.theme.textColor.opacity(0.12))
+                .fill(readerConfig.textColor.opacity(0.12))
                 .frame(height: 0.5)
 
             bottomActionRow
@@ -722,7 +782,7 @@ public struct ReaderView: View {
         .padding(.top, 14)
         .padding(.bottom, 10)
         .background(
-            readerConfig.theme.backgroundColor
+            readerConfig.backgroundColor
                 .opacity(0.97)
                 .shadow(color: Color.black.opacity(0.12), radius: 10, x: 0, y: -4)
                 .ignoresSafeArea(edges: .bottom)
@@ -736,13 +796,13 @@ public struct ReaderView: View {
             if !chapters.isEmpty && currentChapterIndex < chapters.count {
                 Text(chapters[currentChapterIndex].title)
                     .font(.system(size: 11, weight: .regular))
-                    .foregroundColor(readerConfig.theme.textColor.opacity(0.55))
+                    .foregroundColor(readerConfig.textColor.opacity(0.55))
                     .lineLimit(1)
                     .truncationMode(.tail)
             } else {
                 Text(activeBook.name)
                     .font(.system(size: 11, weight: .regular))
-                    .foregroundColor(readerConfig.theme.textColor.opacity(0.55))
+                    .foregroundColor(readerConfig.textColor.opacity(0.55))
                     .lineLimit(1)
             }
 
@@ -751,14 +811,14 @@ public struct ReaderView: View {
             // Reading Percentage / Page Info
             if !chapters.isEmpty {
                 let progressPercent = Double(currentChapterIndex + 1) / Double(chapters.count) * 100.0
-                if readerConfig.pageMode == .pageByPage, let cur = currentLoadedChapter, !cur.pages.isEmpty {
+                if readerConfig.pageMode.isPaged, let cur = currentLoadedChapter, !cur.pages.isEmpty {
                     Text("\(currentPageIndex + 1)/\(cur.pages.count) · \(String(format: "%.1f%%", progressPercent))")
                         .font(.system(size: 11, weight: .medium, design: .monospaced))
-                        .foregroundColor(readerConfig.theme.textColor.opacity(0.55))
+                        .foregroundColor(readerConfig.textColor.opacity(0.55))
                 } else {
                     Text("\(currentChapterIndex + 1)/\(chapters.count) (\(String(format: "%.1f%%", progressPercent)))")
                         .font(.system(size: 11, weight: .medium, design: .monospaced))
-                        .foregroundColor(readerConfig.theme.textColor.opacity(0.55))
+                        .foregroundColor(readerConfig.textColor.opacity(0.55))
                 }
             }
         }
@@ -766,7 +826,7 @@ public struct ReaderView: View {
         .padding(.top, 2)
         .padding(.bottom, 6)
         .frame(height: 26)
-        .background(readerConfig.theme.backgroundColor)
+        .background(readerConfig.backgroundColor)
         .contentShape(Rectangle())
         .onTapGesture {
             withAnimation(.easeInOut(duration: 0.2)) {
@@ -785,7 +845,7 @@ public struct ReaderView: View {
                     Text("上一章")
                 }
                 .font(.system(size: 13, weight: .medium))
-                .foregroundColor(currentChapterIndex > 0 ? readerConfig.theme.textColor : readerConfig.theme.textColor.opacity(0.3))
+                .foregroundColor(currentChapterIndex > 0 ? readerConfig.textColor : readerConfig.textColor.opacity(0.3))
             }
             .disabled(currentChapterIndex <= 0)
 
@@ -816,7 +876,7 @@ public struct ReaderView: View {
                     Image(systemName: "chevron.right")
                 }
                 .font(.system(size: 13, weight: .medium))
-                .foregroundColor(currentChapterIndex < chapters.count - 1 ? readerConfig.theme.textColor : readerConfig.theme.textColor.opacity(0.3))
+                .foregroundColor(currentChapterIndex < chapters.count - 1 ? readerConfig.textColor : readerConfig.textColor.opacity(0.3))
             }
             .disabled(currentChapterIndex >= chapters.count - 1)
         }
@@ -881,7 +941,7 @@ public struct ReaderView: View {
     private func handlePageModeChange(to newMode: PageMode) {
         guard let cur = currentLoadedChapter else { return }
 
-        if newMode == .pageByPage {
+        if newMode.isPaged {
             // 1. Switching from Continuous Scroll to Page-by-Page:
             var charPos = 0
             for block in cur.blocks {
@@ -944,7 +1004,7 @@ public struct ReaderView: View {
                     Text("目录")
                         .font(.system(size: 11, weight: .medium))
                 }
-                .foregroundColor(readerConfig.theme.textColor)
+                .foregroundColor(readerConfig.textColor)
                 .frame(maxWidth: .infinity)
             }
 
@@ -956,7 +1016,7 @@ public struct ReaderView: View {
                     Text("搜索")
                         .font(.system(size: 11, weight: .medium))
                 }
-                .foregroundColor(readerConfig.theme.textColor)
+                .foregroundColor(readerConfig.textColor)
                 .frame(maxWidth: .infinity)
             }
 
@@ -967,12 +1027,12 @@ public struct ReaderView: View {
                 VStack(spacing: 4) {
                     Image(systemName: audioService.isPlaying ? "pause.circle.fill" : (audioService.isPaused ? "play.circle.fill" : "headphones"))
                         .font(.system(size: 20))
-                        .foregroundColor(audioService.isPlaying ? .accentColor : readerConfig.theme.textColor)
+                        .foregroundColor(audioService.isPlaying ? .accentColor : readerConfig.textColor)
                     Text(audioService.isPlaying ? "暂停" : (audioService.isPaused ? "继续" : "听书"))
                         .font(.system(size: 11, weight: .medium))
-                        .foregroundColor(audioService.isPlaying ? .accentColor : readerConfig.theme.textColor)
+                        .foregroundColor(audioService.isPlaying ? .accentColor : readerConfig.textColor)
                 }
-                .foregroundColor(readerConfig.theme.textColor)
+                .foregroundColor(readerConfig.textColor)
                 .frame(maxWidth: .infinity)
             }
 
@@ -984,7 +1044,7 @@ public struct ReaderView: View {
                     Text("换源")
                         .font(.system(size: 11, weight: .medium))
                 }
-                .foregroundColor(readerConfig.theme.textColor)
+                .foregroundColor(readerConfig.textColor)
                 .frame(maxWidth: .infinity)
             }
 
@@ -996,7 +1056,7 @@ public struct ReaderView: View {
                     Text("界面")
                         .font(.system(size: 11, weight: .medium))
                 }
-                .foregroundColor(readerConfig.theme.textColor)
+                .foregroundColor(readerConfig.textColor)
                 .frame(maxWidth: .infinity)
             }
         }
@@ -1100,15 +1160,23 @@ public struct ReaderView: View {
     private var readingSettingsCard: some View {
         VStack(alignment: .leading, spacing: 14) {
             settingsHeader
-            pageModeRow
-            fontSizeRow
-            themeRow
+            ScrollView {
+                VStack(alignment: .leading, spacing: 14) {
+                    pageModeRow
+                    fontSizeRow
+                    typographySection
+                    themeRow
+                    colorSection
+                }
+                .padding(.bottom, 4)
+            }
+            .frame(maxHeight: 380)
         }
         .padding(.horizontal, 20)
         .padding(.top, 16)
         .padding(.bottom, 20)
         .background(
-            readerConfig.theme.backgroundColor
+            readerConfig.backgroundColor
                 .opacity(0.98)
                 .shadow(color: Color.black.opacity(0.2), radius: 16, x: 0, y: -6)
                 .ignoresSafeArea(edges: .bottom)
@@ -1116,7 +1184,7 @@ public struct ReaderView: View {
         .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
         .overlay(
             RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .stroke(readerConfig.theme.textColor.opacity(0.12), lineWidth: 0.5)
+                .stroke(readerConfig.textColor.opacity(0.12), lineWidth: 0.5)
         )
         .padding(.horizontal, 10)
         .padding(.bottom, 6)
@@ -1126,7 +1194,7 @@ public struct ReaderView: View {
         HStack {
             Text("阅读设置")
                 .font(.system(size: 15, weight: .bold))
-                .foregroundColor(readerConfig.theme.textColor)
+                .foregroundColor(readerConfig.textColor)
 
             Spacer()
 
@@ -1137,7 +1205,7 @@ public struct ReaderView: View {
             }) {
                 Image(systemName: "xmark.circle.fill")
                     .font(.system(size: 20))
-                    .foregroundColor(readerConfig.theme.textColor.opacity(0.6))
+                    .foregroundColor(readerConfig.textColor.opacity(0.6))
             }
             .buttonStyle(.plain)
         }
@@ -1147,7 +1215,7 @@ public struct ReaderView: View {
         HStack(spacing: 12) {
             Text("模式")
                 .font(.system(size: 13, weight: .medium))
-                .foregroundColor(readerConfig.theme.textColor.opacity(0.7))
+                .foregroundColor(readerConfig.textColor.opacity(0.7))
                 .frame(width: 36, alignment: .leading)
 
             Picker("阅读模式", selection: $readerConfig.pageMode) {
@@ -1159,16 +1227,107 @@ public struct ReaderView: View {
         }
     }
 
+    // MARK: 排版
+    private var typographySection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("排版")
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundColor(readerConfig.textColor.opacity(0.6))
+
+            settingSlider("字间距", value: $readerConfig.letterSpacing, range: 0...4, step: 0.5)
+            settingSlider("段间距", value: $readerConfig.paragraphSpacing, range: 0...30, step: 1)
+            settingSlider("左右页边距", value: $readerConfig.horizontalPadding, range: 8...48, step: 2)
+            settingSlider("首行缩进", value: $readerConfig.firstLineIndent, range: 0...4, step: 1, suffix: " 字")
+
+            Toggle(isOn: $readerConfig.boldText) {
+                Text("正文加粗")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundColor(readerConfig.textColor.opacity(0.7))
+            }
+            .toggleStyle(.switch)
+        }
+    }
+
+    // MARK: 自定义配色
+    private var colorSection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("配色")
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundColor(readerConfig.textColor.opacity(0.6))
+
+            Toggle(isOn: $readerConfig.useCustomColors) {
+                Text("自定义背景与文字颜色")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundColor(readerConfig.textColor.opacity(0.7))
+            }
+            .toggleStyle(.switch)
+
+            if readerConfig.useCustomColors {
+                ColorPicker("背景颜色", selection: customBackgroundBinding, supportsOpacity: false)
+                    .font(.system(size: 12))
+                ColorPicker("文字颜色", selection: customTextBinding, supportsOpacity: false)
+                    .font(.system(size: 12))
+
+                HStack(spacing: 8) {
+                    Text("预览")
+                        .font(.system(size: 12))
+                        .foregroundColor(readerConfig.textColor.opacity(0.6))
+                    Text("天地玄黄，宇宙洪荒。")
+                        .font(.system(size: readerConfig.fontSize))
+                        .foregroundColor(readerConfig.textColor)
+                        .padding(8)
+                        .background(readerConfig.backgroundColor)
+                        .cornerRadius(6)
+                }
+            }
+        }
+    }
+
+    private var customBackgroundBinding: Binding<Color> {
+        Binding(
+            get: { Color(hex: readerConfig.customBackgroundHex) ?? readerConfig.theme.backgroundColor },
+            set: { readerConfig.customBackgroundHex = $0.hexString ?? readerConfig.customBackgroundHex }
+        )
+    }
+
+    private var customTextBinding: Binding<Color> {
+        Binding(
+            get: { Color(hex: readerConfig.customTextHex) ?? readerConfig.theme.textColor },
+            set: { readerConfig.customTextHex = $0.hexString ?? readerConfig.customTextHex }
+        )
+    }
+
+    private func settingSlider(
+        _ title: String,
+        value: Binding<CGFloat>,
+        range: ClosedRange<CGFloat>,
+        step: CGFloat,
+        suffix: String = " pt"
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            HStack {
+                Text(title)
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundColor(readerConfig.textColor.opacity(0.7))
+                Spacer()
+                Text("\(Int(value.wrappedValue))\(suffix)")
+                    .font(.system(size: 11))
+                    .foregroundColor(readerConfig.textColor.opacity(0.5))
+            }
+            Slider(value: value, in: range, step: step)
+        }
+    }
+
     private var fontSizeRow: some View {
         HStack(spacing: 12) {
             Text("字号")
                 .font(.system(size: 13, weight: .medium))
-                .foregroundColor(readerConfig.theme.textColor.opacity(0.7))
+                .foregroundColor(readerConfig.textColor.opacity(0.7))
                 .frame(width: 36, alignment: .leading)
 
             Text("A-")
                 .font(.system(size: 13, weight: .semibold))
-                .foregroundColor(readerConfig.theme.textColor.opacity(0.8))
+                .foregroundColor(readerConfig.textColor.opacity(0.8))
 
             Slider(value: $readerConfig.fontSize, in: 12...32, step: 1)
                 .accentColor(.accentColor)
@@ -1178,11 +1337,11 @@ public struct ReaderView: View {
 
             Text("A+")
                 .font(.system(size: 16, weight: .bold))
-                .foregroundColor(readerConfig.theme.textColor.opacity(0.8))
+                .foregroundColor(readerConfig.textColor.opacity(0.8))
 
             Text("\(Int(readerConfig.fontSize)) pt")
                 .font(.system(size: 12, weight: .medium, design: .monospaced))
-                .foregroundColor(readerConfig.theme.textColor.opacity(0.7))
+                .foregroundColor(readerConfig.textColor.opacity(0.7))
                 .frame(width: 42, alignment: .trailing)
         }
     }
@@ -1191,7 +1350,7 @@ public struct ReaderView: View {
         HStack(spacing: 12) {
             Text("主题")
                 .font(.system(size: 13, weight: .medium))
-                .foregroundColor(readerConfig.theme.textColor.opacity(0.7))
+                .foregroundColor(readerConfig.textColor.opacity(0.7))
                 .frame(width: 36, alignment: .leading)
 
             HStack(spacing: 8) {
@@ -1215,7 +1374,7 @@ public struct ReaderView: View {
                     .frame(width: 12, height: 12)
                     .overlay(
                         Circle()
-                            .stroke(readerConfig.theme.textColor.opacity(0.25), lineWidth: 1)
+                            .stroke(readerConfig.textColor.opacity(0.25), lineWidth: 1)
                     )
                 Text(t.rawValue)
                     .font(.system(size: 11, weight: isSelected ? .semibold : .regular))
@@ -1226,7 +1385,7 @@ public struct ReaderView: View {
             .frame(maxWidth: .infinity)
             .background(
                 RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .fill(isSelected ? Color.accentColor.opacity(0.15) : readerConfig.theme.textColor.opacity(0.05))
+                    .fill(isSelected ? Color.accentColor.opacity(0.15) : readerConfig.textColor.opacity(0.05))
             )
             .overlay(
                 RoundedRectangle(cornerRadius: 8, style: .continuous)
@@ -1234,7 +1393,7 @@ public struct ReaderView: View {
             )
         }
         .buttonStyle(.plain)
-        .foregroundColor(isSelected ? .accentColor : readerConfig.theme.textColor)
+        .foregroundColor(isSelected ? .accentColor : readerConfig.textColor)
     }
 
     // MARK: - Data Loading Pipeline
@@ -1366,7 +1525,7 @@ public struct ReaderView: View {
 
                 // Restore position if durChapterPos is saved and opening the current chapter
                 if targetPageIndex == 0 && self.activeBook.durChapterPos > 0 && index == self.activeBook.durChapterIndex {
-                    if self.readerConfig.pageMode == .pageByPage {
+                    if self.readerConfig.pageMode.isPaged {
                         var accumulated = 0
                         var targetPage = 0
                         for (pIdx, page) in loaded.pages.enumerated() {
@@ -1549,7 +1708,7 @@ public struct ReaderView: View {
 
     private func currentChapterCharOffset() -> Int {
         guard let cur = currentLoadedChapter else { return 0 }
-        if readerConfig.pageMode == .pageByPage {
+        if readerConfig.pageMode.isPaged {
             var offset = 0
             let limit = min(currentPageIndex, cur.pages.count)
             for p in 0..<limit {
@@ -1960,6 +2119,10 @@ public struct CoreTextPageView: NSViewRepresentable {
     public let textColor: Color
     public let width: CGFloat
     public let height: CGFloat
+    public var letterSpacing: CGFloat = 0
+    public var paragraphSpacing: CGFloat = 0
+    public var firstLineIndent: CGFloat = 0
+    public var bold: Bool = false
 
     public func makeNSView(context: Context) -> CoreTextNSView {
         let view = CoreTextNSView()
@@ -1972,6 +2135,10 @@ public struct CoreTextPageView: NSViewRepresentable {
         nsView.isParagraphEnd = isParagraphEnd
         nsView.fontSize = fontSize
         nsView.lineSpacing = lineSpacing
+        nsView.letterSpacing = letterSpacing
+        nsView.paragraphSpacing = paragraphSpacing
+        nsView.firstLineIndent = firstLineIndent
+        nsView.bold = bold
         nsView.textColor = NSColor(textColor)
         nsView.containerWidth = width
         nsView.containerHeight = height
@@ -1984,6 +2151,10 @@ public class CoreTextNSView: NSView {
     public var isParagraphEnd: [Bool] = []
     public var fontSize: CGFloat = 18
     public var lineSpacing: CGFloat = 6
+    public var letterSpacing: CGFloat = 0
+    public var paragraphSpacing: CGFloat = 0
+    public var firstLineIndent: CGFloat = 0
+    public var bold: Bool = false
     public var textColor: NSColor = .textColor
     public var containerWidth: CGFloat = 340
     public var containerHeight: CGFloat = 600
@@ -1993,19 +2164,24 @@ public class CoreTextNSView: NSView {
     public override func draw(_ dirtyRect: NSRect) {
         guard let ctx = NSGraphicsContext.current?.cgContext, !lines.isEmpty else { return }
 
-        let ctFont = CTFontCreateWithName("PingFangSC-Regular" as CFString, fontSize, nil)
+        let fontName = bold ? "PingFangSC-Semibold" : "PingFangSC-Regular"
+        let ctFont = CTFontCreateWithName(fontName as CFString, fontSize, nil)
         let effectiveLineHeight = fontSize * 1.25 + lineSpacing
         let targetWidth = Double(max(100, containerWidth))
+        var paragraphOffset: CGFloat = 0
 
         for (index, lineText) in lines.enumerated() {
             guard !lineText.isEmpty else { continue }
+            let isParagraphStart = index == 0 || (index - 1 < isParagraphEnd.count && isParagraphEnd[index - 1])
+            let renderedText = isParagraphStart ? String(repeating: "　", count: Int(firstLineIndent.rounded())) + lineText : lineText
             let attrs: [CFString: Any] = [
                 kCTFontAttributeName: ctFont,
-                kCTForegroundColorAttributeName: textColor.cgColor
+                kCTForegroundColorAttributeName: textColor.cgColor,
+                kCTKernAttributeName: letterSpacing
             ]
-            guard let attrStr = CFAttributedStringCreate(nil, lineText as CFString, attrs as CFDictionary) else { continue }
+            guard let attrStr = CFAttributedStringCreate(nil, renderedText as CFString, attrs as CFDictionary) else { continue }
             let typesetter = CTTypesetterCreateWithAttributedString(attrStr)
-            let ctLine = CTTypesetterCreateLine(typesetter, CFRange(location: 0, length: lineText.count))
+            let ctLine = CTTypesetterCreateLine(typesetter, CFRange(location: 0, length: renderedText.count))
 
             let isEnd = (index < isParagraphEnd.count) ? isParagraphEnd[index] : false
             let finalLine: CTLine
@@ -2020,7 +2196,7 @@ public class CoreTextNSView: NSView {
             var leading: CGFloat = 0
             CTLineGetTypographicBounds(finalLine, &ascent, &descent, &leading)
 
-            let baselineY = CGFloat(index) * effectiveLineHeight + ascent
+            let baselineY = CGFloat(index) * effectiveLineHeight + ascent + paragraphOffset
 
             ctx.saveGState()
             ctx.textMatrix = .identity
@@ -2028,6 +2204,10 @@ public class CoreTextNSView: NSView {
             ctx.scaleBy(x: 1.0, y: -1.0)
             CTLineDraw(finalLine, ctx)
             ctx.restoreGState()
+
+            if isEnd {
+                paragraphOffset += paragraphSpacing
+            }
         }
     }
 }
@@ -2044,6 +2224,10 @@ public struct CoreTextPageView: UIViewRepresentable {
     public let textColor: Color
     public let width: CGFloat
     public let height: CGFloat
+    public var letterSpacing: CGFloat = 0
+    public var paragraphSpacing: CGFloat = 0
+    public var firstLineIndent: CGFloat = 0
+    public var bold: Bool = false
 
     public func makeUIView(context: Context) -> CoreTextUIView {
         let view = CoreTextUIView()
@@ -2056,6 +2240,10 @@ public struct CoreTextPageView: UIViewRepresentable {
         uiView.isParagraphEnd = isParagraphEnd
         uiView.fontSize = fontSize
         uiView.lineSpacing = lineSpacing
+        uiView.letterSpacing = letterSpacing
+        uiView.paragraphSpacing = paragraphSpacing
+        uiView.firstLineIndent = firstLineIndent
+        uiView.bold = bold
         uiView.textColor = UIColor(textColor)
         uiView.containerWidth = width
         uiView.containerHeight = height
@@ -2069,6 +2257,10 @@ public class CoreTextUIView: UIView {
     public var isParagraphEnd: [Bool] = []
     public var fontSize: CGFloat = 18
     public var lineSpacing: CGFloat = 6
+    public var letterSpacing: CGFloat = 0
+    public var paragraphSpacing: CGFloat = 0
+    public var firstLineIndent: CGFloat = 0
+    public var bold: Bool = false
     public var textColor: UIColor = .label
     public var containerWidth: CGFloat = 340
     public var containerHeight: CGFloat = 600
@@ -2076,19 +2268,24 @@ public class CoreTextUIView: UIView {
     public override func draw(_ rect: CGRect) {
         guard let ctx = UIGraphicsGetCurrentContext(), !lines.isEmpty else { return }
 
-        let ctFont = CTFontCreateWithName("PingFangSC-Regular" as CFString, fontSize, nil)
+        let fontName = bold ? "PingFangSC-Semibold" : "PingFangSC-Regular"
+        let ctFont = CTFontCreateWithName(fontName as CFString, fontSize, nil)
         let effectiveLineHeight = fontSize * 1.25 + lineSpacing
         let targetWidth = Double(max(100, containerWidth))
+        var paragraphOffset: CGFloat = 0
 
         for (index, lineText) in lines.enumerated() {
             guard !lineText.isEmpty else { continue }
+            let isParagraphStart = index == 0 || (index - 1 < isParagraphEnd.count && isParagraphEnd[index - 1])
+            let renderedText = isParagraphStart ? String(repeating: "　", count: Int(firstLineIndent.rounded())) + lineText : lineText
             let attrs: [CFString: Any] = [
                 kCTFontAttributeName: ctFont,
-                kCTForegroundColorAttributeName: textColor.cgColor
+                kCTForegroundColorAttributeName: textColor.cgColor,
+                kCTKernAttributeName: letterSpacing
             ]
-            guard let attrStr = CFAttributedStringCreate(nil, lineText as CFString, attrs as CFDictionary) else { continue }
+            guard let attrStr = CFAttributedStringCreate(nil, renderedText as CFString, attrs as CFDictionary) else { continue }
             let typesetter = CTTypesetterCreateWithAttributedString(attrStr)
-            let ctLine = CTTypesetterCreateLine(typesetter, CFRange(location: 0, length: lineText.count))
+            let ctLine = CTTypesetterCreateLine(typesetter, CFRange(location: 0, length: renderedText.count))
 
             let isEnd = (index < isParagraphEnd.count) ? isParagraphEnd[index] : false
             let finalLine: CTLine
@@ -2103,7 +2300,7 @@ public class CoreTextUIView: UIView {
             var leading: CGFloat = 0
             CTLineGetTypographicBounds(finalLine, &ascent, &descent, &leading)
 
-            let baselineY = CGFloat(index) * effectiveLineHeight + ascent
+            let baselineY = CGFloat(index) * effectiveLineHeight + ascent + paragraphOffset
 
             ctx.saveGState()
             ctx.textMatrix = .identity
@@ -2111,6 +2308,10 @@ public class CoreTextUIView: UIView {
             ctx.scaleBy(x: 1.0, y: -1.0)
             CTLineDraw(finalLine, ctx)
             ctx.restoreGState()
+
+            if isEnd {
+                paragraphOffset += paragraphSpacing
+            }
         }
     }
 }

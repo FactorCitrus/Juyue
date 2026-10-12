@@ -30,29 +30,115 @@ public enum ReaderTheme: String, CaseIterable, Identifiable {
 public enum PageMode: String, CaseIterable, Identifiable {
     case scroll = "连续滚动"
     case pageByPage = "左右翻页"
+    case simulation = "仿真翻页"
 
     public var id: String { rawValue }
+
+    /// 按页翻的模式（左右、仿真）共用分页逻辑。
+    public var isPaged: Bool { self != .scroll }
 }
 
 public class ReaderConfig: ObservableObject {
     public static let shared = ReaderConfig()
 
-    @Published public var fontSize: CGFloat = 18.0
-    @Published public var lineSpacing: CGFloat = 8.0
-    @Published public var theme: ReaderTheme = .parchment
+    private static let defaults = UserDefaults.standard
 
-    @Published public var pageMode: PageMode {
-        didSet {
-            UserDefaults.standard.set(pageMode.rawValue, forKey: "reader_page_mode")
+    // MARK: - 字号与行距
+    @Published public var fontSize: CGFloat = 18.0 { didSet { persist(fontSize, "reader_font_size") } }
+    @Published public var lineSpacing: CGFloat = 8.0 { didSet { persist(lineSpacing, "reader_line_spacing") } }
+
+    // MARK: - 排版
+    /// 字间距
+    @Published public var letterSpacing: CGFloat = 0.5 { didSet { persist(letterSpacing, "reader_letter_spacing") } }
+    /// 段间距
+    @Published public var paragraphSpacing: CGFloat = 12.0 { didSet { persist(paragraphSpacing, "reader_paragraph_spacing") } }
+    /// 左右页边距
+    @Published public var horizontalPadding: CGFloat = 24.0 { didSet { persist(horizontalPadding, "reader_horizontal_padding") } }
+    /// 首行缩进，按字数算
+    @Published public var firstLineIndent: CGFloat = 0 { didSet { persist(firstLineIndent, "reader_first_line_indent") } }
+    /// 正文加粗
+    @Published public var boldText: Bool = false { didSet { Self.defaults.set(boldText, forKey: "reader_bold_text") } }
+
+    // MARK: - 配色
+    @Published public var theme: ReaderTheme = .parchment { didSet { Self.defaults.set(theme.rawValue, forKey: "reader_theme") } }
+    @Published public var useCustomColors: Bool = false { didSet { Self.defaults.set(useCustomColors, forKey: "reader_custom_colors") } }
+    @Published public var customBackgroundHex: String = "#F2ECE0" { didSet { Self.defaults.set(customBackgroundHex, forKey: "reader_bg_hex") } }
+    @Published public var customTextHex: String = "#2E2721" { didSet { Self.defaults.set(customTextHex, forKey: "reader_text_hex") } }
+
+    // MARK: - 翻页
+    @Published public var pageMode: PageMode = .scroll { didSet { Self.defaults.set(pageMode.rawValue, forKey: "reader_page_mode") } }
+
+    /// 真正用到的背景色：开了自定义就用自定义，否则用主题色。
+    public var backgroundColor: Color {
+        guard useCustomColors, let custom = Color(hex: customBackgroundHex) else {
+            return theme.backgroundColor
         }
+        return custom
+    }
+
+    public var textColor: Color {
+        guard useCustomColors, let custom = Color(hex: customTextHex) else {
+            return theme.textColor
+        }
+        return custom
     }
 
     public init() {
-        if let savedMode = UserDefaults.standard.string(forKey: "reader_page_mode"),
-           let mode = PageMode(rawValue: savedMode) {
-            self.pageMode = mode
-        } else {
-            self.pageMode = .scroll
+        let d = Self.defaults
+        if let savedMode = d.string(forKey: "reader_page_mode"), let mode = PageMode(rawValue: savedMode) {
+            pageMode = mode
         }
+        if let savedTheme = d.string(forKey: "reader_theme"), let t = ReaderTheme(rawValue: savedTheme) {
+            theme = t
+        }
+        if d.object(forKey: "reader_font_size") != nil { fontSize = CGFloat(d.double(forKey: "reader_font_size")) }
+        if d.object(forKey: "reader_line_spacing") != nil { lineSpacing = CGFloat(d.double(forKey: "reader_line_spacing")) }
+        if d.object(forKey: "reader_letter_spacing") != nil { letterSpacing = CGFloat(d.double(forKey: "reader_letter_spacing")) }
+        if d.object(forKey: "reader_paragraph_spacing") != nil { paragraphSpacing = CGFloat(d.double(forKey: "reader_paragraph_spacing")) }
+        if d.object(forKey: "reader_horizontal_padding") != nil { horizontalPadding = CGFloat(d.double(forKey: "reader_horizontal_padding")) }
+        if d.object(forKey: "reader_first_line_indent") != nil { firstLineIndent = CGFloat(d.double(forKey: "reader_first_line_indent")) }
+        if d.object(forKey: "reader_bold_text") != nil { boldText = d.bool(forKey: "reader_bold_text") }
+        if d.object(forKey: "reader_custom_colors") != nil { useCustomColors = d.bool(forKey: "reader_custom_colors") }
+        if let hex = d.string(forKey: "reader_bg_hex") { customBackgroundHex = hex }
+        if let hex = d.string(forKey: "reader_text_hex") { customTextHex = hex }
+    }
+
+    private func persist(_ value: CGFloat, _ key: String) {
+        Self.defaults.set(Double(value), forKey: key)
+    }
+}
+
+public extension Color {
+    /// 支持 #RRGGBB / RRGGBB / #RGB
+    init?(hex: String) {
+        var value = hex.trimmingCharacters(in: .whitespacesAndNewlines)
+        if value.hasPrefix("#") { value.removeFirst() }
+        if value.count == 3 {
+            value = value.map { "\($0)\($0)" }.joined()
+        }
+        guard value.count == 6, let number = UInt32(value, radix: 16) else { return nil }
+        self.init(
+            red: Double((number & 0xFF0000) >> 16) / 255.0,
+            green: Double((number & 0x00FF00) >> 8) / 255.0,
+            blue: Double(number & 0x0000FF) / 255.0
+        )
+    }
+
+    /// 转回 #RRGGBB，用于把取色器的结果存进 UserDefaults
+    var hexString: String? {
+        #if os(iOS)
+        let ui = UIColor(self)
+        var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
+        guard ui.getRed(&r, green: &g, blue: &b, alpha: &a) else { return nil }
+        #else
+        guard let ns = NSColor(self).usingColorSpace(.deviceRGB) else { return nil }
+        let r = ns.redComponent, g = ns.greenComponent, b = ns.blueComponent
+        #endif
+        return String(
+            format: "#%02X%02X%02X",
+            Int((r * 255).rounded()),
+            Int((g * 255).rounded()),
+            Int((b * 255).rounded())
+        )
     }
 }
