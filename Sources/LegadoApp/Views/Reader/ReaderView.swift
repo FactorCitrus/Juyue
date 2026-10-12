@@ -688,8 +688,18 @@ public struct ReaderView: View {
                             // 页面最后一行是段尾的话，它后面的段间距是看不见的空白，不该占高度
                             let trailingSpacing = isParagraphEnd.last == true ? 1 : 0
                             let paragraphCount = CGFloat(isParagraphEnd.filter { $0 }.count - trailingSpacing)
-                            let pageContentHeight = CGFloat(lines.count) * effectiveLineHeight
-                                + paragraphCount * readerConfig.paragraphSpacing
+                            // 一页排不满时把剩下的高度匀进段间距，正文才会贴到页脚
+                            let titleReserved = currentPageIndex == 0
+                                ? estimatedTitleHeight(currentLoadedChapter?.chapter.title ?? "")
+                                : 0
+                            let filledBase = CGFloat(lines.count) * effectiveLineHeight
+                            let slack = max(0, contentHeight - readerConfig.paddingTop - readerConfig.paddingBottom
+                                            - titleReserved - filledBase - 10)
+                            let extraPerParagraph = paragraphCount > 0
+                                ? min(slack / paragraphCount, effectiveLineHeight)
+                                : 0
+                            let pageContentHeight = filledBase
+                                + paragraphCount * (readerConfig.paragraphSpacing + extraPerParagraph)
 
                             CoreTextPageView(
                                 lines: lines,
@@ -700,7 +710,7 @@ public struct ReaderView: View {
                                 width: usableWidth,
                                 height: pageContentHeight,
                                 letterSpacing: readerConfig.letterSpacing,
-                                paragraphSpacing: readerConfig.paragraphSpacing,
+                                paragraphSpacing: readerConfig.paragraphSpacing + extraPerParagraph,
                                 firstLineIndent: readerConfig.firstLineIndent,
                                 weightLevel: readerConfig.weightLevel,
                                 chineseConversion: readerConfig.chineseConversion,
@@ -2273,6 +2283,17 @@ public struct ReaderView: View {
     }
 
     /// 一页能放多高（点）：先扣掉页眉页脚和上下边距。
+    /// 首页标题占的高度：按可用宽度估算折行行数，分页和渲染共用同一套算法
+    private func estimatedTitleHeight(_ title: String) -> CGFloat {
+        guard readerConfig.titleAlignment != .hidden else { return 0 }
+        let titleFontSize = readerConfig.fontSize + 3
+        let width = max(120, readerContainerSize.width - readerConfig.paddingLeft - readerConfig.paddingRight)
+        let charsPerLine = max(4, Int(width / (titleFontSize + readerConfig.letterSpacing)))
+        let lines = max(1, min(4, Int(ceil(Double(title.count) / Double(charsPerLine)))))
+        // 略放宽：估小了最后一行会被页脚裁掉
+        return titleFontSize * 1.45 * CGFloat(lines) + 12.0
+    }
+
     /// 这里必须返回高度而不是行数——段间距也要占地方，按行数算会低估，
     /// 渲染出来超出预算的那半行就会压到页脚上（正文糊在页脚上）。
     private func calculateLayoutMetrics(title: String? = nil) -> (pageHeight: CGFloat, firstPageHeight: CGFloat) {
@@ -2288,15 +2309,7 @@ public struct ReaderView: View {
         let usableHeight = max(200, height - reserved - 2)
 
         // First page has chapter title (+ title padding)
-        let titleLineHeight = (readerConfig.fontSize + 3) * 1.3 + readerConfig.lineSpacing
-        // 标题按实际宽度估行数：窄屏长标题会折行，留太少会把正文顶到页脚上，
-        // 留太多首页底部就空一大块
-        let titleWidth = max(120, readerContainerSize.width - readerConfig.paddingLeft - readerConfig.paddingRight)
-        let charsPerLine = max(4, Int(titleWidth / (readerConfig.fontSize + 3)))
-        let titleLines = title.map { max(1, min(3, Int(ceil(Double($0.count) / Double(charsPerLine))))) } ?? 1
-        let titleHeight = readerConfig.titleAlignment == .hidden
-            ? 0
-            : titleLineHeight * CGFloat(titleLines) + 10.0
+        let titleHeight = title.map { estimatedTitleHeight($0) } ?? estimatedTitleHeight("第 1 章")
         let firstPageUsableHeight = max(100, usableHeight - titleHeight)
 
         return (pageHeight: usableHeight, firstPageHeight: firstPageUsableHeight)

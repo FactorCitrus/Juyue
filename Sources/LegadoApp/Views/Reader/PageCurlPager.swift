@@ -469,7 +469,7 @@ struct PageCurlContent: View {
                     pageBar(headerSlots, pageIndex: pageIndex, pageCount: pageCount, extendEdge: .top)
                         .padding(.top, headerOffset)
                 }
-                contentBody(usableWidth: usableWidth)
+                contentBody(usableWidth: usableWidth, bodyHeight: geo.size.height)
                 Spacer(minLength: 0)
                 if showFooter, footerSlots.count == 3 {
                     pageBar(footerSlots, pageIndex: pageIndex, pageCount: pageCount, extendEdge: .bottom)
@@ -482,7 +482,7 @@ struct PageCurlContent: View {
     }
 
     @ViewBuilder
-    private func contentBody(usableWidth: CGFloat) -> some View {
+    private func contentBody(usableWidth: CGFloat, bodyHeight: CGFloat) -> some View {
         VStack(alignment: .leading, spacing: 0) {
                 if let chapterTitle, titleAlignment != .hidden {
                     Text(chapterTitle)
@@ -501,8 +501,17 @@ struct PageCurlContent: View {
                     let isParagraphEnd = blocks.map { $0.imageUrl == "p_end" }
                     let trailingSpacing = isParagraphEnd.last == true ? 1 : 0
                     let paragraphCount = CGFloat(isParagraphEnd.filter { $0 }.count - trailingSpacing)
-                    let contentHeight = CGFloat(lines.count) * (fontSize * 1.25 + lineSpacing)
-                        + paragraphCount * paragraphSpacing
+                    let effectiveLineHeight = fontSize * 1.25 + lineSpacing
+                    let filledBase = CGFloat(lines.count) * effectiveLineHeight
+                    // 一页排不满时把剩下的高度匀进段间距，正文才会贴到页脚（跟左右翻页同一套算法）
+                    let titleReserved = pageIndex == 0 ? estimatedTitleHeight(usableWidth: usableWidth) : 0
+                    let barsReserved = (showHeader ? 19 + headerOffset : 0) + (showFooter ? 19 + footerOffset : 0)
+                    let available = max(80, bodyHeight - barsReserved - paddingTop - paddingBottom - titleReserved - 10)
+                    let extraPerParagraph = paragraphCount > 0
+                        ? min(max(0, available - filledBase) / paragraphCount, effectiveLineHeight)
+                        : 0
+                    let contentHeight = filledBase
+                        + paragraphCount * (paragraphSpacing + extraPerParagraph)
 
                     CoreTextPageView(
                         lines: lines,
@@ -513,7 +522,7 @@ struct PageCurlContent: View {
                         width: usableWidth,
                         height: contentHeight,
                         letterSpacing: letterSpacing,
-                        paragraphSpacing: paragraphSpacing,
+                        paragraphSpacing: paragraphSpacing + extraPerParagraph,
                         firstLineIndent: firstLineIndent,
                         weightLevel: weightLevel,
                         chineseConversion: chineseConversion,
@@ -528,6 +537,15 @@ struct PageCurlContent: View {
             .padding(.trailing, paddingRight)
             .padding(.top, paddingTop)
             .padding(.bottom, paddingBottom)
+    }
+
+    /// 首页标题占的高度：跟左右翻页用同一套估算
+    private func estimatedTitleHeight(usableWidth: CGFloat) -> CGFloat {
+        guard titleAlignment != .hidden, let title = chapterTitle else { return 0 }
+        let titleFontSize = fontSize + 3
+        let charsPerLine = max(4, Int(usableWidth / (titleFontSize + letterSpacing)))
+        let lines = max(1, min(4, Int(ceil(Double(title.count) / Double(charsPerLine)))))
+        return titleFontSize * 1.45 * CGFloat(lines) + 12.0
     }
 }
 
