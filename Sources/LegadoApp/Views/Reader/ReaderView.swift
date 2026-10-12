@@ -654,8 +654,9 @@ public struct ReaderView: View {
                     // GeometryReader 是贪高的：不把正文这块钉死高度，它会吃掉整页，
                     // 把 19pt 的页脚挤出可视区（页脚"看不见"就是这么来的）
                     let barHeight: CGFloat = 19
-                    let reservedForBars = (readerConfig.headerEnabled ? barHeight : 0)
-                        + (readerConfig.footerEnabled ? barHeight : 0)
+                    // 「距顶/距底」也算进预留高度，否则页脚会被顶到屏幕外
+                    let reservedForBars = (readerConfig.headerEnabled ? barHeight + readerConfig.headerOffset : 0)
+                        + (readerConfig.footerEnabled ? barHeight + readerConfig.footerOffset : 0)
                     let contentHeight = max(80, geo.size.height - reservedForBars)
 
                     VStack(spacing: 0) {
@@ -693,8 +694,10 @@ public struct ReaderView: View {
                                 ? estimatedTitleHeight(currentLoadedChapter?.chapter.title ?? "")
                                 : 0
                             let filledBase = CGFloat(lines.count) * effectiveLineHeight
+                            // 余量要把段间距本身先扣掉再匀，否则整页会超出可用高度
                             let slack = max(0, contentHeight - readerConfig.paddingTop - readerConfig.paddingBottom
-                                            - titleReserved - filledBase - 10)
+                                            - titleReserved - filledBase
+                                            - paragraphCount * readerConfig.paragraphSpacing - 10)
                             let extraPerParagraph = paragraphCount > 0
                                 ? min(slack / paragraphCount, effectiveLineHeight)
                                 : 0

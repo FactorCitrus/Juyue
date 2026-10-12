@@ -501,13 +501,18 @@ struct PageCurlContent: View {
     var body: some View {
         GeometryReader { geo in
             let usableWidth = max(200, geo.size.width - paddingLeft - paddingRight)
+            // 页眉页脚连同「距顶/距底」一起从正文高度里扣掉；正文再长也只在这块里截，
+            // 不然正文会把页脚顶出屏幕（页脚看不见就是这么来的）
+            let barsHeight = (showHeader ? 19 + headerOffset : 0)
+                + (showFooter ? 19 + footerOffset : 0)
             VStack(alignment: .leading, spacing: 0) {
                 if showHeader, headerSlots.count == 3 {
                     pageBar(headerSlots, pageIndex: pageIndex, pageCount: pageCount, extendEdge: .top)
                         .padding(.top, headerOffset)
                 }
                 contentBody(usableWidth: usableWidth, bodyHeight: geo.size.height)
-                Spacer(minLength: 0)
+                    .frame(height: max(80, geo.size.height - barsHeight), alignment: .top)
+                    .clipped()
                 if showFooter, footerSlots.count == 3 {
                     pageBar(footerSlots, pageIndex: pageIndex, pageCount: pageCount, extendEdge: .bottom)
                         .padding(.bottom, footerOffset)
@@ -544,8 +549,10 @@ struct PageCurlContent: View {
                     let titleReserved = pageIndex == 0 ? estimatedTitleHeight(usableWidth: usableWidth) : 0
                     let barsReserved = (showHeader ? 19 + headerOffset : 0) + (showFooter ? 19 + footerOffset : 0)
                     let available = max(80, bodyHeight - barsReserved - paddingTop - paddingBottom - titleReserved - 10)
+                    // 余量要把段间距本身先扣掉再匀，否则整页会超出可用高度
+                    let slack = max(0, available - filledBase - paragraphCount * paragraphSpacing)
                     let extraPerParagraph = paragraphCount > 0
-                        ? min(max(0, available - filledBase) / paragraphCount, effectiveLineHeight)
+                        ? min(slack / paragraphCount, effectiveLineHeight)
                         : 0
                     let contentHeight = filledBase
                         + paragraphCount * (paragraphSpacing + extraPerParagraph)
