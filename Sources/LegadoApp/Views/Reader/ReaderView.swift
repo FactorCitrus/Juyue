@@ -48,8 +48,14 @@ public struct ReaderView: View {
     let book: Book
     let source: BookSource?
 
+    /// 换源后原地替换，不退出阅读界面。
+    @State private var switchedBook: Book?
+    @State private var switchedSource: BookSource?
+
+    private var activeBook: Book { switchedBook ?? book }
+
     private var effectiveSource: BookSource? {
-        source ?? BookStore.shared.findSource(for: book)
+        switchedSource ?? source ?? BookStore.shared.findSource(for: activeBook)
     }
 
     @State private var chapters: [BookChapter] = []
@@ -69,6 +75,7 @@ public struct ReaderView: View {
     @State private var showTOC: Bool = false
     @State private var showSettings: Bool = false
     @State private var showSearch: Bool = false
+    @State private var showSourceSwitch: Bool = false
     @State private var showControls: Bool = false
 
     public var onDismiss: (() -> Void)? = nil
@@ -218,6 +225,15 @@ public struct ReaderView: View {
         .sheet(isPresented: $showSearch) {
             searchSheet
         }
+        .sheet(isPresented: $showSourceSwitch) {
+            SourceSwitchSheet(
+                book: activeBook,
+                currentSourceUrl: effectiveSource?.bookSourceUrl,
+                onSelect: { newSource, candidate in
+                    switchToSource(newSource, candidate)
+                }
+            )
+        }
         .task {
             await loadTOCAndStart()
         }
@@ -259,7 +275,7 @@ public struct ReaderView: View {
                                     .onAppear {
                                         if currentChapterIndex != loadedCh.chapter.index {
                                             currentChapterIndex = loadedCh.chapter.index
-                                            BookStore.shared.updateProgress(bookUrl: book.bookUrl, chapterIndex: currentChapterIndex, chapterTitle: loadedCh.chapter.title, chapterPos: currentChapterCharOffset())
+                                            BookStore.shared.updateProgress(bookUrl: activeBook.bookUrl, chapterIndex: currentChapterIndex, chapterTitle: loadedCh.chapter.title, chapterPos: currentChapterCharOffset())
                                             preCacheNeighbors(around: currentChapterIndex)
                                         }
                                     }
@@ -351,7 +367,7 @@ public struct ReaderView: View {
                             currentChapterIndex = prevIndex
                             scrollToChapterId = "chapter_end_\(prevIndex)"
                         }
-                        BookStore.shared.updateProgress(bookUrl: book.bookUrl, chapterIndex: prevIndex, chapterTitle: prevLoaded.chapter.title)
+                        BookStore.shared.updateProgress(bookUrl: activeBook.bookUrl, chapterIndex: prevIndex, chapterTitle: prevLoaded.chapter.title)
                         preCacheNeighbors(around: prevIndex)
                     }
                 }
@@ -647,7 +663,7 @@ public struct ReaderView: View {
             Spacer()
 
             // Book Title in Center (No reading progress/chapter info)
-            Text(book.name)
+            Text(activeBook.name)
                 .font(.system(size: 15, weight: .semibold))
                 .foregroundColor(readerConfig.theme.textColor)
                 .lineLimit(1)
@@ -707,7 +723,7 @@ public struct ReaderView: View {
                     .lineLimit(1)
                     .truncationMode(.tail)
             } else {
-                Text(book.name)
+                Text(activeBook.name)
                     .font(.system(size: 11, weight: .regular))
                     .foregroundColor(readerConfig.theme.textColor.opacity(0.55))
                     .lineLimit(1)
@@ -806,7 +822,7 @@ public struct ReaderView: View {
                             self.currentChapterIndex = prevIndex
                             self.scrollToChapterId = "chapter_end_\(prevIndex)"
                         }
-                        BookStore.shared.updateProgress(bookUrl: book.bookUrl, chapterIndex: prevIndex, chapterTitle: prevLoaded.chapter.title)
+                        BookStore.shared.updateProgress(bookUrl: activeBook.bookUrl, chapterIndex: prevIndex, chapterTitle: prevLoaded.chapter.title)
                         self.preCacheNeighbors(around: prevIndex)
                     }
                 }
@@ -943,6 +959,18 @@ public struct ReaderView: View {
                 .frame(maxWidth: .infinity)
             }
 
+            // Switch Book Source (换源)
+            Button(action: { showSourceSwitch = true }) {
+                VStack(spacing: 4) {
+                    Image(systemName: "arrow.triangle.2.circlepath")
+                        .font(.system(size: 20))
+                    Text("换源")
+                        .font(.system(size: 11, weight: .medium))
+                }
+                .foregroundColor(readerConfig.theme.textColor)
+                .frame(maxWidth: .infinity)
+            }
+
             // Interface Settings (界面设置)
             Button(action: { showSettings = true }) {
                 VStack(spacing: 4) {
@@ -957,9 +985,34 @@ public struct ReaderView: View {
         }
     }
 
+    /// 换源：把阅读进度搬到新书源，然后在同一个阅读界面里重拉目录和正文。
+    private func switchToSource(_ newSource: BookSource, _ candidate: SearchBook) {
+        let newBook = Book(
+            bookUrl: candidate.bookUrl,
+            name: candidate.name,
+            author: candidate.author,
+            kind: candidate.kind,
+            coverUrl: candidate.coverUrl,
+            intro: candidate.intro,
+            origin: candidate.origin,
+            originName: candidate.originName,
+            latestChapterTitle: candidate.latestChapterTitle
+        )
+        let applied = BookStore.shared.changeBookSource(from: activeBook, to: newBook)
+        switchedBook = applied
+        switchedSource = newSource
+        chapters = []
+        chapterCache.removeAll()
+        loadedChapters = []
+        currentChapterIndex = applied.durChapterIndex
+        isLoadingInitial = true
+        errorMessage = nil
+        Task { await loadTOCAndStart() }
+    }
+
     private var searchSheet: some View {
         ReaderSearchSheet(
-            book: book,
+            book: activeBook,
             currentChapterIndex: currentChapterIndex,
             currentChapterTitle: (!chapters.isEmpty && currentChapterIndex < chapters.count) ? chapters[currentChapterIndex].title : "",
             currentContent: currentChapterContent,
@@ -1149,8 +1202,8 @@ public struct ReaderView: View {
 
     // MARK: - Data Loading Pipeline
     private func loadTOCAndStart() async {
-        if book.origin == "local" {
-            var localChapters = BookStore.shared.getChapters(for: book.bookUrl)
+        if activeBook.origin == "local" {
+            var localChapters = BookStore.shared.getChapters(for: activeBook.bookUrl)
             if !localChapters.isEmpty {
                 for i in 0..<localChapters.count {
                     localChapters[i].index = i
@@ -1171,7 +1224,7 @@ public struct ReaderView: View {
         }
 
         do {
-            var fetchedChapters = try await BookContentService.shared.fetchChapterList(book: book, source: source)
+            var fetchedChapters = try await BookContentService.shared.fetchChapterList(book: activeBook, source: source)
             for i in 0..<fetchedChapters.count {
                 fetchedChapters[i].index = i
             }
@@ -1261,13 +1314,13 @@ public struct ReaderView: View {
                 self.currentChapterIndex = index
 
                 // Restore position if durChapterPos is saved and opening the current chapter
-                if targetPageIndex == 0 && self.book.durChapterPos > 0 && index == self.book.durChapterIndex {
+                if targetPageIndex == 0 && self.activeBook.durChapterPos > 0 && index == self.activeBook.durChapterIndex {
                     if self.readerConfig.pageMode == .pageByPage {
                         var accumulated = 0
                         var targetPage = 0
                         for (pIdx, page) in loaded.pages.enumerated() {
                             let pageCount = page.reduce(0) { $0 + $1.text.count }
-                            if accumulated + pageCount > self.book.durChapterPos {
+                            if accumulated + pageCount > self.activeBook.durChapterPos {
                                 targetPage = pIdx
                                 break
                             }
@@ -1279,7 +1332,7 @@ public struct ReaderView: View {
                         var accumulated = 0
                         var targetBlock = loaded.blocks.first?.id ?? 0
                         for block in loaded.blocks {
-                            if accumulated + block.text.count > self.book.durChapterPos {
+                            if accumulated + block.text.count > self.activeBook.durChapterPos {
                                 targetBlock = block.id
                                 break
                             }
@@ -1320,7 +1373,7 @@ public struct ReaderView: View {
 
                 self.isLoadingInitial = false
                 let currentPos = self.currentChapterCharOffset()
-                BookStore.shared.updateProgress(bookUrl: book.bookUrl, chapterIndex: index, chapterTitle: currentChapter.title, chapterPos: currentPos)
+                BookStore.shared.updateProgress(bookUrl: activeBook.bookUrl, chapterIndex: index, chapterTitle: currentChapter.title, chapterPos: currentPos)
                 self.preCacheNeighbors(around: index)
 
                 if readerConfig.pageMode == .scroll && self.scrollToChapterId == nil {
@@ -1470,7 +1523,7 @@ public struct ReaderView: View {
         guard let cur = currentLoadedChapter else { return }
         let pos = currentChapterCharOffset()
         BookStore.shared.updateProgress(
-            bookUrl: book.bookUrl,
+            bookUrl: activeBook.bookUrl,
             chapterIndex: currentChapterIndex,
             chapterTitle: cur.chapter.title,
             chapterPos: pos
@@ -2011,4 +2064,3 @@ public class CoreTextUIView: UIView {
     }
 }
 #endif
-

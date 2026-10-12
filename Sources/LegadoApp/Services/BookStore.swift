@@ -224,6 +224,27 @@ public class BookStore: ObservableObject {
         saveBookshelf()
     }
 
+    /// 换源：把阅读进度搬到新书源的同名书上，旧记录与旧目录缓存一并清掉。
+    @discardableResult
+    public func changeBookSource(from oldBook: Book, to newBook: Book) -> Book {
+        var target = newBook
+        target.durChapterIndex = oldBook.durChapterIndex
+        target.durChapterTitle = oldBook.durChapterTitle
+        target.durChapterPos = oldBook.durChapterPos
+        target.durChapterTime = oldBook.durChapterTime
+        if target.bookUrl != oldBook.bookUrl {
+            bookshelf.removeAll { $0.bookUrl == oldBook.bookUrl }
+            chaptersCache.removeValue(forKey: oldBook.bookUrl)
+        }
+        if let index = bookshelf.firstIndex(where: { $0.bookUrl == target.bookUrl }) {
+            bookshelf[index] = target
+        } else {
+            bookshelf.insert(target, at: 0)
+        }
+        saveBookshelf()
+        return target
+    }
+
     public func updateProgress(bookUrl: String, chapterIndex: Int, chapterTitle: String, chapterPos: Int = 0) {
         if let index = bookshelf.firstIndex(where: { $0.bookUrl == bookUrl }) {
             let now = Int64(Date().timeIntervalSince1970 * 1000)

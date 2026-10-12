@@ -155,6 +155,19 @@ public struct SettingsView: View {
                 }
 
                 // Section 4: About
+                // Section 5: 听书语音源
+                Section(header: Text("听书（朗读引擎）")) {
+                    NavigationLink(destination: TTSourceManagerView()) {
+                        HStack {
+                            Text("朗读引擎")
+                            Spacer()
+                            Text(TTSourceSelection.displayName(in: HttpTTSStore.shared.sources))
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        }
+                    }
+                }
+
                 Section(header: Text("关于 Legado iOS")) {
                     HStack {
                         Text("应用名称")
