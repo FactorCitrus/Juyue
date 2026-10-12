@@ -17,12 +17,148 @@ public struct SourceManagerView: View {
     @State private var alertMessage: String? = nil
     @State private var showAlert: Bool = false
 
+    // 源多的时候靠这几项筛
+    @State private var searchText: String = ""
+    @State private var selectedGroup: String? = nil
+    @State private var onlyEnabled: Bool = false
+    @State private var sortMode: SourceSortMode = .manual
+
     public init() {}
+
+    enum SourceSortMode: String, CaseIterable, Identifiable {
+        case manual = "默认顺序"
+        case name = "按名称"
+        case group = "按分组"
+        case enabledFirst = "已启用优先"
+
+        var id: String { rawValue }
+    }
+
+    /// 书源里所有出现过的分组名
+    private var allGroups: [String] {
+        var set = Set<String>()
+        for source in bookStore.sources {
+            for group in SourceManagerView.splitGroups(source.bookSourceGroup) {
+                set.insert(group)
+            }
+        }
+        return set.sorted()
+    }
+
+    private static func splitGroups(_ raw: String?) -> [String] {
+        guard let raw, !raw.isEmpty else { return [] }
+        return raw
+            .components(separatedBy: CharacterSet(charactersIn: ",，、 "))
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+    }
+
+    private var filteredSources: [BookSource] {
+        var list = bookStore.sources
+
+        let keyword = searchText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if !keyword.isEmpty {
+            list = list.filter { source in
+                let haystack = [
+                    source.bookSourceName,
+                    source.bookSourceUrl,
+                    source.bookSourceGroup ?? "",
+                    source.bookSourceComment ?? ""
+                ].joined(separator: " ").lowercased()
+                return haystack.contains(keyword)
+            }
+        }
+
+        if let selectedGroup {
+            list = list.filter { SourceManagerView.splitGroups($0.bookSourceGroup).contains(selectedGroup) }
+        }
+
+        if onlyEnabled {
+            list = list.filter { $0.enabled ?? true }
+        }
+
+        switch sortMode {
+        case .manual:
+            break
+        case .name:
+            list.sort { $0.bookSourceName.localizedStandardCompare($1.bookSourceName) == .orderedAscending }
+        case .group:
+            list.sort {
+                SourceManagerView.splitGroups($0.bookSourceGroup).first ?? "~"
+                    < SourceManagerView.splitGroups($1.bookSourceGroup).first ?? "~"
+            }
+        case .enabledFirst:
+            list.sort { ($0.enabled ?? true ? 0 : 1) < ($1.enabled ?? true ? 0 : 1) }
+        }
+        return list
+    }
 
     public var body: some View {
         List {
-            Section(header: Text("已导入书源 (\(bookStore.sources.count)个)")) {
-                    ForEach(bookStore.sources) { source in
+            Section(header: Text("筛选")) {
+                HStack {
+                    Text("显示 \(filteredSources.count) / 共 \(bookStore.sources.count)")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                    Spacer()
+                    Text("可用 \(bookStore.sources.filter { $0.enabled != false }.count)")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+
+                Menu {
+                    Button("全部分组") { selectedGroup = nil }
+                    ForEach(allGroups, id: \.self) { group in
+                        Button(group) { selectedGroup = group }
+                    }
+                } label: {
+                    HStack {
+                        Text("分组")
+                        Spacer()
+                        Text(selectedGroup ?? "全部")
+                            .foregroundColor(.secondary)
+                        Image(systemName: "chevron.right")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
+                }
+
+                Menu {
+                    ForEach(SourceSortMode.allCases) { mode in
+                        Button(mode.rawValue) { sortMode = mode }
+                    }
+                } label: {
+                    HStack {
+                        Text("排序")
+                        Spacer()
+                        Text(sortMode.rawValue)
+                            .foregroundColor(.secondary)
+                        Image(systemName: "chevron.right")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
+                }
+
+                Toggle("只看已启用", isOn: $onlyEnabled)
+
+                Menu {
+                    Button("启用当前筛选结果") { setEnabled(true, in: filteredSources) }
+                    Button("停用当前筛选结果") { setEnabled(false, in: filteredSources) }
+                } label: {
+                    HStack {
+                        Text("批量操作")
+                        Spacer()
+                        Text("作用于上面 \(filteredSources.count) 个")
+                            .foregroundColor(.secondary)
+                        Image(systemName: "chevron.right")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
+                }
+            }
+
+            Section(header: Text("已导入书源")) {
+                    ForEach(filteredSources) { source in
                         NavigationLink(destination: SourceDetailView(source: source)) {
                             sourceRow(for: source)
                         }
@@ -70,6 +206,7 @@ public struct SourceManagerView: View {
                     .onDelete(perform: deleteSources)
                 }
             }
+            .searchable(text: $searchText, prompt: "搜书源名 / 网址 / 分组")
 #if os(iOS)
             .listStyle(.insetGrouped)
 #else
@@ -165,6 +302,14 @@ public struct SourceManagerView: View {
                     .font(.caption)
                     .foregroundColor(.secondary)
                     .lineLimit(1)
+                if let group = source.bookSourceGroup, !group.isEmpty {
+                    Text(group)
+                        .font(.caption2)
+                        .padding(.horizontal, 5)
+                        .padding(.vertical, 1)
+                        .background(Color.secondary.opacity(0.12))
+                        .cornerRadius(4)
+                }
             }
 
             Spacer()
@@ -197,10 +342,23 @@ public struct SourceManagerView: View {
     }
 
     private func deleteSources(at offsets: IndexSet) {
-        for idx in offsets {
-            let s = bookStore.sources[idx]
-            bookStore.deleteSource(sourceUrl: s.bookSourceUrl)
+        let list = filteredSources
+        for idx in offsets where idx < list.count {
+            bookStore.deleteSource(sourceUrl: list[idx].bookSourceUrl)
         }
+    }
+
+    /// 批量启用/停用：只翻转状态不一致的，避免把已经对的又翻回去。
+    private func setEnabled(_ enabled: Bool, in sources: [BookSource]) {
+        var changed = 0
+        for source in sources where (source.enabled ?? true) != enabled {
+            bookStore.toggleSource(sourceUrl: source.bookSourceUrl)
+            changed += 1
+        }
+        alertMessage = changed == 0
+            ? "这些书源本来就已经是\(enabled ? "启用" : "停用")状态。"
+            : "已\(enabled ? "启用" : "停用") \(changed) 个书源。"
+        showAlert = true
     }
 
     private var importSourceSheet: some View {
