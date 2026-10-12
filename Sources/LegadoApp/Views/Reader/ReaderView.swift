@@ -147,8 +147,8 @@ public struct ReaderView: View {
 
                 // 1. Reading Canvas with Permanent Fixed Bottom Info Bar
                 VStack(spacing: 0) {
-                    // 仿真翻页时页眉页脚画在每一页里，跟着卷页一起动
-                    if readerConfig.headerEnabled, readerConfig.pageMode != .simulation {
+                    // 按页翻的模式（左右/覆盖/滑动/仿真）页眉页脚画在每页里，跟着一起翻
+                    if readerConfig.headerEnabled, readerConfig.pageMode == .scroll {
                         statusBar(left: readerConfig.headerLeft, center: readerConfig.headerCenter, right: readerConfig.headerRight)
                     }
 
@@ -229,7 +229,7 @@ public struct ReaderView: View {
                     }
 
                     // Fixed Bottom Information Bar (Apple Books Style)
-                    if readerConfig.footerEnabled, readerConfig.pageMode != .simulation {
+                    if readerConfig.footerEnabled, readerConfig.pageMode == .scroll {
                         statusBar(left: readerConfig.footerLeft, center: readerConfig.footerCenter, right: readerConfig.footerRight)
                     }
                 }
@@ -643,7 +643,12 @@ public struct ReaderView: View {
                     let pageBlocks = pages[currentPageIndex]
                     let usableWidth = max(200, readerContainerSize.width - readerConfig.horizontalPadding * 2)
 
-                    VStack(alignment: .leading, spacing: 0) {
+                    VStack(spacing: 0) {
+                        if readerConfig.headerEnabled {
+                            statusBar(left: readerConfig.headerLeft, center: readerConfig.headerCenter, right: readerConfig.headerRight)
+                        }
+
+                        VStack(alignment: .leading, spacing: 0) {
                         // If it's page 0, display Chapter Title at top
                         if currentPageIndex == 0, readerConfig.titleAlignment != .hidden, let cur = currentLoadedChapter {
                             Text(cur.chapter.title)
@@ -686,10 +691,16 @@ public struct ReaderView: View {
                         }
 
                         Spacer(minLength: 0)
+                        }
+                        .padding(.horizontal, readerConfig.horizontalPadding)
+                        .padding(.top, readerConfig.verticalPadding)
+                        .padding(.bottom, readerConfig.verticalPadding)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+
+                        if readerConfig.footerEnabled {
+                            statusBar(left: readerConfig.footerLeft, center: readerConfig.footerCenter, right: readerConfig.footerRight)
+                        }
                     }
-                    .padding(.horizontal, readerConfig.horizontalPadding)
-                    .padding(.top, readerConfig.verticalPadding)
-                    .padding(.bottom, readerConfig.verticalPadding)
                     .id("page_\(currentChapterIndex)_\(currentPageIndex)")
                     .transition(pageTransition)
                 }
