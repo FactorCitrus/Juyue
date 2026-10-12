@@ -129,7 +129,7 @@ public struct PageCurlPager: UIViewControllerRepresentable {
         // 双面翻页：背面由 dataSource 提供，才不会出现系统那张白纸
         controller.isDoubleSided = true
         controller.view.backgroundColor = UIColor(backgroundColor)
-        // 双面模式下必须一次给两张（正面 + 背面），只给一张 UIKit 会直接抛异常
+        // 正面 + 背面；实际投递几张由 apply 按当前书脊裁
         apply(
             context.coordinator.pagePair(at: clampedIndex),
             to: controller,
@@ -139,12 +139,15 @@ public struct PageCurlPager: UIViewControllerRepresentable {
         return controller
     }
 
-    /// 双面模式下投递页面必须重新声明一次 `isDoubleSided`。
+    /// 一次投几张，按 UIKit 的校验规则来（模拟器 iOS 26.3 实测，和 `isDoubleSided`、
+    /// 有没有上屏都无关）：
     ///
-    /// UIKit 的规则是：spine 不是 .mid 时，`doubleSided` 为 YES 才要求一次给两张，
-    /// 为 NO 就只收一张。过渡结束后 UIKit 会把 `doubleSided` 复位成 NO，
-    /// 之后照旧给两张就会抛
-    /// "The number of provided view controllers (2) doesn't match the number required (1)"。
+    /// - 不带画：严格按书脊给 —— `.min` 只收 1 张，`.mid` 收 2 张；
+    /// - 带动画：固定按 2 张校验，只给 1 张同样抛
+    ///   "The number of view controllers provided (1) doesn't match the number required (2) for the requested transition"。
+    ///
+    /// 给多给少都是一条 NSInvalidArgumentException，凑不齐两张就退化成不带画投递。
+    /// `isDoubleSided` 每次重新声明，保证卷起时露出的背面由 dataSource 提供。
     private func apply(
         _ target: [UIViewController],
         to controller: UIPageViewController,
@@ -152,8 +155,19 @@ public struct PageCurlPager: UIViewControllerRepresentable {
         animated: Bool
     ) {
         guard !target.isEmpty else { return }
+        var wanted = target
+        var animate = animated
+        if animated {
+            if target.count >= 2 {
+                wanted = Array(target.prefix(2))
+            } else {
+                animate = false
+            }
+        } else if controller.spineLocation != .mid {
+            wanted = Array(target.prefix(1))
+        }
         controller.isDoubleSided = true
-        controller.setViewControllers(target, direction: direction, animated: animated)
+        controller.setViewControllers(wanted, direction: direction, animated: animate)
     }
 
     public func updateUIViewController(_ controller: UIPageViewController, context: Context) {
@@ -272,7 +286,7 @@ public struct PageCurlPager: UIViewControllerRepresentable {
             return host
         }
 
-        /// 双面模式下要成对给：正面在前、背面在后
+        /// 正面在前、背面在后；书脊是 .min 时 apply 只会用到正面那张
         func pagePair(at index: Int) -> [UIViewController] {
             guard let front = controller(at: index) else { return [] }
             if let back = backController(at: index) {
