@@ -124,6 +124,18 @@ public struct PageCurlPager: UIViewControllerRepresentable {
     public func updateUIViewController(_ controller: UIPageViewController, context: Context) {
         context.coordinator.parent = self
         guard !pages.isEmpty else { return }
+
+        // 配色、字体、排版这些变了要重建当前页，否则托管的页面还是旧样式
+        let signature = renderSignature
+        if context.coordinator.lastSignature != signature {
+            context.coordinator.lastSignature = signature
+            let current = context.coordinator.index
+            if let rebuilt = context.coordinator.controller(at: current) {
+                controller.setViewControllers([rebuilt], direction: .forward, animated: false)
+            }
+            return
+        }
+
         let current = context.coordinator.index
         guard current != clampedIndex else { return }
         let direction: UIPageViewController.NavigationDirection = clampedIndex > current ? .forward : .reverse
@@ -138,13 +150,41 @@ public struct PageCurlPager: UIViewControllerRepresentable {
         return min(max(0, startIndex), pages.count - 1)
     }
 
+    /// 影响渲染的配置指纹，变了就重建页面
+    private var renderSignature: String {
+        var parts: [String] = []
+        parts.append(String(describing: backgroundColor))
+        parts.append(String(describing: textColor))
+        parts.append("\(fontSize)")
+        parts.append("\(lineSpacing)")
+        parts.append("\(letterSpacing)")
+        parts.append("\(paragraphSpacing)")
+        parts.append("\(firstLineIndent)")
+        parts.append("\(weightLevel)")
+        parts.append(fontPostScriptName)
+        parts.append(boldPostScriptName ?? "")
+        parts.append(chineseConversion.rawValue)
+        parts.append(titleAlignment.rawValue)
+        parts.append("\(showHeader)\(showFooter)\(barDivider)")
+        parts.append("\(horizontalPadding)")
+        parts.append("\(verticalPadding)")
+        parts.append(headerSlots.map { $0.rawValue }.joined(separator: ","))
+        parts.append(footerSlots.map { $0.rawValue }.joined(separator: ","))
+        parts.append(chapterTitleText)
+        parts.append(bookName)
+        parts.append("\(chapterIndex)/\(chapterCount)")
+        return parts.joined(separator: "|")
+    }
+
     public final class Coordinator: NSObject, UIPageViewControllerDataSource, UIPageViewControllerDelegate {
         var parent: PageCurlPager
         var index: Int
+        var lastSignature: String = ""
 
         init(_ parent: PageCurlPager) {
             self.parent = parent
             self.index = min(max(0, parent.startIndex), max(0, parent.pages.count - 1))
+            self.lastSignature = parent.renderSignature
         }
 
         func controller(at index: Int) -> UIViewController? {
