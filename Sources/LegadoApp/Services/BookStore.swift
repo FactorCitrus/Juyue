@@ -1,4 +1,10 @@
 import Foundation
+import CoreGraphics
+import ImageIO
+import ZIPFoundation
+#if canImport(PDFKit)
+import PDFKit
+#endif
 #if canImport(LegadoCore)
 import LegadoCore
 #endif
@@ -11,9 +17,104 @@ public class BookStore: ObservableObject {
 
     private let booksKey = "legado_bookshelf_v1"
     private let sourcesKey = "legado_sources_v1"
+    private let bookmarksKey = "legado_bookmarks_v1"
+    private let groupsKey = "legado_book_groups_v1"
+
+    /// 书签 / 笔记：按书存，读取时按书过滤
+    @Published public var bookmarks: [BookBookmark] = []
 
     public init() {
         loadData()
+        loadBookmarks()
+        loadGroups()
+    }
+
+    private func loadBookmarks() {
+        if let data = UserDefaults.standard.data(forKey: bookmarksKey),
+           let decoded = try? JSONDecoder().decode([BookBookmark].self, from: data) {
+            bookmarks = decoded
+        }
+    }
+
+    private func saveBookmarks() {
+        if let data = try? JSONEncoder().encode(bookmarks) {
+            UserDefaults.standard.set(data, forKey: bookmarksKey)
+        }
+    }
+
+    public func bookmarks(for bookUrl: String) -> [BookBookmark] {
+        bookmarks.filter { $0.bookUrl == bookUrl }.sorted { $0.createdAt > $1.createdAt }
+    }
+
+    public func addBookmark(_ bookmark: BookBookmark) {
+        bookmarks.append(bookmark)
+        saveBookmarks()
+    }
+
+    public func removeBookmark(_ bookmark: BookBookmark) {
+        bookmarks.removeAll { $0.id == bookmark.id }
+        saveBookmarks()
+    }
+
+    // MARK: - 书架分组
+    @Published public var groups: [BookGroup] = []
+
+    private func loadGroups() {
+        if let data = UserDefaults.standard.data(forKey: groupsKey),
+           let decoded = try? JSONDecoder().decode([BookGroup].self, from: data) {
+            groups = decoded
+        }
+    }
+
+    private func saveGroups() {
+        if let data = try? JSONEncoder().encode(groups) {
+            UserDefaults.standard.set(data, forKey: groupsKey)
+        }
+    }
+
+    @discardableResult
+    public func addGroup(name: String) -> BookGroup {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        let group = BookGroup(name: trimmed.isEmpty ? "新分组" : trimmed)
+        groups.append(group)
+        saveGroups()
+        return group
+    }
+
+    public func renameGroup(id: UUID, to name: String) {
+        guard let idx = groups.firstIndex(where: { $0.id == id }) else { return }
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        groups[idx].name = trimmed
+        saveGroups()
+    }
+
+    public func removeGroup(id: UUID) {
+        groups.removeAll { $0.id == id }
+        saveGroups()
+        // 组内书回到未分组
+        for i in 0..<bookshelf.count where bookshelf[i].groupId == id {
+            bookshelf[i].groupId = nil
+        }
+        saveBookshelf()
+    }
+
+    /// 把书挪到某个分组（nil = 移出分组）
+    public func assign(_ book: Book, toGroup groupId: UUID?) {
+        guard let idx = bookshelf.firstIndex(where: { $0.bookUrl == book.bookUrl }) else { return }
+        bookshelf[idx].groupId = groupId
+        saveBookshelf()
+    }
+
+    public func books(inGroup groupId: UUID?) -> [Book] {
+        guard let groupId else { return bookshelf }
+        return bookshelf.filter { $0.groupId == groupId }
+    }
+
+    public func updateBookmarkNote(id: UUID, note: String) {
+        guard let idx = bookmarks.firstIndex(where: { $0.id == id }) else { return }
+        bookmarks[idx].note = note
+        saveBookmarks()
     }
 
     private func getDocumentsDirectory() -> URL {
@@ -608,10 +709,374 @@ public class BookStore: ObservableObject {
 
     public func importFile(from fileUrl: URL) throws -> Book {
         let ext = fileUrl.pathExtension.lowercased()
-        if ext == "txt" {
+        switch ext {
+        case "txt":
             return try importTxt(from: fileUrl)
-        } else {
+        case "zip", "cbz":
+            return try importComic(from: fileUrl)
+        case "pdf":
+            return try importPDF(from: fileUrl)
+        default:
             return try importEpub(from: fileUrl)
         }
+    }
+}
+
+// MARK: - 阅读统计
+/// 阅读时长 / 字数 / 章节数，按天存，用来算连续天数
+public final class ReadingStatsStore: ObservableObject {
+    public static let shared = ReadingStatsStore()
+
+    public struct Snapshot: Codable {
+        public var dailySeconds: [String: Int] = [:]
+        public var totalCharacters: Int = 0
+        public var chaptersRead: Int = 0
+    }
+
+    @Published public private(set) var snapshot = Snapshot()
+
+    private let key = "reading_stats_v1"
+    private let dayFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.dateFormat = "yyyy-MM-dd"
+        return f
+    }()
+
+    public init() {
+        if let data = UserDefaults.standard.data(forKey: key),
+           let decoded = try? JSONDecoder().decode(Snapshot.self, from: data) {
+            snapshot = decoded
+        }
+    }
+
+    private func save() {
+        if let data = try? JSONEncoder().encode(snapshot) {
+            UserDefaults.standard.set(data, forKey: key)
+        }
+    }
+
+    private func key(for date: Date) -> String { dayFormatter.string(from: date) }
+
+    /// 记一段阅读：秒数 + 这次新读到的字数
+    public func addReading(seconds: Int, characters: Int = 0, chapters: Int = 0) {
+        guard seconds > 0 || characters > 0 || chapters > 0 else { return }
+        if seconds > 0 {
+            let k = key(for: Date())
+            snapshot.dailySeconds[k, default: 0] += seconds
+        }
+        snapshot.totalCharacters += max(0, characters)
+        snapshot.chaptersRead += max(0, chapters)
+        save()
+    }
+
+    public var todaySeconds: Int { snapshot.dailySeconds[key(for: Date())] ?? 0 }
+    public var totalSeconds: Int { snapshot.dailySeconds.values.reduce(0, +) }
+    public var totalCharacters: Int { snapshot.totalCharacters }
+    public var chaptersRead: Int { snapshot.chaptersRead }
+    public var daysRead: Int { snapshot.dailySeconds.filter { $0.value > 0 }.count }
+
+    /// 连续阅读天数：从今天往回数
+    public var streakDays: Int {
+        var streak = 0
+        var date = Date()
+        while true {
+            let k = key(for: date)
+            if (snapshot.dailySeconds[k] ?? 0) > 0 {
+                streak += 1
+                date = Calendar.current.date(byAdding: .day, value: -1, to: date) ?? date
+            } else if streak == 0 {
+                // 今天还没读，从昨天开始数
+                date = Calendar.current.date(byAdding: .day, value: -1, to: date) ?? date
+                if (snapshot.dailySeconds[key(for: date)] ?? 0) == 0 { break }
+            } else {
+                break
+            }
+            if streak > 3650 { break }
+        }
+        return streak
+    }
+
+    /// 最近 n 天，从早到晚
+    public func recentDays(_ n: Int = 7) -> [(day: String, seconds: Int)] {
+        var out: [(String, Int)] = []
+        for offset in stride(from: n - 1, through: 0, by: -1) {
+            guard let date = Calendar.current.date(byAdding: .day, value: -offset, to: Date()) else { continue }
+            let k = key(for: date)
+            out.append((k, snapshot.dailySeconds[k] ?? 0))
+        }
+        return out
+    }
+}
+
+// MARK: - 书架分组
+public struct BookGroup: Codable, Identifiable, Equatable {
+    public var id: UUID
+    public var name: String
+
+    public init(name: String) {
+        self.id = UUID()
+        self.name = name
+    }
+}
+
+// MARK: - 批量下载
+public struct DownloadJob: Identifiable, Equatable {
+    public let id: UUID
+    public var bookUrl: String
+    public var bookName: String
+    public var total: Int
+    public var finished: Int
+    public var failed: Int
+    public var isPaused: Bool
+    public var isCancelled: Bool
+    public var isRunning: Bool
+    public var currentChapter: String
+
+    public var progress: Double {
+        total > 0 ? Double(finished + failed) / Double(total) : 0
+    }
+
+    public init(bookUrl: String, bookName: String, total: Int) {
+        self.id = UUID()
+        self.bookUrl = bookUrl
+        self.bookName = bookName
+        self.total = total
+        self.finished = 0
+        self.failed = 0
+        self.isPaused = false
+        self.isCancelled = false
+        self.isRunning = true
+        self.currentChapter = ""
+    }
+}
+
+/// 批量缓存章节：一次排队一批，能暂停/继续/取消，进度看得见
+public final class ChapterDownloadManager: ObservableObject {
+    public static let shared = ChapterDownloadManager()
+
+    @Published public private(set) var jobs: [DownloadJob] = []
+
+    private var tasks: [UUID: Task<Void, Never>] = [:]
+
+    public init() {}
+
+    /// indices：要下载的章节下标（对应 chapters 数组）
+    @discardableResult
+    public func start(book: Book, chapters: [BookChapter], source: BookSource?, indices: [Int]) -> UUID? {
+        guard !indices.isEmpty else { return nil }
+        let job = DownloadJob(bookUrl: book.bookUrl, bookName: book.name, total: indices.count)
+        let jobId = job.id
+        jobs.insert(job, at: 0)
+
+        tasks[jobId] = Task { [weak self] in
+            for index in indices {
+                guard let self else { return }
+                // 暂停原地等，取消就退出
+                while true {
+                    let state = await self.jobState(jobId)
+                    if state == nil || state == .cancelled { return }
+                    if state == .running { break }
+                    try? await Task.sleep(nanoseconds: 300_000_000)
+                }
+
+                guard index >= 0, index < chapters.count else { continue }
+                let chapter = chapters[index]
+                if BookContentService.shared.hasCachedChapter(bookUrl: book.bookUrl, chapterIndex: chapter.index) {
+                    await self.mark(jobId, finished: 1)
+                } else {
+                    await self.setCurrentChapter(jobId, chapter.title)
+                    do {
+                        _ = try await BookContentService.shared.fetchChapterContent(chapter: chapter, source: source)
+                        await self.mark(jobId, finished: 1)
+                    } catch {
+                        await self.mark(jobId, failed: 1)
+                    }
+                }
+                try? await Task.sleep(nanoseconds: 120_000_000)
+            }
+            await self?.finish(jobId)
+        }
+        return jobId
+    }
+
+    enum JobState { case running, paused, cancelled }
+
+    @MainActor private func jobState(_ id: UUID) -> JobState? {
+        guard let job = jobs.first(where: { $0.id == id }) else { return nil }
+        if job.isCancelled { return .cancelled }
+        return job.isPaused ? .paused : .running
+    }
+
+    @MainActor private func setCurrentChapter(_ id: UUID, _ title: String) {
+        guard let i = jobs.firstIndex(where: { $0.id == id }) else { return }
+        jobs[i].currentChapter = title
+    }
+
+    @MainActor private func mark(_ id: UUID, finished: Int = 0, failed: Int = 0) {
+        guard let i = jobs.firstIndex(where: { $0.id == id }) else { return }
+        jobs[i].finished += finished
+        jobs[i].failed += failed
+    }
+
+    @MainActor private func finish(_ id: UUID) {
+        guard let i = jobs.firstIndex(where: { $0.id == id }) else { return }
+        jobs[i].isRunning = false
+        jobs[i].currentChapter = ""
+    }
+
+    public func pause(_ id: UUID) {
+        guard let i = jobs.firstIndex(where: { $0.id == id }) else { return }
+        jobs[i].isPaused = true
+    }
+
+    public func resume(_ id: UUID) {
+        guard let i = jobs.firstIndex(where: { $0.id == id }) else { return }
+        jobs[i].isPaused = false
+    }
+
+    public func cancel(_ id: UUID) {
+        guard let i = jobs.firstIndex(where: { $0.id == id }) else { return }
+        jobs[i].isCancelled = true
+        jobs[i].isRunning = false
+        tasks[id]?.cancel()
+        tasks[id] = nil
+    }
+
+    public func clearFinished() {
+        jobs.removeAll { !$0.isRunning }
+    }
+}
+
+// MARK: - OPDS 书库配置
+public final class OPDSStore: ObservableObject {
+    public static let shared = OPDSStore()
+
+    @Published public var catalogs: [OPDSCatalog] = []
+
+    private let key = "opds_catalogs_v1"
+
+    public init() {
+        if let data = UserDefaults.standard.data(forKey: key),
+           let decoded = try? JSONDecoder().decode([OPDSCatalog].self, from: data) {
+            catalogs = decoded
+        }
+    }
+
+    private func save() {
+        if let data = try? JSONEncoder().encode(catalogs) {
+            UserDefaults.standard.set(data, forKey: key)
+        }
+    }
+
+    public func add(name: String, url: String, username: String, password: String) {
+        let trimmed = url.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        catalogs.append(OPDSCatalog(name: name.trimmingCharacters(in: .whitespacesAndNewlines), url: trimmed, username: username, password: password))
+        save()
+    }
+
+    public func remove(_ catalog: OPDSCatalog) {
+        catalogs.removeAll { $0.id == catalog.id }
+        save()
+    }
+}
+
+// MARK: - 漫画（cbz / zip）与 PDF 导入
+public extension BookStore {
+
+    /// cbz / zip 漫画：解包出图片，按自然顺序一页一章
+    @discardableResult
+    func importComic(from fileUrl: URL) throws -> Book {
+        guard let archive = Archive(url: fileUrl, accessMode: .read) else {
+            throw NSError(domain: "Legado", code: 1, userInfo: [NSLocalizedDescriptionKey: "打不开这个压缩包"])
+        }
+        let imageExts: Set<String> = ["jpg", "jpeg", "png", "webp", "gif", "bmp"]
+        var entries: [Entry] = []
+        for entry in archive where imageExts.contains((entry.path as NSString).pathExtension.lowercased()) {
+            entries.append(entry)
+        }
+        guard !entries.isEmpty else {
+            throw NSError(domain: "Legado", code: 2, userInfo: [NSLocalizedDescriptionKey: "包里没有图片"])
+        }
+        entries.sort { $0.path.localizedStandardCompare($1.path) == .orderedAscending }
+
+        let bookUrl = "comic://" + CryptoUtils.md5(fileUrl.absoluteString)
+        let dir = getDocumentsDirectory().appendingPathComponent("Books/Comics/\(CryptoUtils.md5(bookUrl))", isDirectory: true)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+
+        var chapters: [BookChapter] = []
+        for (index, entry) in entries.enumerated() {
+            let ext = (entry.path as NSString).pathExtension.lowercased()
+            let dest = dir.appendingPathComponent(String(format: "page-%04d.%@", index + 1, ext))
+            if !FileManager.default.fileExists(atPath: dest.path) {
+                _ = try? archive.extract(entry, consumer: { data in
+                    try? data.write(to: dest)
+                })
+            }
+            let title = String(format: "第 %d 页", index + 1)
+            chapters.append(BookChapter(bookUrl: bookUrl, url: "imgpage://" + dest.path, title: title, index: index))
+        }
+
+        let name = fileUrl.deletingPathExtension().lastPathComponent
+        let book = Book(bookUrl: bookUrl, name: name, author: "", intro: "", origin: "local", originName: "本地漫画", tocUrl: "", latestChapterTitle: chapters.last?.title, totalChapterNum: chapters.count)
+        saveChapters(chapters, for: bookUrl)
+        if let idx = bookshelf.firstIndex(where: { $0.bookUrl == bookUrl }) {
+            bookshelf[idx] = book
+        } else {
+            bookshelf.insert(book, at: 0)
+        }
+        saveBookshelf()
+        return book
+    }
+
+    /// PDF：每页渲染成图片，一页一章
+    @discardableResult
+    func importPDF(from fileUrl: URL) throws -> Book {
+        #if canImport(PDFKit)
+        guard let doc = PDFDocument(url: fileUrl) else {
+            throw NSError(domain: "Legado", code: 3, userInfo: [NSLocalizedDescriptionKey: "打不开这个 PDF"])
+        }
+        let bookUrl = "pdf://" + CryptoUtils.md5(fileUrl.absoluteString)
+        let dir = getDocumentsDirectory().appendingPathComponent("Books/PDF/\(CryptoUtils.md5(bookUrl))", isDirectory: true)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+
+        var chapters: [BookChapter] = []
+        for index in 0..<doc.pageCount {
+            guard let page = doc.page(at: index) else { continue }
+            let dest = dir.appendingPathComponent(String(format: "page-%04d.png", index + 1))
+            if !FileManager.default.fileExists(atPath: dest.path) {
+                let bounds = page.bounds(for: .mediaBox)
+                let scale: CGFloat = 2
+                let width = max(1, Int(bounds.width * scale))
+                let height = max(1, Int(bounds.height * scale))
+                guard let ctx = CGContext(data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: 0, space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue) else { continue }
+                ctx.setFillColor(CGColor(red: 1, green: 1, blue: 1, alpha: 1))
+                ctx.fill(CGRect(x: 0, y: 0, width: CGFloat(width), height: CGFloat(height)))
+                ctx.scaleBy(x: scale, y: scale)
+                page.draw(with: .mediaBox, to: ctx)
+                guard let cgImage = ctx.makeImage(),
+                      let out = CGImageDestinationCreateWithURL(dest as CFURL, "public.png" as CFString, 1, nil) else { continue }
+                CGImageDestinationAddImage(out, cgImage, nil)
+                CGImageDestinationFinalize(out)
+            }
+            chapters.append(BookChapter(bookUrl: bookUrl, url: "imgpage://" + dest.path, title: String(format: "第 %d 页", index + 1), index: index))
+        }
+        guard !chapters.isEmpty else {
+            throw NSError(domain: "Legado", code: 4, userInfo: [NSLocalizedDescriptionKey: "PDF 没渲染出页面"])
+        }
+
+        let name = fileUrl.deletingPathExtension().lastPathComponent
+        let book = Book(bookUrl: bookUrl, name: name, author: "", intro: "", origin: "local", originName: "本地 PDF", tocUrl: "", latestChapterTitle: chapters.last?.title, totalChapterNum: chapters.count)
+        saveChapters(chapters, for: bookUrl)
+        if let idx = bookshelf.firstIndex(where: { $0.bookUrl == bookUrl }) {
+            bookshelf[idx] = book
+        } else {
+            bookshelf.insert(book, at: 0)
+        }
+        saveBookshelf()
+        return book
+        #else
+        throw NSError(domain: "Legado", code: 5, userInfo: [NSLocalizedDescriptionKey: "这个平台不支持 PDF"])
+        #endif
     }
 }

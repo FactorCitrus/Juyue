@@ -1,4 +1,5 @@
 import Foundation
+import Combine
 import SwiftSoup
 
 public class BookContentService {
@@ -303,6 +304,10 @@ public class BookContentService {
 
     /// Fetches and cleans chapter text content
     public func fetchChapterContent(chapter: BookChapter, source: BookSource? = nil) async throws -> String {
+        // 漫画 / PDF：章节就是一张本地图片，直接交给阅读器的图片链路
+        if chapter.url.hasPrefix("imgpage://") {
+            return "[image:" + String(chapter.url.dropFirst("imgpage://".count)) + "]"
+        }
         // If chapter points to a local file, extract directly from disk
         if chapter.url.hasPrefix("file://") || chapter.url.hasPrefix("epub://") || chapter.url.hasPrefix("txt://") || chapter.bookUrl.hasPrefix("file://") || chapter.bookUrl.hasPrefix("txt://") || chapter.url.contains(".xhtml") || chapter.url.contains(".html") || chapter.url.contains(".txt") {
             if chapter.url.contains(".txt") {
@@ -391,6 +396,8 @@ public class BookContentService {
 
         // Clean up common web garbage and sanitize HTML tags
         contentText = BookContentService.cleanHtml(contentText, baseUrl: parsedReq.url.absoluteString)
+        // 替换净化：正则/普通文本规则过一遍，去广告水印
+        contentText = TextPurifier.shared.apply(contentText)
 
         if !contentText.isEmpty {
             saveCachedChapterContent(bookUrl: chapter.bookUrl, chapterIndex: chapter.index, content: contentText)
@@ -483,6 +490,26 @@ public class BookContentService {
 
     /// Sanitizes HTML text, converting <img> to [image:url], <p> and <br> to paragraphs, and stripping other tags
     public static func cleanHtml(_ raw: String, baseUrl: String? = nil) -> String {
+        // 这个函数是多轮正则，开销不小；而列表里每一行的简介每次重绘都会调它一遍，
+        // 长列表滚动时会反复做同样的事。结果按「baseUrl + 原文」缓存。
+        let cacheKey = (baseUrl ?? "") + "\u{1}" + raw
+        cleanCacheLock.lock()
+        let cached = cleanCache[cacheKey]
+        cleanCacheLock.unlock()
+        if let cached { return cached }
+
+        let result = cleanHtmlUncached(raw, baseUrl: baseUrl)
+        cleanCacheLock.lock()
+        if cleanCache.count > 128 { cleanCache.removeAll() }
+        cleanCache[cacheKey] = result
+        cleanCacheLock.unlock()
+        return result
+    }
+
+    private static let cleanCacheLock = NSLock()
+    private static var cleanCache: [String: String] = [:]
+
+    private static func cleanHtmlUncached(_ raw: String, baseUrl: String? = nil) -> String {
         var text = raw
 
         // Convert <img> tags to \n\n[image:url]\n\n before stripping HTML tags
@@ -560,5 +587,354 @@ public class BookContentService {
             }
         }
         return src
+    }
+}
+
+// MARK: - 替换净化
+/// 一条替换规则：普通文本替换，或者正则替换（去广告、去水印、去站点名）
+public struct ReplacementRule: Codable, Identifiable, Equatable {
+    public var id: UUID
+    public var name: String
+    public var pattern: String
+    public var replacement: String
+    public var isRegex: Bool
+    public var enabled: Bool
+
+    public init(name: String = "", pattern: String, replacement: String = "", isRegex: Bool = true, enabled: Bool = true) {
+        self.id = UUID()
+        self.name = name
+        self.pattern = pattern
+        self.replacement = replacement
+        self.isRegex = isRegex
+        self.enabled = enabled
+    }
+}
+
+/// 正文替换净化：规则存 UserDefaults，抓完正文依次过一遍
+public final class TextPurifier: ObservableObject {
+    public static let shared = TextPurifier()
+
+    private let key = "text_purifier_rules_v1"
+
+    @Published public var rules: [ReplacementRule] = [] {
+        didSet { save() }
+    }
+
+    public init() {
+        if let data = UserDefaults.standard.data(forKey: key),
+           let decoded = try? JSONDecoder().decode([ReplacementRule].self, from: data) {
+            rules = decoded
+        }
+    }
+
+    private func save() {
+        if let data = try? JSONEncoder().encode(rules) {
+            UserDefaults.standard.set(data, forKey: key)
+        }
+    }
+
+    public func apply(_ text: String) -> String {
+        guard !rules.isEmpty, !text.isEmpty else { return text }
+        var result = text
+        for rule in rules where rule.enabled && !rule.pattern.isEmpty {
+            if rule.isRegex {
+                guard let regex = try? NSRegularExpression(pattern: rule.pattern, options: [.dotMatchesLineSeparators]) else { continue }
+                let range = NSRange(location: 0, length: (result as NSString).length)
+                result = regex.stringByReplacingMatches(in: result, options: [], range: range, withTemplate: rule.replacement)
+            } else {
+                result = result.replacingOccurrences(of: rule.pattern, with: rule.replacement)
+            }
+        }
+        return result
+    }
+}
+
+// MARK: - RSS / Atom 订阅
+public struct RSSSource: Codable, Identifiable, Equatable {
+    public var id: UUID
+    public var name: String
+    public var url: String
+
+    public init(name: String = "", url: String) {
+        self.id = UUID()
+        self.name = name
+        self.url = url
+    }
+}
+
+public struct RSSItem: Identifiable, Equatable {
+    public var id: String { link.isEmpty ? title : link }
+    public var title: String
+    public var link: String
+    public var summary: String
+    public var date: String
+    public var sourceName: String
+}
+
+/// 拉取 RSS / Atom 并解析出条目（XMLParser，不依赖第三方库）
+public final class RSSService {
+    public static let shared = RSSService()
+
+    public init() {}
+
+    public func fetchFeed(url: String, sourceName: String = "") async throws -> [RSSItem] {
+        guard let parsed = NetworkClient.parseLegadoUrl(url) else { return [] }
+        let response = try await NetworkClient.shared.request(parsed: parsed)
+        let parser = RSSXMLParser(sourceName: sourceName)
+        let delegate = RSSParserDelegate(handler: parser)
+        let xmlParser = XMLParser(data: Data(response.bodyString.utf8))
+        xmlParser.delegate = delegate
+        xmlParser.parse()
+        return delegate.items
+    }
+}
+
+private final class RSSXMLParser {
+    let sourceName: String
+    init(sourceName: String) { self.sourceName = sourceName }
+    func makeItem(title: String, link: String, summary: String, date: String) -> RSSItem {
+        RSSItem(title: title.trimmingCharacters(in: .whitespacesAndNewlines),
+                link: link.trimmingCharacters(in: .whitespacesAndNewlines),
+                summary: BookContentService.cleanHtml(summary),
+                date: date.trimmingCharacters(in: .whitespacesAndNewlines),
+                sourceName: sourceName)
+    }
+}
+
+private final class RSSParserDelegate: NSObject, XMLParserDelegate {
+    private let handler: RSSXMLParser
+    private(set) var items: [RSSItem] = []
+
+    private var inItem = false
+    private var currentElement = ""
+    private var title = ""
+    private var link = ""
+    private var summary = ""
+    private var date = ""
+    private var buffer = ""
+
+    init(handler: RSSXMLParser) { self.handler = handler }
+
+    func parser(_ parser: XMLParser, didStartElement elementName: String, namespaceURI: String?, qualifiedName qName: String?, attributes attributeDict: [String: String] = [:]) {
+        currentElement = elementName.lowercased()
+        buffer = ""
+        if currentElement == "item" || currentElement == "entry" {
+            inItem = true
+            title = ""; link = ""; summary = ""; date = ""
+        }
+        if inItem, currentElement == "link", let href = attributeDict["href"], link.isEmpty {
+            link = href
+        }
+    }
+
+    func parser(_ parser: XMLParser, foundCharacters string: String) {
+        buffer += string
+    }
+
+    func parser(_ parser: XMLParser, didEndElement elementName: String, namespaceURI: String?, qualifiedName qName: String?) {
+        let name = elementName.lowercased()
+        let value = buffer.trimmingCharacters(in: .whitespacesAndNewlines)
+        if inItem {
+            switch name {
+            case "title": if title.isEmpty { title = value }
+            case "link": if link.isEmpty { link = value }
+            case "description", "summary", "content", "content:encoded": if summary.isEmpty { summary = value }
+            case "pubdate", "published", "updated", "dc:date": if date.isEmpty { date = value }
+            case "item", "entry":
+                inItem = false
+                let item = handler.makeItem(title: title, link: link, summary: summary, date: date)
+                if !item.title.isEmpty { items.append(item) }
+            default: break
+            }
+        }
+        buffer = ""
+    }
+}
+
+// MARK: - 订阅源存储
+public final class RSSStore: ObservableObject {
+    public static let shared = RSSStore()
+
+    @Published public var sources: [RSSSource] = []
+
+    private let key = "rss_sources_v1"
+
+    public init() {
+        if let data = UserDefaults.standard.data(forKey: key),
+           let decoded = try? JSONDecoder().decode([RSSSource].self, from: data) {
+            sources = decoded
+        }
+    }
+
+    private func save() {
+        if let data = try? JSONEncoder().encode(sources) {
+            UserDefaults.standard.set(data, forKey: key)
+        }
+    }
+
+    public func add(name: String, url: String) {
+        let trimmedURL = url.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedURL.isEmpty else { return }
+        let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        sources.append(RSSSource(name: trimmedName, url: trimmedURL))
+        save()
+    }
+
+    public func remove(_ source: RSSSource) {
+        sources.removeAll { $0.id == source.id }
+        save()
+    }
+}
+
+// MARK: - OPDS / Calibre 书库
+public struct OPDSCatalog: Codable, Identifiable, Equatable {
+    public var id: UUID
+    public var name: String
+    public var url: String
+    public var username: String
+    public var password: String
+
+    public init(name: String = "", url: String, username: String = "", password: String = "") {
+        self.id = UUID()
+        self.name = name
+        self.url = url
+        self.username = username
+        self.password = password
+    }
+}
+
+public struct OPDSEntry: Identifiable, Equatable {
+    public var id: String { href.isEmpty ? title : href }
+    public var title: String
+    public var href: String
+    public var summary: String
+    public var author: String
+    public var isNavigation: Bool
+    public var acquisitions: [(mime: String, href: String)]
+
+    public static func == (lhs: OPDSEntry, rhs: OPDSEntry) -> Bool { lhs.id == rhs.id }
+}
+
+/// 拉 OPDS 目录（Calibre / Calibre-Web / 自建 OPDS 都能吃）
+public final class OPDSService {
+    public static let shared = OPDSService()
+
+    public init() {}
+
+    public func fetch(_ urlString: String, username: String = "", password: String = "") async throws -> (title: String, entries: [OPDSEntry]) {
+        var parsed = NetworkClient.parseLegadoUrl(urlString)
+        if parsed == nil, let encoded = urlString.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed), let u = URL(string: encoded) {
+            parsed = NetworkClient.ParsedRequest(url: u, method: "GET", headers: [:], body: nil)
+        }
+        guard let request = parsed else { return ("", []) }
+
+        var headers = request.headers
+        if !username.isEmpty {
+            let token = CryptoUtils.base64Encode("\(username):\(password)")
+            headers["Authorization"] = "Basic \(token)"
+        }
+        let authorized = NetworkClient.ParsedRequest(url: request.url, method: request.method, headers: headers, body: request.body)
+        let response = try await NetworkClient.shared.request(parsed: authorized)
+
+        let delegate = OPDSXMLDelegate(baseURL: request.url)
+        let parser = XMLParser(data: Data(response.bodyString.utf8))
+        parser.delegate = delegate
+        parser.parse()
+        return (delegate.feedTitle, delegate.entries)
+    }
+
+    /// 下载一本（返回本地临时文件路径）
+    public func download(_ href: String, username: String = "", password: String = "") async throws -> URL {
+        var parsed = NetworkClient.parseLegadoUrl(href)
+        if parsed == nil, let u = URL(string: href) {
+            parsed = NetworkClient.ParsedRequest(url: u, method: "GET", headers: [:], body: nil)
+        }
+        guard let request = parsed else { throw URLError(.badURL) }
+        var headers = request.headers
+        if !username.isEmpty {
+            headers["Authorization"] = "Basic " + CryptoUtils.base64Encode("\(username):\(password)")
+        }
+        let authorized = NetworkClient.ParsedRequest(url: request.url, method: "GET", headers: headers, body: nil)
+        let response = try await NetworkClient.shared.request(parsed: authorized)
+
+        let name = request.url.lastPathComponent.isEmpty ? "opds-book.epub" : request.url.lastPathComponent
+        let dest = FileManager.default.temporaryDirectory.appendingPathComponent(name)
+        try response.data.write(to: dest)
+        return dest
+    }
+}
+
+private final class OPDSXMLDelegate: NSObject, XMLParserDelegate {
+    private let baseURL: URL
+    private(set) var feedTitle = ""
+    private(set) var entries: [OPDSEntry] = []
+
+    private var inEntry = false
+    private var inFeedTitle = false
+    private var current = ""
+    private var title = ""
+    private var summary = ""
+    private var author = ""
+    private var href = ""
+    private var isNavigation = false
+    private var acquisitions: [(mime: String, href: String)] = []
+
+    init(baseURL: URL) { self.baseURL = baseURL }
+
+    private func absolute(_ link: String) -> String {
+        guard !link.isEmpty else { return "" }
+        if link.hasPrefix("http") { return link }
+        return URL(string: link, relativeTo: baseURL)?.absoluteString ?? link
+    }
+
+    func parser(_ parser: XMLParser, didStartElement elementName: String, namespaceURI: String?, qualifiedName qName: String?, attributes attributeDict: [String: String] = [:]) {
+        let name = elementName.lowercased()
+        current = ""
+        switch name {
+        case "entry":
+            inEntry = true
+            title = ""; summary = ""; author = ""; href = ""; isNavigation = false; acquisitions = []
+        case "title":
+            if !inEntry { inFeedTitle = true }
+        case "link":
+            let rel = attributeDict["rel"] ?? ""
+            let type = attributeDict["type"] ?? ""
+            guard let raw = attributeDict["href"] else { break }
+            let link = absolute(raw)
+            if rel.contains("acquisition") {
+                acquisitions.append((type, link))
+            } else if rel.contains("subsection") || type.contains("atom") || rel.isEmpty {
+                if href.isEmpty || rel.contains("subsection") {
+                    href = link
+                    if rel.contains("subsection") { isNavigation = true }
+                }
+            }
+        default:
+            break
+        }
+    }
+
+    func parser(_ parser: XMLParser, foundCharacters string: String) { current += string }
+
+    func parser(_ parser: XMLParser, didEndElement elementName: String, namespaceURI: String?, qualifiedName qName: String?) {
+        let name = elementName.lowercased()
+        let value = current.trimmingCharacters(in: .whitespacesAndNewlines)
+        if inEntry {
+            switch name {
+            case "title": if title.isEmpty { title = value }
+            case "summary", "content": if summary.isEmpty { summary = value }
+            case "name": if author.isEmpty { author = value }
+            case "entry":
+                inEntry = false
+                if !title.isEmpty {
+                    entries.append(OPDSEntry(title: title, href: href, summary: BookContentService.cleanHtml(summary), author: author, isNavigation: isNavigation && acquisitions.isEmpty, acquisitions: acquisitions))
+                }
+            default: break
+            }
+        } else if name == "title", inFeedTitle {
+            feedTitle = value
+            inFeedTitle = false
+        }
+        current = ""
     }
 }

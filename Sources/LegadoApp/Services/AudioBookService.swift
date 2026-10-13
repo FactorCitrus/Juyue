@@ -5,12 +5,69 @@ import Combine
 import LegadoCore
 #endif
 
+/// 系统语音的音色选择。iOS 里中文音色有婷婷、Sandy、Shelley 这些，
+/// 在「设置 → 辅助功能 → 朗读内容 → 声音 → 中文」里下载增强/高级版之后，同一个 id 会自动变成高质量那版。
+enum SystemVoiceSelection {
+    static let defaultsKey = "legado_system_voice_identifier"
+
+    static var identifier: String? {
+        get { UserDefaults.standard.string(forKey: defaultsKey) }
+        set {
+            if let newValue {
+                UserDefaults.standard.set(newValue, forKey: defaultsKey)
+            } else {
+                UserDefaults.standard.removeObject(forKey: defaultsKey)
+            }
+        }
+    }
+
+    static var selectedVoice: AVSpeechSynthesisVoice? {
+        guard let id = identifier else { return nil }
+        return AVSpeechSynthesisVoice(identifier: id)
+    }
+
+    /// 中文音色，质量高的排前面。quality 要 iOS 16+ 才有。
+    static var chineseVoices: [AVSpeechSynthesisVoice] {
+        let all = AVSpeechSynthesisVoice.speechVoices().filter { $0.language.hasPrefix("zh") }
+        return all.sorted { lhs, rhs in
+            let lq = qualityRank(lhs), rq = qualityRank(rhs)
+            if lq != rq { return lq > rq }
+            if lhs.language != rhs.language { return lhs.language < rhs.language }
+            return lhs.name < rhs.name
+        }
+    }
+
+    static func qualityRank(_ voice: AVSpeechSynthesisVoice) -> Int {
+        guard #available(iOS 16.0, macOS 13.0, *) else { return 1 }
+        switch voice.quality {
+        case .premium: return 3
+        case .enhanced: return 2
+        default: return 1
+        }
+    }
+
+    static func qualityLabel(_ voice: AVSpeechSynthesisVoice) -> String {
+        guard #available(iOS 16.0, macOS 13.0, *) else { return "默认" }
+        switch voice.quality {
+        case .premium: return "高级"
+        case .enhanced: return "增强"
+        default: return "默认"
+        }
+    }
+}
+
 public class AudioBookService: NSObject, ObservableObject, AVSpeechSynthesizerDelegate {
     public static let shared = AudioBookService()
 
     private let synthesizer = AVSpeechSynthesizer()
     /// 选中在线语音源时改走它，否则还是系统语音。
     private let httpPlayer = HttpTTSPlayer.shared
+    #if os(iOS)
+    /// 选中百度离线音色时改走它。
+    private let baiduPlayer = BaiduOfflineTTS.shared
+    /// 选中百度在线发音人时改走它。
+    private let baiduOnlinePlayer = BaiduOnlineTTS.shared
+    #endif
     private var cancellables = Set<AnyCancellable>()
 
     @Published public var isPlaying: Bool = false
@@ -44,7 +101,18 @@ public class AudioBookService: NSObject, ObservableObject, AVSpeechSynthesizerDe
 
     /// 当前引擎名，设置面板和阅读界面都用它显示
     public var currentEngineName: String {
-        TTSourceSelection.activeSource?.name ?? "系统语音"
+        #if os(iOS)
+        if let voice = BaiduOfflineTTS.activeVoice {
+            return "百度离线 · \(voice.name)"
+        }
+        if let speaker = BaiduOnlineTTS.activeSpeaker {
+            return "百度在线 · \(speaker.name)"
+        }
+        #endif
+        if let voice = SystemVoiceSelection.selectedVoice {
+            return "系统语音 · \(voice.name)"
+        }
+        return TTSourceSelection.activeSource?.name ?? "系统语音"
     }
 
     /// 试听一句话
@@ -69,6 +137,40 @@ public class AudioBookService: NSObject, ObservableObject, AVSpeechSynthesizerDe
                 self.isPaused = paused
             }
             .store(in: &cancellables)
+
+        #if os(iOS)
+        baiduPlayer.$isPlaying
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] playing in
+                guard let self, BaiduOfflineTTS.activeVoiceId != nil else { return }
+                self.isPlaying = playing
+            }
+            .store(in: &cancellables)
+
+        baiduPlayer.$isPaused
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] paused in
+                guard let self, BaiduOfflineTTS.activeVoiceId != nil else { return }
+                self.isPaused = paused
+            }
+            .store(in: &cancellables)
+
+        baiduOnlinePlayer.$isPlaying
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] playing in
+                guard let self, BaiduOnlineTTS.activeSpeakerId != nil else { return }
+                self.isPlaying = playing
+            }
+            .store(in: &cancellables)
+
+        baiduOnlinePlayer.$isPaused
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] paused in
+                guard let self, BaiduOnlineTTS.activeSpeakerId != nil else { return }
+                self.isPaused = paused
+            }
+            .store(in: &cancellables)
+        #endif
     }
 
     /// 把 AVSpeech 的语速换算成语音源的 speakSpeed（安卓端范围 5..50）。
@@ -76,6 +178,20 @@ public class AudioBookService: NSObject, ObservableObject, AVSpeechSynthesizerDe
         let ratio = speechRate / AVSpeechUtteranceDefaultSpeechRate
         return min(50, max(5, Int(ratio * 10)))
     }
+
+    #if os(iOS)
+    /// 换算成百度离线引擎的 paramSpeed，区间 0..15，5 是 1 倍速。
+    private var baiduSpeed: Int {
+        let ratio = Double(speechRate / AVSpeechUtteranceDefaultSpeechRate)
+        return min(15, max(0, Int((ratio - 0.5) * 10)))
+    }
+
+    /// 换算成在线引擎的 paramSpeed，区间 0..25（最高 3 倍速）。
+    private var baiduOnlineSpeed: Int {
+        let ratio = Double(speechRate / AVSpeechUtteranceDefaultSpeechRate)
+        return min(25, max(0, Int((ratio - 0.5) * 10)))
+    }
+    #endif
 
     private func setupAudioSession() {
         #if os(iOS)
@@ -94,6 +210,25 @@ public class AudioBookService: NSObject, ObservableObject, AVSpeechSynthesizerDe
 
         self.currentText = text
 
+        #if os(iOS)
+        if let voice = BaiduOfflineTTS.activeVoice {
+            baiduPlayer.start(voice: voice, text: text, speed: baiduSpeed, maxChunkLength: chunkLength)
+            DispatchQueue.main.async {
+                self.isPlaying = true
+                self.isPaused = false
+            }
+            return
+        }
+        if let speaker = BaiduOnlineTTS.activeSpeaker {
+            baiduOnlinePlayer.start(speaker: speaker, text: text, speed: baiduOnlineSpeed, maxChunkLength: chunkLength)
+            DispatchQueue.main.async {
+                self.isPlaying = true
+                self.isPaused = false
+            }
+            return
+        }
+        #endif
+
         if let source = TTSourceSelection.activeSource {
             httpPlayer.start(source: source, text: text, speed: httpSpeed, maxChunkLength: chunkLength)
             DispatchQueue.main.async {
@@ -104,7 +239,7 @@ public class AudioBookService: NSObject, ObservableObject, AVSpeechSynthesizerDe
         }
 
         let utterance = AVSpeechUtterance(string: text)
-        utterance.voice = AVSpeechSynthesisVoice(language: language)
+        utterance.voice = SystemVoiceSelection.selectedVoice ?? AVSpeechSynthesisVoice(language: language)
         utterance.rate = speechRate
 
         // Ensure audio session is active
@@ -130,6 +265,14 @@ public class AudioBookService: NSObject, ObservableObject, AVSpeechSynthesizerDe
     }
 
     public func pause() {
+        #if os(iOS)
+        if BaiduOfflineTTS.activeVoiceId != nil {
+            baiduPlayer.pause()
+        }
+        if BaiduOnlineTTS.activeSpeakerId != nil {
+            baiduOnlinePlayer.pause()
+        }
+        #endif
         if TTSourceSelection.activeId != nil {
             httpPlayer.pause()
         }
@@ -143,6 +286,14 @@ public class AudioBookService: NSObject, ObservableObject, AVSpeechSynthesizerDe
     }
 
     public func resume() {
+        #if os(iOS)
+        if BaiduOfflineTTS.activeVoiceId != nil {
+            baiduPlayer.resume()
+        }
+        if BaiduOnlineTTS.activeSpeakerId != nil {
+            baiduOnlinePlayer.resume()
+        }
+        #endif
         if TTSourceSelection.activeId != nil {
             httpPlayer.resume()
         }
@@ -156,6 +307,10 @@ public class AudioBookService: NSObject, ObservableObject, AVSpeechSynthesizerDe
     }
 
     public func stop() {
+        #if os(iOS)
+        baiduPlayer.stop()
+        baiduOnlinePlayer.stop()
+        #endif
         httpPlayer.stop()
         // Critical: in iOS AVFoundation, stopSpeaking while isPaused can deadlock mediaserverd.
         // If paused, we must resume before stopping immediately.

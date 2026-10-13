@@ -217,6 +217,17 @@ public enum TTSourceSelection {
     }
 
     public static func displayName(in sources: [HttpTTS]) -> String {
+        #if os(iOS)
+        if let voice = BaiduOfflineTTS.activeVoice {
+            return "百度离线 · \(voice.name)"
+        }
+        if let speaker = BaiduOnlineTTS.activeSpeaker {
+            return "百度在线 · \(speaker.name)"
+        }
+        #endif
+        if let voice = SystemVoiceSelection.selectedVoice {
+            return "系统语音 · \(voice.name)"
+        }
         guard let id = activeId else { return "系统语音" }
         if let named = sources.first(where: { $0.id == id })?.name {
             return named

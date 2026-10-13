@@ -16,6 +16,7 @@ public struct SourceManagerView: View {
     @State private var importUrl: String = ""
     @State private var alertMessage: String? = nil
     @State private var showAlert: Bool = false
+    @State private var showBatchDeleteAlert: Bool = false
 
     // 源多的时候靠这几项筛
     @State private var searchText: String = ""
@@ -144,6 +145,12 @@ public struct SourceManagerView: View {
                 Menu {
                     Button("启用当前筛选结果") { setEnabled(true, in: filteredSources) }
                     Button("停用当前筛选结果") { setEnabled(false, in: filteredSources) }
+                    Divider()
+                    Button(role: .destructive) {
+                        showBatchDeleteAlert = true
+                    } label: {
+                        Text("删除当前筛选结果（\(filteredSources.count)）")
+                    }
                 } label: {
                     HStack {
                         Text("批量操作")
@@ -236,6 +243,19 @@ public struct SourceManagerView: View {
             }
             .alert(alertMessage ?? "", isPresented: $showAlert) {
                 Button("确定", role: .cancel) {}
+            }
+            .alert("删除这些书源？", isPresented: $showBatchDeleteAlert) {
+                Button("取消", role: .cancel) {}
+                Button("删除 \(filteredSources.count) 个", role: .destructive) {
+                    let targets = filteredSources.map { $0.bookSourceUrl }
+                    for url in targets {
+                        bookStore.deleteSource(sourceUrl: url)
+                    }
+                    alertMessage = "已删除 \(targets.count) 个书源"
+                    showAlert = true
+                }
+            } message: {
+                Text("删的是上面「筛选」的结果，共 \(filteredSources.count) 个。删掉就找不回来了，除非重新导入。")
             }
             .fileImporter(
                 isPresented: $showFileImporter,

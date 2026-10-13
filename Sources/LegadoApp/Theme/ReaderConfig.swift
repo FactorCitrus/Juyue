@@ -90,16 +90,78 @@ public enum ChineseConversion: String, CaseIterable, Identifiable {
     }
 }
 
-/// 页眉页脚每栏能填什么
-public enum ReaderBarContent: String, CaseIterable, Identifiable {
-    case none = "无"
-    case chapterTitle = "标题"
-    case bookName = "书名"
-    case progress = "进度(%)"
-    case pageInfo = "页码"
-    case time = "时间"
+/// 阅读器设置卡片的三个面板，对应栖阅的 `ReaderQuickSettingsPanelKind`
+/// （quick / spacing / tts）。原来所有设置堆成一长条，滑半天找不到东西。
+public enum ReaderQuickPanel: String, CaseIterable, Identifiable {
+    case quick = "快捷"
+    case spacing = "排版"
+    case tts = "朗读"
 
     public var id: String { rawValue }
+
+    public var symbolName: String {
+        switch self {
+        case .quick: return "slider.horizontal.3"
+        case .spacing: return "text.alignleft"
+        case .tts: return "speaker.wave.2"
+        }
+    }
+}
+
+public extension ReaderTheme {
+    /// 每套主题一个强调色，设置面板的滑块、选中态都用它，
+    /// 免得所有控件都是同一个灰。
+    var accentColor: Color {
+        switch self {
+        case .white: return Color(red: 0.18, green: 0.44, blue: 0.84)
+        case .parchment: return Color(red: 0.72, green: 0.47, blue: 0.20)
+        case .eyeCare: return Color(red: 0.30, green: 0.50, blue: 0.24)
+        case .dark: return Color(red: 0.56, green: 0.73, blue: 0.96)
+        }
+    }
+}
+
+/// 页眉页脚每栏能填什么。
+///
+/// 条目对齐栖阅的 `ReaderDisplayItem`（22 项）；前 6 个的 rawValue 保持原样，
+/// 免得老用户的已存配置解不出来。
+public enum ReaderBarContent: String, CaseIterable, Identifiable {
+    case none = "无"
+    case bookName = "书名"
+    case chapterTitle = "标题"
+    case chapterTitleShort = "短标题"
+    case progress = "进度(%)"
+    case pageInfo = "页码"
+    case pageProgress = "页进度"
+    case pageProgressText = "第 N 页"
+    case totalProgress = "总进度"
+    case totalProgressBar = "总进度条"
+    case time = "时间"
+    case timeWithSeconds = "时间(秒)"
+    case date = "日期"
+    case weekday = "星期"
+    case customDate = "自定义日期"
+    case batteryLevel = "电量(%)"
+    case batteryIcon = "电量图标"
+    case batteryIconWithNumber = "图标+电量"
+    case batteryBar = "电量条"
+    case chapterCount = "共 N 章"
+    case chapterCountShort = "N 章"
+    case readingDuration = "阅读时长"
+    case remainingTime = "剩余时间"
+    case customText = "自定义"
+
+    public var id: String { rawValue }
+
+    /// 电量与进度条这类要画图形，不能只当文本塞进 HStack
+    public var isGraphical: Bool {
+        switch self {
+        case .batteryIcon, .batteryIconWithNumber, .batteryBar, .totalProgressBar:
+            return true
+        default:
+            return false
+        }
+    }
 }
 
 /// 每页顶部那行章节标题怎么放
@@ -109,6 +171,40 @@ public enum ReaderTitleAlignment: String, CaseIterable, Identifiable {
     case hidden = "隐藏"
 
     public var id: String { rawValue }
+}
+
+/// 正文对齐方式。对应栖阅 reader.css 的 `--reader-align`，默认两端对齐。
+public enum ReaderTextAlignment: String, CaseIterable, Identifiable {
+    case justify = "两端"
+    case leading = "靠左"
+    case center = "居中"
+    case trailing = "靠右"
+
+    public var id: String { rawValue }
+
+    /// 只有两端对齐要额外做二次分配，其余交给 Text 自己排。
+    public var isJustify: Bool { self == .justify }
+}
+
+/// 下划线线型。对应栖阅 ReadingSettings 的 `_textUnderlinePattern`。
+public enum ReaderUnderlinePattern: String, CaseIterable, Identifiable {
+    case solid = "实线"
+    case dot = "点线"
+    case dash = "虚线"
+    case dashDot = "点划线"
+
+    public var id: String { rawValue }
+
+    /// `Text.LineStyle` 要 iOS 16 / macOS 13 才有，低版本走不带线型的分支
+    @available(iOS 16.0, macOS 13.0, *)
+    public var lineStyle: Text.LineStyle.Pattern {
+        switch self {
+        case .solid: return .solid
+        case .dot: return .dot
+        case .dash: return .dash
+        case .dashDot: return .dashDot
+        }
+    }
 }
 
 public class ReaderConfig: ObservableObject {
@@ -135,6 +231,32 @@ public class ReaderConfig: ObservableObject {
     /// 页眉/页脚离屏幕边缘的距离
     @Published public var headerOffset: CGFloat = 0.0 { didSet { persist(headerOffset, "reader_header_offset") } }
     @Published public var footerOffset: CGFloat = 0.0 { didSet { persist(footerOffset, "reader_footer_offset") } }
+
+    /// 页眉那一行离屏幕上沿的实际距离，0 = 贴屏幕上沿（顶到灵动岛那条上面）
+    public var headerGap: CGFloat { max(0, headerOffset) }
+    /// 页脚那一行离屏幕下沿的实际距离，0 = 贴屏幕下沿
+    public var footerGap: CGFloat { max(0, footerOffset) }
+
+    /// 页末匀空白：一页排不满时，把剩下的高度匀进段间距，正文看起来铺满整页。
+    /// 关掉之后页末留白全堆在底部，段间距就是你设的那个值。
+    @Published public var justifyLastPage: Bool = true {
+        didSet { Self.defaults.set(justifyLastPage, forKey: "reader_justify_last_page") }
+    }
+
+    /// 阅读设置面板的不透明度：调布局时把它调低，能看见被面板挡住的正文变化。
+    @Published public var panelOpacity: Double = 0.92 {
+        didSet { Self.defaults.set(panelOpacity, forKey: "reader_panel_opacity") }
+    }
+
+    /// 面板是两层底色叠出来的，想得到总不透明度 v，每层得用 1-√(1-v)。
+    public var panelLayerOpacity: Double {
+        let v = max(0.0, min(1.0, panelOpacity))
+        return 1 - (1 - v).squareRoot()
+    }
+    /// 阅读页亮度：1 = 原始，越小越暗（盖一层黑，不去动系统亮度）
+    @Published public var brightness: Double = 1.0 { didSet { Self.defaults.set(brightness, forKey: "reader_brightness") } }
+    /// 自动夜间：22:00–07:00 用暗黑主题，白天回到原来的主题
+    @Published public var autoNight: Bool = false { didSet { Self.defaults.set(autoNight, forKey: "reader_auto_night") } }
     /// 上下边距
     @Published public var verticalPadding: CGFloat = 24.0 { didSet { persist(verticalPadding, "reader_vertical_padding") } }
     /// 首行缩进，按字数算
@@ -159,6 +281,102 @@ public class ReaderConfig: ObservableObject {
         set { weightLevel = newValue.level }
     }
 
+    // MARK: - 正文对齐与段落（栖阅 reader.css 的排版变量）
+    /// 正文对齐，默认两端对齐（栖阅 `--reader-align: justify`）
+    @Published public var textAlignment: ReaderTextAlignment = .justify {
+        didSet { Self.defaults.set(textAlignment.rawValue, forKey: "reader_text_alignment") }
+    }
+    /// 段落之间的分隔线数量，0 表示不加。对应栖阅 `_paragraphSeparatorLines`
+    @Published public var paragraphSeparatorLines: Int = 0 {
+        didSet { Self.defaults.set(paragraphSeparatorLines, forKey: "reader_paragraph_separator_lines") }
+    }
+    /// 段落分隔线的颜色，空字符串表示跟随正文色
+    @Published public var paragraphSeparatorColorHex: String = "" {
+        didSet { Self.defaults.set(paragraphSeparatorColorHex, forKey: "reader_paragraph_separator_hex") }
+    }
+
+    // MARK: - 正文下划线（栖阅 `_textUnderline*` 六参数）
+    @Published public var underlineEnabled: Bool = false {
+        didSet { Self.defaults.set(underlineEnabled, forKey: "reader_underline_enabled") }
+    }
+    @Published public var underlinePattern: ReaderUnderlinePattern = .solid {
+        didSet { Self.defaults.set(underlinePattern.rawValue, forKey: "reader_underline_pattern") }
+    }
+    /// 空字符串表示跟随正文色
+    @Published public var underlineColorHex: String = "" {
+        didSet { Self.defaults.set(underlineColorHex, forKey: "reader_underline_hex") }
+    }
+
+    public var underlineColor: Color? {
+        underlineColorHex.isEmpty ? nil : Color(hex: underlineColorHex)
+    }
+
+    public var paragraphSeparatorColor: Color {
+        Color(hex: paragraphSeparatorColorHex) ?? textColor.opacity(0.18)
+    }
+
+    // MARK: - 章节标题（栖阅 reader.css 的 .chapter-title / .chapter）
+    /// 标题字号 = 正文字号 × 该系数，栖阅默认 1.18
+    @Published public var chapterTitleScale: CGFloat = 1.18 {
+        didSet { persist(chapterTitleScale, "reader_chapter_title_scale") }
+    }
+    /// 标题到正文的距离
+    @Published public var chapterTitleSpacing: CGFloat = 28.0 {
+        didSet { persist(chapterTitleSpacing, "reader_chapter_title_spacing") }
+    }
+    /// 上一章尾部到下一章标题的距离
+    @Published public var chapterTopSpacing: CGFloat = 18.0 {
+        didSet { persist(chapterTopSpacing, "reader_chapter_top_spacing") }
+    }
+    /// 章节正文底部留白
+    @Published public var chapterBottomSpacing: CGFloat = 36.0 {
+        didSet { persist(chapterBottomSpacing, "reader_chapter_bottom_spacing") }
+    }
+
+    // MARK: - 章节标题设计器产物（栖阅 ChapterTitleDesigner 导出的东西）
+    /// 设计器工程 JSON，下次打开设计器回灌用
+    @Published public var chapterTitleProjectJSON: String = "" {
+        didSet { Self.defaults.set(chapterTitleProjectJSON, forKey: "reader_title_designer_project") }
+    }
+    /// 渲染用 HTML 片段（`<style>…</style>` + HTML）
+    @Published public var chapterTitleHTMLTemplate: String = "" {
+        didSet { Self.defaults.set(chapterTitleHTMLTemplate, forKey: "reader_title_designer_html") }
+    }
+    /// 设计画布高度，渲染时按这个比例缩放
+    @Published public var chapterTitleCanvasHeight: Double = 0 {
+        didSet { Self.defaults.set(chapterTitleCanvasHeight, forKey: "reader_title_designer_height") }
+    }
+    /// 有没有已经设计好的标题
+    public var hasDesignedChapterTitle: Bool { !chapterTitleHTMLTemplate.isEmpty }
+
+    /// 设计器要按当前配色切明暗主题
+    public var isDarkAppearance: Bool {
+        theme == .dark
+    }
+
+    // MARK: - 阅读背景图
+    @Published public var backgroundImageEnabled: Bool = false {
+        didSet { Self.defaults.set(backgroundImageEnabled, forKey: "reader_bg_image_enabled") }
+    }
+    /// 背景图绝对路径。用路径而不是资源名，才能用相册或文件里选的图
+    @Published public var backgroundImagePath: String = "" {
+        didSet { Self.defaults.set(backgroundImagePath, forKey: "reader_bg_image_path") }
+    }
+
+    // MARK: - 页眉页脚内容参数（栖阅 ReaderDisplayItem 用到的那几个）
+    /// 「短标题」留几个字
+    @Published public var shortTitleLength: Int = 6 {
+        didSet { Self.defaults.set(shortTitleLength, forKey: "reader_short_title_length") }
+    }
+    /// 「自定义日期」的格式串
+    @Published public var customDatePattern: String = "M月d日" {
+        didSet { Self.defaults.set(customDatePattern, forKey: "reader_custom_date_pattern") }
+    }
+    /// 「自定义」栏文字
+    @Published public var customBarText: String = "" {
+        didSet { Self.defaults.set(customBarText, forKey: "reader_custom_bar_text") }
+    }
+
     // MARK: - 页眉页脚
     @Published public var titleAlignment: ReaderTitleAlignment = .leading {
         didSet { Self.defaults.set(titleAlignment.rawValue, forKey: "reader_title_alignment") }
@@ -166,26 +384,39 @@ public class ReaderConfig: ObservableObject {
     @Published public var headerEnabled: Bool = false {
         didSet { Self.defaults.set(headerEnabled, forKey: "reader_header_enabled") }
     }
-    @Published public var headerLeft: ReaderBarContent = .bookName {
-        didSet { Self.defaults.set(headerLeft.rawValue, forKey: "reader_header_left") }
+    /// 一栏能塞几个组件就塞几个，顺序就是显示顺序；空数组等于这一栏不画。
+    @Published public var headerLeft: [ReaderBarContent] = [.bookName] {
+        didSet { Self.persistBar(headerLeft, key: "reader_header_left") }
     }
-    @Published public var headerCenter: ReaderBarContent = .none {
-        didSet { Self.defaults.set(headerCenter.rawValue, forKey: "reader_header_center") }
+    @Published public var headerCenter: [ReaderBarContent] = [] {
+        didSet { Self.persistBar(headerCenter, key: "reader_header_center") }
     }
-    @Published public var headerRight: ReaderBarContent = .progress {
-        didSet { Self.defaults.set(headerRight.rawValue, forKey: "reader_header_right") }
+    @Published public var headerRight: [ReaderBarContent] = [.progress] {
+        didSet { Self.persistBar(headerRight, key: "reader_header_right") }
     }
     @Published public var footerEnabled: Bool = true {
         didSet { Self.defaults.set(footerEnabled, forKey: "reader_footer_enabled") }
     }
-    @Published public var footerLeft: ReaderBarContent = .chapterTitle {
-        didSet { Self.defaults.set(footerLeft.rawValue, forKey: "reader_footer_left") }
+    @Published public var footerLeft: [ReaderBarContent] = [.chapterTitle] {
+        didSet { Self.persistBar(footerLeft, key: "reader_footer_left") }
     }
-    @Published public var footerCenter: ReaderBarContent = .none {
-        didSet { Self.defaults.set(footerCenter.rawValue, forKey: "reader_footer_center") }
+    @Published public var footerCenter: [ReaderBarContent] = [] {
+        didSet { Self.persistBar(footerCenter, key: "reader_footer_center") }
     }
-    @Published public var footerRight: ReaderBarContent = .pageInfo {
-        didSet { Self.defaults.set(footerRight.rawValue, forKey: "reader_footer_right") }
+    @Published public var footerRight: [ReaderBarContent] = [.pageInfo] {
+        didSet { Self.persistBar(footerRight, key: "reader_footer_right") }
+    }
+
+    /// 一栏多个组件用逗号拼着存；老的「单个值」也在这条路径上解出来。
+    private static func persistBar(_ items: [ReaderBarContent], key: String) {
+        defaults.set(items.map { $0.rawValue }.joined(separator: ","), forKey: key)
+    }
+
+    private static func loadBar(_ key: String, fallback: [ReaderBarContent]) -> [ReaderBarContent] {
+        guard let raw = defaults.string(forKey: key) else { return fallback }
+        let parts = raw.split(separator: ",").map { String($0).trimmingCharacters(in: .whitespaces) }
+        let parsed = parts.compactMap { ReaderBarContent(rawValue: $0) }.filter { $0 != .none }
+        return parsed
     }
     /// 页眉页脚和正文之间的分隔线：默认开着，否则同色背景下页脚等于看不见
     @Published public var barDivider: Bool = true {
@@ -221,6 +452,18 @@ public class ReaderConfig: ObservableObject {
         public var headerEnabled: Bool
         public var footerEnabled: Bool
         public var barDivider: Bool
+        // 后加的键一律可选，老备份解出来是 nil 就用默认值
+        public var textAlignment: String?
+        public var paragraphSeparatorLines: Int?
+        public var underlineEnabled: Bool?
+        public var underlinePattern: String?
+        public var underlineColorHex: String?
+        public var chapterTitleScale: Double?
+        public var chapterTitleSpacing: Double?
+        public var chapterTopSpacing: Double?
+        public var chapterBottomSpacing: Double?
+        public var backgroundImageEnabled: Bool?
+        public var backgroundImagePath: String?
     }
 
     public var layoutSnapshot: LayoutSnapshot {
@@ -246,7 +489,18 @@ public class ReaderConfig: ObservableObject {
             titleAlignment: titleAlignment.rawValue,
             headerEnabled: headerEnabled,
             footerEnabled: footerEnabled,
-            barDivider: barDivider
+            barDivider: barDivider,
+            textAlignment: textAlignment.rawValue,
+            paragraphSeparatorLines: paragraphSeparatorLines,
+            underlineEnabled: underlineEnabled,
+            underlinePattern: underlinePattern.rawValue,
+            underlineColorHex: underlineColorHex,
+            chapterTitleScale: Double(chapterTitleScale),
+            chapterTitleSpacing: Double(chapterTitleSpacing),
+            chapterTopSpacing: Double(chapterTopSpacing),
+            chapterBottomSpacing: Double(chapterBottomSpacing),
+            backgroundImageEnabled: backgroundImageEnabled,
+            backgroundImagePath: backgroundImagePath
         )
     }
 
@@ -273,6 +527,17 @@ public class ReaderConfig: ObservableObject {
         headerEnabled = snapshot.headerEnabled
         footerEnabled = snapshot.footerEnabled
         barDivider = snapshot.barDivider
+        textAlignment = ReaderTextAlignment(rawValue: snapshot.textAlignment ?? "") ?? .justify
+        paragraphSeparatorLines = snapshot.paragraphSeparatorLines ?? 0
+        underlineEnabled = snapshot.underlineEnabled ?? false
+        underlinePattern = ReaderUnderlinePattern(rawValue: snapshot.underlinePattern ?? "") ?? .solid
+        underlineColorHex = snapshot.underlineColorHex ?? ""
+        chapterTitleScale = CGFloat(snapshot.chapterTitleScale ?? 1.18)
+        chapterTitleSpacing = CGFloat(snapshot.chapterTitleSpacing ?? 28)
+        chapterTopSpacing = CGFloat(snapshot.chapterTopSpacing ?? 18)
+        chapterBottomSpacing = CGFloat(snapshot.chapterBottomSpacing ?? 36)
+        backgroundImageEnabled = snapshot.backgroundImageEnabled ?? false
+        backgroundImagePath = snapshot.backgroundImagePath ?? ""
     }
 
     /// 按书存排版，key 用书的 URL 的哈希
@@ -331,6 +596,8 @@ public class ReaderConfig: ObservableObject {
         if d.object(forKey: "reader_line_spacing") != nil { lineSpacing = CGFloat(d.double(forKey: "reader_line_spacing")) }
         if d.object(forKey: "reader_letter_spacing") != nil { letterSpacing = CGFloat(d.double(forKey: "reader_letter_spacing")) }
         if d.object(forKey: "reader_paragraph_spacing") != nil { paragraphSpacing = CGFloat(d.double(forKey: "reader_paragraph_spacing")) }
+        if d.object(forKey: "reader_justify_last_page") != nil { justifyLastPage = d.bool(forKey: "reader_justify_last_page") }
+        if d.object(forKey: "reader_panel_opacity") != nil { panelOpacity = d.double(forKey: "reader_panel_opacity") }
         if d.object(forKey: "reader_horizontal_padding") != nil { horizontalPadding = CGFloat(d.double(forKey: "reader_horizontal_padding")) }
         if d.object(forKey: "reader_first_line_indent") != nil { firstLineIndent = CGFloat(d.double(forKey: "reader_first_line_indent")) }
         if d.object(forKey: "reader_bold_text") != nil { boldText = d.bool(forKey: "reader_bold_text") }
@@ -349,20 +616,58 @@ public class ReaderConfig: ObservableObject {
         paddingRight = d.object(forKey: "reader_padding_right") != nil ? CGFloat(d.double(forKey: "reader_padding_right")) : legacyHorizontal
         if d.object(forKey: "reader_header_offset") != nil { headerOffset = CGFloat(d.double(forKey: "reader_header_offset")) }
         if d.object(forKey: "reader_footer_offset") != nil { footerOffset = CGFloat(d.double(forKey: "reader_footer_offset")) }
+        if d.object(forKey: "reader_brightness") != nil { brightness = d.double(forKey: "reader_brightness") }
+        if d.object(forKey: "reader_auto_night") != nil { autoNight = d.bool(forKey: "reader_auto_night") }
         if let v = d.string(forKey: "reader_title_alignment"), let t = ReaderTitleAlignment(rawValue: v) { titleAlignment = t }
         if d.object(forKey: "reader_header_enabled") != nil { headerEnabled = d.bool(forKey: "reader_header_enabled") }
-        if let v = d.string(forKey: "reader_header_left"), let c = ReaderBarContent(rawValue: v) { headerLeft = c }
-        if let v = d.string(forKey: "reader_header_center"), let c = ReaderBarContent(rawValue: v) { headerCenter = c }
-        if let v = d.string(forKey: "reader_header_right"), let c = ReaderBarContent(rawValue: v) { headerRight = c }
+        headerLeft = Self.loadBar("reader_header_left", fallback: headerLeft)
+        headerCenter = Self.loadBar("reader_header_center", fallback: headerCenter)
+        headerRight = Self.loadBar("reader_header_right", fallback: headerRight)
         if d.object(forKey: "reader_footer_enabled") != nil { footerEnabled = d.bool(forKey: "reader_footer_enabled") }
-        if let v = d.string(forKey: "reader_footer_left"), let c = ReaderBarContent(rawValue: v) { footerLeft = c }
-        if let v = d.string(forKey: "reader_footer_center"), let c = ReaderBarContent(rawValue: v) { footerCenter = c }
-        if let v = d.string(forKey: "reader_footer_right"), let c = ReaderBarContent(rawValue: v) { footerRight = c }
+        footerLeft = Self.loadBar("reader_footer_left", fallback: footerLeft)
+        footerCenter = Self.loadBar("reader_footer_center", fallback: footerCenter)
+        footerRight = Self.loadBar("reader_footer_right", fallback: footerRight)
         if d.object(forKey: "reader_bar_divider") != nil { barDivider = d.bool(forKey: "reader_bar_divider") }
         if d.object(forKey: "reader_shared_layout") != nil { sharedLayout = d.bool(forKey: "reader_shared_layout") }
         if d.object(forKey: "reader_custom_colors") != nil { useCustomColors = d.bool(forKey: "reader_custom_colors") }
         if let hex = d.string(forKey: "reader_bg_hex") { customBackgroundHex = hex }
         if let hex = d.string(forKey: "reader_text_hex") { customTextHex = hex }
+        if let v = d.string(forKey: "reader_text_alignment"), let a = ReaderTextAlignment(rawValue: v) {
+            textAlignment = a
+        }
+        if d.object(forKey: "reader_paragraph_separator_lines") != nil {
+            paragraphSeparatorLines = d.integer(forKey: "reader_paragraph_separator_lines")
+        }
+        if let hex = d.string(forKey: "reader_paragraph_separator_hex") { paragraphSeparatorColorHex = hex }
+        if d.object(forKey: "reader_underline_enabled") != nil { underlineEnabled = d.bool(forKey: "reader_underline_enabled") }
+        if let v = d.string(forKey: "reader_underline_pattern"), let p = ReaderUnderlinePattern(rawValue: v) {
+            underlinePattern = p
+        }
+        if let hex = d.string(forKey: "reader_underline_hex") { underlineColorHex = hex }
+        if d.object(forKey: "reader_chapter_title_scale") != nil {
+            chapterTitleScale = CGFloat(d.double(forKey: "reader_chapter_title_scale"))
+        }
+        if d.object(forKey: "reader_chapter_title_spacing") != nil {
+            chapterTitleSpacing = CGFloat(d.double(forKey: "reader_chapter_title_spacing"))
+        }
+        if d.object(forKey: "reader_chapter_top_spacing") != nil {
+            chapterTopSpacing = CGFloat(d.double(forKey: "reader_chapter_top_spacing"))
+        }
+        if d.object(forKey: "reader_chapter_bottom_spacing") != nil {
+            chapterBottomSpacing = CGFloat(d.double(forKey: "reader_chapter_bottom_spacing"))
+        }
+        if d.object(forKey: "reader_bg_image_enabled") != nil { backgroundImageEnabled = d.bool(forKey: "reader_bg_image_enabled") }
+        if let p = d.string(forKey: "reader_bg_image_path") { backgroundImagePath = p }
+        if d.object(forKey: "reader_short_title_length") != nil {
+            shortTitleLength = d.integer(forKey: "reader_short_title_length")
+        }
+        if let p = d.string(forKey: "reader_custom_date_pattern") { customDatePattern = p }
+        if let t = d.string(forKey: "reader_custom_bar_text") { customBarText = t }
+        if let p = d.string(forKey: "reader_title_designer_project") { chapterTitleProjectJSON = p }
+        if let h = d.string(forKey: "reader_title_designer_html") { chapterTitleHTMLTemplate = h }
+        if d.object(forKey: "reader_title_designer_height") != nil {
+            chapterTitleCanvasHeight = d.double(forKey: "reader_title_designer_height")
+        }
     }
 
     private func persist(_ value: CGFloat, _ key: String) {
@@ -402,6 +707,136 @@ public enum ReaderPresetColor: String, CaseIterable, Identifiable {
         case .plain: return "#23282D"
         }
     }
+}
+
+// MARK: - 页眉页脚取值
+
+/// 页眉页脚格式化需要的全部输入。
+/// 滚动阅读和仿真翻页两条路径共用同一套取值，免得同一栏在两处显示不一样。
+public struct ReaderBarContext {
+    public var bookName: String = ""
+    public var chapterTitle: String = ""
+    public var chapterIndex: Int = 0
+    public var chapterCount: Int = 0
+    public var pageIndex: Int = 0
+    public var pageCount: Int = 0
+    public var isPaged: Bool = false
+    /// 全书进度 0...1
+    public var bookProgress: Double = 0
+    /// 本次阅读会话起点，没有就不显示时长
+    public var sessionStart: Date?
+    public var shortTitleLength: Int = 6
+    public var customDatePattern: String = "M月d日"
+    public var customBarText: String = ""
+
+    public init() {}
+}
+
+public enum ReaderBarBattery {
+    /// 设备电量 0...1，拿不到返回 nil
+    public static func level() -> Double? {
+        #if canImport(UIKit)
+        let device = UIDevice.current
+        if !device.isBatteryMonitoringEnabled { device.isBatteryMonitoringEnabled = true }
+        let level = device.batteryLevel
+        return level < 0 ? nil : Double(level)
+        #else
+        return nil
+        #endif
+    }
+}
+
+/// `DateFormatter` 建一次要几百微秒，而页眉页脚每帧都会问一次时间。
+/// 按格式串缓存住，不然翻页时每帧都在建格式化器。
+private final class ReaderBarClock {
+    static let shared = ReaderBarClock()
+    private var cache: [String: DateFormatter] = [:]
+    private let lock = NSLock()
+
+    func string(for pattern: String) -> String {
+        lock.lock()
+        let formatter: DateFormatter
+        if let cached = cache[pattern] {
+            formatter = cached
+        } else {
+            let made = DateFormatter()
+            made.locale = Locale(identifier: "zh_CN")
+            made.dateFormat = pattern
+            cache[pattern] = made
+            formatter = made
+        }
+        lock.unlock()
+        return formatter.string(from: Date())
+    }
+}
+
+private func readerBarClock(_ pattern: String) -> String {
+    ReaderBarClock.shared.string(for: pattern)
+}
+
+/// 把一栏显示项格式化成文字。图形项（电量图标、进度条）返回空串，由视图层单独画。
+public func readerBarText(_ content: ReaderBarContent, _ ctx: ReaderBarContext) -> String {
+    switch content {
+    case .none, .totalProgressBar, .batteryIcon, .batteryBar:
+        return ""
+    case .bookName:
+        return ctx.bookName
+    case .chapterTitle:
+        return ctx.chapterTitle
+    case .chapterTitleShort:
+        guard !ctx.chapterTitle.isEmpty else { return "" }
+        let limit = max(2, ctx.shortTitleLength)
+        return ctx.chapterTitle.count <= limit ? ctx.chapterTitle : String(ctx.chapterTitle.prefix(limit)) + "…"
+    case .progress:
+        guard ctx.chapterCount > 0 else { return "" }
+        return String(format: "%.1f%%", Double(ctx.chapterIndex + 1) / Double(ctx.chapterCount) * 100)
+    case .pageInfo, .pageProgress:
+        if ctx.isPaged, ctx.pageCount > 0 { return "\(ctx.pageIndex + 1)/\(ctx.pageCount)" }
+        guard ctx.chapterCount > 0 else { return "" }
+        return "\(ctx.chapterIndex + 1)/\(ctx.chapterCount)"
+    case .pageProgressText:
+        guard ctx.isPaged, ctx.pageCount > 0 else { return "" }
+        return "第 \(ctx.pageIndex + 1) 页"
+    case .totalProgress:
+        return ctx.bookProgress <= 0 ? "" : String(format: "%.1f%%", ctx.bookProgress * 100)
+    case .time:
+        return readerBarClock("HH:mm")
+    case .timeWithSeconds:
+        return readerBarClock("HH:mm:ss")
+    case .date:
+        return readerBarClock("yyyy-MM-dd")
+    case .weekday:
+        return readerBarClock("EEEE")
+    case .customDate:
+        return readerBarClock(ctx.customDatePattern)
+    case .batteryLevel, .batteryIconWithNumber:
+        guard let level = ReaderBarBattery.level() else { return "" }
+        return "\(Int((level * 100).rounded()))%"
+    case .chapterCount:
+        return ctx.chapterCount > 0 ? "共 \(ctx.chapterCount) 章" : ""
+    case .chapterCountShort:
+        return ctx.chapterCount > 0 ? "\(ctx.chapterCount)章" : ""
+    case .readingDuration:
+        guard let start = ctx.sessionStart else { return "" }
+        return barDurationText(Date().timeIntervalSince(start))
+    case .remainingTime:
+        guard let start = ctx.sessionStart else { return "" }
+        let elapsed = Date().timeIntervalSince(start)
+        // 样本太少不外推，免得刚打开就报一个离谱的数字
+        guard ctx.bookProgress > 0.02, elapsed > 60 else { return "" }
+        let remaining = elapsed / ctx.bookProgress - elapsed
+        guard remaining > 0, remaining < 24 * 3600 else { return "" }
+        return "约剩 " + barDurationText(remaining)
+    case .customText:
+        return ctx.customBarText
+    }
+}
+
+private func barDurationText(_ seconds: TimeInterval) -> String {
+    let minutes = Int(seconds / 60)
+    if minutes <= 0 { return "刚刚" }
+    if minutes < 60 { return "\(minutes) 分" }
+    return "\(minutes / 60) 时 \(minutes % 60) 分"
 }
 
 public extension Color {

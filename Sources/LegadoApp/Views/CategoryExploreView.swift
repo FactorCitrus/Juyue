@@ -24,16 +24,32 @@ public struct CategoryExploreView: View {
     @State private var errorMessage: String? = nil
 
     @State private var showAllCategoriesSheet: Bool = false
+    @State private var showAllSourcesSheet: Bool = false
+    @State private var showLoginSheet: Bool = false
+    @State private var sourceFilterText: String = ""
     @State private var selectedBookForDetail: SearchBook? = nil
 
-    public init() {}
+    /// 这个页签是不是当前选中的。TabView 会把三个页签都建出来，
+    /// 分类页一被建出来就去联网拉书，启动那一下的卡顿就是这么来的，
+    /// 所以初始化要等它真的被选中。
+    var isActive: Bool = true
 
-    /// Sources that are enabled and have exploreUrl configured
-    private var availableSources: [BookSource] {
-        bookStore.sources.filter { source in
-            (source.enabled ?? true) &&
-            source.exploreUrl != nil &&
-            !(source.exploreUrl?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true)
+    public init(isActive: Bool = true) {
+        self.isActive = isActive
+    }
+
+    /// 可用书源。原来是每次 body 求值都重新过滤一遍全部书源（还要做字符串 trim），
+    /// 而这个属性在一次 body 里被读好几处，列表滚动时等于每帧都重算。
+    /// 现在只在书源真的变化时刷新一次。
+    @State private var cachedSources: [BookSource] = []
+
+    private var availableSources: [BookSource] { cachedSources }
+
+    private func refreshCachedSources(_ sources: [BookSource]) {
+        cachedSources = sources.filter { source in
+            guard source.enabled ?? true, let url = source.exploreUrl else { return false }
+            // 用 allSatisfy 判断空白，避免 trim 里再分配一个 String
+            return !url.isEmpty && !url.allSatisfy { $0.isWhitespace }
         }
     }
 
@@ -84,6 +100,19 @@ public struct CategoryExploreView: View {
             .sheet(isPresented: $showAllCategoriesSheet) {
                 allCategoriesSheet
             }
+            .sheet(isPresented: $showAllSourcesSheet) {
+                allSourcesSheet
+            }
+            .sheet(isPresented: $showLoginSheet) {
+                if let src = currentSource {
+                    SourceLoginSheet(source: src)
+                }
+            }
+            .onChange(of: showLoginSheet) { showing in
+                // 登录面板关掉就重试一次：登录成功的话这一栏就能看了
+                guard !showing, let cat = selectedCategory else { return }
+                loadBooks(for: cat, page: 1)
+            }
             .background(
                 NavigationLink(
                     isActive: Binding(
@@ -102,16 +131,43 @@ public struct CategoryExploreView: View {
                 .hidden()
             )
             .onAppear {
-                initializeIfNeeded()
+                refreshCachedSources(bookStore.sources)
+                if isActive { initializeIfNeeded() }
+            }
+            .onChange(of: isActive) { active in
+                if active { initializeIfNeeded() }
+            }
+            .onReceive(bookStore.$sources) { sources in
+                refreshCachedSources(sources)
             }
         }
     }
 
     // MARK: - Level 1: Source Switcher Bar
+    /// 内联只画当前源 + 前面几个：可用书源有上千个，全塞进 HStack
+    /// 一帧里建完按钮，点进分类就会卡一下
+    private var inlineSources: [BookSource] {
+        let limit = 10
+        var list = Array(availableSources.prefix(limit))
+        if let cur = currentSource, !list.contains(where: { $0.bookSourceUrl == cur.bookSourceUrl }) {
+            list.insert(cur, at: 0)
+            if list.count > limit { list.removeLast() }
+        }
+        return list
+    }
+
+    private var filteredSources: [BookSource] {
+        let key = sourceFilterText.trimmingCharacters(in: .whitespaces)
+        guard !key.isEmpty else { return availableSources }
+        return availableSources.filter { $0.bookSourceName.localizedCaseInsensitiveContains(key) }
+    }
+
     private var sourceSwitcherBar: some View {
         ScrollView(.horizontal, showsIndicators: false) {
+            // 用 HStack：LazyHStack 在横向 ScrollView 里只按提议宽度排版，
+            // 后面的书源药丸会被裁掉、整条也会歪
             HStack(spacing: 8) {
-                ForEach(availableSources) { src in
+                ForEach(inlineSources) { src in
                     let isSelected = src.bookSourceUrl == currentSource?.bookSourceUrl
                     Button {
                         if src.bookSourceUrl != currentSource?.bookSourceUrl {
@@ -132,11 +188,73 @@ public struct CategoryExploreView: View {
                     }
                     .buttonStyle(.plain)
                 }
+
+                if availableSources.count > inlineSources.count {
+                    Button {
+                        showAllSourcesSheet = true
+                    } label: {
+                        HStack(spacing: 5) {
+                            Image(systemName: "list.bullet")
+                                .font(.system(size: 11))
+                            Text("全部书源 (\(availableSources.count))")
+                                .font(.system(size: 13, weight: .medium))
+                        }
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 6)
+                        .background(Color.secondary.opacity(0.12))
+                        .foregroundColor(.primary)
+                        .cornerRadius(16)
+                    }
+                    .buttonStyle(.plain)
+                }
             }
             .padding(.horizontal, 16)
             .padding(.vertical, 8)
         }
         .background(switcherBackgroundColor)
+    }
+
+    /// 全部书源：用 List（懒加载）挑，几千个也不卡
+    private var allSourcesSheet: some View {
+        NavigationView {
+            List {
+                ForEach(filteredSources) { src in
+                    Button {
+                        if src.bookSourceUrl != currentSource?.bookSourceUrl {
+                            switchSource(to: src)
+                        }
+                        showAllSourcesSheet = false
+                    } label: {
+                        HStack(alignment: .center, spacing: 10) {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(src.bookSourceName)
+                                    .font(.system(size: 15))
+                                    .foregroundColor(.primary)
+                                Text(src.bookSourceUrl)
+                                    .font(.system(size: 11))
+                                    .foregroundColor(.secondary)
+                                    .lineLimit(1)
+                            }
+                            Spacer()
+                            if src.bookSourceUrl == currentSource?.bookSourceUrl {
+                                Image(systemName: "checkmark")
+                                    .foregroundColor(.accentColor)
+                            }
+                        }
+                    }
+                }
+            }
+            .searchable(text: $sourceFilterText, prompt: "搜书源名")
+            .navigationTitle("全部书源 (\(availableSources.count))")
+            #if os(iOS)
+            .navigationBarTitleDisplayMode(.inline)
+            #endif
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("关闭") { showAllSourcesSheet = false }
+                }
+            }
+        }
     }
 
     private var switcherBackgroundColor: Color {
@@ -154,7 +272,8 @@ public struct CategoryExploreView: View {
         HStack(spacing: 0) {
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 8) {
-                    ForEach(actionableCategories) { cat in
+                    // 分类条目多的书源能有几十个，内联只画前 12 个，其余进「全部」
+                    ForEach(Array(actionableCategories.prefix(12))) { cat in
                         let isSelected = cat.id == selectedCategory?.id
                         Button {
                             if cat.id != selectedCategory?.id {
@@ -224,12 +343,43 @@ public struct CategoryExploreView: View {
                     .foregroundColor(.secondary)
                     .multilineTextAlignment(.center)
                     .padding(.horizontal)
-                Button("重试") {
-                    if let cat = selectedCategory {
-                        loadBooks(for: cat, page: 1)
+                // 401/403 基本都是这个分类要登录（书源自带的账号密码登录），
+                // 直白说清楚，顺手给一条能看的分类，别让人对着 HTTP 代码发呆
+                if isAuthError(error), let publicCategory {
+                    Text("这个分类要登录这个书源才能看。登录完再回来这句就不见了。")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                        .multilineTextAlignment(.center)
+                        .padding(.horizontal)
+                    if currentSource?.loginUrl?.isEmpty == false || currentSource?.loginUi?.isEmpty == false {
+                        Button("登录「\(currentSource?.bookSourceName ?? "")」") {
+                            showLoginSheet = true
+                        }
+                        .buttonStyle(.borderedProminent)
+                        Button("先看「\(publicCategory.title)」") {
+                            selectCategory(publicCategory)
+                        }
+                        .buttonStyle(.bordered)
+                    } else {
+                        Button("切到「\(publicCategory.title)」") {
+                            selectCategory(publicCategory)
+                        }
+                        .buttonStyle(.borderedProminent)
                     }
+                    Button("重试") {
+                        if let cat = selectedCategory {
+                            loadBooks(for: cat, page: 1)
+                        }
+                    }
+                    .buttonStyle(.bordered)
+                } else {
+                    Button("重试") {
+                        if let cat = selectedCategory {
+                            loadBooks(for: cat, page: 1)
+                        }
+                    }
+                    .buttonStyle(.borderedProminent)
                 }
-                .buttonStyle(.borderedProminent)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else if books.isEmpty {
@@ -393,6 +543,18 @@ public struct CategoryExploreView: View {
         currentPage = 1
         hasMore = true
         loadBooks(for: category, page: 1)
+    }
+
+    /// 401/403 这种就是没登录，别当普通网络错误处理
+    private func isAuthError(_ message: String) -> Bool {
+        message.contains("401") || message.contains("403")
+    }
+
+    /// 不用登录也能看的那一栏（优先「全部」）
+    private var publicCategory: ExploreCategory? {
+        let usable = categories.filter { !$0.isHeader && $0.url?.isEmpty == false }
+        return usable.first(where: { $0.title == "全部" })
+            ?? usable.first(where: { !$0.title.contains("历史") && !$0.title.contains("收藏") })
     }
 
     private func loadBooks(for category: ExploreCategory, page: Int) {

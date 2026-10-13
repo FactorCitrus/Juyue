@@ -18,6 +18,8 @@ public struct LegadoApp: App {
 
     public init() {
         preloadDefaultSources()
+        // 导入过的自定义字体要在用之前注册进进程，否则 CoreText 认不出来
+        CustomFontService.shared.loadAll()
     }
 
     public var body: some Scene {
@@ -41,24 +43,31 @@ public struct LegadoApp: App {
 }
 
 public struct MainTabView: View {
+    /// 三个页签始终建出来，否则未选中的 tabItem 会消失（试过用条件包 Group，tab 栏就只剩书架了）。
+    /// 启动卡顿改成由各页自己按 isActive 决定要不要干活。
+    @State private var selection: Int = 0
+
     public init() {}
 
     public var body: some View {
-        TabView {
+        TabView(selection: $selection) {
             BookshelfView()
                 .tabItem {
                     Label("书架", systemImage: "books.vertical.fill")
                 }
+                .tag(0)
 
-            CategoryExploreView()
+            CategoryExploreView(isActive: selection == 1)
                 .tabItem {
                     Label("分类", systemImage: "square.grid.2x2.fill")
                 }
+                .tag(1)
 
             SettingsView()
                 .tabItem {
                     Label("设置", systemImage: "gearshape.fill")
                 }
+                .tag(2)
         }
     }
 }

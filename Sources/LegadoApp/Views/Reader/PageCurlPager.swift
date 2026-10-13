@@ -7,6 +7,8 @@ import UIKit
 /// 只负责当前章的页面；翻过头或翻回来时通知外层换章。
 public struct PageCurlPager: UIViewControllerRepresentable {
     public let pages: [[ContentBlock]]
+    /// pages 对应的章节序号：换章时正文要晚一步才到，卷页动画得等它到位再做
+    public let loadedChapterIndex: Int
     public let chapterTitle: String?
     public let fontSize: CGFloat
     public let lineSpacing: CGFloat
@@ -17,8 +19,20 @@ public struct PageCurlPager: UIViewControllerRepresentable {
     public let chineseConversion: ChineseConversion
     public let fontPostScriptName: String
     public let boldPostScriptName: String?
+    public let textAlignment: ReaderTextAlignment
+    public let underlineEnabled: Bool
+    public let underlineColor: Color?
     public let textColor: Color
     public let backgroundColor: Color
+    /// 阅读背景图，跟着每一页和卷起来的背面一起铺
+    public let backgroundImage: Image?
+    /// 章节标题字号系数，跟滚动模式同一口径
+    public let chapterTitleScale: CGFloat
+    public let shortTitleLength: Int
+    public let customDatePattern: String
+    public let customBarText: String
+    public let titleHTMLTemplate: String
+    public let titleProjectJSON: String
     public let paddingTop: CGFloat
     public let paddingBottom: CGFloat
     public let paddingLeft: CGFloat
@@ -30,8 +44,11 @@ public struct PageCurlPager: UIViewControllerRepresentable {
     public let showHeader: Bool
     public let showFooter: Bool
     public let barDivider: Bool
-    public let headerSlots: [ReaderBarContent]
-    public let footerSlots: [ReaderBarContent]
+    public let headerSlots: [[ReaderBarContent]]
+    public let footerSlots: [[ReaderBarContent]]
+    /// 整页是贴到屏幕物理边缘的，页眉页脚得自己把安全区让出来再顶出去
+    public let topInset: CGFloat
+    public let bottomInset: CGFloat
     public let bookName: String
     public let chapterTitleText: String
     public let chapterIndex: Int
@@ -44,6 +61,7 @@ public struct PageCurlPager: UIViewControllerRepresentable {
 
     public init(
         pages: [[ContentBlock]],
+        loadedChapterIndex: Int,
         chapterTitle: String?,
         fontSize: CGFloat,
         lineSpacing: CGFloat,
@@ -54,8 +72,18 @@ public struct PageCurlPager: UIViewControllerRepresentable {
         chineseConversion: ChineseConversion,
         fontPostScriptName: String,
         boldPostScriptName: String?,
+        textAlignment: ReaderTextAlignment,
+        underlineEnabled: Bool,
+        underlineColor: Color?,
         textColor: Color,
         backgroundColor: Color,
+        backgroundImage: Image?,
+        chapterTitleScale: CGFloat,
+        shortTitleLength: Int,
+        customDatePattern: String,
+        customBarText: String,
+        titleHTMLTemplate: String,
+        titleProjectJSON: String,
         paddingTop: CGFloat,
         paddingBottom: CGFloat,
         paddingLeft: CGFloat,
@@ -66,8 +94,10 @@ public struct PageCurlPager: UIViewControllerRepresentable {
         showHeader: Bool,
         showFooter: Bool,
         barDivider: Bool,
-        headerSlots: [ReaderBarContent],
-        footerSlots: [ReaderBarContent],
+        headerSlots: [[ReaderBarContent]],
+        footerSlots: [[ReaderBarContent]],
+        topInset: CGFloat = 0,
+        bottomInset: CGFloat = 0,
         bookName: String,
         chapterTitleText: String,
         chapterIndex: Int,
@@ -79,6 +109,7 @@ public struct PageCurlPager: UIViewControllerRepresentable {
         onTapCenter: @escaping () -> Void
     ) {
         self.pages = pages
+        self.loadedChapterIndex = loadedChapterIndex
         self.chapterTitle = chapterTitle
         self.fontSize = fontSize
         self.lineSpacing = lineSpacing
@@ -89,8 +120,18 @@ public struct PageCurlPager: UIViewControllerRepresentable {
         self.chineseConversion = chineseConversion
         self.fontPostScriptName = fontPostScriptName
         self.boldPostScriptName = boldPostScriptName
+        self.textAlignment = textAlignment
+        self.underlineEnabled = underlineEnabled
+        self.underlineColor = underlineColor
         self.textColor = textColor
         self.backgroundColor = backgroundColor
+        self.backgroundImage = backgroundImage
+        self.chapterTitleScale = chapterTitleScale
+        self.shortTitleLength = shortTitleLength
+        self.customDatePattern = customDatePattern
+        self.customBarText = customBarText
+        self.titleHTMLTemplate = titleHTMLTemplate
+        self.titleProjectJSON = titleProjectJSON
         self.paddingTop = paddingTop
         self.paddingBottom = paddingBottom
         self.paddingLeft = paddingLeft
@@ -103,6 +144,8 @@ public struct PageCurlPager: UIViewControllerRepresentable {
         self.barDivider = barDivider
         self.headerSlots = headerSlots
         self.footerSlots = footerSlots
+        self.topInset = topInset
+        self.bottomInset = bottomInset
         self.bookName = bookName
         self.chapterTitleText = chapterTitleText
         self.chapterIndex = chapterIndex
@@ -129,6 +172,7 @@ public struct PageCurlPager: UIViewControllerRepresentable {
         // 双面翻页：背面由 dataSource 提供，才不会出现系统那张白纸
         controller.isDoubleSided = true
         controller.view.backgroundColor = UIColor(backgroundColor)
+        context.coordinator.installSwipeHooks(on: controller)
         // 正面 + 背面；实际投递几张由 apply 按当前书脊裁
         apply(
             context.coordinator.pagePair(at: clampedIndex),
@@ -172,16 +216,33 @@ public struct PageCurlPager: UIViewControllerRepresentable {
 
     public func updateUIViewController(_ controller: UIPageViewController, context: Context) {
         context.coordinator.parent = self
+        context.coordinator.installSwipeHooks(on: controller)
         controller.view.backgroundColor = UIColor(backgroundColor)
         guard !pages.isEmpty else { return }
 
         // 配色、字体、排版这些变了要重建当前页，否则托管的页面还是旧样式
         let signature = renderSignature
+        // 换章：在 pager 里按方向卷过去，别硬切、也别重建 pager。
+        // （旧写法是给 pager 加 .id 让 SwiftUI 重建，换章就没有卷页动画了）
+        if let previousChapter = context.coordinator.lastLoadedChapterIndex, previousChapter != loadedChapterIndex {
+            let forward = loadedChapterIndex > previousChapter
+            context.coordinator.lastLoadedChapterIndex = loadedChapterIndex
+            context.coordinator.lastSignature = signature
+            context.coordinator.index = clampedIndex
+            apply(
+                context.coordinator.pagePair(at: clampedIndex),
+                to: controller,
+                direction: forward ? .forward : .reverse,
+                animated: true
+            )
+            return
+        }
+        context.coordinator.lastLoadedChapterIndex = loadedChapterIndex
+
         if context.coordinator.lastSignature != signature {
             context.coordinator.lastSignature = signature
-            let current = context.coordinator.index
             apply(
-                context.coordinator.pagePair(at: current),
+                context.coordinator.pagePair(at: context.coordinator.index),
                 to: controller,
                 direction: .forward,
                 animated: false
@@ -224,8 +285,9 @@ public struct PageCurlPager: UIViewControllerRepresentable {
         parts.append("\(showHeader)\(showFooter)\(barDivider)")
         parts.append("\(paddingTop)/\(paddingBottom)/\(paddingLeft)/\(paddingRight)")
         parts.append("\(headerOffset)/\(footerOffset)")
-        parts.append(headerSlots.map { $0.rawValue }.joined(separator: ","))
-        parts.append(footerSlots.map { $0.rawValue }.joined(separator: ","))
+        parts.append(headerSlots.map { $0.map(\.rawValue).joined(separator: "+") }.joined(separator: ","))
+        parts.append(footerSlots.map { $0.map(\.rawValue).joined(separator: "+") }.joined(separator: ","))
+        parts.append("\(topInset)/\(bottomInset)")
         parts.append(chapterTitleText)
         parts.append(bookName)
         parts.append("\(chapterIndex)/\(chapterCount)")
@@ -243,8 +305,56 @@ public struct PageCurlPager: UIViewControllerRepresentable {
             self.lastSignature = parent.renderSignature
         }
 
+        // MARK: - 页面缓存
+        private struct CachedPage {
+            let controller: UIViewController
+            let key: String
+        }
+        private var frontCache: [Int: CachedPage] = [:]
+        private var backCache: [Int: CachedPage] = [:]
+        private var cacheSignature: String = ""
+
+        /// 缓存键 = 配置指纹 + 这一页的实际内容。
+        /// 只看下标不行：翻到下一章时下标会重复，会拿到上一章的旧页面。
+        private func pageKey(_ index: Int) -> String {
+            let blocks = parent.pages[index]
+            return parent.renderSignature
+                + "|\(parent.pages.count)|\(index)|"
+                + blocks.map { $0.text }.joined(separator: "\u{2}")
+                + "|"
+                + blocks.map { $0.imageUrl ?? "" }.joined(separator: "\u{2}")
+        }
+
+        private func resetCacheIfNeeded() {
+            if cacheSignature != parent.renderSignature {
+                cacheSignature = parent.renderSignature
+                frontCache.removeAll()
+                backCache.removeAll()
+            }
+        }
+
+        /// 缓存不能无限涨，只留当前页附近的几页
+        private func trim(_ cache: inout [Int: CachedPage]) {
+            let limit = 6
+            guard cache.count > limit else { return }
+            let evict = cache.keys.sorted { abs($0 - index) > abs($1 - index) }
+            for key in evict.prefix(cache.count - limit) { cache.removeValue(forKey: key) }
+        }
+
+        /// UIPageViewController 翻页时会反复要页面。每次重建 hosting controller
+        /// 等于每次翻页重新搭一棵 SwiftUI 视图树 + 重排一次正文，动画就卡。
         func controller(at index: Int) -> UIViewController? {
             guard index >= 0, index < parent.pages.count else { return nil }
+            resetCacheIfNeeded()
+            let key = pageKey(index)
+            if let cached = frontCache[index], cached.key == key { return cached.controller }
+            let made = makeController(at: index)
+            frontCache[index] = CachedPage(controller: made, key: key)
+            trim(&frontCache)
+            return made
+        }
+
+        private func makeController(at index: Int) -> UIViewController {
             let page = parent.pages[index]
             let host = UIHostingController(rootView: PageCurlContent(
                 blocks: page,
@@ -258,8 +368,18 @@ public struct PageCurlPager: UIViewControllerRepresentable {
                 chineseConversion: parent.chineseConversion,
                 fontPostScriptName: parent.fontPostScriptName,
                 boldPostScriptName: parent.boldPostScriptName,
+                textAlignment: parent.textAlignment,
+                underlineEnabled: parent.underlineEnabled,
+                underlineColor: parent.underlineColor,
                 textColor: parent.textColor,
                 backgroundColor: parent.backgroundColor,
+                backgroundImage: parent.backgroundImage,
+                chapterTitleScale: parent.chapterTitleScale,
+                shortTitleLength: parent.shortTitleLength,
+                customDatePattern: parent.customDatePattern,
+                customBarText: parent.customBarText,
+                titleHTMLTemplate: parent.titleHTMLTemplate,
+                titleProjectJSON: parent.titleProjectJSON,
                 paddingTop: parent.paddingTop,
                 paddingBottom: parent.paddingBottom,
                 paddingLeft: parent.paddingLeft,
@@ -272,6 +392,8 @@ public struct PageCurlPager: UIViewControllerRepresentable {
                 barDivider: parent.barDivider,
                 headerSlots: parent.headerSlots,
                 footerSlots: parent.footerSlots,
+                topInset: parent.topInset,
+                bottomInset: parent.bottomInset,
                 bookName: parent.bookName,
                 chapterTitleText: parent.chapterTitleText,
                 chapterIndex: parent.chapterIndex,
@@ -298,9 +420,35 @@ public struct PageCurlPager: UIViewControllerRepresentable {
         /// 卷起来时露出的那一面：用主题底色 + 靠书脊的浅阴影，不再是一张白纸
         func backController(at index: Int) -> UIViewController? {
             guard index >= 0, index < parent.pages.count else { return nil }
+            resetCacheIfNeeded()
+            let key = pageKey(index)
+            if let cached = backCache[index], cached.key == key { return cached.controller }
+            let made = makeBackController(at: index)
+            backCache[index] = CachedPage(controller: made, key: key)
+            trim(&backCache)
+            return made
+        }
+
+        private func makeBackController(at index: Int) -> UIViewController {
             let back = UIHostingController(rootView: PageCurlBackPage(
                 backgroundColor: parent.backgroundColor,
-                spineOnRight: false
+                backgroundImage: parent.backgroundImage,
+                spineOnRight: false,
+                faintLines: parent.pages[index].map { $0.text },
+                faintParagraphEnd: parent.pages[index].map { $0.imageUrl == "p_end" },
+                fontSize: parent.fontSize,
+                lineSpacing: parent.lineSpacing,
+                letterSpacing: parent.letterSpacing,
+                firstLineIndent: parent.firstLineIndent,
+                weightLevel: parent.weightLevel,
+                chineseConversion: parent.chineseConversion,
+                fontPostScriptName: parent.fontPostScriptName,
+                boldPostScriptName: parent.boldPostScriptName,
+                textColor: parent.textColor,
+                paddingTop: parent.paddingTop,
+                paddingBottom: parent.paddingBottom,
+                paddingLeft: parent.paddingLeft,
+                paddingRight: parent.paddingRight
             ))
             back.view.backgroundColor = UIColor(parent.backgroundColor)
             back.view.tag = index
@@ -335,6 +483,113 @@ public struct PageCurlPager: UIViewControllerRepresentable {
             }
         }
 
+        private var swipeHooked = false
+        /// 一次滑动里只在位移阈值处通知一次
+        private var boundaryForward = false
+        private var boundaryBackward = false
+        static var panEnds = 0
+        static var panHits = 0
+        static var swipeHits = 0
+        static var tapHits = 0
+        /// 换章检测：指纹变了＝换章，用来决定要不要走卷页动画
+        var lastChapterSignature: String? = nil
+        /// pages 已经渲染成哪一章了；换章动画靠它判断新章正文到没到
+        var lastLoadedChapterIndex: Int? = nil
+
+        /// 盯住 UIPageViewController 自己的滑动手势：本章最后一页还往前划，
+        /// 或者第一页还往后划，就通知外层换章（原来只有点边缘才会换）
+        func installSwipeHooks(on pager: UIPageViewController) {
+            guard !swipeHooked else { return }
+            let pans = Coordinator.collectPans(in: pager.view)
+            let direct = pager.gestureRecognizers.compactMap { $0 as? UIPanGestureRecognizer }
+            for pan in Set(pans + direct) {
+                pan.addTarget(self, action: #selector(handlePanEnd(_:)))
+            }
+            // 边界那一下（本章最后一页再往前、第一页再往后）UIKit 没有下一页可给，
+            // pan 可能压根不认，所以再挂两个 swipe 识别器兜底
+            for direction: UISwipeGestureRecognizer.Direction in [.left, .right] {
+                let swipe = UISwipeGestureRecognizer(target: self, action: #selector(handleSwipe(_:)))
+                swipe.direction = direction
+                swipe.cancelsTouchesInView = false
+                pager.view.addGestureRecognizer(swipe)
+            }
+            swipeHooked = true
+        }
+
+        @objc private func handleSwipe(_ gesture: UISwipeGestureRecognizer) {
+            NSLog("[PageCurl] swipe dir=\(gesture.direction.rawValue) index=\(index) pages=\(parent.pages.count)")
+            Coordinator.swipeHits += 1
+            switch gesture.direction {
+            case .left:
+                if index >= parent.pages.count - 1 {
+                    Coordinator.panHits += 1
+                    parent.onReachEnd()
+                }
+            case .right:
+                if index <= 0 {
+                    Coordinator.panHits += 1
+                    parent.onReachStart()
+                }
+            default:
+                break
+            }
+        }
+
+        /// pageCurl 的翻页手势挂在内部分页视图上，得整个视图树捞一遍
+        static func collectPans(in view: UIView) -> [UIPanGestureRecognizer] {
+            var found: [UIPanGestureRecognizer] = []
+            for gr in view.gestureRecognizers ?? [] {
+                if let pan = gr as? UIPanGestureRecognizer { found.append(pan) }
+            }
+            for sub in view.subviews {
+                found.append(contentsOf: collectPans(in: sub))
+            }
+            return found
+        }
+
+        @objc private func handlePanEnd(_ pan: UIPanGestureRecognizer) {
+            let view = pan.view ?? pan.view?.window
+            NSLog("[PageCurl] pan state=\(pan.state.rawValue) tx=\(pan.translation(in: view).x) index=\(index) pages=\(parent.pages.count)")
+            let translation = pan.translation(in: view)
+            let velocity = pan.velocity(in: view)
+            let forward = translation.x < -20 || velocity.x < -250
+            let backward = translation.x > 20 || velocity.x > 250
+            switch pan.state {
+            case .changed:
+                // 边界那一下 UIKit 没有下一页可给，手势结束时位移可能被清成 0，
+                // 所以滑动过程中先记下「到头了」，真正换章等手指离开再做，
+                // 免得卷页动画中途被打断
+                if forward, index >= parent.pages.count - 1, translation.x < -50 {
+                    boundaryForward = true
+                } else if backward, index <= 0, translation.x > 50 {
+                    boundaryBackward = true
+                }
+            case .ended, .cancelled, .failed:
+                Coordinator.panEnds += 1
+                if boundaryForward, forward || translation.x < -20 {
+                    boundaryForward = false
+                    Coordinator.panHits += 1
+                    parent.onReachEnd()
+                } else if boundaryBackward, backward || translation.x > 20 {
+                    boundaryBackward = false
+                    Coordinator.panHits += 1
+                    parent.onReachStart()
+                } else {
+                    boundaryForward = false
+                    boundaryBackward = false
+                    if forward, index >= parent.pages.count - 1 {
+                        Coordinator.panHits += 1
+                        parent.onReachEnd()
+                    } else if backward, index <= 0 {
+                        Coordinator.panHits += 1
+                        parent.onReachStart()
+                    }
+                }
+            default:
+                break
+            }
+        }
+
         @objc private func handleTap(_ gesture: UITapGestureRecognizer) {
             switch gesture.view?.tag {
             case 0:
@@ -351,12 +606,14 @@ public struct PageCurlPager: UIViewControllerRepresentable {
                 if index + 1 < parent.pages.count {
                     parent.onIndexChange(index + 1)
                 } else {
+                    Coordinator.tapHits += 1
                     parent.onReachEnd()
                 }
             } else {
                 if index > 0 {
                     parent.onIndexChange(index - 1)
                 } else {
+                    Coordinator.tapHits += 1
                     parent.onReachStart()
                 }
             }
@@ -381,6 +638,11 @@ public struct PageCurlPager: UIViewControllerRepresentable {
             if viewController is UIHostingController<PageCurlBackPage> {
                 let next = viewController.view.tag + 1
                 return next < parent.pages.count ? controller(at: next) : nil
+            }
+            // 最后一页往前划：不返回「本页背面」了，否则会卷出一张背面然后卡死在那儿，
+            // 返回 nil 让手势直接落到 handlePanEnd，由它通知外层换章
+            if viewController.view.tag >= parent.pages.count - 1 {
+                return nil
             }
             return backController(at: viewController.view.tag)
         }
@@ -413,8 +675,18 @@ struct PageCurlContent: View {
     let chineseConversion: ChineseConversion
     let fontPostScriptName: String
     let boldPostScriptName: String?
+    let textAlignment: ReaderTextAlignment
+    let underlineEnabled: Bool
+    let underlineColor: Color?
     let textColor: Color
     let backgroundColor: Color
+    let backgroundImage: Image?
+    let chapterTitleScale: CGFloat
+    let shortTitleLength: Int
+    let customDatePattern: String
+    let customBarText: String
+    let titleHTMLTemplate: String
+    let titleProjectJSON: String
     let paddingTop: CGFloat
     let paddingBottom: CGFloat
     let paddingLeft: CGFloat
@@ -425,8 +697,10 @@ struct PageCurlContent: View {
     let showHeader: Bool
     let showFooter: Bool
     let barDivider: Bool
-    let headerSlots: [ReaderBarContent]
-    let footerSlots: [ReaderBarContent]
+    let headerSlots: [[ReaderBarContent]]
+    let footerSlots: [[ReaderBarContent]]
+    let topInset: CGFloat
+    let bottomInset: CGFloat
     let bookName: String
     let chapterTitleText: String
     let chapterIndex: Int
@@ -434,39 +708,90 @@ struct PageCurlContent: View {
     let pageIndex: Int
     let pageCount: Int
 
-    /// 页眉页脚每栏要显示的文字
+    /// 页眉页脚每栏要显示的文字，走和滚动阅读同一套格式化
     private func barText(_ content: ReaderBarContent, pageIndex: Int, pageCount: Int) -> String {
-        switch content {
-        case .none:
-            return ""
-        case .chapterTitle:
-            return chapterTitleText
-        case .bookName:
-            return bookName
-        case .progress:
-            guard chapterCount > 0 else { return "" }
-            let percent = Double(chapterIndex + 1) / Double(chapterCount) * 100
-            return String(format: "%.1f%%", percent)
-        case .pageInfo:
-            if pageCount > 0 {
-                return "\(pageIndex + 1)/\(pageCount)"
+        var ctx = ReaderBarContext()
+        ctx.bookName = bookName
+        ctx.chapterTitle = chapterTitleText
+        ctx.chapterIndex = chapterIndex
+        ctx.chapterCount = chapterCount
+        ctx.pageIndex = pageIndex
+        ctx.pageCount = pageCount
+        ctx.isPaged = true
+        ctx.bookProgress = chapterCount > 0
+            ? Double(chapterIndex) / Double(chapterCount)
+                + (pageCount > 0 ? Double(pageIndex) / Double(pageCount) / Double(chapterCount) : 0)
+            : 0
+        ctx.shortTitleLength = shortTitleLength
+        ctx.customDatePattern = customDatePattern
+        ctx.customBarText = customBarText
+        return readerBarText(content, ctx)
+    }
+
+    @ViewBuilder
+    private func barSlot(_ slot: ReaderBarContent, alignment: Alignment) -> some View {
+        switch slot {
+        case .totalProgressBar, .batteryBar:
+            GeometryReader { geo in
+                ZStack(alignment: .leading) {
+                    Capsule().fill(textColor.opacity(0.18))
+                    Capsule()
+                        .fill(textColor.opacity(0.65))
+                        .frame(width: geo.size.width * CGFloat(max(0, min(1, slot == .totalProgressBar
+                            ? bookProgressFraction
+                            : (ReaderBarBattery.level() ?? 0)))))
+                }
             }
-            return chapterCount > 0 ? "\(chapterIndex + 1)/\(chapterCount)" : ""
-        case .time:
-            let formatter = DateFormatter()
-            formatter.dateFormat = "HH:mm"
-            return formatter.string(from: Date())
+            .frame(height: 3)
+            .frame(maxWidth: .infinity, alignment: alignment)
+        case .batteryIcon, .batteryIconWithNumber:
+            HStack(spacing: 3) {
+                Image(systemName: batterySymbolName)
+                if slot == .batteryIconWithNumber, let level = ReaderBarBattery.level() {
+                    Text("\(Int((level * 100).rounded()))%")
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: alignment)
+        default:
+            Text(barText(slot, pageIndex: pageIndex, pageCount: pageCount))
+                .lineLimit(1)
+                .truncationMode(.tail)
+                .frame(maxWidth: .infinity, alignment: alignment)
+        }
+    }
+
+    private var bookProgressFraction: Double {
+        guard chapterCount > 0 else { return 0 }
+        let chapterPart = Double(chapterIndex) / Double(chapterCount)
+        let inChapter = pageCount > 0 ? Double(pageIndex) / Double(pageCount) / Double(chapterCount) : 0
+        return min(1, chapterPart + inChapter)
+    }
+
+    private var batterySymbolName: String {
+        guard let level = ReaderBarBattery.level() else { return "battery.0" }
+        switch level {
+        case ..<0.13: return "battery.0"
+        case ..<0.38: return "battery.25"
+        case ..<0.63: return "battery.50"
+        case ..<0.88: return "battery.75"
+        default: return "battery.100"
         }
     }
 
     @ViewBuilder
     private func pageBar(
-        _ slots: [ReaderBarContent],
+        _ slots: [[ReaderBarContent]],
         pageIndex: Int,
         pageCount: Int,
-        extendEdge: Edge.Set? = nil
+        extendEdge: Edge.Set? = nil,
+        topSpacer: CGFloat = 0,
+        bottomSpacer: CGFloat = 0
     ) -> some View {
         VStack(spacing: 0) {
+            // 给灵动岛/Home 指示条留的空白，让这条栏的底色顶到屏幕物理边缘
+            if topSpacer > 0 {
+                Color.clear.frame(height: topSpacer)
+            }
             if barDivider {
                 Rectangle()
                     .fill(textColor.opacity(0.12))
@@ -474,19 +799,18 @@ struct PageCurlContent: View {
             }
             HStack(spacing: 8) {
                 ForEach(Array(slots.enumerated()), id: \.offset) { index, slot in
-                    Text(barText(slot, pageIndex: pageIndex, pageCount: pageCount))
+                    barSlotGroup(slot, alignment: index == 0 ? .leading : (index == 1 ? .center : .trailing))
                         .font(.system(size: 11))
                         .foregroundColor(textColor.opacity(0.8))
-                        .lineLimit(1)
-                        .truncationMode(.tail)
-                        .frame(maxWidth: .infinity,
-                               alignment: index == 0 ? .leading : (index == 1 ? .center : .trailing))
                 }
             }
             .padding(.horizontal, 16)
             .frame(height: 18)
+            if bottomSpacer > 0 {
+                Color.clear.frame(height: bottomSpacer)
+            }
         }
-        .frame(height: 19)
+        .frame(height: 19 + topSpacer + bottomSpacer)
         .background(
             Group {
                 if let edge = extendEdge {
@@ -498,42 +822,92 @@ struct PageCurlContent: View {
         )
     }
 
+    /// 一栏里可能塞了好几个组件，横着排开
+    @ViewBuilder
+    private func barSlotGroup(_ contents: [ReaderBarContent], alignment: Alignment) -> some View {
+        let items = contents.filter { $0 != .none }
+        if items.count == 1, let only = items.first {
+            barSlot(only, alignment: alignment)
+        } else {
+            HStack(spacing: 6) {
+                ForEach(Array(items.enumerated()), id: \.offset) { _, item in
+                    barSlot(item, alignment: alignment)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: alignment)
+        }
+    }
+
     var body: some View {
         GeometryReader { geo in
             let usableWidth = max(200, geo.size.width - paddingLeft - paddingRight)
-            // 页眉页脚连同「距顶/距底」一起从正文高度里扣掉；正文再长也只在这块里截，
-            // 不然正文会把页脚顶出屏幕（页脚看不见就是这么来的）
-            let barsHeight = (showHeader ? 19 + headerOffset : 0)
-                + (showFooter ? 19 + footerOffset : 0)
+            // 跟左右翻页同一套：「距顶/距底」是离屏幕物理边缘的绝对距离，0 = 贴边
+            let headerGap = showHeader ? max(0, headerOffset) : 0
+            let footerGap = showFooter ? max(0, footerOffset) : 0
+            let barsHeight = (headerGap + 19) + (footerGap + 19)
             VStack(alignment: .leading, spacing: 0) {
-                if showHeader, headerSlots.count == 3 {
-                    pageBar(headerSlots, pageIndex: pageIndex, pageCount: pageCount, extendEdge: .top)
-                        .padding(.top, headerOffset)
-                }
+                Color.clear.frame(height: headerGap + 19)
                 contentBody(usableWidth: usableWidth, bodyHeight: geo.size.height)
                     .frame(height: max(80, geo.size.height - barsHeight), alignment: .top)
                     .clipped()
-                if showFooter, footerSlots.count == 3 {
-                    pageBar(footerSlots, pageIndex: pageIndex, pageCount: pageCount, extendEdge: .bottom)
-                        .padding(.bottom, footerOffset)
-                }
+                Color.clear.frame(height: footerGap + 19)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            .overlay(alignment: .top) {
+                if showHeader, headerSlots.count == 3 {
+                    pageBar(headerSlots, pageIndex: pageIndex, pageCount: pageCount, extendEdge: .top)
+                        .padding(.top, headerGap)
+                }
+            }
+            .overlay(alignment: .bottom) {
+                if showFooter, footerSlots.count == 3 {
+                    pageBar(footerSlots, pageIndex: pageIndex, pageCount: pageCount, extendEdge: .bottom)
+                        .padding(.bottom, footerGap)
+                }
+            }
         }
-        .background(backgroundColor)
+        // UIPageViewController 里的 SwiftUI 会按窗口安全区给自己留边，不忽略的话
+        // 这一页的 0 点其实在灵动岛下面，「距顶 0」永远顶不到屏幕上沿
+        .ignoresSafeArea(edges: .all)
+        .background(pageBackground)
+    }
+
+    /// 每页的底色 + 可选背景图，铺满整页
+    @ViewBuilder
+    private var pageBackground: some View {
+        ZStack {
+            backgroundColor
+            if let backgroundImage {
+                backgroundImage
+                    .resizable()
+                    .aspectRatio(contentMode: .fill)
+            }
+        }
     }
 
     @ViewBuilder
     private func contentBody(usableWidth: CGFloat, bodyHeight: CGFloat) -> some View {
         VStack(alignment: .leading, spacing: 0) {
                 if let chapterTitle, titleAlignment != .hidden {
-                    Text(chapterTitle)
-                        .font(.system(size: fontSize + 3, weight: .bold))
-                        .foregroundColor(textColor)
-                        .padding(.bottom, 8)
-                        .fixedSize(horizontal: false, vertical: true)
+                    if !titleHTMLTemplate.isEmpty {
+                        // 存过设计稿就按设计稿渲染这一章的标题
+                        ChapterTitleHTMLView(
+                            htmlTemplate: titleHTMLTemplate,
+                            projectJSON: titleProjectJSON,
+                            width: max(120, usableWidth),
+                            chapterTitle: chapterTitle,
+                            chapterNumber: "第 \(chapterIndex + 1) 章"
+                        )
                         .frame(maxWidth: .infinity, alignment: titleAlignment == .center ? .center : .leading)
-                        .multilineTextAlignment(titleAlignment == .center ? .center : .leading)
+                    } else {
+                        Text(chapterTitle)
+                            .font(.system(size: fontSize * chapterTitleScale, weight: .semibold))
+                            .foregroundColor(textColor)
+                            .padding(.bottom, 8)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .frame(maxWidth: .infinity, alignment: titleAlignment == .center ? .center : .leading)
+                            .multilineTextAlignment(titleAlignment == .center ? .center : .leading)
+                    }
                 }
 
                 if blocks.first?.isImage == true, let urlStr = blocks.first?.imageUrl {
@@ -547,15 +921,17 @@ struct PageCurlContent: View {
                     let filledBase = CGFloat(lines.count) * effectiveLineHeight
                     // 一页排不满时把剩下的高度匀进段间距，正文才会贴到页脚（跟左右翻页同一套算法）
                     let titleReserved = pageIndex == 0 ? estimatedTitleHeight(usableWidth: usableWidth) : 0
-                    let barsReserved = (showHeader ? 19 + headerOffset : 0) + (showFooter ? 19 + footerOffset : 0)
+                    let barsReserved = (showHeader ? 19 + max(0, headerOffset) : 0) + (showFooter ? 19 + max(0, footerOffset) : 0)
                     let available = max(80, bodyHeight - barsReserved - paddingTop - paddingBottom - titleReserved - 10)
                     // 余量要把段间距本身先扣掉再匀，否则整页会超出可用高度
                     let slack = max(0, available - filledBase - paragraphCount * paragraphSpacing)
                     let extraPerParagraph = paragraphCount > 0
                         ? min(slack / paragraphCount, effectiveLineHeight)
                         : 0
+                    // 关掉「页末匀空白」就不匀
+                    let appliedExtra = ReaderConfig.shared.justifyLastPage ? extraPerParagraph : 0
                     let contentHeight = filledBase
-                        + paragraphCount * (paragraphSpacing + extraPerParagraph)
+                        + paragraphCount * (paragraphSpacing + appliedExtra)
 
                     CoreTextPageView(
                         lines: lines,
@@ -566,12 +942,15 @@ struct PageCurlContent: View {
                         width: usableWidth,
                         height: contentHeight,
                         letterSpacing: letterSpacing,
-                        paragraphSpacing: paragraphSpacing + extraPerParagraph,
+                        paragraphSpacing: paragraphSpacing + appliedExtra,
                         firstLineIndent: firstLineIndent,
                         weightLevel: weightLevel,
                         chineseConversion: chineseConversion,
                         fontPostScriptName: fontPostScriptName,
-                        boldPostScriptName: boldPostScriptName
+                        boldPostScriptName: boldPostScriptName,
+                        textAlignment: textAlignment,
+                        underlineEnabled: underlineEnabled,
+                        underlineColor: underlineColor
                     )
                     .frame(width: usableWidth, height: contentHeight, alignment: .topLeading)
                 }
@@ -586,7 +965,7 @@ struct PageCurlContent: View {
     /// 首页标题占的高度：跟左右翻页用同一套估算
     private func estimatedTitleHeight(usableWidth: CGFloat) -> CGFloat {
         guard titleAlignment != .hidden, let title = chapterTitle else { return 0 }
-        let titleFontSize = fontSize + 3
+        let titleFontSize = fontSize * chapterTitleScale
         let charsPerLine = max(4, Int(usableWidth / (titleFontSize + letterSpacing)))
         let lines = max(1, min(4, Int(ceil(Double(title.count) / Double(charsPerLine)))))
         return titleFontSize * 1.45 * CGFloat(lines) + 12.0
@@ -596,18 +975,73 @@ struct PageCurlContent: View {
 /// 仿真翻页翻开后露出的背面：跟主题同色，靠书脊一侧压一道浅影
 struct PageCurlBackPage: View {
     let backgroundColor: Color
+    let backgroundImage: Image?
     let spineOnRight: Bool
+    /// 翻起来的那张纸背面透出来的字（镜像 + 很淡，像墨透到背面）
+    var faintLines: [String] = []
+    var faintParagraphEnd: [Bool] = []
+    var fontSize: CGFloat = 18
+    var lineSpacing: CGFloat = 6
+    var letterSpacing: CGFloat = 0
+    var firstLineIndent: CGFloat = 0
+    var weightLevel: Int = 1
+    var chineseConversion: ChineseConversion = .none
+    var fontPostScriptName: String = "PingFangSC-Regular"
+    var boldPostScriptName: String? = "PingFangSC-Semibold"
+    var textColor: Color = .black
+    var paddingTop: CGFloat = 24
+    var paddingBottom: CGFloat = 24
+    var paddingLeft: CGFloat = 24
+    var paddingRight: CGFloat = 24
 
     var body: some View {
-        ZStack {
-            backgroundColor
-            LinearGradient(
-                colors: [Color.black.opacity(0.10), Color.black.opacity(0.0)],
-                startPoint: spineOnRight ? .trailing : .leading,
-                endPoint: spineOnRight ? .leading : .trailing
-            )
-            .frame(width: 26)
-            .frame(maxWidth: .infinity, alignment: spineOnRight ? .trailing : .leading)
+        GeometryReader { geo in
+            ZStack {
+                backgroundColor
+                if let backgroundImage {
+                    backgroundImage
+                        .resizable()
+                        .aspectRatio(contentMode: .fill)
+                }
+
+                if !faintLines.isEmpty {
+                    let bodyHeight = max(80, geo.size.height - paddingTop - paddingBottom)
+                    let usableWidth = max(120, geo.size.width - paddingLeft - paddingRight)
+                    CoreTextPageView(
+                        lines: faintLines,
+                        isParagraphEnd: faintParagraphEnd,
+                        fontSize: fontSize,
+                        lineSpacing: lineSpacing,
+                        textColor: textColor,
+                        width: usableWidth,
+                        height: bodyHeight,
+                        letterSpacing: letterSpacing,
+                        paragraphSpacing: lineSpacing,
+                        firstLineIndent: firstLineIndent,
+                        weightLevel: weightLevel,
+                        chineseConversion: chineseConversion,
+                        fontPostScriptName: fontPostScriptName,
+                        boldPostScriptName: boldPostScriptName,
+                        textAlignment: .justify,
+                        underlineEnabled: false,
+                        underlineColor: nil
+                    )
+                    .frame(width: usableWidth, height: bodyHeight, alignment: .topLeading)
+                    .padding(.leading, paddingLeft)
+                    .padding(.trailing, paddingRight)
+                    .padding(.top, paddingTop)
+                    .scaleEffect(x: -1, y: 1)
+                    .opacity(0.10)
+                }
+
+                LinearGradient(
+                    colors: [Color.black.opacity(0.10), Color.black.opacity(0.0)],
+                    startPoint: spineOnRight ? .trailing : .leading,
+                    endPoint: spineOnRight ? .leading : .trailing
+                )
+                .frame(width: 26)
+                .frame(maxWidth: .infinity, alignment: spineOnRight ? .trailing : .leading)
+            }
         }
         .ignoresSafeArea()
     }

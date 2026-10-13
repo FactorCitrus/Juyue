@@ -23,6 +23,10 @@ public struct BookDetailView: View {
     @State private var isReading: Bool = false
     @State private var selectedChapterIndex: Int = 0
     @State private var showActionAlert: Bool = false
+    @State private var showEditSheet: Bool = false
+    @State private var editName: String = ""
+    @State private var editAuthor: String = ""
+    @State private var editCover: String = ""
     @State private var actionAlertMessage: String = ""
 
     public init(book: Book, source: BookSource? = nil) {
@@ -130,6 +134,34 @@ public struct BookDetailView: View {
                         } label: {
                             Label("刷新目录与详情", systemImage: "arrow.clockwise")
                         }
+
+                        Button {
+                            let all = chapters.indices.map { $0 }
+                            ChapterDownloadManager.shared.start(book: currentBook, chapters: chapters, source: source ?? bookStore.findSource(for: currentBook), indices: all)
+                            actionAlertMessage = "已加入下载队列（全本 \(chapters.count) 章）"
+                            showActionAlert = true
+                        } label: {
+                            Label("缓存全本", systemImage: "arrow.down.circle")
+                        }
+
+                        Button {
+                            let start = min(currentBook.durChapterIndex, max(0, chapters.count - 1))
+                            let rest = (start..<chapters.count).map { $0 }
+                            ChapterDownloadManager.shared.start(book: currentBook, chapters: chapters, source: source ?? bookStore.findSource(for: currentBook), indices: rest)
+                            actionAlertMessage = "已加入下载队列（未读 \(rest.count) 章）"
+                            showActionAlert = true
+                        } label: {
+                            Label("缓存未读章节", systemImage: "arrow.down.to.line")
+                        }
+
+                        Button {
+                            editName = currentBook.name
+                            editAuthor = currentBook.author
+                            editCover = currentBook.coverUrl ?? ""
+                            showEditSheet = true
+                        } label: {
+                            Label("编辑书名 / 作者 / 封面", systemImage: "pencil")
+                        }
                     } label: {
                         Image(systemName: "ellipsis")
                             .font(.system(size: 16, weight: .semibold))
@@ -139,6 +171,25 @@ public struct BookDetailView: View {
             }
             .alert(actionAlertMessage, isPresented: $showActionAlert) {
                 Button("确定", role: .cancel) {}
+            }
+            .sheet(isPresented: $showEditSheet) {
+                BookInfoEditSheet(
+                    name: editName,
+                    author: editAuthor,
+                    coverUrl: editCover,
+                    onSave: { name, author, cover in
+                        var updated = currentBook
+                        updated.name = name
+                        updated.author = author
+                        updated.coverUrl = cover.isEmpty ? nil : cover
+                        currentBook = updated
+                        if bookStore.bookshelf.contains(where: { $0.bookUrl == updated.bookUrl }) {
+                            _ = bookStore.saveOrUpdateBook(updated)
+                        }
+                        actionAlertMessage = "已保存"
+                        showActionAlert = true
+                    }
+                )
             }
             .background(
                 NavigationLink(
@@ -602,5 +653,62 @@ struct ChapterListView: View {
         #if os(iOS)
         .navigationBarTitleDisplayMode(.inline)
         #endif
+    }
+}
+
+/// 改书名 / 作者 / 封面链接
+struct BookInfoEditSheet: View {
+    @Environment(\.dismiss) private var dismiss
+    @State private var name: String
+    @State private var author: String
+    @State private var cover: String
+    private let onSave: (String, String, String) -> Void
+
+    init(name: String, author: String, coverUrl: String, onSave: @escaping (String, String, String) -> Void) {
+        _name = State(initialValue: name)
+        _author = State(initialValue: author)
+        _cover = State(initialValue: coverUrl)
+        self.onSave = onSave
+    }
+
+    var body: some View {
+        NavigationView {
+            Form {
+                TextField("书名", text: $name)
+                TextField("作者", text: $author)
+                TextField("封面图片地址", text: $cover)
+                    .autocorrectionDisabled()
+                if !cover.isEmpty, let url = URL(string: cover) {
+                    HStack {
+                        Spacer()
+                        AsyncImage(url: url) { image in
+                            image.resizable().scaledToFit()
+                        } placeholder: {
+                            ProgressView()
+                        }
+                        .frame(height: 120)
+                        Spacer()
+                    }
+                }
+                Button("清除封面") { cover = "" }
+                    .foregroundColor(.red)
+            }
+            .navigationTitle("编辑书籍信息")
+            #if os(iOS)
+            .navigationBarTitleDisplayMode(.inline)
+            #endif
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("取消") { dismiss() }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("保存") {
+                        onSave(name.trimmingCharacters(in: .whitespaces), author.trimmingCharacters(in: .whitespaces), cover.trimmingCharacters(in: .whitespaces))
+                        dismiss()
+                    }
+                    .disabled(name.trimmingCharacters(in: .whitespaces).isEmpty)
+                }
+            }
+        }
     }
 }

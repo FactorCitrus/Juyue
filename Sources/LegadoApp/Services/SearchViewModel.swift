@@ -13,12 +13,33 @@ public class SearchViewModel: ObservableObject {
     @Published public var currentPage: Int = 1
     @Published public var hasMore: Bool = true
     @Published public var selectedSourceUrl: String? = nil
+    /// 最近搜索过的词，点一下就能重搜
+    @Published public var history: [String] = []
+
+    private let historyKey = "search_history_v1"
+    private let historyLimit = 20
 
     private var exhaustedSourceUrls: Set<String> = []
     private var seenBookIds: Set<String> = []
     private var currentSearchTask: Task<Void, Never>? = nil
 
-    public init() {}
+    public init() {
+        history = UserDefaults.standard.stringArray(forKey: historyKey) ?? []
+    }
+
+    public func rememberQuery(_ raw: String) {
+        let key = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !key.isEmpty else { return }
+        history.removeAll { $0.caseInsensitiveCompare(key) == .orderedSame }
+        history.insert(key, at: 0)
+        if history.count > historyLimit { history = Array(history.prefix(historyLimit)) }
+        UserDefaults.standard.set(history, forKey: historyKey)
+    }
+
+    public func clearHistory() {
+        history = []
+        UserDefaults.standard.removeObject(forKey: historyKey)
+    }
 
     public var availableSources: [BookSource] {
         BookStore.shared.sources.filter { $0.enabled != false && $0.searchUrl != nil }
@@ -47,6 +68,7 @@ public class SearchViewModel: ObservableObject {
     public func startSearch() {
         let key = searchQuery.trimmingCharacters(in: .whitespaces)
         guard !key.isEmpty else { return }
+        rememberQuery(key)
 
         cancelAndReset()
         isSearching = true

@@ -97,16 +97,20 @@ public struct SearchBookView: View {
                 }
                 Spacer()
             } else if viewModel.searchResults.isEmpty && viewModel.searchQuery.isEmpty {
-                Spacer()
-                VStack(spacing: 8) {
-                    Image(systemName: "books.vertical")
-                        .font(.system(size: 40))
-                        .foregroundColor(.secondary.opacity(0.5))
-                    Text("输入关键词开启全网搜索")
-                        .font(.subheadline)
-                        .foregroundColor(.secondary)
+                if viewModel.history.isEmpty {
+                    Spacer()
+                    VStack(spacing: 8) {
+                        Image(systemName: "books.vertical")
+                            .font(.system(size: 40))
+                            .foregroundColor(.secondary.opacity(0.5))
+                        Text("输入关键词开启全网搜索")
+                            .font(.subheadline)
+                            .foregroundColor(.secondary)
+                    }
+                    Spacer()
+                } else {
+                    searchHistoryList
                 }
-                Spacer()
             } else {
                 List {
                     ForEach(viewModel.searchResults) { item in
@@ -200,6 +204,36 @@ public struct SearchBookView: View {
             }
             .padding(.vertical, 12)
         }
+    }
+
+    /// 搜索历史：点一条直接重搜
+    private var searchHistoryList: some View {
+        List {
+            Section(header: HStack {
+                Text("最近搜索")
+                Spacer()
+                Button("清空") {
+                    viewModel.clearHistory()
+                }
+                .font(.caption)
+            }) {
+                ForEach(viewModel.history, id: \.self) { keyword in
+                    Button {
+                        viewModel.searchQuery = keyword
+                        viewModel.startSearch()
+                    } label: {
+                        HStack {
+                            Image(systemName: "clock.arrow.circlepath")
+                                .foregroundColor(.secondary)
+                            Text(keyword)
+                                .foregroundColor(.primary)
+                            Spacer()
+                        }
+                    }
+                }
+            }
+        }
+        .listStyle(.plain)
     }
 }
 

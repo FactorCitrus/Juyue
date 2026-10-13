@@ -24,6 +24,8 @@ public struct Book: Codable, Identifiable, Equatable {
     public var durChapterTime: Int64
     public var totalChapterNum: Int
     public var lastCheckTime: Int64
+    /// 书架分组（nil = 未分组）
+    public var groupId: UUID?
 
     public init(
         bookUrl: String,
@@ -42,7 +44,8 @@ public struct Book: Codable, Identifiable, Equatable {
         durChapterPos: Int = 0,
         durChapterTime: Int64 = 0,
         totalChapterNum: Int = 0,
-        lastCheckTime: Int64 = Int64(Date().timeIntervalSince1970 * 1000)
+        lastCheckTime: Int64 = Int64(Date().timeIntervalSince1970 * 1000),
+        groupId: UUID? = nil
     ) {
         self.bookUrl = bookUrl
         self.name = name
@@ -61,12 +64,14 @@ public struct Book: Codable, Identifiable, Equatable {
         self.durChapterTime = durChapterTime
         self.totalChapterNum = totalChapterNum
         self.lastCheckTime = lastCheckTime
+        self.groupId = groupId
     }
 
     enum CodingKeys: String, CodingKey {
         case bookUrl, name, author, kind, coverUrl, intro
         case origin, originName, tocUrl, wordCount, latestChapterTitle
         case durChapterTitle, durChapterIndex, durChapterPos, durChapterTime, totalChapterNum, lastCheckTime
+        case groupId
     }
 
     public init(from decoder: Decoder) throws {
@@ -88,6 +93,7 @@ public struct Book: Codable, Identifiable, Equatable {
         self.durChapterTime = (try? container.decode(Int64.self, forKey: .durChapterTime)) ?? 0
         self.totalChapterNum = (try? container.decode(Int.self, forKey: .totalChapterNum)) ?? 0
         self.lastCheckTime = (try? container.decode(Int64.self, forKey: .lastCheckTime)) ?? Int64(Date().timeIntervalSince1970 * 1000)
+        self.groupId = try? container.decodeIfPresent(UUID.self, forKey: .groupId)
     }
 }
 
@@ -188,5 +194,30 @@ public struct SearchBook: Codable, Identifiable, Equatable {
         self.origin = origin
         self.originName = originName
         self.wordCount = wordCount
+    }
+}
+
+
+// MARK: - 书签 / 笔记
+/// 一条书签：章节 + 位置 + 当时摘的句子，可以再写备注
+public struct BookBookmark: Codable, Identifiable, Equatable {
+    public var id: UUID
+    public var bookUrl: String
+    public var chapterIndex: Int
+    public var chapterTitle: String
+    public var charOffset: Int
+    public var snippet: String
+    public var note: String
+    public var createdAt: Date
+
+    public init(bookUrl: String, chapterIndex: Int, chapterTitle: String, charOffset: Int, snippet: String = "", note: String = "") {
+        self.id = UUID()
+        self.bookUrl = bookUrl
+        self.chapterIndex = chapterIndex
+        self.chapterTitle = chapterTitle
+        self.charOffset = charOffset
+        self.snippet = snippet
+        self.note = note
+        self.createdAt = Date()
     }
 }
