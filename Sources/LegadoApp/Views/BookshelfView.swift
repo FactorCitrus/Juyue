@@ -164,6 +164,13 @@ public struct BookshelfView: View {
                                     navigateToDetailBook = book
                                 }
                                 .contextMenu {
+                                    // 长按默认弹的是这个菜单，.onLongPressGesture 抢不到，
+                                    // 所以详情的入口放这儿
+                                    Button {
+                                        navigateToDetailBook = book
+                                    } label: {
+                                        Label("书籍详情", systemImage: "info.circle")
+                                    }
                                     Menu("移动到分组") {
                                         Button("未分组") { bookStore.assign(book, toGroup: nil) }
                                         ForEach(bookStore.groups) { group in
@@ -175,6 +182,14 @@ public struct BookshelfView: View {
                                             showNewGroupAlert = true
                                         }
                                     }
+                                }
+                                .swipeActions(edge: .leading, allowsFullSwipe: false) {
+                                    Button {
+                                        navigateToDetailBook = book
+                                    } label: {
+                                        Label("详情", systemImage: "info.circle")
+                                    }
+                                    .tint(.blue)
                                 }
                         }
                         .onDelete { indexSet in
