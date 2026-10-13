@@ -265,7 +265,7 @@ public struct SettingsView: View {
                         showRestoreAlert = true
                     } label: {
                         HStack {
-                            Text("恢复预装默认书源")
+                            Text("重置书源")
                             Spacer()
                             Image(systemName: "arrow.clockwise")
                                 .foregroundColor(.accentColor)
@@ -311,14 +311,14 @@ public struct SettingsView: View {
                 }
             }
             .navigationTitle("设置")
-            .alert("恢复默认书源", isPresented: $showRestoreAlert) {
+            .alert("重置书源", isPresented: $showRestoreAlert) {
                 Button("取消", role: .cancel) {}
-                Button("确定恢复", role: .destructive) {
+                Button("确定重置", role: .destructive) {
                     bookStore.loadBundledSources(forceReset: true)
-                    restoreSuccessMessage = "已恢复预装书源"
+                    restoreSuccessMessage = "书源已重置为预装状态"
                 }
             } message: {
-                Text("确定要将书源列表恢复为预装默认状态吗？自定义导入的书源可能被覆盖。")
+                Text("确定要把书源重置为预装默认状态吗？自己导入的书源会被覆盖，重新导入即可。")
             }
             .alert("清理阅读缓存", isPresented: $showClearCacheAlert) {
                 Button("取消", role: .cancel) {}
