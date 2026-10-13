@@ -1844,7 +1844,18 @@ public struct ReaderView: View {
 
             // TTS (听书)
             Button(action: {
-                audioService.togglePlayPause(text: currentChapterContent)
+                if TTSCastStore.shared.enabled {
+                    // 多角色：整章按段切好、逐段换音色播
+                    if audioService.isPlaying {
+                        audioService.pause()
+                    } else if audioService.isPaused && !audioService.currentText.isEmpty {
+                        audioService.resume()
+                    } else {
+                        audioService.speakWithCast(currentChapterContent)
+                    }
+                } else {
+                    audioService.togglePlayPause(text: currentChapterContent)
+                }
             }) {
                 VStack(spacing: 4) {
                     Image(systemName: audioService.isPlaying ? "pause.circle.fill" : (audioService.isPaused ? "play.circle.fill" : "headphones"))

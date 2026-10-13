@@ -56,6 +56,94 @@ enum SystemVoiceSelection {
     }
 }
 
+/// 多角色朗读里的一条「角色 → 音色」规则
+public struct TTSCastRole: Codable, Identifiable, Equatable {
+    /// 这条规则什么时候用得上
+    public enum Match: String, Codable, CaseIterable, Identifiable {
+        case narration = "旁白"
+        case dialogue = "对话"
+        case keyword = "关键词"
+        public var id: String { rawValue }
+    }
+
+    /// 走哪个引擎发音。HTTP 语音源是整章一起发的，按段换不了，所以这里只放能逐段换的两种。
+    public enum Engine: String, Codable, CaseIterable, Identifiable {
+        case system = "系统语音"
+        case baiduOnline = "百度在线"
+        public var id: String { rawValue }
+    }
+
+    public var id: UUID
+    public var name: String
+    public var match: Match
+    public var keyword: String
+    public var engine: Engine
+    /// 系统语音填 AVSpeechSynthesisVoice.identifier，百度在线填发音人 id
+    public var voiceId: String
+    public var enabled: Bool
+
+    public init(
+        id: UUID = UUID(),
+        name: String = "",
+        match: Match = .narration,
+        keyword: String = "",
+        engine: Engine = .system,
+        voiceId: String = "",
+        enabled: Bool = true
+    ) {
+        self.id = id
+        self.name = name
+        self.match = match
+        self.keyword = keyword
+        self.engine = engine
+        self.voiceId = voiceId
+        self.enabled = enabled
+    }
+}
+
+/// 多角色配置：总开关 + 角色表
+public final class TTSCastStore: ObservableObject {
+    public static let shared = TTSCastStore()
+
+    @Published public var enabled: Bool { didSet { save() } }
+    @Published public var roles: [TTSCastRole] { didSet { save() } }
+
+    private let enabledKey = "tts_cast_enabled"
+    private let rolesKey = "tts_cast_roles_v1"
+
+    private init() {
+        let defaults = UserDefaults.standard
+        self.enabled = defaults.bool(forKey: enabledKey)
+        if let data = defaults.data(forKey: rolesKey),
+           let list = try? JSONDecoder().decode([TTSCastRole].self, from: data) {
+            self.roles = list
+        } else {
+            self.roles = []
+        }
+    }
+
+    private func save() {
+        let defaults = UserDefaults.standard
+        defaults.set(enabled, forKey: enabledKey)
+        if let data = try? JSONEncoder().encode(roles) {
+            defaults.set(data, forKey: rolesKey)
+        }
+    }
+
+    /// 一条能直接用的起步配置：旁白 + 对话各一条
+    public func makeStarterRoles() {
+        var narration = TTSCastRole(name: "旁白", match: .narration)
+        narration.engine = .system
+        narration.voiceId = SystemVoiceSelection.identifier ?? ""
+
+        var dialogue = TTSCastRole(name: "对话", match: .dialogue)
+        dialogue.engine = .system
+        dialogue.voiceId = ""
+
+        roles = [narration, dialogue]
+    }
+}
+
 public class AudioBookService: NSObject, ObservableObject, AVSpeechSynthesizerDelegate {
     public static let shared = AudioBookService()
 
@@ -69,6 +157,17 @@ public class AudioBookService: NSObject, ObservableObject, AVSpeechSynthesizerDe
     private let baiduOnlinePlayer = BaiduOnlineTTS.shared
     #endif
     private var cancellables = Set<AnyCancellable>()
+
+    // MARK: - 多角色朗读状态
+    private struct CastSegment {
+        let text: String
+        let role: TTSCastRole?
+    }
+    private var castSegments: [CastSegment] = []
+    private var castCursor = 0
+    private var castActive = false
+    private var castSegmentCompletion: (() -> Void)?
+    private var castLanguage = "zh-CN"
 
     @Published public var isPlaying: Bool = false
     @Published public var isPaused: Bool = false
@@ -307,6 +406,11 @@ public class AudioBookService: NSObject, ObservableObject, AVSpeechSynthesizerDe
     }
 
     public func stop() {
+        // 停就整条序一起停，别留着半截角色队列
+        castActive = false
+        castSegments = []
+        castCursor = 0
+        castSegmentCompletion = nil
         #if os(iOS)
         baiduPlayer.stop()
         baiduOnlinePlayer.stop()
@@ -329,6 +433,11 @@ public class AudioBookService: NSObject, ObservableObject, AVSpeechSynthesizerDe
 
     // MARK: - AVSpeechSynthesizerDelegate
     public func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didFinish utterance: AVSpeechUtterance) {
+        if castActive {
+            // 多角色：这只是其中一段播完，接着下一段，别把整章当成结束
+            completeCastSegment()
+            return
+        }
         DispatchQueue.main.async {
             self.isPlaying = false
             self.isPaused = false
@@ -336,10 +445,152 @@ public class AudioBookService: NSObject, ObservableObject, AVSpeechSynthesizerDe
     }
 
     public func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didCancel utterance: AVSpeechUtterance) {
+        if castActive {
+            castActive = false
+            castSegmentCompletion = nil
+        }
         DispatchQueue.main.async {
             self.isPlaying = false
             self.isPaused = false
         }
+    }
+
+    // MARK: - 多角色朗读
+
+    /// 按「旁白 / 对话 / 关键词」把整章切段，逐段换音色往外播
+    public func speakWithCast(_ text: String, language: String = "zh-CN") {
+        stop()
+        let roles = TTSCastStore.shared.roles.filter { $0.enabled }
+        let segments = AudioBookService.segmentsForCast(text, roles: roles)
+        guard !segments.isEmpty else { return }
+        castSegments = segments
+        castCursor = 0
+        castActive = true
+        castLanguage = language
+        currentText = text
+        playNextCastSegment()
+    }
+
+    private func playNextCastSegment() {
+        guard castActive, castCursor < castSegments.count else {
+            castActive = false
+            castSegmentCompletion = nil
+            DispatchQueue.main.async {
+                self.isPlaying = false
+                self.isPaused = false
+            }
+            return
+        }
+        let item = castSegments[castCursor]
+        castCursor += 1
+        playCastSegment(item)
+    }
+
+    private func playCastSegment(_ item: CastSegment) {
+        let spoken = item.text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !spoken.isEmpty else {
+            playNextCastSegment()
+            return
+        }
+
+        castSegmentCompletion = { [weak self] in
+            self?.playNextCastSegment()
+        }
+
+        #if os(iOS)
+        if let role = item.role, role.engine == .baiduOnline,
+           let speaker = BaiduOnlineTTS.speaker(id: role.voiceId) {
+            baiduOnlinePlayer.onFinish = { [weak self] in
+                self?.completeCastSegment()
+            }
+            baiduOnlinePlayer.start(speaker: speaker, text: spoken, speed: baiduOnlineSpeed, maxChunkLength: chunkLength)
+            DispatchQueue.main.async {
+                self.isPlaying = true
+                self.isPaused = false
+            }
+            return
+        }
+        #endif
+
+        let utterance = AVSpeechUtterance(string: spoken)
+        if let role = item.role, role.engine == .system, !role.voiceId.isEmpty,
+           let voice = AVSpeechSynthesisVoice(identifier: role.voiceId) {
+            utterance.voice = voice
+        } else {
+            utterance.voice = SystemVoiceSelection.selectedVoice ?? AVSpeechSynthesisVoice(language: castLanguage)
+        }
+        utterance.rate = speechRate
+
+        #if os(iOS)
+        try? AVAudioSession.sharedInstance().setActive(true)
+        #endif
+
+        synthesizer.speak(utterance)
+        DispatchQueue.main.async {
+            self.isPlaying = true
+            self.isPaused = false
+        }
+    }
+
+    private func completeCastSegment() {
+        let completion = castSegmentCompletion
+        castSegmentCompletion = nil
+        DispatchQueue.main.async { completion?() }
+    }
+
+    /// 切段规则：按行切，行内再按引号分出对话；对话给「对话」角色，其余给旁白或命中的关键词角色
+    private static func segmentsForCast(_ text: String, roles: [TTSCastRole]) -> [CastSegment] {
+        let narration = roles.first { $0.match == .narration }
+        let dialogue = roles.first { $0.match == .dialogue }
+        let keywordRoles = roles.filter { $0.match == .keyword && !$0.keyword.isEmpty }
+
+        var result: [CastSegment] = []
+        for rawLine in text.components(separatedBy: .newlines) {
+            let line = rawLine.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !line.isEmpty else { continue }
+            for piece in splitByQuotes(line) where !piece.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                let role: TTSCastRole?
+                if piece.isDialogue {
+                    role = dialogue
+                } else if let hit = keywordRoles.first(where: { piece.text.contains($0.keyword) }) {
+                    role = hit
+                } else {
+                    role = narration
+                }
+                result.append(CastSegment(text: piece.text, role: role))
+            }
+        }
+        return result
+    }
+
+    /// 把一行按引号切成「对话 / 非对话」交替的片段
+    private static func splitByQuotes(_ line: String) -> [(text: String, isDialogue: Bool)] {
+        let openers: Set<Character> = ["「", "“", "『", "\""]
+        let closers: Set<Character> = ["」", "”", "』", "\""]
+        var pieces: [(String, Bool)] = []
+        var buffer = ""
+        var inQuote = false
+        for ch in line {
+            if !inQuote, openers.contains(ch) {
+                if !buffer.isEmpty {
+                    pieces.append((buffer, false))
+                    buffer = ""
+                }
+                inQuote = true
+                buffer.append(ch)
+            } else if inQuote, closers.contains(ch) {
+                buffer.append(ch)
+                pieces.append((buffer, true))
+                buffer = ""
+                inQuote = false
+            } else {
+                buffer.append(ch)
+            }
+        }
+        if !buffer.isEmpty {
+            pieces.append((buffer, inQuote))
+        }
+        return pieces
     }
 
     public func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didPause utterance: AVSpeechUtterance) {

@@ -27,6 +27,7 @@ public struct TTSSettingsSheet: View {
     #endif
     @State private var systemVoiceId: String? = SystemVoiceSelection.identifier
     @State private var customSpeakerId: String = ""
+    @ObservedObject private var cast = TTSCastStore.shared
 
     public init() {}
 
@@ -230,6 +231,44 @@ public struct TTSSettingsSheet: View {
                     Text("在线语音源会按这个长度切段再合成。太长容易超时或被服务器截断。")
                         .font(.caption)
                         .foregroundColor(.secondary)
+                }
+
+                Section {
+                    Toggle("按角色换音色", isOn: $cast.enabled)
+
+                    if cast.roles.isEmpty {
+                        Button {
+                            cast.makeStarterRoles()
+                        } label: {
+                            Label("生成一套默认角色（旁白 + 对话）", systemImage: "person.2.badge.plus")
+                        }
+                    }
+
+                    ForEach($cast.roles) { $role in
+                        NavigationLink {
+                            TTSCastRoleEditor(role: $role)
+                        } label: {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(role.name.isEmpty ? "（未命名角色）" : role.name)
+                                Text("\(role.match.rawValue) · \(role.engine.rawValue) · \(castVoiceLabel(role))")
+                                    .font(.caption2)
+                                    .foregroundColor(.secondary)
+                            }
+                        }
+                    }
+                    .onDelete { indexSet in
+                        cast.roles.remove(atOffsets: indexSet)
+                    }
+
+                    Button {
+                        cast.roles.append(TTSCastRole(name: "新角色"))
+                    } label: {
+                        Label("添加角色", systemImage: "plus")
+                    }
+                } header: {
+                    Text("多角色朗读")
+                } footer: {
+                    Text("打开后按段落切分：引号里的对话走「对话」角色，正文走旁白，命名角色按关键词命中。逐段换音色只支持系统语音和百度在线；HTTP 语音源仍是整章一个音色。")
                 }
 
                 Section {
@@ -497,3 +536,86 @@ struct BaiduVoiceManagerSheet: View {
     }
 }
 #endif
+
+/// 单条角色音色的编辑页
+struct TTSCastRoleEditor: View {
+    @Binding var role: TTSCastRole
+
+    var body: some View {
+        Form {
+            Section(header: Text("角色")) {
+                TextField("角色名（随便起，只影响列表显示）", text: $role.name)
+
+                Picker("什么时候用", selection: $role.match) {
+                    ForEach(TTSCastRole.Match.allCases) { m in
+                        Text(m.rawValue).tag(m)
+                    }
+                }
+
+                if role.match == .keyword {
+                    TextField("关键词（正文里出现就用这条音色）", text: $role.keyword)
+                        .autocorrectionDisabled()
+                }
+
+                Toggle("启用这条", isOn: $role.enabled)
+            }
+
+            Section {
+                Picker("引擎", selection: $role.engine) {
+                    ForEach(TTSCastRole.Engine.allCases) { e in
+                        Text(e.rawValue).tag(e)
+                    }
+                }
+                .pickerStyle(.segmented)
+
+                switch role.engine {
+                case .system:
+                    Picker("系统音色", selection: $role.voiceId) {
+                        Text("跟随全局设置").tag("")
+                        ForEach(SystemVoiceSelection.chineseVoices, id: \.identifier) { voice in
+                            Text("\(voice.name) · \(SystemVoiceSelection.qualityLabel(voice))")
+                                .tag(voice.identifier)
+                        }
+                    }
+
+                case .baiduOnline:
+                    #if os(iOS)
+                    Picker("发音人", selection: $role.voiceId) {
+                        Text("跟随全局设置").tag("")
+                        ForEach(BaiduOnlineTTS.speakers) { speaker in
+                            Text("\(speaker.name) · \(speaker.note)").tag(speaker.id)
+                        }
+                    }
+                    #else
+                    Text("百度在线发音人只在 iOS 上可用。")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                    #endif
+                }
+            } header: {
+                Text("音色")
+            } footer: {
+                Text("选「跟随全局设置」就用听书设置里当前选的那个音色。")
+            }
+        }
+        .navigationTitle(role.name.isEmpty ? "角色" : role.name)
+        #if os(iOS)
+        .navigationBarTitleDisplayMode(.inline)
+        #endif
+    }
+}
+
+/// 列表里那行「音色」的显示名
+private func castVoiceLabel(_ role: TTSCastRole) -> String {
+    guard !role.voiceId.isEmpty else { return "跟随全局" }
+    switch role.engine {
+    case .system:
+        return AVSpeechSynthesisVoice(identifier: role.voiceId)?.name ?? "未知音色"
+    case .baiduOnline:
+        #if os(iOS)
+        return BaiduOnlineTTS.speaker(id: role.voiceId)?.name ?? "未知发音人"
+        #else
+        return "在线发音人"
+        #endif
+    }
+}
