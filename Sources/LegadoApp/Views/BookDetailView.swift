@@ -5,6 +5,9 @@ import LegadoCore
 #if canImport(UIKit)
 import UIKit
 #endif
+#if os(iOS)
+import PhotosUI
+#endif
 
 public struct BookDetailView: View {
     @ObservedObject var bookStore = BookStore.shared
@@ -246,17 +249,8 @@ public struct BookDetailView: View {
     private var headerCard: some View {
         HStack(alignment: .top, spacing: 16) {
             // Book Cover Image
-            if let coverUrlStr = currentBook.coverUrl, let url = URL(string: coverUrlStr) {
-                AsyncImage(url: url) { phase in
-                    switch phase {
-                    case .success(let image):
-                        image
-                            .resizable()
-                            .scaledToFill()
-                    default:
-                        coverPlaceholder
-                    }
-                }
+            if currentBook.coverUrl != nil {
+                BookCoverImage(urlString: currentBook.coverUrl)
                 .frame(width: 100, height: 138)
                 .cornerRadius(8)
                 .shadow(color: Color.black.opacity(0.12), radius: 6, x: 0, y: 3)
@@ -656,12 +650,130 @@ struct ChapterListView: View {
     }
 }
 
+/// 封面：网络地址走 AsyncImage，本地文件（相册选的）直接读盘，省一次请求
+struct BookCoverImage: View {
+    let urlString: String?
+    var contentMode: ContentMode = .fill
+
+    @State private var localImage: Image?
+
+    var body: some View {
+        Group {
+            if let localImage {
+                localImage
+                    .resizable()
+                    .aspectRatio(contentMode: contentMode)
+            } else if let urlString, let url = URL(string: urlString) {
+                AsyncImage(url: url) { phase in
+                    switch phase {
+                    case .success(let image):
+                        image
+                            .resizable()
+                            .aspectRatio(contentMode: contentMode)
+                    case .failure:
+                        placeholder
+                    default:
+                        placeholder
+                    }
+                }
+            } else {
+                placeholder
+            }
+        }
+        .task(id: urlString) {
+            localImage = Self.loadLocalImage(urlString)
+        }
+    }
+
+    private var placeholder: some View {
+        ZStack {
+            Color.gray.opacity(0.16)
+            Image(systemName: "book.closed")
+                .font(.title3)
+                .foregroundColor(.secondary)
+        }
+    }
+
+    /// 只认本地文件，网络地址交给 AsyncImage
+    private static func loadLocalImage(_ urlString: String?) -> Image? {
+        guard let urlString else { return nil }
+        let path: String
+        if urlString.hasPrefix("file://") {
+            guard let url = URL(string: urlString) else { return nil }
+            path = url.path
+        } else if urlString.hasPrefix("/") {
+            path = urlString
+        } else {
+            return nil
+        }
+        guard FileManager.default.fileExists(atPath: path) else { return nil }
+        #if os(iOS)
+        guard let image = UIImage(contentsOfFile: path) else { return nil }
+        return Image(uiImage: image)
+        #elseif os(macOS)
+        guard let image = NSImage(contentsOfFile: path) else { return nil }
+        return Image(nsImage: image)
+        #else
+        return nil
+        #endif
+    }
+}
+
+/// 相册选的封面存到沙盒里，书里只留文件地址
+enum BookCoverStorage {
+    static func directory() -> URL {
+        let base = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+        return base.appendingPathComponent("Covers", isDirectory: true)
+    }
+
+    static func save(_ data: Data) -> String? {
+        let dir = directory()
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let url = dir.appendingPathComponent(UUID().uuidString + ".jpg")
+        do {
+            try data.write(to: url, options: .atomic)
+            return url.absoluteString
+        } catch {
+            return nil
+        }
+    }
+}
+
+/// 去书源里找同一本书，把各家搜到的封面收回来当候选
+enum CoverCandidateFinder {
+    static func find(bookName: String, sources: [BookSource], limit: Int = 40) async -> [(source: String, url: String)] {
+        guard !bookName.isEmpty, !sources.isEmpty else { return [] }
+        var found: [(source: String, url: String)] = []
+        var seen = Set<String>()
+
+        let stream = BookSearchService.shared.searchMultiSources(sources: sources, key: bookName, page: 1)
+        for await (source, books) in stream {
+            for candidate in books where candidate.name.contains(bookName) || bookName.contains(candidate.name) {
+                guard let cover = candidate.coverUrl, !cover.isEmpty else { continue }
+                guard !seen.contains(cover) else { continue }
+                seen.insert(cover)
+                found.append((source: source.bookSourceName, url: cover))
+                if found.count >= limit { return found }
+            }
+        }
+        return found
+    }
+}
+
 /// 改书名 / 作者 / 封面链接
 struct BookInfoEditSheet: View {
     @Environment(\.dismiss) private var dismiss
     @State private var name: String
     @State private var author: String
     @State private var cover: String
+    @State private var coverError: String?
+    @State private var coverCandidates: [(source: String, url: String)] = []
+    @State private var isFindingCovers = false
+    @State private var coverFinderNote: String?
+    #if os(iOS)
+    /// 用 Any 存是为了 iOS 15 也能编译（PhotosPickerItem 要 iOS 16+）
+    @State private var pickedCover: Any?
+    #endif
     private let onSave: (String, String, String) -> Void
 
     init(name: String, author: String, coverUrl: String, onSave: @escaping (String, String, String) -> Void) {
@@ -678,20 +790,89 @@ struct BookInfoEditSheet: View {
                 TextField("作者", text: $author)
                 TextField("封面图片地址", text: $cover)
                     .autocorrectionDisabled()
-                if !cover.isEmpty, let url = URL(string: cover) {
+                if !cover.isEmpty {
                     HStack {
                         Spacer()
-                        AsyncImage(url: url) { image in
-                            image.resizable().scaledToFit()
-                        } placeholder: {
-                            ProgressView()
-                        }
-                        .frame(height: 120)
+                        BookCoverImage(urlString: cover, contentMode: .fit)
+                            .frame(height: 120)
                         Spacer()
                     }
                 }
+                #if os(iOS)
+                if #available(iOS 16.0, *) {
+                    PhotosPicker(
+                        selection: Binding(
+                            get: { pickedCover as? PhotosPickerItem },
+                            set: { newValue in
+                                pickedCover = newValue
+                                guard let item = newValue else { return }
+                                Task {
+                                    if let data = try? await item.loadTransferable(type: Data.self),
+                                       let stored = BookCoverStorage.save(data) {
+                                        await MainActor.run {
+                                            cover = stored
+                                            coverError = nil
+                                        }
+                                    } else {
+                                        await MainActor.run { coverError = "这张图读不出来，换一张试试。" }
+                                    }
+                                }
+                            }
+                        ),
+                        matching: .images
+                    ) {
+                        Label("从相册选封面", systemImage: "photo.on.rectangle")
+                    }
+                    if let coverError {
+                        Text(coverError)
+                            .font(.caption)
+                            .foregroundColor(.red)
+                    }
+                }
+                #endif
                 Button("清除封面") { cover = "" }
                     .foregroundColor(.red)
+
+                Section(header: Text("从书源找封面")) {
+                    Button {
+                        findCovers()
+                    } label: {
+                        HStack {
+                            Label("用书名去书源搜一圈", systemImage: "square.grid.2x2")
+                            Spacer()
+                            if isFindingCovers {
+                                ProgressView()
+                            }
+                        }
+                    }
+                    .disabled(isFindingCovers || name.trimmingCharacters(in: .whitespaces).isEmpty)
+
+                    if let coverFinderNote {
+                        Text(coverFinderNote)
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
+
+                    if !coverCandidates.isEmpty {
+                        LazyVGrid(columns: [GridItem(.adaptive(minimum: 64), spacing: 8)], spacing: 8) {
+                            ForEach(coverCandidates, id: \.url) { item in
+                                Button {
+                                    cover = item.url
+                                    coverError = nil
+                                } label: {
+                                    BookCoverImage(urlString: item.url)
+                                        .frame(width: 64, height: 88)
+                                        .cornerRadius(6)
+                                        .overlay(
+                                            RoundedRectangle(cornerRadius: 6)
+                                                .stroke(cover == item.url ? Color.accentColor : Color.clear, lineWidth: 2)
+                                        )
+                                }
+                            }
+                        }
+                        .padding(.vertical, 4)
+                    }
+                }
             }
             .navigationTitle("编辑书籍信息")
             #if os(iOS)
@@ -708,6 +889,23 @@ struct BookInfoEditSheet: View {
                     }
                     .disabled(name.trimmingCharacters(in: .whitespaces).isEmpty)
                 }
+            }
+        }
+    }
+
+    /// 拿书名去所有启用的书源搜，收各家给出的封面当候选
+    private func findCovers() {
+        let key = name.trimmingCharacters(in: .whitespaces)
+        guard !key.isEmpty else { return }
+        isFindingCovers = true
+        coverFinderNote = nil
+        let sources = BookStore.shared.sources.filter { $0.enabled != false }
+        Task {
+            let found = await CoverCandidateFinder.find(bookName: key, sources: sources)
+            await MainActor.run {
+                coverCandidates = found
+                isFindingCovers = false
+                coverFinderNote = found.isEmpty ? "没在书源里搜到封面。" : "点一张就换上。"
             }
         }
     }

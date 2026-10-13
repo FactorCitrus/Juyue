@@ -3,11 +3,19 @@ import SwiftUI
 import LegadoCore
 #endif
 
-/// 阅读中点「换源」调出来的候选列表：拿书名去所有启用的书源搜一遍。
+/// 阅读中点「换源」调出来的候选列表：拿书名/作者去所有启用的书源搜一遍。
 public struct SourceSwitchSheet: View {
     let book: Book
     let currentSourceUrl: String?
     let onSelect: (BookSource, SearchBook) -> Void
+
+    /// 拿什么去搜：书名、作者，或者两个都要
+    enum MatchMode: String, CaseIterable, Identifiable {
+        case title = "书名"
+        case author = "作者"
+        case both = "书名+作者"
+        var id: String { rawValue }
+    }
 
     @Environment(\.dismiss) private var dismiss
     @ObservedObject private var bookStore = BookStore.shared
@@ -18,6 +26,10 @@ public struct SourceSwitchSheet: View {
     @State private var finishedSources = 0
     @State private var totalSources = 0
     @State private var errorMessage: String?
+    @State private var hitNote: String?
+    @State private var matchMode: MatchMode
+    @State private var keyword: String
+    @State private var sourceFilter: String = ""
 
     public init(
         book: Book,
@@ -27,6 +39,11 @@ public struct SourceSwitchSheet: View {
         self.book = book
         self.currentSourceUrl = currentSourceUrl
         self.onSelect = onSelect
+        // 名字特别短的书（「家」「序」这种）按书名搜全是噪音，默认改成按作者搜
+        let shortTitle = book.name.trimmingCharacters(in: .whitespaces).count <= 2
+        let initialMode: MatchMode = (shortTitle && !book.author.isEmpty) ? .author : .title
+        self._matchMode = State(initialValue: initialMode)
+        self._keyword = State(initialValue: initialMode == .author ? book.author : book.name)
     }
 
     public var body: some View {
@@ -55,6 +72,53 @@ public struct SourceSwitchSheet: View {
                         Text("当前书源：\(book.originName.isEmpty ? "未知" : book.originName)")
                             .font(.caption)
                             .foregroundColor(.secondary)
+                        if !book.author.isEmpty {
+                            Text("作者：\(book.author)")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        }
+                    }
+                }
+
+                Section(header: Text("搜索条件")) {
+                    Picker("匹配", selection: $matchMode) {
+                        ForEach(MatchMode.allCases) { m in
+                            Text(m.rawValue).tag(m)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    .onChange(of: matchMode) { newValue in
+                        switch newValue {
+                        case .title:
+                            keyword = book.name
+                        case .author:
+                            keyword = book.author.isEmpty ? book.name : book.author
+                        case .both:
+                            keyword = book.author.isEmpty ? book.name : "\(book.name) \(book.author)"
+                        }
+                        startSearch()
+                    }
+
+                    HStack {
+                        Text("关键词")
+                            .frame(width: 52, alignment: .leading)
+                        TextField("要搜的内容", text: $keyword)
+                            #if os(iOS)
+                            .autocapitalization(.none)
+                            .disableAutocorrection(true)
+                            #endif
+                        Button("搜索") { startSearch() }
+                            .disabled(keyword.trimmingCharacters(in: .whitespaces).isEmpty)
+                    }
+
+                    HStack {
+                        Text("限定源")
+                            .frame(width: 52, alignment: .leading)
+                        TextField("只搜名称 / 分组里含这几个字的源", text: $sourceFilter)
+                            #if os(iOS)
+                            .autocapitalization(.none)
+                            .disableAutocorrection(true)
+                            #endif
                     }
                 }
 
@@ -66,6 +130,14 @@ public struct SourceSwitchSheet: View {
                                 .font(.caption)
                                 .foregroundColor(.secondary)
                         }
+                    }
+                }
+
+                if let hitNote {
+                    Section {
+                        Text(hitNote)
+                            .font(.caption)
+                            .foregroundColor(.secondary)
                     }
                 }
 
@@ -116,7 +188,7 @@ public struct SourceSwitchSheet: View {
                     }
                 } else if !isSearching {
                     Section {
-                        Text("没有在其他书源找到这本书。")
+                        Text("没有在其他书源找到这本书。换个匹配方式或关键词再试。")
                             .font(.caption)
                             .foregroundColor(.secondary)
                     }
@@ -138,23 +210,53 @@ public struct SourceSwitchSheet: View {
     }
 
     private func startSearch() {
-        let sources = bookStore.sources.filter { $0.enabled != false }
-        totalSources = sources.count
+        searchTask?.cancel()
+        results = []
+        errorMessage = nil
+        hitNote = nil
         finishedSources = 0
-        isSearching = !sources.isEmpty
-        guard !sources.isEmpty else {
-            errorMessage = "没有启用的书源，先去设置里导入。"
+
+        let trimmedKeyword = keyword.trimmingCharacters(in: .whitespaces)
+        guard !trimmedKeyword.isEmpty else {
+            isSearching = false
+            errorMessage = "先填关键词。"
             return
         }
 
+        let filter = sourceFilter.trimmingCharacters(in: .whitespaces).lowercased()
+        var sources = bookStore.sources.filter { $0.enabled != false }
+        if !filter.isEmpty {
+            sources = sources.filter {
+                $0.bookSourceName.lowercased().contains(filter)
+                    || ($0.bookSourceGroup ?? "").lowercased().contains(filter)
+            }
+        }
+        totalSources = sources.count
+        isSearching = !sources.isEmpty
+        guard !sources.isEmpty else {
+            errorMessage = filter.isEmpty
+                ? "没有启用的书源，先去设置里导入。"
+                : "没有符合「\(sourceFilter)」的书源。"
+            return
+        }
+
+        let requestKey = requestKeyword(from: trimmedKeyword)
+        let mode = matchMode
+        let bookName = book.name
+        let bookAuthor = book.author
+
         searchTask = Task {
-            let stream = BookSearchService.shared.searchMultiSources(sources: sources, key: book.name, page: 1)
+            let stream = BookSearchService.shared.searchMultiSources(sources: sources, key: requestKey, page: 1)
+            var mismatched = 0
             for await (source, books) in stream {
                 if Task.isCancelled { return }
                 await MainActor.run {
                     finishedSources += 1
-                    // 只收书名对得上的，避免把同名不同书塞进来
-                    let matched = books.filter { $0.name.contains(book.name) || book.name.contains($0.name) }
+                    // 按选中的口径过滤，避免同名不同书混进来
+                    let matched = books.filter {
+                        Self.matches($0, mode: mode, bookName: bookName, author: bookAuthor)
+                    }
+                    mismatched += books.count - matched.count
                     for candidate in matched {
                         if !results.contains(where: { $0.book.bookUrl == candidate.bookUrl }) {
                             results.append((source: source, book: candidate))
@@ -164,7 +266,32 @@ public struct SourceSwitchSheet: View {
             }
             await MainActor.run {
                 isSearching = false
+                if results.isEmpty, mismatched > 0 {
+                    hitNote = "搜到 \(mismatched) 条，但都不符合「\(mode.rawValue)」的匹配口径。"
+                }
             }
+        }
+    }
+
+    /// 搜索接口一般只认书名，带空格的关键词取最长的那一段去请求
+    private func requestKeyword(from raw: String) -> String {
+        let parts = raw.split(separator: " ").map(String.init).filter { !$0.isEmpty }
+        return parts.max(by: { $0.count < $1.count }) ?? raw
+    }
+
+    /// 按选中的口径判断这条结果算不算同一本书
+    private static func matches(_ candidate: SearchBook, mode: MatchMode, bookName: String, author: String) -> Bool {
+        let nameHit = !bookName.isEmpty
+            && (candidate.name.contains(bookName) || bookName.contains(candidate.name))
+        let authorHit = !author.isEmpty && !candidate.author.isEmpty
+            && (candidate.author.contains(author) || author.contains(candidate.author))
+        switch mode {
+        case .title:
+            return nameHit
+        case .author:
+            return authorHit
+        case .both:
+            return nameHit || authorHit
         }
     }
 }

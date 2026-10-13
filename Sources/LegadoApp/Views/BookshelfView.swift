@@ -393,17 +393,9 @@ struct BookRow: View {
         HStack(alignment: .center, spacing: 14) {
             // Book cover with Unread Red Badge
             ZStack(alignment: shelfConfig.badgeCorner == .topTrailing ? .topTrailing : .topLeading) {
-                if let coverUrlStr = book.coverUrl, let url = URL(string: coverUrlStr) {
-                    AsyncImage(url: url) { phase in
-                        switch phase {
-                        case .success(let image):
-                            image
-                                .resizable()
-                                .scaledToFill()
-                        default:
-                            coverPlaceholder
-                        }
-                    }
+                if book.coverUrl != nil {
+                    // 走统一的封面视图：相册选的本地封面也在这儿显示
+                    BookCoverImage(urlString: book.coverUrl)
                     .frame(width: 54, height: 74)
                     .cornerRadius(6)
                     .clipped()
