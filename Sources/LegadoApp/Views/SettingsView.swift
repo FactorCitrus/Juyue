@@ -61,6 +61,15 @@ public struct SettingsView: View {
                         }
                     }
 
+                    NavigationLink(destination: SubscribeSourcesView()) {
+                        HStack {
+                            Text("订阅源（阅读订阅源）")
+                            Spacer()
+                            Text("\(SubscribeSourceStore.shared.sources.count) 个源")
+                                .foregroundColor(.secondary)
+                        }
+                    }
+
                     NavigationLink(destination: DownloadManagerView()) {
                         HStack {
                             Text("下载管理")
@@ -884,6 +893,457 @@ struct DownloadManagerView: View {
         .navigationTitle("下载管理")
         .toolbar {
             Button("清理已完成") { manager.clearFinished() }
+        }
+    }
+}
+
+// MARK: - 订阅源（阅读订阅源）
+
+/// 订阅源的本地存储：整份 JSON 存 UserDefaults，按 sourceUrl 去重
+final class SubscribeSourceStore: ObservableObject {
+    static let shared = SubscribeSourceStore()
+
+    @Published var sources: [SubscribeSource] = [] {
+        didSet { save() }
+    }
+
+    private let key = "subscribe_sources_v1"
+
+    init() {
+        if let data = UserDefaults.standard.data(forKey: key),
+           let list = try? JSONDecoder().decode([SubscribeSource].self, from: data) {
+            sources = list
+        }
+    }
+
+    private func save() {
+        if let data = try? JSONEncoder().encode(sources) {
+            UserDefaults.standard.set(data, forKey: key)
+        }
+    }
+
+    /// 导入：同地址的覆盖更新，其余追加。返回 (新增, 更新)
+    @discardableResult
+    func merge(_ list: [SubscribeSource]) -> (added: Int, updated: Int) {
+        var added = 0
+        var updated = 0
+        for item in list where !item.sourceUrl.isEmpty {
+            if let idx = sources.firstIndex(where: { $0.sourceUrl == item.sourceUrl }) {
+                sources[idx] = item
+                updated += 1
+            } else {
+                sources.append(item)
+                added += 1
+            }
+        }
+        return (added, updated)
+    }
+
+    func remove(sourceUrl: String) {
+        sources.removeAll { $0.sourceUrl == sourceUrl }
+    }
+
+    func toggle(sourceUrl: String) {
+        guard let idx = sources.firstIndex(where: { $0.sourceUrl == sourceUrl }) else { return }
+        sources[idx].enabled = !(sources[idx].enabled ?? true)
+    }
+}
+
+struct SubscribeSourcesView: View {
+    @ObservedObject private var store = SubscribeSourceStore.shared
+
+    @State private var showImport = false
+    @State private var importText = ""
+    @State private var importURL = ""
+    @State private var message: String?
+    @State private var showFileImporter = false
+    @State private var editing: SubscribeSource?
+
+    var body: some View {
+        List {
+            if store.sources.isEmpty {
+                Section {
+                    Text("还没有订阅源。右上角可以粘贴 / 导入 Legado 的 rssSources.json。")
+                        .font(.footnote)
+                        .foregroundColor(.secondary)
+                }
+            }
+
+            Section(header: Text("订阅源（\(store.sources.count)）")) {
+                ForEach(store.sources) { source in
+                    NavigationLink {
+                        SubscribeArticlesView(source: source)
+                    } label: {
+                        VStack(alignment: .leading, spacing: 3) {
+                            HStack {
+                                Text(source.sourceName.isEmpty ? source.sourceUrl : source.sourceName)
+                                    .font(.system(size: 15, weight: .medium))
+                                Spacer()
+                                if source.enabled == false {
+                                    Text("已停用")
+                                        .font(.caption2)
+                                        .foregroundColor(.secondary)
+                                }
+                            }
+                            Text(source.sourceUrl)
+                                .font(.system(size: 11))
+                                .foregroundColor(.secondary)
+                                .lineLimit(1)
+                        }
+                    }
+                    .contextMenu {
+                        Button {
+                            editing = source
+                        } label: {
+                            Label("看 / 改源码", systemImage: "curlybraces")
+                        }
+                        Button {
+                            store.toggle(sourceUrl: source.sourceUrl)
+                        } label: {
+                            Label(source.enabled == false ? "启用" : "停用", systemImage: "power")
+                        }
+                        Button(role: .destructive) {
+                            store.remove(sourceUrl: source.sourceUrl)
+                        } label: {
+                            Label("删除", systemImage: "trash")
+                        }
+                    }
+                }
+                .onDelete { indexSet in
+                    for idx in indexSet where idx < store.sources.count {
+                        store.remove(sourceUrl: store.sources[idx].sourceUrl)
+                    }
+                }
+            }
+        }
+        .navigationTitle("订阅源")
+        .toolbar {
+            ToolbarItem(placement: .primaryAction) {
+                Button {
+                    showImport = true
+                } label: {
+                    Image(systemName: "square.and.arrow.down")
+                }
+            }
+        }
+        .alert(message ?? "", isPresented: Binding(
+            get: { message != nil },
+            set: { if !$0 { message = nil } }
+        )) {
+            Button("好", role: .cancel) {}
+        }
+        .sheet(isPresented: $showImport) {
+            SubscribeImportSheet(
+                importText: $importText,
+                importURL: $importURL,
+                onDone: { text in message = text },
+                onPickFile: { showFileImporter = true }
+            )
+        }
+        .sheet(item: $editing) { source in
+            SubscribeSourceEditor(source: source) { updated in
+                store.merge([updated])
+            }
+        }
+        .fileImporter(isPresented: $showFileImporter, allowedContentTypes: [.json, .plainText]) { result in
+            switch result {
+            case .success(let url):
+                let canAccess = url.startAccessingSecurityScopedResource()
+                defer { if canAccess { url.stopAccessingSecurityScopedResource() } }
+                if let data = try? Data(contentsOf: url),
+                   let text = String(data: data, encoding: .utf8) {
+                    message = importJSON(text)
+                } else {
+                    message = "文件读不出来。"
+                }
+            case .failure(let error):
+                message = "打开文件失败：\(error.localizedDescription)"
+            }
+        }
+    }
+
+    private func importJSON(_ text: String) -> String {
+        do {
+            let list = try SubscribeSourceService.decodeSources(from: text)
+            guard !list.isEmpty else { return "没解析出订阅源，检查是不是 rssSources.json 的格式。" }
+            let result = store.merge(list)
+            return "导入完成：新增 \(result.added) 个，更新 \(result.updated) 个。"
+        } catch {
+            return "解析失败：\(error.localizedDescription)"
+        }
+    }
+}
+
+struct SubscribeImportSheet: View {
+    @Binding var importText: String
+    @Binding var importURL: String
+    let onDone: (String) -> Void
+    let onPickFile: () -> Void
+
+    @Environment(\.dismiss) private var dismiss
+    @State private var isFetching = false
+
+    var body: some View {
+        NavigationView {
+            Form {
+                Section(header: Text("粘贴 JSON")) {
+                    TextEditor(text: $importText)
+                        .frame(minHeight: 140)
+                        .font(.system(.caption, design: .monospaced))
+                    Button {
+                        apply(importText)
+                    } label: {
+                        Label("导入粘贴的内容", systemImage: "doc.text")
+                    }
+                    .disabled(importText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                }
+
+                Section(header: Text("从网址导入")) {
+                    TextField("https://…/rssSources.json", text: $importURL)
+                        .autocorrectionDisabled()
+                    Button {
+                        fetchRemote()
+                    } label: {
+                        HStack {
+                            Label("下载并导入", systemImage: "arrow.down.circle")
+                            Spacer()
+                            if isFetching { ProgressView() }
+                        }
+                    }
+                    .disabled(isFetching || importURL.trimmingCharacters(in: .whitespaces).isEmpty)
+                }
+
+                Section {
+                    Button {
+                        onPickFile()
+                    } label: {
+                        Label("从文件导入", systemImage: "folder")
+                    }
+                } footer: {
+                    Text("跟安卓版 Legado 的订阅源文件互通：数组或单个对象都认。")
+                }
+            }
+            .navigationTitle("导入订阅源")
+            #if os(iOS)
+            .navigationBarTitleDisplayMode(.inline)
+            #endif
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("关闭") { dismiss() }
+                }
+            }
+        }
+    }
+
+    private func apply(_ text: String) {
+        onDone(importText.isEmpty ? "没有内容。" : "已解析，返回列表查看。")
+        if let list = try? SubscribeSourceService.decodeSources(from: text) {
+            let result = SubscribeSourceStore.shared.merge(list)
+            onDone("导入完成：新增 \(result.added) 个，更新 \(result.updated) 个。")
+        } else {
+            onDone("解析失败，检查 JSON 格式。")
+        }
+        dismiss()
+    }
+
+    private func fetchRemote() {
+        let url = importURL.trimmingCharacters(in: .whitespaces)
+        guard let target = URL(string: url) else {
+            onDone("网址不合法。")
+            return
+        }
+        isFetching = true
+        Task {
+            do {
+                let (data, _) = try await URLSession.shared.data(from: target)
+                let text = String(data: data, encoding: .utf8) ?? ""
+                await MainActor.run {
+                    isFetching = false
+                    apply(text)
+                }
+            } catch {
+                await MainActor.run {
+                    isFetching = false
+                    onDone("下载失败：\(error.localizedDescription)")
+                }
+            }
+        }
+    }
+}
+
+struct SubscribeSourceEditor: View {
+    @Environment(\.dismiss) private var dismiss
+    @State private var raw: String
+    @State private var error: String?
+    private let original: SubscribeSource
+    private let onSave: (SubscribeSource) -> Void
+
+    init(source: SubscribeSource, onSave: @escaping (SubscribeSource) -> Void) {
+        self.original = source
+        self.onSave = onSave
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
+        self._raw = State(initialValue: (try? encoder.encode(source)).flatMap { String(data: $0, encoding: .utf8) } ?? "{}")
+    }
+
+    var body: some View {
+        NavigationView {
+            Form {
+                Section(header: Text("整段 JSON（保存时解析回写）")) {
+                    TextEditor(text: $raw)
+                        .frame(minHeight: 360)
+                        .font(.system(.caption, design: .monospaced))
+                        .autocorrectionDisabled()
+                }
+                if let error {
+                    Section {
+                        Text(error).font(.caption).foregroundColor(.red)
+                    }
+                }
+            }
+            .navigationTitle("订阅源源码")
+            #if os(iOS)
+            .navigationBarTitleDisplayMode(.inline)
+            #endif
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("取消") { dismiss() }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("保存") {
+                        guard let list = try? SubscribeSourceService.decodeSources(from: raw), let parsed = list.first else {
+                            error = "JSON 解析失败，检查括号和引号。"
+                            return
+                        }
+                        onSave(parsed)
+                        dismiss()
+                    }
+                }
+            }
+        }
+    }
+}
+
+struct SubscribeArticlesView: View {
+    let source: SubscribeSource
+
+    @State private var articles: [SubscribeArticle] = []
+    @State private var isLoading = false
+    @State private var errorText: String?
+    @State private var selected: SubscribeArticle?
+
+    var body: some View {
+        List {
+            if isLoading {
+                Section {
+                    HStack {
+                        ProgressView()
+                        Text("正在抓取…").font(.caption).foregroundColor(.secondary)
+                    }
+                }
+            }
+            if let errorText {
+                Section {
+                    Text(errorText).font(.caption).foregroundColor(.red)
+                }
+            }
+            Section {
+                ForEach(articles) { article in
+                    Button {
+                        selected = article
+                    } label: {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(article.title)
+                                .font(.system(size: 15, weight: .medium))
+                                .foregroundColor(.primary)
+                                .lineLimit(2)
+                            if let date = article.date, !date.isEmpty {
+                                Text(date).font(.caption2).foregroundColor(.secondary)
+                            }
+                            if let summary = article.summary, !summary.isEmpty {
+                                Text(summary)
+                                    .font(.caption2)
+                                    .foregroundColor(.secondary)
+                                    .lineLimit(2)
+                            }
+                        }
+                    }
+                }
+            } header: {
+                Text(articles.isEmpty ? "没有条目" : "\(articles.count) 条")
+            } footer: {
+                Text(source.sourceName.isEmpty ? source.sourceUrl : source.sourceName)
+            }
+        }
+        .navigationTitle(source.sourceName.isEmpty ? "订阅" : source.sourceName)
+        .refreshable { await load() }
+        .task { await load() }
+        .sheet(item: $selected) { article in
+            SubscribeArticleView(article: article, source: source)
+        }
+    }
+
+    private func load() async {
+        isLoading = true
+        errorText = nil
+        do {
+            articles = try await SubscribeSourceService.fetchArticles(source: source)
+            if articles.isEmpty { errorText = "这条源没抓到条目：检查规则或地址。" }
+        } catch {
+            errorText = "抓取失败：\(error.localizedDescription)"
+        }
+        isLoading = false
+    }
+}
+
+struct SubscribeArticleView: View {
+    let article: SubscribeArticle
+    let source: SubscribeSource
+
+    @Environment(\.dismiss) private var dismiss
+    @State private var content = ""
+    @State private var isLoading = true
+
+    var body: some View {
+        NavigationView {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 12) {
+                    Text(article.title)
+                        .font(.title3.bold())
+                    if let date = article.date, !date.isEmpty {
+                        Text(date).font(.caption).foregroundColor(.secondary)
+                    }
+                    if isLoading {
+                        ProgressView().padding(.top, 20)
+                    } else {
+                        Text(content.isEmpty ? "没取到正文，点右上角去网页看。" : content)
+                            .font(.system(size: 16))
+                            .lineSpacing(6)
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(16)
+            }
+            .navigationTitle("正文")
+            #if os(iOS)
+            .navigationBarTitleDisplayMode(.inline)
+            #endif
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("关闭") { dismiss() }
+                }
+                ToolbarItem(placement: .primaryAction) {
+                    if let url = URL(string: article.link) {
+                        Link(destination: url) {
+                            Image(systemName: "safari")
+                        }
+                    }
+                }
+            }
+            .task {
+                content = (try? await SubscribeSourceService.fetchContent(article: article, source: source)) ?? ""
+                isLoading = false
+            }
         }
     }
 }

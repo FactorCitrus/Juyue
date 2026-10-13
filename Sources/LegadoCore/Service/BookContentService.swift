@@ -649,6 +649,174 @@ public final class TextPurifier: ObservableObject {
     }
 }
 
+// MARK: - 阅读订阅源（Legado RssSource）
+
+/// 订阅源，字段名与安卓版 Legado 的 RssSource 对齐，JSON 可以直接互相导入
+public struct SubscribeSource: Codable, Identifiable, Equatable {
+    public var id: String { sourceUrl }
+
+    public var sourceUrl: String
+    public var sourceName: String
+    public var sourceIcon: String?
+    public var sourceGroup: String?
+    public var sourceComment: String?
+    public var enabled: Bool?
+    public var variableComment: String?
+    public var jsLib: String?
+    public var header: String?
+    public var loginUrl: String?
+    public var loginUi: String?
+    /// 单 URL 源：直接抓 sourceUrl；否则抓 sortUrl 分类页
+    public var singleUrl: Bool?
+    public var sortUrl: String?
+    public var articleStyle: Int?
+    public var ruleArticles: String?
+    public var ruleNextPage: String?
+    public var ruleTitle: String?
+    public var rulePubDate: String?
+    public var ruleDescription: String?
+    public var ruleImage: String?
+    public var ruleLink: String?
+    public var ruleContent: String?
+    public var lastUpdateTime: Int64?
+    public var customOrder: Int?
+    public var type: Int?
+    public var preload: Bool?
+    public var cacheFirst: Bool?
+    public var enableJs: Bool?
+    public var loadWithBaseUrl: Bool?
+    public var searchUrl: String?
+
+    public init(
+        sourceUrl: String = "",
+        sourceName: String = "",
+        sourceGroup: String? = nil,
+        singleUrl: Bool? = true,
+        sortUrl: String? = nil,
+        ruleArticles: String? = nil,
+        ruleTitle: String? = nil,
+        ruleLink: String? = nil,
+        ruleContent: String? = nil
+    ) {
+        self.sourceUrl = sourceUrl
+        self.sourceName = sourceName
+        self.sourceGroup = sourceGroup
+        self.singleUrl = singleUrl
+        self.sortUrl = sortUrl
+        self.ruleArticles = ruleArticles
+        self.ruleTitle = ruleTitle
+        self.ruleLink = ruleLink
+        self.ruleContent = ruleContent
+    }
+
+    /// 规则引擎要一个 BookSource 当上下文（拿 header、jsLib、baseUrl），
+    /// 订阅源没这层，就现场拼一个同地址的壳。
+    var ruleContext: BookSource {
+        var shim = BookSource(bookSourceUrl: sourceUrl, bookSourceName: sourceName)
+        shim.header = header
+        shim.enabled = enabled
+        return shim
+    }
+
+    /// 抓列表的入口页
+    public var listUrl: String {
+        if singleUrl == false, let sortUrl, !sortUrl.isEmpty {
+            return sortUrl
+        }
+        return sourceUrl
+    }
+}
+
+/// 订阅源里的一篇文章
+public struct SubscribeArticle: Identifiable, Equatable {
+    public var id: String { link.isEmpty ? title : link }
+    public var title: String
+    public var link: String
+    public var date: String?
+    public var summary: String?
+    public var imageUrl: String?
+}
+
+public enum SubscribeSourceService {
+    /// 抓订阅源的文章列表。没写 ruleArticles 就当普通 RSS/Atom 处理。
+    public static func fetchArticles(source: SubscribeSource, pageUrl: String? = nil) async throws -> [SubscribeArticle] {
+        let target = pageUrl ?? source.listUrl
+        guard let parsed = NetworkClient.parseLegadoUrl(target, defaultHeader: source.header, baseUrl: source.sourceUrl) else {
+            return []
+        }
+        let response = try await NetworkClient.shared.request(parsed: parsed)
+        guard response.statusCode >= 200 && response.statusCode < 400 else { return [] }
+        let body = response.bodyString
+        let base = parsed.url.absoluteString
+
+        guard let listRule = source.ruleArticles, !listRule.isEmpty else {
+            // 没配列表规则：按标准 RSS/Atom 解析
+            let items = try await RSSService.shared.fetchFeed(url: target, sourceName: source.sourceName)
+            return items.map {
+                SubscribeArticle(title: $0.title, link: $0.link, date: $0.date, summary: $0.summary, imageUrl: nil)
+            }
+        }
+
+        let jsEngine = JSEngine()
+        let analyzer = RuleAnalyzer(content: body, baseUrl: base, bookSource: source.ruleContext, jsEngine: jsEngine)
+        let elements = analyzer.getElements(listRule)
+
+        var articles: [SubscribeArticle] = []
+        for element in elements {
+            let itemAnalyzer = RuleAnalyzer(content: element, baseUrl: base, bookSource: source.ruleContext, jsEngine: jsEngine)
+            let title = itemAnalyzer.getString(source.ruleTitle)
+            let link = itemAnalyzer.getString(source.ruleLink, isUrl: true)
+            guard !title.isEmpty || !link.isEmpty else { continue }
+            let date = itemAnalyzer.getString(source.rulePubDate)
+            let summary = itemAnalyzer.getString(source.ruleDescription)
+            let image = itemAnalyzer.getString(source.ruleImage, isUrl: true)
+            articles.append(
+                SubscribeArticle(
+                    title: title.isEmpty ? link : title,
+                    link: link,
+                    date: date.isEmpty ? nil : date,
+                    summary: summary.isEmpty ? nil : BookContentService.cleanHtml(summary),
+                    imageUrl: image.isEmpty ? nil : image
+                )
+            )
+        }
+        return articles
+    }
+
+    /// 抓正文：有 ruleContent 就按规则取，取不到就把整页按纯文本给出去
+    public static func fetchContent(article: SubscribeArticle, source: SubscribeSource) async throws -> String {
+        guard !article.link.isEmpty,
+              let parsed = NetworkClient.parseLegadoUrl(article.link, defaultHeader: source.header, baseUrl: source.sourceUrl) else {
+            return ""
+        }
+        let response = try await NetworkClient.shared.request(parsed: parsed)
+        guard response.statusCode >= 200 && response.statusCode < 400 else { return "" }
+        let body = response.bodyString
+        let base = parsed.url.absoluteString
+
+        if let contentRule = source.ruleContent, !contentRule.isEmpty {
+            let analyzer = RuleAnalyzer(content: body, baseUrl: base, bookSource: source.ruleContext, jsEngine: JSEngine())
+            let raw = analyzer.getString(contentRule)
+            let text = BookContentService.cleanHtml(raw, baseUrl: base)
+            if !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                return text
+            }
+        }
+        return BookContentService.cleanHtml(body, baseUrl: base)
+    }
+
+    /// 导入：吃 Legado 的 rssSources.json（数组），也吃单个对象
+    public static func decodeSources(from json: String) throws -> [SubscribeSource] {
+        let data = Data(json.utf8)
+        let decoder = JSONDecoder()
+        if let list = try? decoder.decode([SubscribeSource].self, from: data) {
+            return list.filter { !$0.sourceUrl.isEmpty }
+        }
+        let single = try decoder.decode(SubscribeSource.self, from: data)
+        return single.sourceUrl.isEmpty ? [] : [single]
+    }
+}
+
 // MARK: - RSS / Atom 订阅
 public struct RSSSource: Codable, Identifiable, Equatable {
     public var id: UUID
