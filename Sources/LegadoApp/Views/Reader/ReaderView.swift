@@ -211,6 +211,7 @@ public struct ReaderView: View {
     @State private var isSwitchingChapter = false
     @State private var paginationTask: Task<Void, Never>?
     @State private var showTitleDesigner = false
+    @State private var showReplaceRules = false
 
     public var onDismiss: (() -> Void)? = nil
 
@@ -441,6 +442,9 @@ public struct ReaderView: View {
                 readerConfig.chapterTitleProjectJSON = export.projectJSON
                 readerConfig.chapterTitleCanvasHeight = export.canvasHeight
             }
+        }
+        .sheet(isPresented: $showReplaceRules) {
+            ReplaceRulesView(bookUrl: activeBook.bookUrl, bookName: activeBook.name)
         }
         .task {
             readerConfig.loadLayout(for: activeBook.bookUrl)
@@ -1895,6 +1899,59 @@ public struct ReaderView: View {
                 .foregroundColor(readerConfig.textColor)
                 .frame(maxWidth: .infinity)
             }
+
+            // 刷新本章
+            Button {
+                refreshCurrentChapter()
+            } label: {
+                VStack(spacing: 4) {
+                    Image(systemName: "arrow.clockwise")
+                        .font(.system(size: 20))
+                    Text("刷新")
+                        .font(.system(size: 11, weight: .medium))
+                }
+                .foregroundColor(readerConfig.textColor)
+                .frame(maxWidth: .infinity)
+            }
+
+            // 更多：把零碎功能收在一个菜单里
+            Menu {
+                Button {
+                    refreshCurrentChapter()
+                } label: {
+                    Label("刷新本章正文", systemImage: "arrow.clockwise")
+                }
+                Button {
+                    Task { await refreshChapterList() }
+                } label: {
+                    Label("刷新目录", systemImage: "list.bullet.rectangle")
+                }
+                Button {
+                    showReplaceRules = true
+                } label: {
+                    Label("替换净化规则", systemImage: "wand.and.sparkles")
+                }
+                Button {
+                    showTTSSettings = true
+                } label: {
+                    Label("听书设置", systemImage: "headphones")
+                }
+                Divider()
+                Button(role: .destructive) {
+                    refreshCurrentChapter()
+                } label: {
+                    Label("清掉本章缓存并重抓", systemImage: "trash")
+                }
+            } label: {
+                VStack(spacing: 4) {
+                    Image(systemName: "ellipsis.circle")
+                        .font(.system(size: 20))
+                    Text("更多")
+                        .font(.system(size: 11, weight: .medium))
+                }
+                .foregroundColor(readerConfig.textColor)
+                .frame(maxWidth: .infinity)
+            }
         }
     }
 
@@ -2094,6 +2151,16 @@ public struct ReaderView: View {
 
     private var tocDisplayChapters: [BookChapter] {
         tocReversed ? chapters.reversed() : chapters
+    }
+
+    /// 刷新本章：把缓存里这一章丢掉重抓，尽量停在当前页
+    private func refreshCurrentChapter() {
+        let index = currentChapterIndex
+        let page = currentPageIndex
+        chapterCache[index] = nil
+        audioService.stop()
+        errorMessage = nil
+        loadInitialChapter(at: index, targetPageIndex: page)
     }
 
     /// 手动刷新目录：重新抓章节列表，尽量停在原来那一章
@@ -3240,7 +3307,9 @@ public struct ReaderView: View {
     }
 
     // MARK: - Paragraph and Page Parser
-    private func parseContentBlocks(from text: String) -> [ContentBlock] {
+    private func parseContentBlocks(from raw: String) -> [ContentBlock] {
+        // 替换净化：全局规则 + 本书规则，正文从这儿进，所以都过一遍
+        let text = ReplaceRuleStore.shared.apply(to: raw, bookUrl: activeBook.bookUrl)
         var blocks: [ContentBlock] = []
         var currentId = 0
         let regex = try? NSRegularExpression(pattern: "\\[image:(.*?)\\]")
@@ -3904,6 +3973,172 @@ public class CoreTextNSView: NSView {
     }
 }
 #endif
+
+/// 替换净化：全局规则对所有书生效，单书规则只对这本书
+struct ReplaceRulesView: View {
+    let bookUrl: String
+    let bookName: String
+
+    @ObservedObject private var store = ReplaceRuleStore.shared
+    @Environment(\.dismiss) private var dismiss
+    @State private var editing: ReplaceRule?
+    @State private var isNewRule = false
+
+    var body: some View {
+        NavigationView {
+            List {
+                Section {
+                    ForEach(store.rules.filter { $0.isGlobal }) { rule in
+                        ruleRow(rule)
+                    }
+                    .onDelete { delete(global: true, $0) }
+
+                    Button {
+                        startNewRule(global: true)
+                    } label: {
+                        Label("加一条全局规则", systemImage: "plus")
+                    }
+                } header: {
+                    Text("全局规则（所有书都跑）")
+                }
+
+                Section {
+                    ForEach(store.rules.filter { !$0.isGlobal }) { rule in
+                        ruleRow(rule)
+                    }
+                    .onDelete { delete(global: false, $0) }
+
+                    Button {
+                        startNewRule(global: false)
+                    } label: {
+                        Label("加一条本书规则", systemImage: "plus")
+                    }
+                } header: {
+                    Text("本书规则（\(bookName)）")
+                } footer: {
+                    Text("正文入库前按顺序跑一遍。正则写错的那条会被跳过，不会把整章弄没。改完重新进这一章或点阅读页的「刷新」就生效。")
+                }
+            }
+            .navigationTitle("替换净化")
+            #if os(iOS)
+            .navigationBarTitleDisplayMode(.inline)
+            #endif
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("完成") { dismiss() }
+                }
+            }
+            .sheet(item: $editing) { rule in
+                ReplaceRuleEditor(rule: rule, isNew: isNewRule) { saved in
+                    if let idx = store.rules.firstIndex(where: { $0.id == saved.id }) {
+                        store.rules[idx] = saved
+                    } else {
+                        store.rules.append(saved)
+                    }
+                }
+            }
+        }
+    }
+
+    private func ruleRow(_ rule: ReplaceRule) -> some View {
+        Button {
+            isNewRule = false
+            editing = rule
+        } label: {
+            VStack(alignment: .leading, spacing: 3) {
+                HStack {
+                    Text(rule.name.isEmpty ? "（未命名规则）" : rule.name)
+                        .foregroundColor(.primary)
+                    Spacer()
+                    if !rule.enabled {
+                        Text("已停用")
+                            .font(.caption2)
+                            .foregroundColor(.secondary)
+                    }
+                }
+                Text("\(rule.isRegex ? "正则" : "文本")：\(rule.pattern) → \(rule.replacement.isEmpty ? "（删除）" : rule.replacement)")
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
+                    .lineLimit(2)
+            }
+        }
+    }
+
+    private func startNewRule(global: Bool) {
+        isNewRule = true
+        editing = ReplaceRule(bookUrl: global ? nil : bookUrl)
+    }
+
+    private func delete(global: Bool, _ indexSet: IndexSet) {
+        let scope = store.rules.filter { $0.isGlobal == global }
+        let targets = indexSet.compactMap { $0 < scope.count ? scope[$0].id : nil }
+        store.rules.removeAll { targets.contains($0.id) }
+    }
+}
+
+/// 单条净化规则的编辑页，带一个试跑框
+struct ReplaceRuleEditor: View {
+    @Environment(\.dismiss) private var dismiss
+    @State private var draft: ReplaceRule
+    @State private var sample = ""
+    private let isNew: Bool
+    private let onSave: (ReplaceRule) -> Void
+
+    init(rule: ReplaceRule, isNew: Bool, onSave: @escaping (ReplaceRule) -> Void) {
+        _draft = State(initialValue: rule)
+        self.isNew = isNew
+        self.onSave = onSave
+    }
+
+    private var previewText: String {
+        let input = sample.isEmpty ? "示例：第(1)章　　正文里常见的　多余空格与广告" : sample
+        return draft.apply(to: input)
+    }
+
+    var body: some View {
+        NavigationView {
+            Form {
+                Section(header: Text("规则")) {
+                    TextField("名称（备注用，可留空）", text: $draft.name)
+                    TextField("要替换的内容", text: $draft.pattern)
+                        .autocorrectionDisabled()
+                    TextField("替换成（留空就是删掉）", text: $draft.replacement)
+                        .autocorrectionDisabled()
+                    Toggle("当成正则表达式", isOn: $draft.isRegex)
+                    Toggle("启用这条", isOn: $draft.enabled)
+                }
+
+                Section {
+                    TextField("贴一行原文试试", text: $sample)
+                        .autocorrectionDisabled()
+                    Text(previewText)
+                        .font(.system(.caption, design: .monospaced))
+                        .foregroundColor(.secondary)
+                } header: {
+                    Text("试跑")
+                } footer: {
+                    Text(draft.isGlobal ? "这条是全局规则，所有书都跑。" : "这条只对当前这本书跑。")
+                }
+            }
+            .navigationTitle(isNew ? "新建净化规则" : "编辑净化规则")
+            #if os(iOS)
+            .navigationBarTitleDisplayMode(.inline)
+            #endif
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("取消") { dismiss() }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("保存") {
+                        onSave(draft)
+                        dismiss()
+                    }
+                    .disabled(draft.pattern.isEmpty)
+                }
+            }
+        }
+    }
+}
 
 #if os(iOS)
 import UIKit

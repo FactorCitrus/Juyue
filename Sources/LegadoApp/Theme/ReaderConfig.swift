@@ -873,3 +873,85 @@ public extension Color {
         )
     }
 }
+
+/// 替换净化规则：正文入库前按顺序跑一遍，全局规则 + 本书规则都会生效
+public struct ReplaceRule: Codable, Identifiable, Equatable {
+    public var id: UUID
+    public var name: String
+    public var pattern: String
+    public var replacement: String
+    /// 关掉就按纯文本替换，不把 pattern 当正则
+    public var isRegex: Bool
+    public var enabled: Bool
+    /// nil = 全局；填 bookUrl = 只对那本书
+    public var bookUrl: String?
+
+    public init(
+        id: UUID = UUID(),
+        name: String = "",
+        pattern: String = "",
+        replacement: String = "",
+        isRegex: Bool = true,
+        enabled: Bool = true,
+        bookUrl: String? = nil
+    ) {
+        self.id = id
+        self.name = name
+        self.pattern = pattern
+        self.replacement = replacement
+        self.isRegex = isRegex
+        self.enabled = enabled
+        self.bookUrl = bookUrl
+    }
+
+    public var isGlobal: Bool { bookUrl == nil }
+
+    /// 只跑这一条：编辑页试跑和批量净化都走它
+    public func apply(to text: String) -> String {
+        guard enabled, !pattern.isEmpty else { return text }
+        if isRegex {
+            guard let regex = try? NSRegularExpression(pattern: pattern) else { return text }
+            let range = NSRange(location: 0, length: (text as NSString).length)
+            return regex.stringByReplacingMatches(in: text, options: [], range: range, withTemplate: replacement)
+        }
+        return text.replacingOccurrences(of: pattern, with: replacement)
+    }
+}
+
+public final class ReplaceRuleStore: ObservableObject {
+    public static let shared = ReplaceRuleStore()
+
+    @Published public var rules: [ReplaceRule] {
+        didSet { save() }
+    }
+
+    private let key = "reader_replace_rules_v1"
+
+    private init() {
+        if let data = UserDefaults.standard.data(forKey: key),
+           let list = try? JSONDecoder().decode([ReplaceRule].self, from: data) {
+            rules = list
+        } else {
+            rules = []
+        }
+    }
+
+    private func save() {
+        if let data = try? JSONEncoder().encode(rules) {
+            UserDefaults.standard.set(data, forKey: key)
+        }
+    }
+
+    public func globalRules() -> [ReplaceRule] {
+        rules.filter { $0.isGlobal }
+    }
+
+    public func rules(for bookUrl: String?) -> [ReplaceRule] {
+        rules.filter { $0.isGlobal || ($0.bookUrl != nil && $0.bookUrl == bookUrl) }
+    }
+
+    /// 对正文跑一遍净化。正则写错就跳过这条，别把整章弄没了。
+    public func apply(to text: String, bookUrl: String?) -> String {
+        rules(for: bookUrl).reduce(text) { $1.apply(to: $0) }
+    }
+}
