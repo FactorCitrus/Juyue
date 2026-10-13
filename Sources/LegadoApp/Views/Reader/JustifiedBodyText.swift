@@ -10,7 +10,7 @@ import AppKit
 ///
 /// SwiftUI 的 `Text` 没有两端对齐，滚动模式下要真做 justify 只能落到平台文本控件；
 /// 顺带把行距、字距、下划线一起交给 `NSMutableParagraphStyle`，
-/// 口径和栖阅 reader.css 的 `.para`（text-align / line-height / letter-spacing）对齐。
+/// 口径和正文段落的排版一致（text-align / line-height / letter-spacing）。
 struct JustifiedBodyText: View {
     let text: String
     let fontSize: CGFloat

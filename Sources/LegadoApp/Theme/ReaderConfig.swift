@@ -90,7 +90,7 @@ public enum ChineseConversion: String, CaseIterable, Identifiable {
     }
 }
 
-/// 阅读器设置卡片的三个面板，对应栖阅的 `ReaderQuickSettingsPanelKind`
+/// 阅读器设置卡片的三个面板
 /// （quick / spacing / tts）。原来所有设置堆成一长条，滑半天找不到东西。
 public enum ReaderQuickPanel: String, CaseIterable, Identifiable {
     case quick = "快捷"
@@ -123,40 +123,40 @@ public extension ReaderTheme {
 
 /// 页眉页脚每栏能填什么。
 ///
-/// 条目对齐栖阅的 `ReaderDisplayItem`（22 项）；前 6 个的 rawValue 保持原样，
+/// 页眉页脚每栏可填的条目；前 6 个的 rawValue 是已存配置的键，不要改，
 /// 免得老用户的已存配置解不出来。
 public enum ReaderBarContent: String, CaseIterable, Identifiable {
     case none = "无"
     case bookName = "书名"
     case chapterTitle = "标题"
-    case chapterTitleShort = "短标题"
+    case shortChapterTitle = "短标题"
     case progress = "进度(%)"
     case pageInfo = "页码"
-    case pageProgress = "页进度"
-    case pageProgressText = "第 N 页"
-    case totalProgress = "总进度"
-    case totalProgressBar = "总进度条"
+    case pagePercent = "页进度"
+    case pageNumberLabel = "第 N 页"
+    case bookPercent = "总进度"
+    case bookPercentBar = "总进度条"
     case time = "时间"
-    case timeWithSeconds = "时间(秒)"
+    case clockWithSeconds = "时间(秒)"
     case date = "日期"
     case weekday = "星期"
-    case customDate = "自定义日期"
+    case userDate = "自定义日期"
     case batteryLevel = "电量(%)"
     case batteryIcon = "电量图标"
-    case batteryIconWithNumber = "图标+电量"
+    case batteryGlyphWithPercent = "图标+电量"
     case batteryBar = "电量条"
     case chapterCount = "共 N 章"
-    case chapterCountShort = "N 章"
-    case readingDuration = "阅读时长"
-    case remainingTime = "剩余时间"
-    case customText = "自定义"
+    case chaptersShort = "N 章"
+    case elapsedReadingTime = "阅读时长"
+    case remainingReadingTime = "剩余时间"
+    case userText = "自定义"
 
     public var id: String { rawValue }
 
     /// 电量与进度条这类要画图形，不能只当文本塞进 HStack
     public var isGraphical: Bool {
         switch self {
-        case .batteryIcon, .batteryIconWithNumber, .batteryBar, .totalProgressBar:
+        case .batteryIcon, .batteryGlyphWithPercent, .batteryBar, .bookPercentBar:
             return true
         default:
             return false
@@ -173,7 +173,7 @@ public enum ReaderTitleAlignment: String, CaseIterable, Identifiable {
     public var id: String { rawValue }
 }
 
-/// 正文对齐方式。对应栖阅 reader.css 的 `--reader-align`，默认两端对齐。
+/// 正文对齐方式，默认两端对齐。
 public enum ReaderTextAlignment: String, CaseIterable, Identifiable {
     case justify = "两端"
     case leading = "靠左"
@@ -186,7 +186,7 @@ public enum ReaderTextAlignment: String, CaseIterable, Identifiable {
     public var isJustify: Bool { self == .justify }
 }
 
-/// 下划线线型。对应栖阅 ReadingSettings 的 `_textUnderlinePattern`。
+/// 下划线线型。
 public enum ReaderUnderlinePattern: String, CaseIterable, Identifiable {
     case solid = "实线"
     case dot = "点线"
@@ -281,12 +281,12 @@ public class ReaderConfig: ObservableObject {
         set { weightLevel = newValue.level }
     }
 
-    // MARK: - 正文对齐与段落（栖阅 reader.css 的排版变量）
-    /// 正文对齐，默认两端对齐（栖阅 `--reader-align: justify`）
+    // MARK: - 正文对齐与段落
+    /// 正文对齐，默认两端对齐
     @Published public var textAlignment: ReaderTextAlignment = .justify {
         didSet { Self.defaults.set(textAlignment.rawValue, forKey: "reader_text_alignment") }
     }
-    /// 段落之间的分隔线数量，0 表示不加。对应栖阅 `_paragraphSeparatorLines`
+    /// 段落之间的分隔线数量，0 表示不加
     @Published public var paragraphSeparatorLines: Int = 0 {
         didSet { Self.defaults.set(paragraphSeparatorLines, forKey: "reader_paragraph_separator_lines") }
     }
@@ -295,7 +295,7 @@ public class ReaderConfig: ObservableObject {
         didSet { Self.defaults.set(paragraphSeparatorColorHex, forKey: "reader_paragraph_separator_hex") }
     }
 
-    // MARK: - 正文下划线（栖阅 `_textUnderline*` 六参数）
+    // MARK: - 正文下划线
     @Published public var underlineEnabled: Bool = false {
         didSet { Self.defaults.set(underlineEnabled, forKey: "reader_underline_enabled") }
     }
@@ -315,8 +315,8 @@ public class ReaderConfig: ObservableObject {
         Color(hex: paragraphSeparatorColorHex) ?? textColor.opacity(0.18)
     }
 
-    // MARK: - 章节标题（栖阅 reader.css 的 .chapter-title / .chapter）
-    /// 标题字号 = 正文字号 × 该系数，栖阅默认 1.18
+    // MARK: - 章节标题
+    /// 标题字号 = 正文字号 × 该系数，默认 1.18
     @Published public var chapterTitleScale: CGFloat = 1.18 {
         didSet { persist(chapterTitleScale, "reader_chapter_title_scale") }
     }
@@ -333,7 +333,7 @@ public class ReaderConfig: ObservableObject {
         didSet { persist(chapterBottomSpacing, "reader_chapter_bottom_spacing") }
     }
 
-    // MARK: - 章节标题设计器产物（栖阅 ChapterTitleDesigner 导出的东西）
+    // MARK: - 章节标题设计器产物（设计器导出的 JSON）
     /// 设计器工程 JSON，下次打开设计器回灌用
     @Published public var chapterTitleProjectJSON: String = "" {
         didSet { Self.defaults.set(chapterTitleProjectJSON, forKey: "reader_title_designer_project") }
@@ -363,7 +363,7 @@ public class ReaderConfig: ObservableObject {
         didSet { Self.defaults.set(backgroundImagePath, forKey: "reader_bg_image_path") }
     }
 
-    // MARK: - 页眉页脚内容参数（栖阅 ReaderDisplayItem 用到的那几个）
+    // MARK: - 页眉页脚内容参数
     /// 「短标题」留几个字
     @Published public var shortTitleLength: Int = 6 {
         didSet { Self.defaults.set(shortTitleLength, forKey: "reader_short_title_length") }
@@ -777,49 +777,49 @@ private func readerBarClock(_ pattern: String) -> String {
 /// 把一栏显示项格式化成文字。图形项（电量图标、进度条）返回空串，由视图层单独画。
 public func readerBarText(_ content: ReaderBarContent, _ ctx: ReaderBarContext) -> String {
     switch content {
-    case .none, .totalProgressBar, .batteryIcon, .batteryBar:
+    case .none, .bookPercentBar, .batteryIcon, .batteryBar:
         return ""
     case .bookName:
         return ctx.bookName
     case .chapterTitle:
         return ctx.chapterTitle
-    case .chapterTitleShort:
+    case .shortChapterTitle:
         guard !ctx.chapterTitle.isEmpty else { return "" }
         let limit = max(2, ctx.shortTitleLength)
         return ctx.chapterTitle.count <= limit ? ctx.chapterTitle : String(ctx.chapterTitle.prefix(limit)) + "…"
     case .progress:
         guard ctx.chapterCount > 0 else { return "" }
         return String(format: "%.1f%%", Double(ctx.chapterIndex + 1) / Double(ctx.chapterCount) * 100)
-    case .pageInfo, .pageProgress:
+    case .pageInfo, .pagePercent:
         if ctx.isPaged, ctx.pageCount > 0 { return "\(ctx.pageIndex + 1)/\(ctx.pageCount)" }
         guard ctx.chapterCount > 0 else { return "" }
         return "\(ctx.chapterIndex + 1)/\(ctx.chapterCount)"
-    case .pageProgressText:
+    case .pageNumberLabel:
         guard ctx.isPaged, ctx.pageCount > 0 else { return "" }
         return "第 \(ctx.pageIndex + 1) 页"
-    case .totalProgress:
+    case .bookPercent:
         return ctx.bookProgress <= 0 ? "" : String(format: "%.1f%%", ctx.bookProgress * 100)
     case .time:
         return readerBarClock("HH:mm")
-    case .timeWithSeconds:
+    case .clockWithSeconds:
         return readerBarClock("HH:mm:ss")
     case .date:
         return readerBarClock("yyyy-MM-dd")
     case .weekday:
         return readerBarClock("EEEE")
-    case .customDate:
+    case .userDate:
         return readerBarClock(ctx.customDatePattern)
-    case .batteryLevel, .batteryIconWithNumber:
+    case .batteryLevel, .batteryGlyphWithPercent:
         guard let level = ReaderBarBattery.level() else { return "" }
         return "\(Int((level * 100).rounded()))%"
     case .chapterCount:
         return ctx.chapterCount > 0 ? "共 \(ctx.chapterCount) 章" : ""
-    case .chapterCountShort:
+    case .chaptersShort:
         return ctx.chapterCount > 0 ? "\(ctx.chapterCount)章" : ""
-    case .readingDuration:
+    case .elapsedReadingTime:
         guard let start = ctx.sessionStart else { return "" }
         return barDurationText(Date().timeIntervalSince(start))
-    case .remainingTime:
+    case .remainingReadingTime:
         guard let start = ctx.sessionStart else { return "" }
         let elapsed = Date().timeIntervalSince(start)
         // 样本太少不外推，免得刚打开就报一个离谱的数字
@@ -827,7 +827,7 @@ public func readerBarText(_ content: ReaderBarContent, _ ctx: ReaderBarContext) 
         let remaining = elapsed / ctx.bookProgress - elapsed
         guard remaining > 0, remaining < 24 * 3600 else { return "" }
         return "约剩 " + barDurationText(remaining)
-    case .customText:
+    case .userText:
         return ctx.customBarText
     }
 }

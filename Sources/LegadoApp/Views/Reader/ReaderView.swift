@@ -7,7 +7,7 @@ import LegadoCore
 #endif
 
 /// 阅读背景图读一次盘就缓存住：正文每次重绘都去读文件会卡。
-/// 页眉页脚选内容的芯片网格（对应栖阅的 DisplayItemGrid）。
+/// 页眉页脚选内容的芯片网格。
 /// 23 个选项塞进 Menu 太长，铺成自适应网格更好点。
 public struct ReaderBarItemGrid: View {
     @Binding var selection: [ReaderBarContent]
@@ -510,8 +510,8 @@ public struct ReaderView: View {
 
 
 
-    // MARK: - 阅读页背景（栖阅 reader.css 的 body background-image）
-    /// 底色 + 可选背景图，缩放到铺满，对应栖阅 CSS 的 background-size: cover / position: center。
+    // MARK: - 阅读页背景
+    /// 底色 + 可选背景图，缩放到铺满（background-size: cover / position: center）。
     @ViewBuilder
     private var readerBackground: some View {
         ZStack {
@@ -565,7 +565,7 @@ public struct ReaderView: View {
         }
     }
 
-    // MARK: - 正文段落（栖阅 .para：对齐 / 字距 / 下划线）
+    // MARK: - 正文段落（对齐 / 字距 / 下划线）
     /// 每章的标题：设计器里存过设计稿就渲染设计稿，否则用纯文字。
     /// 两条路径的间距口径一致，切换设计不应该跳版。
     @ViewBuilder
@@ -657,7 +657,7 @@ public struct ReaderView: View {
         }
     }
 
-    /// 段间分隔线，条数由设置决定（栖阅 `_paragraphSeparatorLines`）
+    /// 段间分隔线，条数由设置决定
     @ViewBuilder
     private func paragraphSeparator() -> some View {
         if readerConfig.paragraphSeparatorLines > 0 {
@@ -690,7 +690,7 @@ public struct ReaderView: View {
                     LazyVStack(alignment: .leading, spacing: 0) {
                         ForEach(loadedChapters) { loadedCh in
                             // 段间距由每段自己的下间距给，块之间不再叠一层行距，
-                            // 这样「段间距」滑块才和栖阅 .para 的 margin-bottom 是一个口径
+                            // 这样「段间距」滑块和段落自身的 margin-bottom 才是一个口径
                             VStack(alignment: .leading, spacing: 0) {
                                 // Chapter Title
                                 chapterTitleView(chapterIndex: loadedCh.chapter.index, title: loadedCh.chapter.title)
@@ -1507,13 +1507,13 @@ public struct ReaderView: View {
     @ViewBuilder
     private func statusSlotView(_ content: ReaderBarContent, alignment: Alignment, fills: Bool) -> some View {
         switch content {
-        case .totalProgressBar:
+        case .bookPercentBar:
             statusBar(fraction: bookProgressFraction, alignment: alignment)
         case .batteryBar:
             statusBar(fraction: ReaderBarBattery.level() ?? 0, alignment: alignment)
         case .batteryIcon:
             batterySlot(showNumber: false, alignment: alignment)
-        case .batteryIconWithNumber:
+        case .batteryGlyphWithPercent:
             batterySlot(showNumber: true, alignment: alignment)
         default:
             Text(statusText(content))
@@ -2439,7 +2439,7 @@ public struct ReaderView: View {
         }
     }
 
-    // MARK: 正文排版（栖阅 reader.css 的 .para：对齐与段间分隔线）
+    // MARK: 正文排版（对齐与段间分隔线）
     private var bodyLayoutSection: some View {
         VStack(alignment: .leading, spacing: 10) {
             sectionDivider
@@ -2471,7 +2471,7 @@ public struct ReaderView: View {
         }
     }
 
-    // MARK: 正文下划线（栖阅 `_textUnderline*`）
+    // MARK: 正文下划线
     private var underlineSection: some View {
         VStack(alignment: .leading, spacing: 10) {
             sectionDivider
@@ -2500,7 +2500,7 @@ public struct ReaderView: View {
                 ColorPicker("下划线颜色", selection: underlineColorBinding, supportsOpacity: true)
                     .font(.system(size: 12))
 
-                Text("线宽与偏移在 Cocoa 文本里没有公开接口，栖阅那两项无法移植。")
+                Text("线宽与偏移在 Cocoa 文本里没有公开接口，这两项无法实现。")
                     .font(.system(size: 10))
                     .foregroundColor(readerConfig.textColor.opacity(0.45))
             }
@@ -2514,7 +2514,7 @@ public struct ReaderView: View {
         )
     }
 
-    // MARK: 章节标题（栖阅 .chapter-title / .chapter 的间距）
+    // MARK: 章节标题（标题区间距）
     private var chapterTitleSection: some View {
         VStack(alignment: .leading, spacing: 10) {
             sectionDivider
@@ -2547,7 +2547,7 @@ public struct ReaderView: View {
         }
     }
 
-    // MARK: 阅读背景图（栖阅 body 的 background-image）
+    // MARK: 阅读背景图
     private var backgroundImageSection: some View {
         VStack(alignment: .leading, spacing: 10) {
             sectionDivider

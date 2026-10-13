@@ -11,7 +11,7 @@ struct ChapterTitleDesignExport {
 
 /// 章节标题设计器。
 ///
-/// 页面就是栖阅那套 `Resources/ChapterTitleDesigner`（index.html + designer.js），
+/// 页面就是 `Resources/ChapterTitleDesigner`（index.html + designer.js），
 /// 协议照它原有的走：原生注册 `chapterTitleDesigner` 消息处理器收 `{type, payload}`，
 /// 下发用 `window.qireaderTitleDesigner.receive({command, payload})`。
 struct ChapterTitleDesignerView: View {

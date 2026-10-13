@@ -731,23 +731,23 @@ struct PageCurlContent: View {
     @ViewBuilder
     private func barSlot(_ slot: ReaderBarContent, alignment: Alignment) -> some View {
         switch slot {
-        case .totalProgressBar, .batteryBar:
+        case .bookPercentBar, .batteryBar:
             GeometryReader { geo in
                 ZStack(alignment: .leading) {
                     Capsule().fill(textColor.opacity(0.18))
                     Capsule()
                         .fill(textColor.opacity(0.65))
-                        .frame(width: geo.size.width * CGFloat(max(0, min(1, slot == .totalProgressBar
+                        .frame(width: geo.size.width * CGFloat(max(0, min(1, slot == .bookPercentBar
                             ? bookProgressFraction
                             : (ReaderBarBattery.level() ?? 0)))))
                 }
             }
             .frame(height: 3)
             .frame(maxWidth: .infinity, alignment: alignment)
-        case .batteryIcon, .batteryIconWithNumber:
+        case .batteryIcon, .batteryGlyphWithPercent:
             HStack(spacing: 3) {
                 Image(systemName: batterySymbolName)
-                if slot == .batteryIconWithNumber, let level = ReaderBarBattery.level() {
+                if slot == .batteryGlyphWithPercent, let level = ReaderBarBattery.level() {
                     Text("\(Int((level * 100).rounded()))%")
                 }
             }
