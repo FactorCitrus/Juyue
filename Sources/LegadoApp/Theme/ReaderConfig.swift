@@ -620,6 +620,20 @@ public class ReaderConfig: ObservableObject {
         paddingLeft = d.object(forKey: "reader_padding_left") != nil ? CGFloat(d.double(forKey: "reader_padding_left")) : legacyHorizontal
         paddingRight = d.object(forKey: "reader_padding_right") != nil ? CGFloat(d.double(forKey: "reader_padding_right")) : legacyHorizontal
         if d.object(forKey: "reader_header_offset") != nil { headerOffset = CGFloat(d.double(forKey: "reader_header_offset")) }
+        // 老配置里可能存着超出滑块范围的数（滑块 range 一变就出这种脏值），
+        // 而 SwiftUI 的 Slider 拿到范围外的值会直接 trap——统一夹一次
+        headerOffset = min(max(0, headerOffset), 160)
+        footerOffset = min(max(0, footerOffset), 160)
+        shortTitleLength = min(max(1, shortTitleLength), 20)
+        paddingTop = min(max(0, paddingTop), 200)
+        paddingBottom = min(max(0, paddingBottom), 200)
+        paddingLeft = min(max(0, paddingLeft), 200)
+        paddingRight = min(max(0, paddingRight), 200)
+        paragraphSpacing = min(max(0, paragraphSpacing), 30)
+        lineSpacing = min(max(0, lineSpacing), 40)
+        letterSpacing = min(max(0, letterSpacing), 4)
+        firstLineIndent = min(max(0, firstLineIndent), 4)
+        fontSize = min(max(12, fontSize), 32)
         if d.object(forKey: "reader_footer_offset") != nil { footerOffset = CGFloat(d.double(forKey: "reader_footer_offset")) }
         if d.object(forKey: "reader_brightness") != nil { brightness = d.double(forKey: "reader_brightness") }
         if d.object(forKey: "reader_auto_night") != nil { autoNight = d.bool(forKey: "reader_auto_night") }

@@ -2844,6 +2844,7 @@ public struct ReaderView: View {
             let _ = AppLog.write("卡片·进入「页眉页脚」")
             sectionTitle("页眉页脚")
                 .padding(.top, 4)
+            let _ = AppLog.write("页眉页脚值｜距顶=\(readerConfig.headerOffset) 距底=\(readerConfig.footerOffset) 短标题=\(readerConfig.shortTitleLength)字 分隔线=\(readerConfig.barDivider)")
 
             Toggle(isOn: $readerConfig.sharedLayout) {
                 Text("共享布局")
