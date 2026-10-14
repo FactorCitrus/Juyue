@@ -1,0 +1,49 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#8FAE6A"/>
+      <stop offset="1" stop-color="#5F7F45"/>
+    </linearGradient>
+    <linearGradient id="pageL" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#FFFDF7"/>
+      <stop offset="1" stop-color="#F2EEE2"/>
+    </linearGradient>
+    <linearGradient id="pageR" x1="1" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#FFFDF7"/>
+      <stop offset="1" stop-color="#EAE5D6"/>
+    </linearGradient>
+    <filter id="soft" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="18" stdDeviation="26" flood-color="#2A3521" flood-opacity="0.32"/>
+    </filter>
+  </defs>
+
+  <rect x="0" y="0" width="1024" height="1024" rx="232" fill="url(#bg)"/>
+
+  <g filter="url(#soft)">
+    <!-- 左页 -->
+    <path d="M192 316 C 320 268, 452 268, 512 322 L 512 792 C 452 738, 320 738, 192 786 Z" fill="url(#pageL)"/>
+    <!-- 右页 -->
+    <path d="M832 316 C 704 268, 572 268, 512 322 L 512 792 C 572 738, 704 738, 832 786 Z" fill="url(#pageR)"/>
+    <!-- 书脊 -->
+    <path d="M504 320 L 520 320 L 520 794 L 504 794 Z" fill="#C9C2AE" opacity="0.9"/>
+    <!-- 文字行（左） -->
+    <g fill="#8C9779" opacity="0.75">
+      <rect x="248" y="392" width="196" height="20" rx="10"/>
+      <rect x="248" y="446" width="212" height="20" rx="10"/>
+      <rect x="248" y="500" width="168" height="20" rx="10"/>
+      <rect x="248" y="554" width="204" height="20" rx="10"/>
+      <rect x="248" y="608" width="150" height="20" rx="10"/>
+    </g>
+    <!-- 文字行（右） -->
+    <g fill="#8C9779" opacity="0.75">
+      <rect x="580" y="392" width="196" height="20" rx="10"/>
+      <rect x="580" y="446" width="168" height="20" rx="10"/>
+      <rect x="580" y="500" width="206" height="20" rx="10"/>
+      <rect x="580" y="554" width="152" height="20" rx="10"/>
+      <rect x="580" y="608" width="190" height="20" rx="10"/>
+    </g>
+  </g>
+
+  <!-- 书签 -->
+  <path d="M700 236 L 700 470 L 664 424 L 628 470 L 628 236 Z" fill="#E0733C"/>
+</svg>

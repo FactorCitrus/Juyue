@@ -974,3 +974,30 @@ public final class ReplaceRuleStore: ObservableObject {
         rules(for: bookUrl).reduce(text) { $1.apply(to: $0) }
     }
 }
+
+extension ReaderConfig {
+    /// 一键把「排版」相关的值恢复默认（字体、主题、亮度不动，那些是个人偏好）
+    public func resetLayoutToDefaults() {
+        fontSize = 18
+        lineSpacing = 8
+        letterSpacing = 0
+        paragraphSpacing = 12
+        firstLineIndent = 2
+        paddingTop = 24
+        paddingBottom = 24
+        paddingLeft = 16
+        paddingRight = 16
+        headerOffset = 0
+        footerOffset = 0
+        shortTitleLength = 6
+        justifyLastPage = true
+        barDivider = true
+        titleAlignment = .center
+        headerLeft = [.bookName]
+        headerCenter = []
+        headerRight = [.progress]
+        footerLeft = [.chapterTitle]
+        footerCenter = []
+        footerRight = [.pageInfo]
+    }
+}

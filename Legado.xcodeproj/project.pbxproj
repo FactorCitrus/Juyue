@@ -339,7 +339,7 @@
 				<key>CODE_SIGN_STYLE</key>
 				<string>Automatic</string>
 				<key>CURRENT_PROJECT_VERSION</key>
-				<string>39</string>
+				<string>40</string>
 				<key>DEVELOPMENT_TEAM</key>
 				<string></string>
 				<key>ENABLE_PREVIEWS</key>
@@ -349,7 +349,7 @@
 				<key>INFOPLIST_FILE</key>
 				<string>Sources/LegadoApp/Info.plist</string>
 				<key>INFOPLIST_KEY_CFBundleDisplayName</key>
-				<string>Legado</string>
+				<string>墨阅</string>
 				<key>INFOPLIST_KEY_UIApplicationSceneManifest_Generation</key>
 				<string>YES</string>
 				<key>INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents</key>
@@ -363,7 +363,7 @@
 				<key>MARKETING_VERSION</key>
 				<string>0.4.5</string>
 				<key>PRODUCT_BUNDLE_IDENTIFIER</key>
-				<string>io.legado.ios</string>
+				<string>com.factorcitrus.moyue</string>
 				<key>PRODUCT_NAME</key>
 				<string>$(TARGET_NAME)</string>
 				<key>SWIFT_VERSION</key>
@@ -1139,7 +1139,7 @@
 				<key>CODE_SIGN_STYLE</key>
 				<string>Automatic</string>
 				<key>CURRENT_PROJECT_VERSION</key>
-				<string>39</string>
+				<string>40</string>
 				<key>DEVELOPMENT_TEAM</key>
 				<string></string>
 				<key>ENABLE_PREVIEWS</key>
@@ -1149,7 +1149,7 @@
 				<key>INFOPLIST_FILE</key>
 				<string>Sources/LegadoApp/Info.plist</string>
 				<key>INFOPLIST_KEY_CFBundleDisplayName</key>
-				<string>Legado</string>
+				<string>墨阅</string>
 				<key>INFOPLIST_KEY_UIApplicationSceneManifest_Generation</key>
 				<string>YES</string>
 				<key>INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents</key>
@@ -1163,7 +1163,7 @@
 				<key>MARKETING_VERSION</key>
 				<string>0.4.5</string>
 				<key>PRODUCT_BUNDLE_IDENTIFIER</key>
-				<string>io.legado.ios</string>
+				<string>com.factorcitrus.moyue</string>
 				<key>PRODUCT_NAME</key>
 				<string>$(TARGET_NAME)</string>
 				<key>SWIFT_VERSION</key>
