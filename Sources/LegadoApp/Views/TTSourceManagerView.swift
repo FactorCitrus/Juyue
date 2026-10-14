@@ -16,6 +16,17 @@ public struct TTSourceManagerView: View {
 
     public var body: some View {
         List {
+            Section(header: Text("朗读设置")) {
+                NavigationLink(destination: VoiceCastSettingsView()) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("音色与朗读参数")
+                        Text("多角色音色、语速、分段、试听、百度语音授权")
+                            .font(.caption2)
+                            .foregroundColor(.secondary)
+                    }
+                }
+            }
+
             Section(header: Text("当前引擎")) {
                 HStack {
                     Text("使用中")
@@ -236,5 +247,12 @@ public enum TTSourceSelection {
             return loaded
         }
         return "在线语音源（已失效）"
+    }
+}
+
+/// 从「朗读引擎」页进听书设置：把整套音色与朗读参数放到同一个入口下
+struct VoiceCastSettingsView: View {
+    var body: some View {
+        TTSSettingsSheet()
     }
 }
