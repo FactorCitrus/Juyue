@@ -215,6 +215,10 @@ public class ReaderConfig: ObservableObject {
     // MARK: - 字号与行距
     @Published public var fontSize: CGFloat = 18.0 { didSet { persist(fontSize, "reader_font_size") } }
     @Published public var lineSpacing: CGFloat = 8.0 { didSet { persist(lineSpacing, "reader_line_spacing") } }
+    /// 阅读页「下载缓存」一次往后缓存多少章
+    @Published public var cachedChapterCount: Int = 20 {
+        didSet { Self.defaults.set(cachedChapterCount, forKey: "reader_cached_chapters") }
+    }
 
     // MARK: - 排版
     /// 字间距
@@ -594,6 +598,7 @@ public class ReaderConfig: ObservableObject {
         }
         if d.object(forKey: "reader_font_size") != nil { fontSize = CGFloat(d.double(forKey: "reader_font_size")) }
         if d.object(forKey: "reader_line_spacing") != nil { lineSpacing = CGFloat(d.double(forKey: "reader_line_spacing")) }
+        if d.object(forKey: "reader_cached_chapters") != nil { cachedChapterCount = d.integer(forKey: "reader_cached_chapters") }
         if d.object(forKey: "reader_letter_spacing") != nil { letterSpacing = CGFloat(d.double(forKey: "reader_letter_spacing")) }
         if d.object(forKey: "reader_paragraph_spacing") != nil { paragraphSpacing = CGFloat(d.double(forKey: "reader_paragraph_spacing")) }
         if d.object(forKey: "reader_justify_last_page") != nil { justifyLastPage = d.bool(forKey: "reader_justify_last_page") }

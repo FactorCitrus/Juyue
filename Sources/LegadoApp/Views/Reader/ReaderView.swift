@@ -406,6 +406,40 @@ public struct ReaderView: View {
         .navigationBarHidden(true)
         .statusBar(hidden: !showControls)
         #endif
+        // 右上角统一菜单：底部工具条只留常用按钮，零碎功能收这里
+        .toolbar {
+            ToolbarItem(placement: .primaryAction) {
+                Menu {
+                    Button {
+                        refreshCurrentChapter()
+                    } label: {
+                        Label("刷新本章正文", systemImage: "arrow.clockwise")
+                    }
+                    Button {
+                        Task { await refreshChapterList() }
+                    } label: {
+                        Label("刷新目录", systemImage: "list.bullet.rectangle")
+                    }
+                    Button {
+                        downloadCachedChapters()
+                    } label: {
+                        Label("下载缓存（\(readerConfig.cachedChapterCount) 章）", systemImage: "arrow.down.circle")
+                    }
+                    Button {
+                        showReplaceRules = true
+                    } label: {
+                        Label("替换净化规则", systemImage: "wand.and.sparkles")
+                    }
+                    Button {
+                        showTTSSettings = true
+                    } label: {
+                        Label("听书设置", systemImage: "headphones")
+                    }
+                } label: {
+                    Image(systemName: "ellipsis.circle")
+                }
+            }
+        }
         .sheet(isPresented: $showTOC) {
             tocSheet
         }
@@ -1914,44 +1948,6 @@ public struct ReaderView: View {
                 .frame(maxWidth: .infinity)
             }
 
-            // 更多：把零碎功能收在一个菜单里
-            Menu {
-                Button {
-                    refreshCurrentChapter()
-                } label: {
-                    Label("刷新本章正文", systemImage: "arrow.clockwise")
-                }
-                Button {
-                    Task { await refreshChapterList() }
-                } label: {
-                    Label("刷新目录", systemImage: "list.bullet.rectangle")
-                }
-                Button {
-                    showReplaceRules = true
-                } label: {
-                    Label("替换净化规则", systemImage: "wand.and.sparkles")
-                }
-                Button {
-                    showTTSSettings = true
-                } label: {
-                    Label("听书设置", systemImage: "headphones")
-                }
-                Divider()
-                Button(role: .destructive) {
-                    refreshCurrentChapter()
-                } label: {
-                    Label("清掉本章缓存并重抓", systemImage: "trash")
-                }
-            } label: {
-                VStack(spacing: 4) {
-                    Image(systemName: "ellipsis.circle")
-                        .font(.system(size: 20))
-                    Text("更多")
-                        .font(.system(size: 11, weight: .medium))
-                }
-                .foregroundColor(readerConfig.textColor)
-                .frame(maxWidth: .infinity)
-            }
         }
     }
 
@@ -2151,6 +2147,23 @@ public struct ReaderView: View {
 
     private var tocDisplayChapters: [BookChapter] {
         tocReversed ? chapters.reversed() : chapters
+    }
+
+    /// 下载缓存：从当前章往后缓存 N 章，N 在设置里调
+    private func downloadCachedChapters() {
+        guard let source = effectiveSource, !chapters.isEmpty else { return }
+        let start = max(0, currentChapterIndex)
+        let span = max(1, readerConfig.cachedChapterCount)
+        let end = min(chapters.count - 1, start + span - 1)
+        guard start <= end else { return }
+        let indices = Array(start...end)
+        _ = ChapterDownloadManager.shared.start(
+            book: activeBook,
+            chapters: chapters,
+            source: source,
+            indices: indices
+        )
+        errorMessage = "已加入下载队列：第 \(start + 1)–\(end + 1) 章（共 \(indices.count) 章）"
     }
 
     /// 刷新本章：把缓存里这一章丢掉重抓，尽量停在当前页

@@ -27,6 +27,8 @@ public struct BookDetailView: View {
     @State private var selectedChapterIndex: Int = 0
     @State private var showActionAlert: Bool = false
     @State private var showEditSheet: Bool = false
+    @State private var showCoverPicker: Bool = false
+    @State private var showSourceSwitch: Bool = false
     @State private var editName: String = ""
     @State private var editAuthor: String = ""
     @State private var editCover: String = ""
@@ -119,6 +121,18 @@ public struct BookDetailView: View {
             .toolbar {
                 ToolbarItem(placement: .primaryAction) {
                     Menu {
+                        Button {
+                            showSourceSwitch = true
+                        } label: {
+                            Label("换源", systemImage: "arrow.triangle.2.circlepath")
+                        }
+
+                        Button {
+                            beginEditing()
+                        } label: {
+                            Label("编辑书名 / 作者 / 封面", systemImage: "pencil")
+                        }
+
                         Button(role: .destructive) {
                             let count = BookContentService.shared.getCacheCount(for: currentBook.bookUrl)
                             BookContentService.shared.clearCache(for: currentBook.bookUrl)
@@ -174,6 +188,27 @@ public struct BookDetailView: View {
             }
             .alert(actionAlertMessage, isPresented: $showActionAlert) {
                 Button("确定", role: .cancel) {}
+            }
+            .sheet(isPresented: $showCoverPicker) {
+                BookCoverPickerSheet(
+                    bookName: currentBook.name,
+                    currentCover: currentBook.coverUrl
+                ) { picked in
+                    var updated = currentBook
+                    updated.coverUrl = picked.isEmpty ? nil : picked
+                    currentBook = updated
+                    if bookStore.bookshelf.contains(where: { $0.bookUrl == updated.bookUrl }) {
+                        _ = bookStore.saveOrUpdateBook(updated)
+                    }
+                }
+            }
+            .sheet(isPresented: $showSourceSwitch) {
+                SourceSwitchSheet(
+                    book: currentBook,
+                    currentSourceUrl: source?.bookSourceUrl
+                ) { newSource, candidate in
+                    switchSource(to: newSource, candidate: candidate)
+                }
             }
             .sheet(isPresented: $showEditSheet) {
                 BookInfoEditSheet(
@@ -246,27 +281,60 @@ public struct BookDetailView: View {
 
     // MARK: - Header Card
 
+    /// 点书名 / 作者 / 菜单里的「编辑」都走这儿，先把三个字段灌进 sheet
+    private func beginEditing() {
+        editName = currentBook.name
+        editAuthor = currentBook.author
+        editCover = currentBook.coverUrl ?? ""
+        showEditSheet = true
+    }
+
+    /// 换源：搬到新源的同一本书，保留阅读进度
+    private func switchSource(to newSource: BookSource, candidate: SearchBook) {
+        var updated = currentBook
+        updated.bookUrl = candidate.bookUrl
+        updated.origin = newSource.bookSourceUrl
+        updated.originName = newSource.bookSourceName
+        if !candidate.name.isEmpty { updated.name = candidate.name }
+        if let cover = candidate.coverUrl, !cover.isEmpty { updated.coverUrl = cover }
+        currentBook = bookStore.changeBookSource(from: currentBook, to: updated)
+        chapters = []
+        Task { await loadBookDetails() }
+    }
+
     private var headerCard: some View {
         HStack(alignment: .top, spacing: 16) {
             // Book Cover Image
-            if currentBook.coverUrl != nil {
-                BookCoverImage(urlString: currentBook.coverUrl)
-                .frame(width: 100, height: 138)
-                .cornerRadius(8)
-                .shadow(color: Color.black.opacity(0.12), radius: 6, x: 0, y: 3)
-                .clipped()
-            } else {
-                coverPlaceholder
-                    .frame(width: 100, height: 138)
-                    .cornerRadius(8)
-                    .shadow(color: Color.black.opacity(0.12), radius: 6, x: 0, y: 3)
+            // 点一下就能换：候选来自书源搜索 + 相册 + 手填
+            Button {
+                showCoverPicker = true
+            } label: {
+                if currentBook.coverUrl != nil {
+                    BookCoverImage(urlString: currentBook.coverUrl)
+                        .frame(width: 100, height: 138)
+                        .cornerRadius(8)
+                        .shadow(color: Color.black.opacity(0.12), radius: 6, x: 0, y: 3)
+                        .clipped()
+                } else {
+                    coverPlaceholder
+                        .frame(width: 100, height: 138)
+                        .cornerRadius(8)
+                        .shadow(color: Color.black.opacity(0.12), radius: 6, x: 0, y: 3)
+                }
             }
+            .buttonStyle(.plain)
 
             VStack(alignment: .leading, spacing: 8) {
-                Text(currentBook.name)
-                    .font(.title3.bold())
-                    .lineLimit(2)
-                    .foregroundColor(.primary)
+                Button {
+                    beginEditing()
+                } label: {
+                    Text(currentBook.name)
+                        .font(.title3.bold())
+                        .lineLimit(2)
+                        .foregroundColor(.primary)
+                        .multilineTextAlignment(.leading)
+                }
+                .buttonStyle(.plain)
 
                 HStack(spacing: 6) {
                     Image(systemName: "person")
@@ -274,10 +342,15 @@ public struct BookDetailView: View {
                         .foregroundColor(.secondary)
 
                     if !currentBook.author.isEmpty && currentBook.author != "未知作者" {
-                        Text(currentBook.author)
-                            .font(.subheadline)
-                            .foregroundColor(.secondary)
-                            .lineLimit(1)
+                        Button {
+                            beginEditing()
+                        } label: {
+                            Text(currentBook.author)
+                                .font(.subheadline)
+                                .foregroundColor(.secondary)
+                                .lineLimit(1)
+                        }
+                        .buttonStyle(.plain)
                     } else if isLoadingDetails {
                         Text("正在获取作者...")
                             .font(.subheadline)
@@ -647,6 +720,136 @@ struct ChapterListView: View {
         #if os(iOS)
         .navigationBarTitleDisplayMode(.inline)
         #endif
+    }
+}
+
+/// 详情页点封面弹出来的换封面面板：书源搜到的候选 + 手填地址 + 相册
+struct BookCoverPickerSheet: View {
+    let bookName: String
+    let currentCover: String?
+    let onPick: (String) -> Void
+
+    @Environment(\.dismiss) private var dismiss
+    @State private var candidates: [(source: String, url: String)] = []
+    @State private var isLoading = true
+    @State private var manual = ""
+    #if os(iOS)
+    @State private var pickedImage: Any?
+    #endif
+
+    var body: some View {
+        NavigationView {
+            List {
+                if isLoading {
+                    Section {
+                        HStack(spacing: 8) {
+                            ProgressView()
+                            Text("正在书源里找这本书的封面…")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        }
+                    }
+                } else if candidates.isEmpty {
+                    Section {
+                        Text("书源里没搜到封面，用手填地址或相册吧。")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
+                }
+
+                if !candidates.isEmpty {
+                    Section(header: Text("书源找到的封面（\(candidates.count)）")) {
+                        LazyVGrid(columns: [GridItem(.adaptive(minimum: 76), spacing: 10)], spacing: 10) {
+                            ForEach(candidates, id: \.url) { item in
+                                Button {
+                                    onPick(item.url)
+                                    dismiss()
+                                } label: {
+                                    VStack(spacing: 4) {
+                                        BookCoverImage(urlString: item.url)
+                                            .frame(width: 76, height: 104)
+                                            .cornerRadius(6)
+                                        Text(item.source)
+                                            .font(.caption2)
+                                            .foregroundColor(.secondary)
+                                            .lineLimit(1)
+                                    }
+                                }
+                                .buttonStyle(.plain)
+                            }
+                        }
+                        .padding(.vertical, 4)
+                    }
+                }
+
+                Section(header: Text("手填地址")) {
+                    TextField("https://…", text: $manual)
+                        .autocorrectionDisabled()
+                    Button("用这个地址") {
+                        let trimmed = manual.trimmingCharacters(in: .whitespacesAndNewlines)
+                        guard !trimmed.isEmpty else { return }
+                        onPick(trimmed)
+                        dismiss()
+                    }
+                    .disabled(manual.trimmingCharacters(in: .whitespaces).isEmpty)
+                }
+
+                #if os(iOS)
+                if #available(iOS 16.0, *) {
+                    Section {
+                        PhotosPicker(
+                            selection: Binding(
+                                get: { pickedImage as? PhotosPickerItem },
+                                set: { newValue in
+                                    pickedImage = newValue
+                                    guard let item = newValue else { return }
+                                    Task {
+                                        if let data = try? await item.loadTransferable(type: Data.self),
+                                           let stored = BookCoverStorage.save(data) {
+                                            await MainActor.run {
+                                                onPick(stored)
+                                                dismiss()
+                                            }
+                                        }
+                                    }
+                                }
+                            ),
+                            matching: .images
+                        ) {
+                            Label("从相册选封面", systemImage: "photo.on.rectangle")
+                        }
+                    }
+                }
+                #endif
+
+                if let currentCover, !currentCover.isEmpty {
+                    Section {
+                        Button(role: .destructive) {
+                            onPick("")
+                            dismiss()
+                        } label: {
+                            Label("清除封面", systemImage: "trash")
+                        }
+                    }
+                }
+            }
+            .navigationTitle("换封面")
+            #if os(iOS)
+            .navigationBarTitleDisplayMode(.inline)
+            #endif
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("取消") { dismiss() }
+                }
+            }
+            .task { await load() }
+        }
+    }
+
+    private func load() async {
+        let sources = BookStore.shared.sources.filter { $0.enabled != false }
+        candidates = await CoverCandidateFinder.find(bookName: bookName, sources: sources)
+        isLoading = false
     }
 }
 
