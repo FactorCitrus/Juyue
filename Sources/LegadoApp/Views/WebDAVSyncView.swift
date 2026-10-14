@@ -59,9 +59,13 @@ public struct WebDAVSyncView: View {
         }
         .alert("从 WebDAV 恢复", isPresented: $showRestoreConfirm) {
             Button("取消", role: .cancel) {}
-            Button("确定恢复", role: .destructive) {
+            Button("替换恢复（完全采用备份）", role: .destructive) {
                 saveConfig()
-                restoreFromWebDAV(backupFileName: selectedRestoreBackupName)
+                restoreFromWebDAV(backupFileName: selectedRestoreBackupName, mode: .replace)
+            }
+            Button("合并恢复（保留本地进度 / 分组 / 封面）") {
+                saveConfig()
+                restoreFromWebDAV(backupFileName: selectedRestoreBackupName, mode: .merge)
             }
         } message: {
             if let name = selectedRestoreBackupName {
@@ -456,7 +460,7 @@ public struct WebDAVSyncView: View {
         }
     }
 
-    private func restoreFromWebDAV(backupFileName: String? = nil) {
+    private func restoreFromWebDAV(backupFileName: String? = nil, mode: BookStore.RestoreMode = .merge) {
         isRestoring = true
         Task {
             do {
@@ -464,7 +468,7 @@ public struct WebDAVSyncView: View {
                     config: currentConfig,
                     backupFileName: backupFileName
                 )
-                let result = bookStore.restoreFromWebDAV(books: books, sources: sources)
+                let result = bookStore.restoreFromWebDAV(books: books, sources: sources, mode: mode)
                 await MainActor.run {
                     isRestoring = false
                     lastSyncTime = Date()

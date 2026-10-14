@@ -206,14 +206,28 @@ public class BookStore: ObservableObject {
     }
 
     /// Merges restored WebDAV books and sources into local storage
-    public func restoreFromWebDAV(books: [Book]?, sources: [BookSource]?) -> (booksAdded: Int, sourcesAdded: Int) {
+    /// 备份恢复的两种取向：合并保留本地进度/分组/封面；替换完全采用备份内容
+    public enum RestoreMode {
+        case merge
+        case replace
+    }
+
+    public func restoreFromWebDAV(
+        books: [Book]?,
+        sources: [BookSource]?,
+        mode: RestoreMode = .merge
+    ) -> (booksAdded: Int, sourcesAdded: Int) {
         var booksCount = 0
         var sourcesCount = 0
 
         if let newBooks = books {
             for b in newBooks {
                 if let idx = bookshelf.firstIndex(where: { $0.bookUrl == b.bookUrl }) {
-                    // 整条替换会把用户侧的东西冲掉，所以合并着来：
+                    if mode == .replace {
+                        bookshelf[idx] = b
+                        continue
+                    }
+                    // 合并：整条替换会把用户侧的东西冲掉，所以逐项来
                     var merged = b
                     let existing = bookshelf[idx]
                     // 远端备份比本地旧时，别把阅读进度倒退回去
