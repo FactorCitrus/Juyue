@@ -213,8 +213,19 @@ public class BookStore: ObservableObject {
         if let newBooks = books {
             for b in newBooks {
                 if let idx = bookshelf.firstIndex(where: { $0.bookUrl == b.bookUrl }) {
-                    // Update metadata and reading progress
-                    bookshelf[idx] = b
+                    // 整条替换会把用户侧的东西冲掉，所以合并着来：
+                    var merged = b
+                    let existing = bookshelf[idx]
+                    // 远端备份比本地旧时，别把阅读进度倒退回去
+                    if existing.durChapterTime > merged.durChapterTime {
+                        merged.durChapterIndex = existing.durChapterIndex
+                        merged.durChapterTitle = existing.durChapterTitle
+                        merged.durChapterPos = existing.durChapterPos
+                        merged.durChapterTime = existing.durChapterTime
+                    }
+                    if merged.groupId == nil { merged.groupId = existing.groupId }
+                    if (merged.coverUrl ?? "").isEmpty { merged.coverUrl = existing.coverUrl }
+                    bookshelf[idx] = merged
                 } else {
                     bookshelf.append(b)
                     booksCount += 1
