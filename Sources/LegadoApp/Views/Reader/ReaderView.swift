@@ -852,7 +852,7 @@ public struct ReaderView: View {
                                                 }
                                             )
                                     } else {
-                                        bodyTextView(block.text)
+                                        bodyTextView(applyingKinsoku(block.text))
                                             .padding(.leading, readerConfig.paddingLeft)
                                             .padding(.trailing, readerConfig.paddingRight)
                                             .padding(.bottom, readerConfig.paragraphSpacing)
@@ -1045,6 +1045,8 @@ public struct ReaderView: View {
                 textAlignment: readerConfig.textAlignment,
                 underlineEnabled: readerConfig.underlineEnabled,
                 underlineColor: readerConfig.underlineColor,
+                paragraphSeparatorLines: readerConfig.paragraphSeparatorLines,
+                paragraphSeparatorColor: readerConfig.paragraphSeparatorColor,
                 textColor: readerConfig.textColor,
                 backgroundColor: readerConfig.backgroundColor,
                 backgroundImage: readerConfig.backgroundImageEnabled
@@ -1199,7 +1201,9 @@ public struct ReaderView: View {
                                 boldPostScriptName: readerConfig.font.boldPostScriptName,
                                 textAlignment: readerConfig.textAlignment,
                                 underlineEnabled: readerConfig.underlineEnabled,
-                                underlineColor: readerConfig.underlineColor
+                                underlineColor: readerConfig.underlineColor,
+                                paragraphSeparatorLines: readerConfig.paragraphSeparatorLines,
+                                paragraphSeparatorColor: readerConfig.paragraphSeparatorColor
                             )
                             .frame(width: usableWidth, height: pageContentHeight, alignment: .topLeading)
                         }
@@ -2968,6 +2972,26 @@ public struct ReaderView: View {
             }
             .toggleStyle(.switch)
 
+            Toggle(isOn: $readerConfig.smartParagraphs) {
+                Text("智能分段")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundColor(readerConfig.textColor.opacity(0.7))
+            }
+            .toggleStyle(.switch)
+            Text("有个别书源把整章塞成一行、没有空行。开着时按句末标点把这种超长行切成正常段落，已经分好段的正文不动。")
+                .font(.system(size: 11))
+                .foregroundColor(readerConfig.textColor.opacity(0.5))
+
+            Toggle(isOn: $readerConfig.punctuationKinsoku) {
+                Text("标点禁则")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundColor(readerConfig.textColor.opacity(0.7))
+            }
+            .toggleStyle(.switch)
+            Text("中文排版规矩：句号、逗号这类标点不甩到行首，开引号、开括号不留在行尾。按页翻和连续模式都生效。")
+                .font(.system(size: 11))
+                .foregroundColor(readerConfig.textColor.opacity(0.5))
+
             // 显示项自身的参数：短标题截几个字、自定义日期格式、自定义栏文字
             settingSlider("短标题", value: shortTitleLengthBinding, range: 2...12, step: 1, suffix: " 字")
 
@@ -3428,6 +3452,14 @@ public struct ReaderView: View {
             "\(readerConfig.headerGap)",
             "\(readerConfig.footerEnabled)",
             "\(readerConfig.footerGap)",
+            "\(readerConfig.headerOffset)",
+            "\(readerConfig.footerOffset)",
+            "\(readerConfig.chapterTitleScale)",
+            readerConfig.titleAlignment.rawValue,
+            "\(readerConfig.chapterTopSpacing)",
+            "\(readerConfig.chapterTitleSpacing)",
+            "\(readerConfig.chapterBottomSpacing)",
+            "\(readerConfig.smartParagraphs)",
             readerConfig.chineseConversion.rawValue,
             readerConfig.textAlignment.rawValue,
             readerConfig.pageMode.rawValue
@@ -3467,6 +3499,36 @@ public struct ReaderView: View {
     }
 
     // MARK: - Paragraph and Page Parser
+    /// 智能分段：只处理「特别长、又完全没有段落」的行（不少书源整章塞成一行）。
+    /// 按句末标点断句，再把断句拼回正常长度的段落；短行原样返回，不动已经分好段的正文。
+    private func smartParagraphSplit(_ line: String) -> [String] {
+        guard line.count > 120 else { return [line] }
+
+        var sentences: [String] = []
+        var buffer = ""
+        for ch in line {
+            buffer.append(ch)
+            if "。！？…".contains(ch) {
+                sentences.append(buffer)
+                buffer = ""
+            }
+        }
+        if !buffer.isEmpty { sentences.append(buffer) }
+        guard sentences.count > 1 else { return [line] }
+
+        var paragraphs: [String] = []
+        var current = ""
+        for sentence in sentences {
+            current += sentence
+            if current.count >= 100 {
+                paragraphs.append(current)
+                current = ""
+            }
+        }
+        if !current.isEmpty { paragraphs.append(current) }
+        return paragraphs
+    }
+
     private func parseContentBlocks(from raw: String) -> [ContentBlock] {
         // 替换净化：全局规则 + 本书规则，正文从这儿进，所以都过一遍
         let text = ReplaceRuleStore.shared.apply(to: raw, bookUrl: activeBook.bookUrl)
@@ -3512,9 +3574,12 @@ public struct ReaderView: View {
                 }
             }
 
-            let indent = (trimmed.hasPrefix("　") || trimmed.hasPrefix("    ")) ? "" : "　　"
-            blocks.append(ContentBlock(id: currentId, isImage: false, text: indent + trimmed, imageUrl: nil))
-            currentId += 1
+            let paragraphs = readerConfig.smartParagraphs ? smartParagraphSplit(trimmed) : [trimmed]
+            for paragraph in paragraphs {
+                let indent = (paragraph.hasPrefix("　") || paragraph.hasPrefix("    ")) ? "" : "　　"
+                blocks.append(ContentBlock(id: currentId, isImage: false, text: indent + paragraph, imageUrl: nil))
+                currentId += 1
+            }
         }
         return blocks
     }
@@ -3615,8 +3680,11 @@ public struct ReaderView: View {
 
         while start < textLen {
             let available = isFirstLine ? max(20, width - indentWidth) : width
-            let count = CTTypesetterSuggestLineBreak(typesetter, start, available)
+            var count = CTTypesetterSuggestLineBreak(typesetter, start, available)
             if count <= 0 { break }
+            if readerConfig.punctuationKinsoku {
+                count = Self.applyLineBreakRules(nsStr: nsStr, start: start, count: count, textLen: textLen)
+            }
             let sub = nsStr.substring(with: NSRange(location: start, length: count))
             let isEnd = (start + count >= textLen)
             result.append((sub, isEnd))
@@ -3624,6 +3692,75 @@ public struct ReaderView: View {
             isFirstLine = false
         }
         return result
+    }
+
+    /// 标点禁则：行首不该出现句读/收尾类标点，行尾不该出现开引号、开括号。
+    /// 行首禁则按「标点挤压」处理——把标点拉到上一行，那点宽度交给两端对齐吸收；
+    /// 行尾禁则把那个字符挪到下一行。CoreText 自己不做中文禁则，得在这里补。
+    private static let forbiddenLineStart: Set<unichar> = {
+        var set = Set<unichar>()
+        for scalar in "。，、；：？！…～·）】》」』〉”’.，;:?!)]}%".unicodeScalars where scalar.value <= 0xFFFF {
+            set.insert(unichar(scalar.value))
+        }
+        return set
+    }()
+
+    private static let forbiddenLineEnd: Set<unichar> = {
+        var set = Set<unichar>()
+        for scalar in "（【《「『〈“‘([{".unicodeScalars where scalar.value <= 0xFFFF {
+            set.insert(unichar(scalar.value))
+        }
+        return set
+    }()
+
+    /// 连续模式用的是 SwiftUI / TextKit 的断行，插不进 CoreText 那套禁则。
+    /// 这里在「不该被换行切开」的位置插 U+2060（WORD JOINER）：TextKit 认这个字符，
+    /// 句读标点就不会被甩到行首，开引号开括号也不会被留在行尾。
+    /// 只作用在渲染出来的字符串上，不动 block.text，免得阅读进度和字符偏移跟着漂。
+    private func applyingKinsoku(_ text: String) -> String {
+        guard readerConfig.punctuationKinsoku else { return text }
+        let joiner = "\u{2060}"
+        let chars = Array(text)
+        guard chars.count > 1 else { return text }
+
+        var out = ""
+        out.reserveCapacity(chars.count + 8)
+        for (index, ch) in chars.enumerated() {
+            out.append(ch)
+            guard index + 1 < chars.count else { continue }
+            let next = chars[index + 1]
+            if Self.isForbiddenLineStart(next) || Self.isForbiddenLineEnd(ch) {
+                out += joiner
+            }
+        }
+        return out
+    }
+
+    private static func isForbiddenLineStart(_ ch: Character) -> Bool {
+        guard let scalar = String(ch).unicodeScalars.first, scalar.value <= 0xFFFF else { return false }
+        return forbiddenLineStart.contains(unichar(scalar.value))
+    }
+
+    private static func isForbiddenLineEnd(_ ch: Character) -> Bool {
+        guard let scalar = String(ch).unicodeScalars.first, scalar.value <= 0xFFFF else { return false }
+        return forbiddenLineEnd.contains(unichar(scalar.value))
+    }
+
+    private static func applyLineBreakRules(nsStr: NSString, start: Int, count: Int, textLen: Int) -> Int {
+        var adjusted = count
+        // 行首禁则：后面紧跟的是句读类标点就拉到本行，一次最多拉两个，别把整行挤爆
+        var pulled = 0
+        var next = start + count
+        while pulled < 2, next < textLen, forbiddenLineStart.contains(nsStr.character(at: next)) {
+            pulled += 1
+            next += 1
+        }
+        adjusted += pulled
+        // 行尾禁则：本行最后一个是开引号/开括号就把它推到下一行
+        if adjusted > 1, forbiddenLineEnd.contains(nsStr.character(at: start + adjusted - 1)) {
+            adjusted -= 1
+        }
+        return max(1, adjusted)
     }
 
     private func buildPageBlocks(from lines: [(text: String, isParagraphEnd: Bool)], startingId: inout Int) -> [ContentBlock] {
@@ -3990,6 +4127,8 @@ public struct CoreTextPageView: NSViewRepresentable {
     public var textAlignment: ReaderTextAlignment = .justify
     public var underlineEnabled: Bool = false
     public var underlineColor: Color? = nil
+    public var paragraphSeparatorLines: Int = 0
+    public var paragraphSeparatorColor: Color? = nil
 
     public func makeNSView(context: Context) -> CoreTextNSView {
         let view = CoreTextNSView()
@@ -4012,6 +4151,8 @@ public struct CoreTextPageView: NSViewRepresentable {
         nsView.textAlignment = textAlignment
         nsView.underlineEnabled = underlineEnabled
         nsView.underlineColor = underlineColor.map { NSColor($0) }
+        nsView.paragraphSeparatorLines = paragraphSeparatorLines
+        nsView.paragraphSeparatorColor = paragraphSeparatorColor.map { NSColor($0) }
         nsView.textColor = NSColor(textColor)
         nsView.containerWidth = width
         nsView.containerHeight = height
@@ -4039,6 +4180,8 @@ public class CoreTextNSView: NSView {
     public var textAlignment: ReaderTextAlignment = .justify
     public var underlineEnabled: Bool = false
     public var underlineColor: NSColor?
+    public var paragraphSeparatorLines: Int = 0
+    public var paragraphSeparatorColor: NSColor?
 
     /// 内容指纹：跟上次一样就不重绘
     public var renderSignature: String = "" {
@@ -4053,7 +4196,8 @@ public class CoreTextNSView: NSView {
             "\(paragraphSpacing)", "\(firstLineIndent)", "\(weightLevel)",
             chineseConversion.rawValue, fontPostScriptName, boldPostScriptName ?? "",
             "\(containerWidth)", "\(containerHeight)", textAlignment.rawValue,
-            "\(underlineEnabled)", underlineColor?.description ?? "", textColor.description
+            "\(underlineEnabled)", underlineColor?.description ?? "", textColor.description,
+            "\(paragraphSeparatorLines)", paragraphSeparatorColor?.description ?? ""
         ]
         parts.append(contentsOf: lines)
         parts.append(isParagraphEnd.map { $0 ? "1" : "0" }.joined())
@@ -4126,6 +4270,21 @@ public class CoreTextNSView: NSView {
             ctx.restoreGState()
 
             if isEnd {
+                if paragraphSeparatorLines > 0 {
+                    let lineColor = paragraphSeparatorColor ?? textColor
+                    var sepY = baselineY + descent
+                        + max(2, (paragraphSpacing - CGFloat(paragraphSeparatorLines) * 3.5) / 2)
+                    ctx.saveGState()
+                    ctx.setStrokeColor(lineColor.cgColor)
+                    ctx.setLineWidth(0.5)
+                    for _ in 0..<paragraphSeparatorLines {
+                        ctx.move(to: CGPoint(x: 0, y: sepY))
+                        ctx.addLine(to: CGPoint(x: targetWidth, y: sepY))
+                        sepY += 3.5
+                    }
+                    ctx.strokePath()
+                    ctx.restoreGState()
+                }
                 paragraphOffset += paragraphSpacing
             }
         }
@@ -4320,6 +4479,8 @@ public struct CoreTextPageView: UIViewRepresentable {
     public var textAlignment: ReaderTextAlignment = .justify
     public var underlineEnabled: Bool = false
     public var underlineColor: Color? = nil
+    public var paragraphSeparatorLines: Int = 0
+    public var paragraphSeparatorColor: Color? = nil
 
     public func makeUIView(context: Context) -> CoreTextUIView {
         let view = CoreTextUIView()
@@ -4342,6 +4503,8 @@ public struct CoreTextPageView: UIViewRepresentable {
         uiView.textAlignment = textAlignment
         uiView.underlineEnabled = underlineEnabled
         uiView.underlineColor = underlineColor.map { UIColor($0) }
+        uiView.paragraphSeparatorLines = paragraphSeparatorLines
+        uiView.paragraphSeparatorColor = paragraphSeparatorColor.map { UIColor($0) }
         uiView.textColor = UIColor(textColor)
         uiView.containerWidth = width
         uiView.containerHeight = height
@@ -4369,6 +4532,8 @@ public class CoreTextUIView: UIView {
     public var textAlignment: ReaderTextAlignment = .justify
     public var underlineEnabled: Bool = false
     public var underlineColor: UIColor?
+    public var paragraphSeparatorLines: Int = 0
+    public var paragraphSeparatorColor: UIColor?
 
     /// 内容指纹：跟上次一样就不重绘
     public var renderSignature: String = "" {
@@ -4383,7 +4548,8 @@ public class CoreTextUIView: UIView {
             "\(paragraphSpacing)", "\(firstLineIndent)", "\(weightLevel)",
             chineseConversion.rawValue, fontPostScriptName, boldPostScriptName ?? "",
             "\(containerWidth)", "\(containerHeight)", textAlignment.rawValue,
-            "\(underlineEnabled)", underlineColor?.description ?? "", textColor.description
+            "\(underlineEnabled)", underlineColor?.description ?? "", textColor.description,
+            "\(paragraphSeparatorLines)", paragraphSeparatorColor?.description ?? ""
         ]
         parts.append(contentsOf: lines)
         parts.append(isParagraphEnd.map { $0 ? "1" : "0" }.joined())
@@ -4454,6 +4620,21 @@ public class CoreTextUIView: UIView {
             ctx.restoreGState()
 
             if isEnd {
+                if paragraphSeparatorLines > 0 {
+                    let lineColor = paragraphSeparatorColor ?? textColor
+                    var sepY = baselineY + descent
+                        + max(2, (paragraphSpacing - CGFloat(paragraphSeparatorLines) * 3.5) / 2)
+                    ctx.saveGState()
+                    ctx.setStrokeColor(lineColor.cgColor)
+                    ctx.setLineWidth(0.5)
+                    for _ in 0..<paragraphSeparatorLines {
+                        ctx.move(to: CGPoint(x: 0, y: sepY))
+                        ctx.addLine(to: CGPoint(x: targetWidth, y: sepY))
+                        sepY += 3.5
+                    }
+                    ctx.strokePath()
+                    ctx.restoreGState()
+                }
                 paragraphOffset += paragraphSpacing
             }
         }

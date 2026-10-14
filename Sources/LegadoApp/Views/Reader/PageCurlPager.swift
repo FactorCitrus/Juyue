@@ -22,6 +22,8 @@ public struct PageCurlPager: UIViewControllerRepresentable {
     public let textAlignment: ReaderTextAlignment
     public let underlineEnabled: Bool
     public let underlineColor: Color?
+    public let paragraphSeparatorLines: Int
+    public let paragraphSeparatorColor: Color
     public let textColor: Color
     public let backgroundColor: Color
     /// 阅读背景图，跟着每一页和卷起来的背面一起铺
@@ -75,6 +77,8 @@ public struct PageCurlPager: UIViewControllerRepresentable {
         textAlignment: ReaderTextAlignment,
         underlineEnabled: Bool,
         underlineColor: Color?,
+        paragraphSeparatorLines: Int,
+        paragraphSeparatorColor: Color,
         textColor: Color,
         backgroundColor: Color,
         backgroundImage: Image?,
@@ -123,6 +127,8 @@ public struct PageCurlPager: UIViewControllerRepresentable {
         self.textAlignment = textAlignment
         self.underlineEnabled = underlineEnabled
         self.underlineColor = underlineColor
+        self.paragraphSeparatorLines = paragraphSeparatorLines
+        self.paragraphSeparatorColor = paragraphSeparatorColor
         self.textColor = textColor
         self.backgroundColor = backgroundColor
         self.backgroundImage = backgroundImage
@@ -282,12 +288,21 @@ public struct PageCurlPager: UIViewControllerRepresentable {
         parts.append(boldPostScriptName ?? "")
         parts.append(chineseConversion.rawValue)
         parts.append(titleAlignment.rawValue)
+        // 正文对齐 / 下划线也必须进指纹：它们是托管页面的绘制参数，
+        // 不进指纹的话「对齐」改了签名不变，缓存里的旧页面会一直留在屏幕上
+        parts.append(textAlignment.rawValue)
+        parts.append("\(underlineEnabled)/\(underlineColor.map { String(describing: $0) } ?? "")")
         parts.append("\(showHeader)\(showFooter)\(barDivider)")
         parts.append("\(paddingTop)/\(paddingBottom)/\(paddingLeft)/\(paddingRight)")
+        parts.append("\(paragraphSeparatorLines)/\(String(describing: paragraphSeparatorColor))")
         parts.append("\(headerOffset)/\(footerOffset)")
         parts.append(headerSlots.map { $0.map(\.rawValue).joined(separator: "+") }.joined(separator: ","))
         parts.append(footerSlots.map { $0.map(\.rawValue).joined(separator: "+") }.joined(separator: ","))
         parts.append("\(topInset)/\(bottomInset)")
+        parts.append("\(chapterTitleScale)")
+        // 分页结果变了（页数变了）也要重建当前页：只看配置的话，
+        // 「距顶/章标题间距」这类改了签名没变，托管页面会拿着旧分页不撒手
+        parts.append("\(pages.count)")
         parts.append(chapterTitleText)
         parts.append(bookName)
         parts.append("\(chapterIndex)/\(chapterCount)")
@@ -371,6 +386,8 @@ public struct PageCurlPager: UIViewControllerRepresentable {
                 textAlignment: parent.textAlignment,
                 underlineEnabled: parent.underlineEnabled,
                 underlineColor: parent.underlineColor,
+                paragraphSeparatorLines: parent.paragraphSeparatorLines,
+                paragraphSeparatorColor: parent.paragraphSeparatorColor,
                 textColor: parent.textColor,
                 backgroundColor: parent.backgroundColor,
                 backgroundImage: parent.backgroundImage,
@@ -678,6 +695,8 @@ struct PageCurlContent: View {
     let textAlignment: ReaderTextAlignment
     let underlineEnabled: Bool
     let underlineColor: Color?
+    let paragraphSeparatorLines: Int
+    let paragraphSeparatorColor: Color
     let textColor: Color
     let backgroundColor: Color
     let backgroundImage: Image?
@@ -950,7 +969,9 @@ struct PageCurlContent: View {
                         boldPostScriptName: boldPostScriptName,
                         textAlignment: textAlignment,
                         underlineEnabled: underlineEnabled,
-                        underlineColor: underlineColor
+                        underlineColor: underlineColor,
+                        paragraphSeparatorLines: paragraphSeparatorLines,
+                        paragraphSeparatorColor: paragraphSeparatorColor
                     )
                     .frame(width: usableWidth, height: contentHeight, alignment: .topLeading)
                 }
