@@ -301,6 +301,11 @@ public class BookStore: ObservableObject {
         target.durChapterTitle = oldBook.durChapterTitle
         target.durChapterPos = oldBook.durChapterPos
         target.durChapterTime = oldBook.durChapterTime
+        // 用户侧的东西要跟着走：分了组、自己设过封面（新源没给封面时别把它冲掉）
+        target.groupId = oldBook.groupId
+        if (target.coverUrl ?? "").isEmpty, let oldCover = oldBook.coverUrl, !oldCover.isEmpty {
+            target.coverUrl = oldCover
+        }
         if target.bookUrl != oldBook.bookUrl {
             bookshelf.removeAll { $0.bookUrl == oldBook.bookUrl }
             chaptersCache.removeValue(forKey: oldBook.bookUrl)
