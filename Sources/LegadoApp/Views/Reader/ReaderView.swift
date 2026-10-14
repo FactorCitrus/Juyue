@@ -1442,10 +1442,14 @@ public struct ReaderView: View {
                 } label: {
                     Label("刷新目录", systemImage: "list.bullet.rectangle")
                 }
-                Button {
-                    downloadCachedChapters()
+                Menu {
+                    ForEach([10, 20, 30, 50, 100], id: \.self) { n in
+                        Button("往后 \(n) 章") { downloadCachedChapters(span: n) }
+                    }
+                    Divider()
+                    Button("用设置里的默认（\(readerConfig.cachedChapterCount) 章）") { downloadCachedChapters() }
                 } label: {
-                    Label("下载缓存（\(readerConfig.cachedChapterCount) 章）", systemImage: "arrow.down.circle")
+                    Label("下载缓存（当前 \(readerConfig.cachedChapterCount) 章）", systemImage: "arrow.down.circle")
                 }
                 Button {
                     showReplaceRules = true
@@ -2194,10 +2198,12 @@ public struct ReaderView: View {
     }
 
     /// 下载缓存：从当前章往后缓存 N 章，N 在设置里调
-    private func downloadCachedChapters() {
+    private func downloadCachedChapters(span chosen: Int? = nil) {
         guard let source = effectiveSource, !chapters.isEmpty else { return }
         let start = max(0, currentChapterIndex)
-        let span = max(1, readerConfig.cachedChapterCount)
+        let span = max(1, chosen ?? readerConfig.cachedChapterCount)
+        // 现挑的数量顺手记成默认，下次点和设置里显示的都对得上
+        if let chosen { readerConfig.cachedChapterCount = chosen }
         let end = min(chapters.count - 1, start + span - 1)
         guard start <= end else { return }
         let indices = Array(start...end)
