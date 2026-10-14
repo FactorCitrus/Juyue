@@ -112,7 +112,16 @@ public struct WebDAVConfig: Codable, Equatable {
         return URL(string: rawUrl)
     }
 
+    /// 明文 HTTP 下不吐凭据：Basic 是 base64，等于裸传密码。
+    /// 这种情况下宁可让请求 401 失败，也不把密码发出去。
+    public var sendCredentialsInClear: Bool {
+        url.trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+            .hasPrefix("http://")
+    }
+
     public var basicAuthHeader: String {
+        guard !sendCredentialsInClear else { return "" }
         let credentials = "\(username):\(password)"
         let encoded = credentials.data(using: .utf8)?.base64EncodedString() ?? ""
         return "Basic \(encoded)"
