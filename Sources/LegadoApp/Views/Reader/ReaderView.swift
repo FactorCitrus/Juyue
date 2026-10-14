@@ -9,6 +9,39 @@ import LegadoCore
 /// 阅读背景图读一次盘就缓存住：正文每次重绘都去读文件会卡。
 /// 页眉页脚选内容的芯片网格。
 /// 23 个选项塞进 Menu 太长，铺成自适应网格更好点。
+/// 可折叠设置块：默认收起只留标题，点开才渲染里面的控件
+/// （设置卡片一屏堆满控件在真机上很吃渲染，能折的都折起来）
+struct CollapsibleSettingBlock<Content: View>: View {
+    let title: String
+    let tint: Color
+    @ViewBuilder let content: () -> Content
+
+    @State private var expanded = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Button {
+                withAnimation(.easeInOut(duration: 0.18)) { expanded.toggle() }
+            } label: {
+                HStack(spacing: 8) {
+                    Text(title)
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundColor(tint.opacity(0.85))
+                    Spacer()
+                    Image(systemName: expanded ? "chevron.up" : "chevron.down")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundColor(tint.opacity(0.5))
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            if expanded {
+                content()
+            }
+        }
+    }
+}
+
 /// 收起态的「页眉/页脚内容」行：摘要 + 展开按钮，展开后才渲染芯片网格
 struct ReaderBarPickerRow: View {
     let title: String
@@ -2298,15 +2331,15 @@ public struct ReaderView: View {
                         pageModeRow
                         fontSizeRow
                         themeRow
-                        colorSection
+                        CollapsibleSettingBlock(title: "配色", tint: readerConfig.textColor) { colorSection }
                         backgroundImageSection
-                        displaySection
+                        CollapsibleSettingBlock(title: "显示", tint: readerConfig.textColor) { displaySection }
                     case .spacing:
                         typographySection
-                        bodyLayoutSection
+                        CollapsibleSettingBlock(title: "正文排版", tint: readerConfig.textColor) { bodyLayoutSection }
                         underlineSection
-                        marginSection
-                        chapterTitleSection
+                        CollapsibleSettingBlock(title: "页边距", tint: readerConfig.textColor) { marginSection }
+                        CollapsibleSettingBlock(title: "章节标题", tint: readerConfig.textColor) { chapterTitleSection }
                         headerFooterSection
                     case .tts:
                         ttsSection
@@ -2485,8 +2518,6 @@ public struct ReaderView: View {
     private var marginSection: some View {
         VStack(alignment: .leading, spacing: 8) {
             sectionDivider
-            let _ = AppLog.write("卡片·进入「页边距」")
-            sectionTitle("页边距")
             settingSlider("上", value: $readerConfig.paddingTop, range: 0...64, step: 2)
             settingSlider("下", value: $readerConfig.paddingBottom, range: 0...64, step: 2)
             settingSlider("左", value: $readerConfig.paddingLeft, range: 0...64, step: 2)
@@ -2498,8 +2529,6 @@ public struct ReaderView: View {
     private var displaySection: some View {
         VStack(alignment: .leading, spacing: 8) {
             sectionDivider
-            let _ = AppLog.write("卡片·进入「显示」")
-            sectionTitle("显示")
             HStack(spacing: 10) {
                 Text("面板")
                     .font(.system(size: 12, weight: .medium))
@@ -2655,8 +2684,6 @@ public struct ReaderView: View {
     private var bodyLayoutSection: some View {
         VStack(alignment: .leading, spacing: 10) {
             sectionDivider
-            let _ = AppLog.write("卡片·进入「正文排版」")
-            sectionTitle("正文排版")
 
             HStack(spacing: 8) {
                 Text("对齐")
@@ -2732,8 +2759,6 @@ public struct ReaderView: View {
     private var chapterTitleSection: some View {
         VStack(alignment: .leading, spacing: 10) {
             sectionDivider
-            let _ = AppLog.write("卡片·进入「章节标题」")
-            sectionTitle("章节标题")
             settingSlider("字号", value: $readerConfig.chapterTitleScale, range: 1.0...1.8, step: 0.02, suffix: " ×")
             settingSlider("标题下距", value: $readerConfig.chapterTitleSpacing, range: 0...48, step: 2)
             settingSlider("章前距", value: $readerConfig.chapterTopSpacing, range: 0...48, step: 2)
@@ -2804,8 +2829,6 @@ public struct ReaderView: View {
     private var colorSection: some View {
         VStack(alignment: .leading, spacing: 10) {
             sectionDivider
-            let _ = AppLog.write("卡片·进入「配色」")
-            sectionTitle("配色")
 
             Toggle(isOn: $readerConfig.useCustomColors) {
                 Text("自定义背景与文字颜色")
