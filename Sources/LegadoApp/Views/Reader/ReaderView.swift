@@ -2535,6 +2535,7 @@ public struct ReaderView: View {
     private var typographySection: some View {
         VStack(alignment: .leading, spacing: 10) {
             sectionDivider
+            let _ = AppLog.write("面板·进入「排版」段")
             sectionTitle("排版")
             let _ = AppLog.write("面板①：字体菜单开始")
 
@@ -2567,6 +2568,7 @@ public struct ReaderView: View {
                 .padding(.vertical, 2)
 
             let _ = AppLog.write("面板③：预览过了，进间距滑块")
+            let _ = AppLog.write("面板④：进间距与开关")
             settingSlider("字间距", value: $readerConfig.letterSpacing, range: 0...4, step: 0.5)
             settingSlider("段间距", value: $readerConfig.paragraphSpacing, range: 0...30, step: 1)
             HStack(spacing: 8) {
@@ -2582,6 +2584,7 @@ public struct ReaderView: View {
                 .foregroundColor(readerConfig.textColor.opacity(0.5))
             settingSlider("首行缩进", value: $readerConfig.firstLineIndent, range: 0...4, step: 1, suffix: " 字")
 
+            let _ = AppLog.write("面板⑤：进字重 Picker｜当前=\(readerConfig.weight.rawValue) 选项=\(ReaderWeight.allCases.map { $0.rawValue }.joined(separator: "/"))")
             HStack(spacing: 8) {
                 Text("字重")
                     .font(.system(size: 12, weight: .medium))
@@ -2597,6 +2600,7 @@ public struct ReaderView: View {
                 .pickerStyle(.segmented)
             }
 
+            let _ = AppLog.write("面板⑥：进简繁 Picker｜当前=\(readerConfig.chineseConversion.rawValue)")
             HStack(spacing: 8) {
                 Text("简繁")
                     .font(.system(size: 12, weight: .medium))
