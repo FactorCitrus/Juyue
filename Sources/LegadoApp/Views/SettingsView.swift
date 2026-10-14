@@ -70,6 +70,19 @@ public struct SettingsView: View {
                         }
                     }
 
+                    HStack {
+                        Text("默认缓存章数")
+                        Spacer()
+                        Stepper(
+                            "\(readerConfig.cachedChapterCount) 章",
+                            value: $readerConfig.cachedChapterCount,
+                            in: 1...200
+                        )
+                        .labelsHidden()
+                        Text("\(readerConfig.cachedChapterCount) 章")
+                            .foregroundColor(.secondary)
+                    }
+
                     NavigationLink(destination: DownloadManagerView()) {
                         HStack {
                             Text("下载管理")
