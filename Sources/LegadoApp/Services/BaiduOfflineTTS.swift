@@ -26,13 +26,10 @@ final class BaiduOfflineTTS: NSObject, ObservableObject {
         var textFileName: String { (textPath as NSString).lastPathComponent }
     }
 
-    /// 控制台里的 APP ID
-    static let appId = ""
-    /// 控制台申请的两条离线序列号，第一条授权失败就换第二条
-    static let serialNumbers = [
-        "",
-        ""
-    ]
+    /// 控制台里的 APP ID（设置里填过就用填的）
+    static var appId: String { BaiduCredentials.appId }
+    /// 控制台申请的离线序列号，第一条授权失败就换第二条
+    static var serialNumbers: [String] { BaiduCredentials.serials }
 
     /// SDK 自带只带两条；自备音库放 Documents/BaiduTTS 里，能放几包放几包
     static let builtinVoices: [Voice] = {

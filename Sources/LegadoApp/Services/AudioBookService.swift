@@ -56,6 +56,63 @@ enum SystemVoiceSelection {
     }
 }
 
+/// 百度语音的四件套凭据。
+///
+/// 运行顺序：先看设置里填的（UserDefaults），没填才用这里的本地默认值。
+/// 公开仓库里 `localDefaults` 是空字符串，谁用谁自己填。
+enum BaiduCredentials {
+    /// 本地默认凭据（公开版本会是空值）
+    enum LocalDefaults {
+        static let appId = ""
+        static let apiKey = ""
+        static let secretKey = ""
+        static let serials = [
+            "",
+            ""
+        ]
+    }
+
+    private static var defaults: UserDefaults { .standard }
+
+    static var appId: String {
+        let stored = defaults.string(forKey: "baidu_app_id") ?? ""
+        return stored.isEmpty ? LocalDefaults.appId : stored
+    }
+
+    static var apiKey: String {
+        let stored = defaults.string(forKey: "baidu_api_key") ?? ""
+        return stored.isEmpty ? LocalDefaults.apiKey : stored
+    }
+
+    static var secretKey: String {
+        let stored = defaults.string(forKey: "baidu_secret_key") ?? ""
+        return stored.isEmpty ? LocalDefaults.secretKey : stored
+    }
+
+    /// 离线序列号，一行一条
+    static var serials: [String] {
+        let stored = defaults.string(forKey: "baidu_serials") ?? ""
+        let list = stored
+            .split(whereSeparator: { $0 == "\n" || $0 == "," })
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+        return list.isEmpty ? LocalDefaults.serials : list
+    }
+
+    /// 后台设置页写回的入口
+    static func store(appId: String, apiKey: String, secretKey: String, serials: String) {
+        defaults.set(appId.trimmingCharacters(in: .whitespacesAndNewlines), forKey: "baidu_app_id")
+        defaults.set(apiKey.trimmingCharacters(in: .whitespacesAndNewlines), forKey: "baidu_api_key")
+        defaults.set(secretKey.trimmingCharacters(in: .whitespacesAndNewlines), forKey: "baidu_secret_key")
+        defaults.set(serials.trimmingCharacters(in: .whitespacesAndNewlines), forKey: "baidu_serials")
+    }
+
+    static var hasCustomValues: Bool {
+        !(defaults.string(forKey: "baidu_app_id") ?? "").isEmpty
+            || !(defaults.string(forKey: "baidu_api_key") ?? "").isEmpty
+    }
+}
+
 /// 多角色朗读里的一条「角色 → 音色」规则
 public struct TTSCastRole: Codable, Identifiable, Equatable {
     /// 这条规则什么时候用得上

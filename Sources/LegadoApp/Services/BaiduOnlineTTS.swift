@@ -16,8 +16,9 @@ final class BaiduOnlineTTS: NSObject, ObservableObject {
         let note: String
     }
 
-    private static let apiKey = ""
-    private static let secretKey = ""
+    // 凭据统一走 BaiduCredentials：设置里填过就用填的，否则用本地默认
+    private static var apiKey: String { BaiduCredentials.apiKey }
+    private static var secretKey: String { BaiduCredentials.secretKey }
 
     /// 在线发音人，按百度语音接口文档的编号
     static let speakers: [Speaker] = [

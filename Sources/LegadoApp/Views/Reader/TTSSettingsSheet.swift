@@ -194,6 +194,21 @@ public struct TTSSettingsSheet: View {
                 }
                 #endif
 
+                #if os(iOS)
+                Section {
+                    NavigationLink(destination: BaiduCredentialView()) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("百度语音授权")
+                            Text(BaiduCredentials.hasCustomValues ? "用的是自己填的凭据" : "用的 App 内置默认凭据")
+                                .font(.caption2)
+                                .foregroundColor(.secondary)
+                        }
+                    }
+                } footer: {
+                    Text("APP ID / API Key / Secret Key / 离线序列号。填了就以填的为准，留空回落到内置默认。")
+                }
+                #endif
+
                 Section(header: Text("语速")) {
                     HStack {
                         Text("\(String(format: "%.1f", audio.speechRate / AVSpeechUtteranceDefaultSpeechRate))×")
@@ -602,6 +617,73 @@ struct TTSCastRoleEditor: View {
         #if os(iOS)
         .navigationBarTitleDisplayMode(.inline)
         #endif
+    }
+}
+
+/// 填自己的百度语音凭据：填了覆盖内置默认值，留空回落默认
+struct BaiduCredentialView: View {
+    @State private var appId = ""
+    @State private var apiKey = ""
+    @State private var secretKey = ""
+    @State private var serials = ""
+    @State private var savedHint: String?
+
+    var body: some View {
+        Form {
+            Section(header: Text("百度智能云语音")) {
+                TextField("APP ID（离线用）", text: $appId)
+                    .autocorrectionDisabled()
+                TextField("API Key（在线用）", text: $apiKey)
+                    .autocorrectionDisabled()
+                TextField("Secret Key（在线用）", text: $secretKey)
+                    .autocorrectionDisabled()
+            }
+
+            Section(header: Text("离线序列号（一行一条）")) {
+                TextEditor(text: $serials)
+                    .frame(minHeight: 90)
+                    .font(.system(.caption, design: .monospaced))
+                    .autocorrectionDisabled()
+            }
+
+            Section {
+                Button {
+                    BaiduCredentials.store(appId: appId, apiKey: apiKey, secretKey: secretKey, serials: serials)
+                    savedHint = "已保存，重启 App 后生效。"
+                } label: {
+                    Label("保存", systemImage: "checkmark.circle")
+                }
+
+                Button(role: .destructive) {
+                    BaiduCredentials.store(appId: "", apiKey: "", secretKey: "", serials: "")
+                    load()
+                    savedHint = "已清空，回到内置默认值。"
+                } label: {
+                    Label("清空并回到默认", systemImage: "arrow.uturn.backward")
+                }
+
+                if let savedHint {
+                    Text(savedHint)
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+            } footer: {
+                Text("内置默认值是打包时带的那份。公开仓库里默认值为空，需要在这里填自己的 APP ID、API Key、Secret Key 和离线序列号；离线引擎要求序列号与 APP ID 配套。")
+            }
+        }
+        .navigationTitle("百度语音授权")
+        #if os(iOS)
+        .navigationBarTitleDisplayMode(.inline)
+        #endif
+        .onAppear(perform: load)
+    }
+
+    private func load() {
+        let defaults = UserDefaults.standard
+        appId = defaults.string(forKey: "baidu_app_id") ?? ""
+        apiKey = defaults.string(forKey: "baidu_api_key") ?? ""
+        secretKey = defaults.string(forKey: "baidu_secret_key") ?? ""
+        serials = defaults.string(forKey: "baidu_serials") ?? ""
     }
 }
 
