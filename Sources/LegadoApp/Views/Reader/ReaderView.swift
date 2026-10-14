@@ -2467,9 +2467,7 @@ public struct ReaderView: View {
                     // 自定义字体是导入来的，换容器/重装后可能只剩注册记录、文件早没了：
                     // 先按文件夹重建一次注册表，失效条目会自动出列，不会再拿它去构建字体
                     CustomFontService.shared.loadAll()
-                    // 面包屑：面板崩了至少知道是点哪个进去的，并带上当时的值
-                    AppLog.write("切面板 → \(panel.rawValue)｜字体=\(readerConfig.font.postScriptName.isEmpty ? "(空)" : readerConfig.font.postScriptName) 字距=\(readerConfig.letterSpacing) 段距=\(readerConfig.paragraphSpacing) 页眉=\(readerConfig.headerEnabled) 页脚=\(readerConfig.footerEnabled) 标题模板=\(readerConfig.chapterTitleHTMLTemplate.count)字 主题=\(readerConfig.theme.rawValue)")
-                    withAnimation(.easeInOut(duration: 0.18)) { settingsPanel = panel }
+                                withAnimation(.easeInOut(duration: 0.18)) { settingsPanel = panel }
                 } label: {
                     HStack(spacing: 5) {
                         Image(systemName: panel.symbolName)
@@ -2574,7 +2572,6 @@ public struct ReaderView: View {
 
     private var pageModeRow: some View {
         VStack(alignment: .leading, spacing: 8) {
-            let _ = AppLog.write("卡片·进入「阅读模式」")
             sectionTitle("阅读模式")
             Picker("阅读模式", selection: $readerConfig.pageMode) {
                 ForEach(PageMode.allCases) { mode in
@@ -2599,10 +2596,7 @@ public struct ReaderView: View {
     private var typographySection: some View {
         VStack(alignment: .leading, spacing: 10) {
             sectionDivider
-            let _ = AppLog.write("面板·进入「排版」段")
-            let _ = AppLog.write("卡片·进入「排版」")
             sectionTitle("排版")
-            let _ = AppLog.write("面板①：字体菜单开始")
 
             Menu {
                 ForEach(ReaderFont.available) { font in
@@ -2625,15 +2619,12 @@ public struct ReaderView: View {
                 }
             }
 
-            let _ = AppLog.write("面板②：字体菜单过了，进预览")
             Text("天地玄黄，宇宙洪荒。日月盈昃，辰宿列张。")
                 .font(resolvedTypographyPreviewFont(size: 15))
                 .foregroundColor(readerConfig.textColor.opacity(0.85))
                 .lineLimit(2)
                 .padding(.vertical, 2)
 
-            let _ = AppLog.write("面板③：预览过了，进间距滑块")
-            let _ = AppLog.write("面板④：进间距与开关")
             settingSlider("字间距", value: $readerConfig.letterSpacing, range: 0...4, step: 0.5)
             settingSlider("段间距", value: $readerConfig.paragraphSpacing, range: 0...30, step: 1)
             HStack(spacing: 8) {
@@ -2649,7 +2640,6 @@ public struct ReaderView: View {
                 .foregroundColor(readerConfig.textColor.opacity(0.5))
             settingSlider("首行缩进", value: $readerConfig.firstLineIndent, range: 0...4, step: 1, suffix: " 字")
 
-            let _ = AppLog.write("面板⑤：进字重 Picker｜当前=\(readerConfig.weight.rawValue) 选项=\(ReaderWeight.allCases.map { $0.rawValue }.joined(separator: "/"))")
             HStack(spacing: 8) {
                 Text("字重")
                     .font(.system(size: 12, weight: .medium))
@@ -2665,7 +2655,6 @@ public struct ReaderView: View {
                 .pickerStyle(.segmented)
             }
 
-            let _ = AppLog.write("面板⑥：进简繁 Picker｜当前=\(readerConfig.chineseConversion.rawValue)")
             HStack(spacing: 8) {
                 Text("简繁")
                     .font(.system(size: 12, weight: .medium))
@@ -2715,7 +2704,6 @@ public struct ReaderView: View {
     private var underlineSection: some View {
         VStack(alignment: .leading, spacing: 10) {
             sectionDivider
-            let _ = AppLog.write("卡片·进入「正文下划线」")
             sectionTitle("正文下划线")
 
             Toggle(isOn: $readerConfig.underlineEnabled) {
@@ -2791,7 +2779,6 @@ public struct ReaderView: View {
     private var backgroundImageSection: some View {
         VStack(alignment: .leading, spacing: 10) {
             sectionDivider
-            let _ = AppLog.write("卡片·进入「背景图」")
             sectionTitle("背景图")
 
             Toggle(isOn: $readerConfig.backgroundImageEnabled) {
@@ -2886,7 +2873,6 @@ public struct ReaderView: View {
     private var headerFooterSection: some View {
         VStack(alignment: .leading, spacing: 10) {
             sectionDivider
-            let _ = AppLog.write("卡片·进入「正文标题」")
             sectionTitle("正文标题")
 
             Picker("正文标题", selection: $readerConfig.titleAlignment) {
@@ -2896,10 +2882,8 @@ public struct ReaderView: View {
             }
             .pickerStyle(.segmented)
 
-            let _ = AppLog.write("卡片·进入「页眉页脚」")
             sectionTitle("页眉页脚")
                 .padding(.top, 4)
-            let _ = AppLog.write("页眉页脚值｜距顶=\(readerConfig.headerOffset) 距底=\(readerConfig.footerOffset) 短标题=\(readerConfig.shortTitleLength)字 分隔线=\(readerConfig.barDivider)")
 
             Toggle(isOn: $readerConfig.sharedLayout) {
                 Text("共享布局")
@@ -2998,7 +2982,6 @@ public struct ReaderView: View {
     private var ttsSection: some View {
         VStack(alignment: .leading, spacing: 10) {
             sectionDivider
-            let _ = AppLog.write("卡片·进入「听书」")
             sectionTitle("听书")
 
             HStack(spacing: 8) {
@@ -3104,7 +3087,6 @@ public struct ReaderView: View {
     private var themeRow: some View {
         VStack(alignment: .leading, spacing: 10) {
             sectionDivider
-            let _ = AppLog.write("卡片·进入「主题」")
             sectionTitle("主题")
             HStack(spacing: 8) {
                 ForEach(ReaderTheme.allCases) { t in

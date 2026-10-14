@@ -1603,7 +1603,22 @@ struct OPDSBrowserView: View {
 /// 极简应用日志：写在沙盒 Documents/AppLogs/app.log，最多保留 512KB。
 /// 顺手挂未捕获异常处理器——闪退时至少能留下一条线索，不用去翻系统分析数据。
 enum AppLog {
-    static let maxBytes = 512 * 1024
+    static let defaultMaxLines = 100
+
+    /// 是否记录常规日志（崩溃标记不受它影响，永远写）
+    static var isEnabled: Bool {
+        get { UserDefaults.standard.object(forKey: "app_log_enabled") as? Bool ?? true }
+        set { UserDefaults.standard.set(newValue, forKey: "app_log_enabled") }
+    }
+
+    /// 保留多少行，默认 100
+    static var maxLines: Int {
+        get {
+            let value = UserDefaults.standard.integer(forKey: "app_log_max_lines")
+            return value > 0 ? value : defaultMaxLines
+        }
+        set { UserDefaults.standard.set(max(20, newValue), forKey: "app_log_max_lines") }
+    }
 
     static var fileURL: URL {
         let base = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
@@ -1627,6 +1642,7 @@ enum AppLog {
         }
         let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "?"
         let build = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "?"
+        // 启动行属于常规日志，跟着开关走
         write("—— 启动 v\(version) (\(build)) ——")
     }
 
@@ -1655,6 +1671,7 @@ enum AppLog {
     }
 
     static func write(_ line: String) {
+        guard isEnabled else { return }
         let stamp = ISO8601DateFormatter().string(from: Date())
         let text = "[\(stamp)] \(line)\n"
         let dir = fileURL.deletingLastPathComponent()
@@ -1666,14 +1683,16 @@ enum AppLog {
         } else {
             try? Data(text.utf8).write(to: fileURL)
         }
-        trimIfNeeded()
+        trimToLines()
     }
 
-    /// 超了就砍掉前半，留最近的那一段
-    private static func trimIfNeeded() {
-        guard let data = try? Data(contentsOf: fileURL), data.count > maxBytes else { return }
-        let kept = data.suffix(maxBytes / 2)
-        try? Data(kept).write(to: fileURL)
+    /// 超过保留行数就从前面砍
+    private static func trimToLines() {
+        guard let text = try? String(contentsOf: fileURL, encoding: .utf8) else { return }
+        var lines = text.split(separator: "\n", omittingEmptySubsequences: false)
+        guard lines.count > maxLines else { return }
+        lines = Array(lines.suffix(maxLines))
+        try? Data((lines.joined(separator: "\n")).utf8).write(to: fileURL)
     }
 
     static func read() -> String {
@@ -1689,9 +1708,30 @@ enum AppLog {
 struct LogViewerView: View {
     @State private var text = ""
     @State private var copied = false
+    @State private var logEnabled = AppLog.isEnabled
+    @State private var lineLimit = AppLog.maxLines
 
     var body: some View {
         VStack(spacing: 0) {
+            HStack(spacing: 12) {
+                Toggle("记录日志", isOn: $logEnabled)
+                    .onChange(of: logEnabled) { newValue in
+                        AppLog.isEnabled = newValue
+                        load()
+                    }
+                Spacer()
+                Stepper(value: $lineLimit, in: 20...2000, step: 20) {
+                    Text("保留 \(lineLimit) 行")
+                        .font(.caption)
+                }
+                .onChange(of: lineLimit) { newValue in
+                    AppLog.maxLines = newValue
+                    load()
+                }
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+            Divider()
             ScrollView {
                 Text(text)
                     .font(.system(size: 11, design: .monospaced))
