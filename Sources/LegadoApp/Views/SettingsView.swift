@@ -1,4 +1,5 @@
 import SwiftUI
+import Darwin
 import UniformTypeIdentifiers
 #if canImport(UIKit)
 import UIKit
@@ -1612,11 +1613,45 @@ enum AppLog {
     static func install() {
         NSSetUncaughtExceptionHandler { exception in
             let stacks = exception.callStackSymbols.prefix(14).joined(separator: " | ")
-            AppLog.write("💥 未捕获异常 \(exception.name.rawValue): \(exception.reason ?? "") || \(stacks)")
+            AppLog.writeSync("💥 未捕获异常 \(exception.name.rawValue): \(exception.reason ?? "") || \(stacks)")
+        }
+        // Swift 运行时的 fatalError / 前提条件失败 / 野指针走的是信号，不走 NSException，
+        // 所以要单独接一层：只写一行标记再交还给系统，保持原本的崩溃行为
+        for sig in [SIGABRT, SIGSEGV, SIGBUS, SIGILL, SIGTRAP, SIGFPE] {
+            signal(sig, { received in
+                let name = AppLog.signalName(received)
+                AppLog.writeSync("💥 信号 \(name)——运行时崩溃，上一行日志就是最后的动作\n")
+                signal(received, SIG_DFL)
+                raise(received)
+            })
         }
         let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "?"
         let build = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "?"
         write("—— 启动 v\(version) (\(build)) ——")
+    }
+
+    /// 信号处理里能安全调用的写盘方式（只有 open/write/close）
+    static func writeSync(_ line: String) {
+        let stamp = ISO8601DateFormatter().string(from: Date())
+        let text = "[\(stamp)] \(line)\n"
+        let dir = fileURL.deletingLastPathComponent()
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let fd = Darwin.open(fileURL.path, O_WRONLY | O_APPEND | O_CREAT, 0o644)
+        guard fd >= 0 else { return }
+        _ = text.withCString { Darwin.write(fd, $0, strlen($0)) }
+        Darwin.close(fd)
+    }
+
+    static func signalName(_ sig: Int32) -> String {
+        switch sig {
+        case SIGABRT: return "SIGABRT"
+        case SIGSEGV: return "SIGSEGV"
+        case SIGBUS: return "SIGBUS"
+        case SIGILL: return "SIGILL"
+        case SIGTRAP: return "SIGTRAP"
+        case SIGFPE: return "SIGFPE"
+        default: return "SIG\(sig)"
+        }
     }
 
     static func write(_ line: String) {
