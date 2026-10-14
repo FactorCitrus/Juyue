@@ -45,6 +45,9 @@ jobs:
 
       - name: Build Archive (Unsigned)
         run: |
+          # 仓库里没有 Vendor/ 的百度语音 SDK（248MB，走 .gitignore），
+          # 所以 CI 构建关掉百度那套：清空桥接头 + 打开 NO_BAIDU_TTS，
+          # 两份百度实现会走同形状的空桩。CI 出的包只有系统语音与 HTTP 语音源。
           xcodebuild -project Legado.xcodeproj \
             -scheme LegadoApp \
             -configuration Release \
@@ -53,7 +56,9 @@ jobs:
             archive \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
-            CODE_SIGN_IDENTITY=""
+            CODE_SIGN_IDENTITY="" \
+            SWIFT_OBJC_BRIDGING_HEADER="" \
+            SWIFT_ACTIVE_COMPILATION_CONDITIONS="NO_BAIDU_TTS"
 
       - name: Package IPA
         id: package

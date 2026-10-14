@@ -1,3 +1,4 @@
+#if !NO_BAIDU_TTS
 #if os(iOS)
 import Foundation
 import AVFoundation
@@ -323,5 +324,57 @@ extension BaiduOnlineTTS: BDSSpeechSynthesizerDelegate {
             break
         }
     }
+}
+#endif
+
+#else
+// 没有百度语音 SDK 的构建（比如 CI）：同形状空实现
+import Foundation
+import Combine
+
+public final class BaiduOnlineTTS: ObservableObject {
+    public struct Speaker: Identifiable, Hashable {
+        public var id: String
+        public var name: String
+        public var note: String
+        public init(id: String, name: String, note: String = "") {
+            self.id = id
+            self.name = name
+            self.note = note
+        }
+    }
+
+    public static let shared = BaiduOnlineTTS()
+
+    @Published public private(set) var isPlaying = false
+    @Published public private(set) var isPaused = false
+    @Published public private(set) var currentIndex = 0
+    @Published public private(set) var totalChunks = 0
+    @Published public private(set) var lastError: String?
+    @Published public private(set) var isPreparing = false
+    @Published public private(set) var statusText = "未编译百度在线引擎"
+
+    public var onFinish: (() -> Void)?
+
+    public static let speakers: [Speaker] = [
+        Speaker(id: "0", name: "普通女声", note: "需要百度语音 SDK"),
+        Speaker(id: "1", name: "普通男声", note: "需要百度语音 SDK")
+    ]
+    public static var activeSpeakerId: String? {
+        get { nil }
+        set { }
+    }
+    public static var activeSpeaker: Speaker? { nil }
+    public static func setActiveSpeakerId(_ id: String?) { }
+    public static func speaker(id: String?) -> Speaker? { speakers.first { $0.id == id } }
+    public func preload(speaker: Speaker) {}
+
+    public func start(speaker: Speaker, text: String, speed: Int, maxChunkLength: Int = 150) {
+        lastError = "这个构建没带百度在线引擎。"
+    }
+    public func stop() {}
+    public func pause() {}
+    public func resume() {}
+    public func clearToken() {}
 }
 #endif
