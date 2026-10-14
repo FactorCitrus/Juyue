@@ -61,6 +61,15 @@ public struct SettingsView: View {
                         }
                     }
 
+                    NavigationLink(destination: LogViewerView()) {
+                        HStack {
+                            Text("诊断日志")
+                            Spacer()
+                            Text("查崩溃 · 复制给我")
+                                .foregroundColor(.secondary)
+                        }
+                    }
+
                     NavigationLink(destination: SubscribeSourcesView()) {
                         HStack {
                             Text("订阅源（阅读订阅源）")
@@ -1585,5 +1594,105 @@ struct OPDSBrowserView: View {
             message = "下载失败：" + error.localizedDescription
         }
         loading = false
+    }
+}
+
+// MARK: - 诊断日志
+
+/// 极简应用日志：写在沙盒 Documents/AppLogs/app.log，最多保留 512KB。
+/// 顺手挂未捕获异常处理器——闪退时至少能留下一条线索，不用去翻系统分析数据。
+enum AppLog {
+    static let maxBytes = 512 * 1024
+
+    static var fileURL: URL {
+        let base = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+        return base.appendingPathComponent("AppLogs", isDirectory: true).appendingPathComponent("app.log")
+    }
+
+    static func install() {
+        NSSetUncaughtExceptionHandler { exception in
+            let stacks = exception.callStackSymbols.prefix(14).joined(separator: " | ")
+            AppLog.write("💥 未捕获异常 \(exception.name.rawValue): \(exception.reason ?? "") || \(stacks)")
+        }
+        let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "?"
+        let build = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "?"
+        write("—— 启动 v\(version) (\(build)) ——")
+    }
+
+    static func write(_ line: String) {
+        let stamp = ISO8601DateFormatter().string(from: Date())
+        let text = "[\(stamp)] \(line)\n"
+        let dir = fileURL.deletingLastPathComponent()
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        if let handle = try? FileHandle(forWritingTo: fileURL) {
+            defer { try? handle.close() }
+            _ = try? handle.seekToEnd()
+            try? handle.write(contentsOf: Data(text.utf8))
+        } else {
+            try? Data(text.utf8).write(to: fileURL)
+        }
+        trimIfNeeded()
+    }
+
+    /// 超了就砍掉前半，留最近的那一段
+    private static func trimIfNeeded() {
+        guard let data = try? Data(contentsOf: fileURL), data.count > maxBytes else { return }
+        let kept = data.suffix(maxBytes / 2)
+        try? Data(kept).write(to: fileURL)
+    }
+
+    static func read() -> String {
+        (try? String(contentsOf: fileURL, encoding: .utf8)) ?? "（还没有日志）"
+    }
+
+    static func clear() {
+        try? FileManager.default.removeItem(at: fileURL)
+    }
+}
+
+/// 日志查看：崩溃后进来复制一份发我就够定位了
+struct LogViewerView: View {
+    @State private var text = ""
+    @State private var copied = false
+
+    var body: some View {
+        VStack(spacing: 0) {
+            ScrollView {
+                Text(text)
+                    .font(.system(size: 11, design: .monospaced))
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(12)
+                    .textSelection(.enabled)
+            }
+            Divider()
+            HStack(spacing: 12) {
+                Button(copied ? "已复制" : "复制全部") {
+                    #if os(iOS)
+                    UIPasteboard.general.string = text
+                    #else
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(text, forType: .string)
+                    #endif
+                    copied = true
+                }
+                Button("刷新") { load() }
+                Button("清空", role: .destructive) {
+                    AppLog.clear()
+                    load()
+                }
+                Spacer()
+                Text("\(text.count) 字符")
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
+            }
+            .padding(12)
+        }
+        .navigationTitle("诊断日志")
+        .onAppear { load() }
+    }
+
+    private func load() {
+        copied = false
+        text = AppLog.read()
     }
 }

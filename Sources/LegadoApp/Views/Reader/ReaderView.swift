@@ -2516,6 +2516,16 @@ public struct ReaderView: View {
         }
     }
 
+    /// 排版页的字体预览：存下来的字体名可能已经不在设备上（导入过又删、跨设备带过来），
+    /// 名字无效时回落到系统字体，别拿一个不存在的名字去构建字体。
+    private func resolvedTypographyPreviewFont(size: CGFloat) -> Font {
+        let name = readerConfig.font.postScriptName
+        guard !name.isEmpty, ReaderFont.available.contains(where: { $0.postScriptName == name }) else {
+            return .system(size: size)
+        }
+        return .custom(name, size: size)
+    }
+
     // MARK: 排版
     private var typographySection: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -2544,7 +2554,7 @@ public struct ReaderView: View {
             }
 
             Text("天地玄黄，宇宙洪荒。日月盈昃，辰宿列张。")
-                .font(.custom(readerConfig.font.postScriptName, size: 15))
+                .font(resolvedTypographyPreviewFont(size: 15))
                 .foregroundColor(readerConfig.textColor.opacity(0.85))
                 .lineLimit(2)
                 .padding(.vertical, 2)
