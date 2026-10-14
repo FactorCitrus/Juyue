@@ -261,10 +261,18 @@ public class BookStore: ObservableObject {
     }
 
     @discardableResult
-    public func saveOrUpdateBook(_ book: Book) -> Book {
+    /// overwriteCover 只在「用户明确改了封面」时为 true：
+    /// 平时不带封面去更新（比如刷新详情）不该把用户自己设的封面冲掉。
+    public func saveOrUpdateBook(_ book: Book, overwriteCover: Bool = false) -> Book {
         if let index = bookshelf.firstIndex(where: { $0.bookUrl == book.bookUrl }) {
             var existing = bookshelf[index]
+            if !book.name.isEmpty { existing.name = book.name }
             if !book.author.isEmpty && book.author != "未知作者" { existing.author = book.author }
+            if overwriteCover {
+                existing.coverUrl = book.coverUrl
+            } else if let cover = book.coverUrl, !cover.isEmpty {
+                existing.coverUrl = cover
+            }
             if let intro = book.intro, !intro.isEmpty, !intro.hasPrefix("源站：") { existing.intro = intro }
             if let kind = book.kind, !kind.isEmpty { existing.kind = kind }
             if let wordCount = book.wordCount, !wordCount.isEmpty { existing.wordCount = wordCount }

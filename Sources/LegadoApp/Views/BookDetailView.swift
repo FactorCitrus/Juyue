@@ -198,7 +198,7 @@ public struct BookDetailView: View {
                     updated.coverUrl = picked.isEmpty ? nil : picked
                     currentBook = updated
                     if bookStore.bookshelf.contains(where: { $0.bookUrl == updated.bookUrl }) {
-                        _ = bookStore.saveOrUpdateBook(updated)
+                        _ = bookStore.saveOrUpdateBook(updated, overwriteCover: true)
                     }
                 }
             }
@@ -222,7 +222,7 @@ public struct BookDetailView: View {
                         updated.coverUrl = cover.isEmpty ? nil : cover
                         currentBook = updated
                         if bookStore.bookshelf.contains(where: { $0.bookUrl == updated.bookUrl }) {
-                            _ = bookStore.saveOrUpdateBook(updated)
+                            _ = bookStore.saveOrUpdateBook(updated, overwriteCover: true)
                         }
                         actionAlertMessage = "已保存"
                         showActionAlert = true
