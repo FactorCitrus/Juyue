@@ -422,9 +422,22 @@ public class ReaderConfig: ObservableObject {
         let parsed = parts.compactMap { ReaderBarContent(rawValue: $0) }.filter { $0 != .none }
         return parsed
     }
-    /// 页眉页脚和正文之间的分隔线：默认开着，否则同色背景下页脚等于看不见
-    @Published public var barDivider: Bool = true {
+    /// 页眉页脚和正文之间的分隔线：按用户要求默认关掉（同色背景下那条线显得多余），
+    /// 想要的人可以在排版设置里打开「显示分隔线」
+    @Published public var barDivider: Bool = false {
         didSet { Self.defaults.set(barDivider, forKey: "reader_bar_divider") }
+    }
+
+    /// 智能分段：有些书源把整章塞成一行，没有空行就分不出段落，
+    /// 开着重排时按句末标点把它切成正常段落。已经分好段的正文不受影响
+    @Published public var smartParagraphs: Bool = true {
+        didSet { Self.defaults.set(smartParagraphs, forKey: "reader_smart_paragraphs") }
+    }
+
+    /// 标点禁则：行首不出现句读/收尾类标点，行尾不出现开引号、开括号。
+    /// 按页翻走 CoreText 断行，连续模式走 TextKit 的 word joiner，两套都听这个开关
+    @Published public var punctuationKinsoku: Bool = true {
+        didSet { Self.defaults.set(punctuationKinsoku, forKey: "reader_punctuation_kinsoku") }
     }
 
     /// 共享布局：开着就是所有书共用一套排版；关掉后每本书各存一份。
@@ -647,6 +660,8 @@ public class ReaderConfig: ObservableObject {
         footerCenter = Self.loadBar("reader_footer_center", fallback: footerCenter)
         footerRight = Self.loadBar("reader_footer_right", fallback: footerRight)
         if d.object(forKey: "reader_bar_divider") != nil { barDivider = d.bool(forKey: "reader_bar_divider") }
+        if d.object(forKey: "reader_smart_paragraphs") != nil { smartParagraphs = d.bool(forKey: "reader_smart_paragraphs") }
+        if d.object(forKey: "reader_punctuation_kinsoku") != nil { punctuationKinsoku = d.bool(forKey: "reader_punctuation_kinsoku") }
         if d.object(forKey: "reader_shared_layout") != nil { sharedLayout = d.bool(forKey: "reader_shared_layout") }
         if d.object(forKey: "reader_custom_colors") != nil { useCustomColors = d.bool(forKey: "reader_custom_colors") }
         if let hex = d.string(forKey: "reader_bg_hex") { customBackgroundHex = hex }
@@ -991,7 +1006,9 @@ extension ReaderConfig {
         footerOffset = 0
         shortTitleLength = 6
         justifyLastPage = true
-        barDivider = true
+        barDivider = false
+        smartParagraphs = true
+        punctuationKinsoku = true
         titleAlignment = .center
         headerLeft = [.bookName]
         headerCenter = []

@@ -333,7 +333,8 @@ public class WebDAVService {
         books: [Book],
         sources: [BookSource],
         deviceName: String = WebDAVConfig.defaultDeviceName,
-        date: Date = Date()
+        date: Date = Date(),
+        settingsJSON: Data? = nil
     ) throws -> (data: Data, fileName: String) {
         let fileName = WebDAVConfig.generateBackupFileName(date: date, deviceName: deviceName)
         let tempDir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
@@ -350,15 +351,24 @@ public class WebDAVService {
 
         let booksFile = tempDir.appendingPathComponent("bookshelf.json")
         let sourcesFile = tempDir.appendingPathComponent("bookSource.json")
+        let settingsFile = tempDir.appendingPathComponent("settings.json")
 
         try booksData.write(to: booksFile)
         try sourcesData.write(to: sourcesFile)
+        // 应用内设置：额外多一个顶层条目，安卓端不认会忽略，不影响它读前两个文件
+        let hasSettings = settingsJSON != nil
+        if let settingsJSON {
+            try settingsJSON.write(to: settingsFile)
+        }
 
         let zipFile = tempDir.appendingPathComponent(fileName)
         try {
             let archive = try Archive(url: zipFile, accessMode: .create)
             try archive.addEntry(with: "bookshelf.json", relativeTo: tempDir, compressionMethod: .deflate)
             try archive.addEntry(with: "bookSource.json", relativeTo: tempDir, compressionMethod: .deflate)
+            if hasSettings {
+                try archive.addEntry(with: "settings.json", relativeTo: tempDir, compressionMethod: .deflate)
+            }
         }()
 
         let zipData = try Data(contentsOf: zipFile)
@@ -366,7 +376,12 @@ public class WebDAVService {
     }
 
     /// Backs up bookshelf and sources to WebDAV server in Android Legado format (backupYYYY-MM-DD-deviceName.zip)
-    public func backup(books: [Book], sources: [BookSource], config: WebDAVConfig) async throws -> (booksCount: Int, sourcesCount: Int, backupFileName: String) {
+    public func backup(
+        books: [Book],
+        sources: [BookSource],
+        config: WebDAVConfig,
+        settingsJSON: Data? = nil
+    ) async throws -> (booksCount: Int, sourcesCount: Int, backupFileName: String) {
         guard let dirUrl = config.directoryURL else {
             throw WebDAVError.invalidURL
         }
@@ -378,7 +393,7 @@ public class WebDAVService {
         encoder.outputFormatting = [.prettyPrinted]
 
         // 1. Create and upload Android Legado compatible ZIP archive: backupYYYY-MM-DD-deviceName.zip
-        let (zipData, zipFileName) = try createBackupZip(books: books, sources: sources, deviceName: config.deviceName)
+        let (zipData, zipFileName) = try createBackupZip(books: books, sources: sources, deviceName: config.deviceName, settingsJSON: settingsJSON)
         let zipUrl = dirUrl.appendingPathComponent(zipFileName)
         let zipReq = makeRequest(url: zipUrl, method: "PUT", config: config, body: zipData, contentType: "application/zip")
         let (_, zipResponse) = try await session.data(for: zipReq)
@@ -513,7 +528,7 @@ public class WebDAVService {
     }
 
     /// Restores bookshelf and sources from WebDAV server (supports both Android backup*.zip and direct JSON files)
-    public func restore(config: WebDAVConfig, backupFileName: String? = nil) async throws -> (books: [Book]?, sources: [BookSource]?, backupName: String?) {
+    public func restore(config: WebDAVConfig, backupFileName: String? = nil) async throws -> (books: [Book]?, sources: [BookSource]?, backupName: String?, settingsJSON: Data?) {
         guard let dirUrl = config.directoryURL else {
             throw WebDAVError.invalidURL
         }
@@ -521,6 +536,7 @@ public class WebDAVService {
         var restoredBooks: [Book]? = nil
         var restoredSources: [BookSource]? = nil
         var usedBackupName: String? = nil
+        var restoredSettings: Data? = nil
 
         // 1. Try finding and downloading Android-compatible backup*.zip files first
         if let remoteBackups = try? await listRemoteBackups(config: config), !remoteBackups.isEmpty {
@@ -535,6 +551,7 @@ public class WebDAVService {
             if let (zipData, zipResp) = try? await session.data(for: zipReq),
                let httpZip = zipResp as? HTTPURLResponse, (200...299).contains(httpZip.statusCode) {
                 let zipResult = try? restoreFromZip(data: zipData)
+                restoredSettings = extractSettingsJSON(fromZip: zipData)
                 restoredBooks = zipResult?.books
                 restoredSources = zipResult?.sources
                 usedBackupName = targetBackup.fileName
@@ -656,7 +673,7 @@ public class WebDAVService {
         updatedConfig.lastSyncTime = Date()
         saveConfig(updatedConfig)
 
-        return (restoredBooks, restoredSources, usedBackupName)
+        return (restoredBooks, restoredSources, usedBackupName, restoredSettings)
     }
 
     // MARK: - Zip Archive Restoration (Android Legado Compatible)
@@ -688,6 +705,29 @@ public class WebDAVService {
         }
 
         return result
+    }
+
+    /// 从备份 zip 里读出 settings.json（没有就返回 nil）
+    public func extractSettingsJSON(fromZip data: Data) -> Data? {
+        guard let archive = try? Archive(data: data, accessMode: .read, pathEncoding: nil) else { return nil }
+        return extractSettingsJSON(from: archive)
+    }
+
+    /// 同上，但直接给一个本地 zip 文件
+    public func extractSettingsJSON(fromZipFileUrl url: URL) -> Data? {
+        guard let archive = try? Archive(url: url, accessMode: .read, pathEncoding: nil) else { return nil }
+        return extractSettingsJSON(from: archive)
+    }
+
+    public func extractSettingsJSON(from archive: Archive) -> Data? {
+        guard let entry = archive["settings.json"] ?? archive.first(where: { $0.path.hasSuffix("settings.json") }) else {
+            return nil
+        }
+        var data = Data()
+        _ = try? archive.extract(entry) { chunk in
+            data.append(chunk)
+        }
+        return data.isEmpty ? nil : data
     }
 
     /// Parses bookshelf.json, bookSource.json, and internal bookProgress from a ZIP archive

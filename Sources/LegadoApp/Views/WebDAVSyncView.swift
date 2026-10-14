@@ -360,8 +360,15 @@ public struct WebDAVSyncView: View {
             let (books, sources) = try WebDAVService.shared.restoreFromZip(fileUrl: selectedUrl)
             let (bCount, sCount) = bookStore.restoreFromWebDAV(books: books, sources: sources)
 
+            var settingsNote = ""
+            if let settingsData = WebDAVService.shared.extractSettingsJSON(fromZipFileUrl: selectedUrl),
+               let payload = AppSettingsBackup.decode(settingsData) {
+                let summary = AppSettingsBackup.apply(payload, mode: .merge)
+                settingsNote = "\n• 应用设置（合并）: \(summary)"
+            }
+
             alertTitle = "备份包导入成功"
-            alertMessage = "成功识别并合并 Android 备份数据：\n• 书架更新/新增: \(bCount) 本\n• 书源更新/新增: \(sCount) 个"
+            alertMessage = "成功识别并合并 Android 备份数据：\n• 书架更新/新增: \(bCount) 本\n• 书源更新/新增: \(sCount) 个\(settingsNote)"
             showAlert = true
         } catch {
             alertTitle = "导入失败"
@@ -440,7 +447,8 @@ public struct WebDAVSyncView: View {
                 let result = try await WebDAVService.shared.backup(
                     books: bookStore.bookshelf,
                     sources: bookStore.sources,
-                    config: currentConfig
+                    config: currentConfig,
+                    settingsJSON: AppSettingsBackup.makeJSON()
                 )
                 await MainActor.run {
                     isBackingUp = false
@@ -464,11 +472,15 @@ public struct WebDAVSyncView: View {
         isRestoring = true
         Task {
             do {
-                let (books, sources, backupName) = try await WebDAVService.shared.restore(
+                let (books, sources, backupName, settingsJSON) = try await WebDAVService.shared.restore(
                     config: currentConfig,
                     backupFileName: backupFileName
                 )
                 let result = bookStore.restoreFromWebDAV(books: books, sources: sources, mode: mode)
+                var settingsSummary: String?
+                if let settingsJSON, let payload = AppSettingsBackup.decode(settingsJSON) {
+                    settingsSummary = AppSettingsBackup.apply(payload, mode: mode == .replace ? .replace : .merge)
+                }
                 await MainActor.run {
                     isRestoring = false
                     lastSyncTime = Date()
@@ -486,6 +498,9 @@ public struct WebDAVSyncView: View {
                         detail += "• 书源同步：\(s.count) 个 (新增 \(result.sourcesAdded) 个)"
                     } else {
                         detail += "• 未找到远程 bookSource.json"
+                    }
+                    if let settingsSummary {
+                        detail += "\n• 应用设置（\(mode == .replace ? "替换" : "合并")）：\(settingsSummary)"
                     }
                     alertMessage = detail
                     showAlert = true

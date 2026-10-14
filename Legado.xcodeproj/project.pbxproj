@@ -46,6 +46,24 @@
 			<key>isa</key>
 			<string>PBXBuildFile</string>
 		</dict>
+		<key>BB01AA0000000000000008B8</key>
+		<dict>
+			<key>isa</key>
+			<string>PBXFileReference</string>
+			<key>lastKnownFileType</key>
+			<string>folder.assetcatalog</string>
+			<key>path</key>
+			<string>Sources/LegadoApp/Resources/Assets.xcassets</string>
+			<key>sourceTree</key>
+			<string>&lt;group&gt;</string>
+		</dict>
+		<key>BB01AA0000000000000009B9</key>
+		<dict>
+			<key>fileRef</key>
+			<string>BB01AA0000000000000008B8</string>
+			<key>isa</key>
+			<string>PBXBuildFile</string>
+		</dict>
 		<key>BB01AA0000000000000005A5</key>
 		<dict>
 			<key>isa</key>
@@ -157,6 +175,24 @@
 			<string>Sources/LegadoApp/Services/BookStore.swift</string>
 			<key>sourceTree</key>
 			<string>&lt;group&gt;</string>
+		</dict>
+		<key>BB01AA000000000000000AB1</key>
+		<dict>
+			<key>isa</key>
+			<string>PBXFileReference</string>
+			<key>lastKnownFileType</key>
+			<string>sourcecode.swift</string>
+			<key>path</key>
+			<string>Sources/LegadoApp/Services/AppSettingsBackup.swift</string>
+			<key>sourceTree</key>
+			<string>&lt;group&gt;</string>
+		</dict>
+		<key>BB01AA000000000000000AC2</key>
+		<dict>
+			<key>fileRef</key>
+			<string>BB01AA000000000000000AB1</string>
+			<key>isa</key>
+			<string>PBXBuildFile</string>
 		</dict>
 		<key>113D5D3AC3E027DF15EFB6AE</key>
 		<dict>
@@ -339,7 +375,7 @@
 				<key>CODE_SIGN_STYLE</key>
 				<string>Automatic</string>
 				<key>CURRENT_PROJECT_VERSION</key>
-				<string>41</string>
+				<string>42</string>
 				<key>DEVELOPMENT_TEAM</key>
 				<string></string>
 				<key>ENABLE_PREVIEWS</key>
@@ -453,6 +489,7 @@
 				<string>F8605495CCFB2EF6EFFA85E6</string>
 				<string>AA11BB22CC33DD44EE55FF69</string>
 				<string>BB01AA0000000000000004A4</string>
+				<string>BB01AA0000000000000009B9</string>
 			</array>
 			<key>isa</key>
 			<string>PBXResourcesBuildPhase</string>
@@ -809,6 +846,7 @@
 				<string>782B4C6BAD3FD51D78E1607C</string>
 				<string>BB01AA0000000000000006A6</string>
 				<string>BB01AA0000000000000009A9</string>
+				<string>BB01AA000000000000000AC2</string>
 			</array>
 			<key>isa</key>
 			<string>PBXSourcesBuildPhase</string>
@@ -1139,7 +1177,7 @@
 				<key>CODE_SIGN_STYLE</key>
 				<string>Automatic</string>
 				<key>CURRENT_PROJECT_VERSION</key>
-				<string>41</string>
+				<string>42</string>
 				<key>DEVELOPMENT_TEAM</key>
 				<string></string>
 				<key>ENABLE_PREVIEWS</key>
