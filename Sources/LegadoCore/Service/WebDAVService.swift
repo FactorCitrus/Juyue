@@ -1,4 +1,5 @@
 import Foundation
+import Security
 import ZIPFoundation
 
 #if canImport(UIKit)
@@ -178,15 +179,36 @@ public class WebDAVService {
         self.session = session
     }
 
+    private let keychainAccount = "webdav_password"
+
     public func loadConfig() -> WebDAVConfig {
-        if let data = UserDefaults.standard.data(forKey: configKey),
-           let config = try? JSONDecoder().decode(WebDAVConfig.self, from: data) {
-            return config
+        guard let data = UserDefaults.standard.data(forKey: configKey),
+              var config = try? JSONDecoder().decode(WebDAVConfig.self, from: data) else {
+            return WebDAVConfig()
         }
-        return WebDAVConfig()
+        if config.password.isEmpty {
+            // 已经迁移过：密码在钥匙串里，配置里只留空
+            config.password = KeychainStore.read(account: keychainAccount) ?? ""
+        } else if KeychainStore.write(config.password, account: keychainAccount) {
+            // 旧配置里是明文：先确认写进钥匙串成功，再把明文抹掉
+            config.password = ""
+            saveConfigRaw(config)
+        }
+        return config
     }
 
     public func saveConfig(_ config: WebDAVConfig) {
+        var stored = config
+        if config.password.isEmpty {
+            KeychainStore.delete(account: keychainAccount)
+        } else if KeychainStore.write(config.password, account: keychainAccount) {
+            // 只在钥匙串写成功后才从明文里移除，写不进去就保留旧行为，免得同步直接失效
+            stored.password = ""
+        }
+        saveConfigRaw(stored)
+    }
+
+    private func saveConfigRaw(_ config: WebDAVConfig) {
         if let data = try? JSONEncoder().encode(config) {
             UserDefaults.standard.set(data, forKey: configKey)
         }
@@ -772,5 +794,43 @@ public class WebDAVService {
                 }
             }
         }
+    }
+}
+
+
+/// WebDAV 密码专用的小钥匙串封装：只放这一个值，不落 UserDefaults
+enum KeychainStore {
+    private static let service = "io.legado.ios.webdav"
+
+    private static func baseQuery(account: String) -> [String: Any] {
+        [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: account
+        ]
+    }
+
+    @discardableResult
+    static func write(_ value: String, account: String) -> Bool {
+        guard let data = value.data(using: .utf8) else { return false }
+        SecItemDelete(baseQuery(account: account) as CFDictionary)
+        var add = baseQuery(account: account)
+        add[kSecValueData as String] = data
+        add[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlock
+        return SecItemAdd(add as CFDictionary, nil) == errSecSuccess
+    }
+
+    static func read(account: String) -> String? {
+        var query = baseQuery(account: account)
+        query[kSecReturnData as String] = true
+        query[kSecMatchLimit as String] = kSecMatchLimitOne
+        var item: CFTypeRef?
+        guard SecItemCopyMatching(query as CFDictionary, &item) == errSecSuccess,
+              let data = item as? Data else { return nil }
+        return String(data: data, encoding: .utf8)
+    }
+
+    static func delete(account: String) {
+        SecItemDelete(baseQuery(account: account) as CFDictionary)
     }
 }
