@@ -45,6 +45,9 @@ jobs:
 
       - name: Build Archive (Unsigned)
         run: |
+          # 音库目录也在 .gitignore 里（37MB），工程把它当资源目录，补个空目录免得报
+          # "No such file or directory"。没有音库时 App 会退回系统语音。
+          mkdir -p Sources/LegadoApp/Resources/BaiduTTS
           # 仓库里没有 Vendor/ 的百度语音 SDK（248MB，走 .gitignore），
           # 所以 CI 构建关掉百度那套：清空桥接头 + 打开 NO_BAIDU_TTS，
           # 两份百度实现会走同形状的空桩。CI 出的包只有系统语音与 HTTP 语音源。
