@@ -1416,9 +1416,39 @@ public struct ReaderView: View {
 
             Spacer()
 
-            // Balanced placeholder so center title remains perfectly centered
-            Color.clear
-                .frame(width: 54, height: 32)
+            // 右上角统一菜单：零碎功能都收这里（这块原来是个占位空格）
+            Menu {
+                Button {
+                    refreshCurrentChapter()
+                } label: {
+                    Label("刷新本章正文", systemImage: "arrow.clockwise")
+                }
+                Button {
+                    Task { await refreshChapterList() }
+                } label: {
+                    Label("刷新目录", systemImage: "list.bullet.rectangle")
+                }
+                Button {
+                    downloadCachedChapters()
+                } label: {
+                    Label("下载缓存（\(readerConfig.cachedChapterCount) 章）", systemImage: "arrow.down.circle")
+                }
+                Button {
+                    showReplaceRules = true
+                } label: {
+                    Label("替换净化规则", systemImage: "wand.and.sparkles")
+                }
+                Button {
+                    showTTSSettings = true
+                } label: {
+                    Label("听书设置", systemImage: "headphones")
+                }
+            } label: {
+                Image(systemName: "ellipsis.circle")
+                    .font(.system(size: 19))
+                    .foregroundColor(readerConfig.textColor)
+                    .frame(width: 54, height: 32)
+            }
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 10)
