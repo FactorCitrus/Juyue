@@ -3,14 +3,14 @@
 [![iOS](https://img.shields.io/badge/Platform-iOS%2015.0%2B-blue.svg)](https://developer.apple.com/ios/)
 [![Swift](https://img.shields.io/badge/Swift-5.0%2B-orange.svg)](https://swift.org)
 [![Xcode](https://img.shields.io/badge/Xcode-14.0%2B-blue.svg)](https://developer.apple.com/xcode/)
-[![Release](https://img.shields.io/badge/Release-v0.2.0-green.svg)](https://github.com/FactorCitrus/Legado-iOS/releases)
+[![Release](https://img.shields.io/badge/Release-v0.4.5%20(22)-green.svg)](https://github.com/FactorCitrus/Legado-iOS/releases)
 [![License](https://img.shields.io/badge/License-GPLv3-lightgrey.svg)](LICENSE)
 
 > **Legado iOS** 是使用 **SwiftUI** 与 **Swift** 现代化技术栈构建的开源网络小说阅读器，高度兼容 Android 端 **Legado (开源阅读 3.0)** 书源生态、解析规则与 WebDAV 多端同步机制。
 
 ---
 
-## 🌟 核心特性 (v0.2.0)
+## 🌟 核心特性 (v0.4.5)
 
 - 📚 **全面兼容 Legado 3.0 书源生态**
   - 支持 CSS 选择器、JSONPath、XPath、正则表达式、JavaScript 动态脚本与模版语法的多重混合解析。
@@ -43,6 +43,15 @@
   - 原生支持跟随系统、浅色模式与深色模式，界面与组件即时切换。
 
 ---
+
+### 0.4.5 新增
+
+- **换源检索**：候选列表支持「书名 / 作者 / 书名+作者」三种匹配口径，可改关键词重搜，也能按书源名或分组限定范围。
+- **书封来源**：详情页可手填地址、**从相册选图**（存沙盒 `Documents/Covers/`）、或**从书源挑图**（拿书名去启用的源搜一圈，封面排成网格点选）。
+- **多角色朗读**：听书可按「旁白 / 对话 / 关键词」切段，逐段换音色（系统语音或百度在线发音人），角色表在听书设置里维护。
+- **阅读订阅源**：兼容安卓版 Legado 的 `RssSource` 订阅源格式，可粘贴 JSON、从网址或文件导入 `rssSources.json`；没写规则的源自动按标准 RSS/Atom 解析。
+- **替换净化**：正文入库前按规则替换，支持全局规则与单书规则两栏，编辑页带试跑框，正则写错只跳过那一条。
+- **阅读页工具**：底部新增「刷新」（丢缓存重抓本章）与「更多」菜单（刷新本章 / 刷新目录 / 替换净化 / 听书设置 / 清缓存重抓）。
 
 ## 🏗️ 架构设计
 
@@ -107,6 +116,14 @@ Legado-iOS/
   - **Sideloadly / 爱思助手**
 
 ---
+
+## 🔑 语音合成凭据
+
+仓库**不内置**任何百度语音凭据。要用百度离线音库或在线发音人，在 App 里填一次：
+
+`设置 → 听书 → 百度语音授权`，填 APP ID、API Key、Secret Key 与离线序列号（一行一条），保存后写入本机 UserDefaults，重启生效；留空则回落到内置默认值（公开版本为空）。
+
+离线序列号必须与 APP ID 配套，否则离线引擎会报授权失败（`-100 / authorize model id is empty`）。凭据不随备份/仓库分发，换设备要重填。
 
 ## 📄 开源许可证
 
