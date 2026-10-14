@@ -39,7 +39,7 @@ jobs:
           elif [ -f "VERSION" ]; then
             TAG=$(cat VERSION | tr -d '[:space:]')
           else
-            TAG="v0.4.5.35"
+            TAG="v0.4.5.36"
           fi
           echo "tag=${TAG}" >> $GITHUB_OUTPUT
 
