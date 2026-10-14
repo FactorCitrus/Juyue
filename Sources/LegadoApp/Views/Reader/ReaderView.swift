@@ -2453,6 +2453,7 @@ public struct ReaderView: View {
     private var marginSection: some View {
         VStack(alignment: .leading, spacing: 8) {
             sectionDivider
+            let _ = AppLog.write("卡片·进入「页边距」")
             sectionTitle("页边距")
             settingSlider("上", value: $readerConfig.paddingTop, range: 0...64, step: 2)
             settingSlider("下", value: $readerConfig.paddingBottom, range: 0...64, step: 2)
@@ -2465,6 +2466,7 @@ public struct ReaderView: View {
     private var displaySection: some View {
         VStack(alignment: .leading, spacing: 8) {
             sectionDivider
+            let _ = AppLog.write("卡片·进入「显示」")
             sectionTitle("显示")
             HStack(spacing: 10) {
                 Text("面板")
@@ -2511,6 +2513,7 @@ public struct ReaderView: View {
 
     private var pageModeRow: some View {
         VStack(alignment: .leading, spacing: 8) {
+            let _ = AppLog.write("卡片·进入「阅读模式」")
             sectionTitle("阅读模式")
             Picker("阅读模式", selection: $readerConfig.pageMode) {
                 ForEach(PageMode.allCases) { mode in
@@ -2536,6 +2539,7 @@ public struct ReaderView: View {
         VStack(alignment: .leading, spacing: 10) {
             sectionDivider
             let _ = AppLog.write("面板·进入「排版」段")
+            let _ = AppLog.write("卡片·进入「排版」")
             sectionTitle("排版")
             let _ = AppLog.write("面板①：字体菜单开始")
 
@@ -2619,6 +2623,7 @@ public struct ReaderView: View {
     private var bodyLayoutSection: some View {
         VStack(alignment: .leading, spacing: 10) {
             sectionDivider
+            let _ = AppLog.write("卡片·进入「正文排版」")
             sectionTitle("正文排版")
 
             HStack(spacing: 8) {
@@ -2651,6 +2656,7 @@ public struct ReaderView: View {
     private var underlineSection: some View {
         VStack(alignment: .leading, spacing: 10) {
             sectionDivider
+            let _ = AppLog.write("卡片·进入「正文下划线」")
             sectionTitle("正文下划线")
 
             Toggle(isOn: $readerConfig.underlineEnabled) {
@@ -2694,6 +2700,7 @@ public struct ReaderView: View {
     private var chapterTitleSection: some View {
         VStack(alignment: .leading, spacing: 10) {
             sectionDivider
+            let _ = AppLog.write("卡片·进入「章节标题」")
             sectionTitle("章节标题")
             settingSlider("字号", value: $readerConfig.chapterTitleScale, range: 1.0...1.8, step: 0.02, suffix: " ×")
             settingSlider("标题下距", value: $readerConfig.chapterTitleSpacing, range: 0...48, step: 2)
@@ -2727,6 +2734,7 @@ public struct ReaderView: View {
     private var backgroundImageSection: some View {
         VStack(alignment: .leading, spacing: 10) {
             sectionDivider
+            let _ = AppLog.write("卡片·进入「背景图」")
             sectionTitle("背景图")
 
             Toggle(isOn: $readerConfig.backgroundImageEnabled) {
@@ -2764,6 +2772,7 @@ public struct ReaderView: View {
     private var colorSection: some View {
         VStack(alignment: .leading, spacing: 10) {
             sectionDivider
+            let _ = AppLog.write("卡片·进入「配色」")
             sectionTitle("配色")
 
             Toggle(isOn: $readerConfig.useCustomColors) {
@@ -2822,6 +2831,7 @@ public struct ReaderView: View {
     private var headerFooterSection: some View {
         VStack(alignment: .leading, spacing: 10) {
             sectionDivider
+            let _ = AppLog.write("卡片·进入「正文标题」")
             sectionTitle("正文标题")
 
             Picker("正文标题", selection: $readerConfig.titleAlignment) {
@@ -2831,6 +2841,7 @@ public struct ReaderView: View {
             }
             .pickerStyle(.segmented)
 
+            let _ = AppLog.write("卡片·进入「页眉页脚」")
             sectionTitle("页眉页脚")
                 .padding(.top, 4)
 
@@ -2946,6 +2957,7 @@ public struct ReaderView: View {
     private var ttsSection: some View {
         VStack(alignment: .leading, spacing: 10) {
             sectionDivider
+            let _ = AppLog.write("卡片·进入「听书」")
             sectionTitle("听书")
 
             HStack(spacing: 8) {
@@ -3051,6 +3063,7 @@ public struct ReaderView: View {
     private var themeRow: some View {
         VStack(alignment: .leading, spacing: 10) {
             sectionDivider
+            let _ = AppLog.write("卡片·进入「主题」")
             sectionTitle("主题")
             HStack(spacing: 8) {
                 ForEach(ReaderTheme.allCases) { t in
