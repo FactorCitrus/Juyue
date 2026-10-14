@@ -89,6 +89,26 @@ jobs:
           name: Legado-${{ steps.version_step.outputs.tag }}-ipa
           path: build/Legado-*.ipa
 
+      - name: Extract Release Notes
+        run: |
+          TAG="${{ steps.version_step.outputs.tag }}"
+          mkdir -p build
+          {
+            echo "## $TAG"
+            echo
+            awk -v tag="$TAG" '
+              index($0, "## " tag) == 1 { found = 1; next }
+              found && index($0, "## ") == 1 { exit }
+              found { print }
+            ' CHANGELOG.md
+            echo
+            echo "#### 📱 安装说明"
+            echo "下载下方的 \`Legado-*.ipa\` 附件，侧载安装：**TrollStore**（巨魔，推荐）/ AltStore / SideStore / Sideloadly / 爱思助手。"
+            echo
+            echo "> CI 构建不含百度语音 SDK，只有系统语音与 HTTP 语音源；带你本机百度音色的完整版用企业微信发的那份。"
+          } > build/RELEASE_NOTES.md
+          cat build/RELEASE_NOTES.md
+
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
@@ -96,21 +116,5 @@ jobs:
           name: "Legado iOS ${{ steps.version_step.outputs.tag }}"
           prerelease: false
           draft: false
-          generate_release_notes: true
           files: build/Legado-*.ipa
-          body: |
-            ### Legado iOS (开源阅读 iOS 版) ${{ steps.version_step.outputs.tag }}
-
-            #### 🌟 核心更新与特性
-            - **WebDAV Android 兼容 ZIP 备份**：完整对齐 Android Legado 标准的 `backupYYYY-MM-DD-deviceName.zip` 归档格式，保留全部书籍元数据与精确阅读进度（`durChapterIndex`, `durChapterPos`, `durChapterTime`）。
-            - **云端历史备份选择**：支持一键检索 WebDAV 云端所有历史备份包（包括 Android 手机与 iOS 备份），展示日期、体积并支持自由点选合并恢复。
-            - **秒级极速 WebDAV 备份**：彻底移除全量备份时的阻塞请求，备份由 30+ 秒降至 1 秒内完成。
-            - **连续滚动无缝翻页**：滚动模式下下拉预加载上一章并无缝衔接阅读断点，不再跳回章节首页。
-            - **分卷书籍目录连贯修复**：完美解决分卷小说因卷标导致的目录断章与前后翻页问题。
-            - **全屏沉浸阅读器**：各入口（详情页、目录跳转等）进入阅读器均规范为原生全屏展示。
-
-            #### 📱 安装说明
-            下载下方的 `Legado-*.ipa` 附件，支持通过以下方式进行侧载安装：
-            - **TrollStore**（巨魔商店，推荐，免签名永不过期）
-            - **AltStore / SideStore**（个人免费证书签名）
-            - **Sideloadly / 爱思助手**
+          body_path: build/RELEASE_NOTES.md
