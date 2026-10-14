@@ -339,7 +339,7 @@
 				<key>CODE_SIGN_STYLE</key>
 				<string>Automatic</string>
 				<key>CURRENT_PROJECT_VERSION</key>
-				<string>40</string>
+				<string>41</string>
 				<key>DEVELOPMENT_TEAM</key>
 				<string></string>
 				<key>ENABLE_PREVIEWS</key>
@@ -349,7 +349,7 @@
 				<key>INFOPLIST_FILE</key>
 				<string>Sources/LegadoApp/Info.plist</string>
 				<key>INFOPLIST_KEY_CFBundleDisplayName</key>
-				<string>墨阅</string>
+				<string>橘阅</string>
 				<key>INFOPLIST_KEY_UIApplicationSceneManifest_Generation</key>
 				<string>YES</string>
 				<key>INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents</key>
@@ -1139,7 +1139,7 @@
 				<key>CODE_SIGN_STYLE</key>
 				<string>Automatic</string>
 				<key>CURRENT_PROJECT_VERSION</key>
-				<string>40</string>
+				<string>41</string>
 				<key>DEVELOPMENT_TEAM</key>
 				<string></string>
 				<key>ENABLE_PREVIEWS</key>
@@ -1149,7 +1149,7 @@
 				<key>INFOPLIST_FILE</key>
 				<string>Sources/LegadoApp/Info.plist</string>
 				<key>INFOPLIST_KEY_CFBundleDisplayName</key>
-				<string>墨阅</string>
+				<string>橘阅</string>
 				<key>INFOPLIST_KEY_UIApplicationSceneManifest_Generation</key>
 				<string>YES</string>
 				<key>INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents</key>
