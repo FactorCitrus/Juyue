@@ -9,6 +9,38 @@ import LegadoCore
 /// 阅读背景图读一次盘就缓存住：正文每次重绘都去读文件会卡。
 /// 页眉页脚选内容的芯片网格。
 /// 23 个选项塞进 Menu 太长，铺成自适应网格更好点。
+/// 收起态的「页眉/页脚内容」行：摘要 + 展开按钮，展开后才渲染芯片网格
+struct ReaderBarPickerRow: View {
+    let title: String
+    @Binding var selection: [ReaderBarContent]
+    let tint: Color
+
+    @State private var expanded = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 8) {
+                Text(title)
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundColor(tint.opacity(0.7))
+                Spacer()
+                Text(selection.isEmpty ? "空" : selection.map { $0.rawValue }.joined(separator: " · "))
+                    .font(.system(size: 11))
+                    .foregroundColor(tint.opacity(0.5))
+                    .lineLimit(1)
+                Button(expanded ? "收起" : "选择") {
+                    expanded.toggle()
+                }
+                .font(.system(size: 11, weight: .medium))
+                .foregroundColor(tint.opacity(0.8))
+            }
+            if expanded {
+                ReaderBarItemGrid(selection: $selection, items: ReaderBarContent.allCases, tint: tint)
+            }
+        }
+    }
+}
+
 public struct ReaderBarItemGrid: View {
     @Binding var selection: [ReaderBarContent]
     let items: [ReaderBarContent]
@@ -2933,25 +2965,10 @@ public struct ReaderView: View {
         )
     }
 
+    /// 一栏的内容选择：默认收起只显示已选项，点「选择」才展开芯片。
+    /// 原来无条件铺开 6 栏 × 24 个芯片（144 个按钮），真机上这一节一渲染就崩。
     private func barContentRow(_ title: String, selection: Binding<[ReaderBarContent]>) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack {
-                Text(title)
-                    .font(.system(size: 12, weight: .medium))
-                    .foregroundColor(readerConfig.textColor.opacity(0.7))
-                Spacer()
-                Text(selection.wrappedValue.isEmpty
-                     ? "空"
-                     : selection.wrappedValue.map { $0.rawValue }.joined(separator: " · "))
-                    .font(.system(size: 11))
-                    .foregroundColor(readerConfig.textColor.opacity(0.5))
-            }
-            ReaderBarItemGrid(
-                selection: selection,
-                items: ReaderBarContent.allCases,
-                tint: readerConfig.textColor
-            )
-        }
+        ReaderBarPickerRow(title: title, selection: selection, tint: readerConfig.textColor)
     }
 
     // MARK: 听书
