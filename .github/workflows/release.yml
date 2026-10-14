@@ -48,6 +48,12 @@ jobs:
           # 音库目录也在 .gitignore 里（37MB），工程把它当资源目录，补个空目录免得报
           # "No such file or directory"。没有音库时 App 会退回系统语音。
           mkdir -p Sources/LegadoApp/Resources/BaiduTTS
+          # 工程直接链了百度 SDK 的静态库和桥接头，CI 没有这两样：
+          # 桥接头给空文件（配合下面的 SWIFT_OBJC_BRIDGING_HEADER="" 更保险），
+          # 静态库给一个空归档占位——NO_BAIDU_TTS 已经把用到符号的代码摘掉了。
+          mkdir -p Vendor/BaiduSpeech/include
+          : > Vendor/BaiduSpeech/BaiduSpeech-Bridging-Header.h
+          ar rcs Vendor/BaiduSpeech/libBDSpeechTTSBaseKit.a
           # 仓库里没有 Vendor/ 的百度语音 SDK（248MB，走 .gitignore），
           # 所以 CI 构建关掉百度那套：清空桥接头 + 打开 NO_BAIDU_TTS，
           # 两份百度实现会走同形状的空桩。CI 出的包只有系统语音与 HTTP 语音源。
