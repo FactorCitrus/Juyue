@@ -4,6 +4,11 @@
 
 > 说明：仓库的版本 tag 从 `v0.4.5.23` 起才有，之前 0.4.5.22 及更早的改动合并在第一段里。
 
+## v0.4.5.42
+- **变更**：Bundle ID 改为 `com.factorcitrus.juyue`（与「橘阅」对齐）
+- **修复**：应用图标从未生效——app target 里没有引用 `Assets.xcassets`，图标没被编译进包
+- **新增**：WebDAV 备份/恢复带上应用内设置（阅读排版、净化规则、订阅源、多音色等）
+
 ## v0.4.5.40
 - **新增**：应用图标（像素猫抱橘子）
 - **变更**：Bundle ID `io.legado.ios` → `com.factorcitrus.moyue`，显示名改为「橘阅」（去 legado/阅读 字样）

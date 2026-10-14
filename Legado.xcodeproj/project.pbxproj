@@ -363,7 +363,7 @@
 				<key>MARKETING_VERSION</key>
 				<string>0.4.5</string>
 				<key>PRODUCT_BUNDLE_IDENTIFIER</key>
-				<string>com.factorcitrus.moyue</string>
+				<string>com.factorcitrus.juyue</string>
 				<key>PRODUCT_NAME</key>
 				<string>$(TARGET_NAME)</string>
 				<key>SWIFT_VERSION</key>
@@ -1163,7 +1163,7 @@
 				<key>MARKETING_VERSION</key>
 				<string>0.4.5</string>
 				<key>PRODUCT_BUNDLE_IDENTIFIER</key>
-				<string>com.factorcitrus.moyue</string>
+				<string>com.factorcitrus.juyue</string>
 				<key>PRODUCT_NAME</key>
 				<string>$(TARGET_NAME)</string>
 				<key>SWIFT_VERSION</key>
