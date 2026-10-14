@@ -14,9 +14,18 @@ import LegadoCore
 struct CollapsibleSettingBlock<Content: View>: View {
     let title: String
     let tint: Color
+    let initiallyExpanded: Bool
     @ViewBuilder let content: () -> Content
 
     @State private var expanded = false
+
+    /// initiallyExpanded = true 的块等于不折：进来就把内容铺出来
+    init(title: String, tint: Color, initiallyExpanded: Bool = false, @ViewBuilder content: @escaping () -> Content) {
+        self.title = title
+        self.tint = tint
+        self.initiallyExpanded = initiallyExpanded
+        self.content = content
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -2333,7 +2342,7 @@ public struct ReaderView: View {
                         themeRow
                         CollapsibleSettingBlock(title: "配色", tint: readerConfig.textColor) { colorSection }
                         backgroundImageSection
-                        CollapsibleSettingBlock(title: "显示", tint: readerConfig.textColor) { displaySection }
+                        CollapsibleSettingBlock(title: "显示", tint: readerConfig.textColor, initiallyExpanded: true) { displaySection }
                     case .spacing:
                         typographySection
                         CollapsibleSettingBlock(title: "正文排版", tint: readerConfig.textColor) { bodyLayoutSection }
