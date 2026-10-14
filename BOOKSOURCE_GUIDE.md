@@ -10,13 +10,13 @@
 
 | 字段名称 | 类型 | 说明 | 示例 |
 | :--- | :--- | :--- | :--- |
-| `bookSourceName` | String | 书源名称（展示在书源列表、分类栏及搜索结果中） | `"示例书源"` / `"示例书源"` |
+| `bookSourceName` | String | 书源名称（展示在书源列表、分类栏及搜索结果中） | `"示例书源"` / `"示例书源二"` |
 | `bookSourceUrl` | String | 书源主域名或基准 URL（作为相对路径的解析基准） | `"https://example.com"` |
 | `bookSourceGroup` | String? | 书源分类分组 | `"日轻"` / `"网络小说"` |
 | `bookSourceType` | Int? | 书源类型：`0` 文本小说（默认），`1` 音频，`2` 图片漫画 | `0` |
 | `enabled` | Bool? | 是否启用该书源（默认为 `true`） | `true` |
 | `header` | String? | 全局 HTTP 请求头（标准 JSON 字符串） | `{"User-Agent": "Mozilla/5.0..."}` |
-| `loginUrl` | String? | 账号登录接口或网页登录交互 URL | `"https://example.com/my/profile.html"` |
+| `loginUrl` | String? | 账号登录接口或网页登录交互 URL | `"https://example.com/login.html"` |
 | `loginUi` | String? | 交互式登录界面配置（JSON 字符串） | `"[{\"name\":\"账号\",\"type\":\"text\"}]"` |
 
 ---
@@ -31,7 +31,7 @@
 **常见示例：**
 - **GET 请求 (带查询参数)**:
   ```text
-  https://example.com/api/novel?page={{page - 1}}&pageSize=20&query={{key}}&translate=1
+  https://example.com/api/search?page={{page}}&query={{key}}
   ```
 - **POST 请求 (JSON Body)**:
   ```text
@@ -103,11 +103,11 @@
 ```json
 [
   {"title": "来源", "url": "", "style": {"layout_flexGrow": 1}},
-  {"title": "全部", "url": "https://example.com/api/novel?provider=all&page={{page}}", "style": {"layout_flexGrow": 0.25}},
-  {"title": "kakuyomu", "url": "https://example.com/api/novel?provider=kakuyomu&page={{page}}", "style": {"layout_flexGrow": 0.25}},
+  {"title": "全部", "url": "https://example.com/category/all?page={{page}}", "style": {"layout_flexGrow": 0.25}},
+  {"title": "分类甲", "url": "https://example.com/category/a?page={{page}}", "style": {"layout_flexGrow": 0.25}},
   {"title": "类型", "url": "", "style": {"layout_flexGrow": 1}},
-  {"title": "连载中", "url": "https://example.com/api/novel?type=1&page={{page}}", "style": {"layout_flexGrow": 0.25}},
-  {"title": "已完结", "url": "https://example.com/api/novel?type=2&page={{page}}", "style": {"layout_flexGrow": 0.25}}
+  {"title": "连载中", "url": "https://example.com/category/ongoing?page={{page}}", "style": {"layout_flexGrow": 0.25}},
+  {"title": "已完结", "url": "https://example.com/category/finished?page={{page}}", "style": {"layout_flexGrow": 0.25}}
 ]
 ```
 > **提示**：`url` 为空或含标题属性的条目会被自动识别为分组标题；带有有效 `url` 的条目会提取到顶部的横向快捷筛选栏与完整分类矩阵抽屉中。
@@ -139,7 +139,7 @@
 1. **API 登录**:
    - 书源配置 `loginUrl` 搭配 JS 脚本，在登录成功后通过 `java.put("loginHeader", ...)` 自动捕获鉴权 Header。
 2. **交互式网页登录 (Web Cookie)**:
-   - 若 `loginUrl` 为纯网页地址（例如 `https://example.com/my/profile.html`），长按书源选择「登录」时，App 会直接启动内置 WebKit 浏览器。
+   - 若 `loginUrl` 为纯网页地址（例如 `https://example.com/login.html`），长按书源选择「登录」时，App 会直接启动内置 WebKit 浏览器。
    - 用户在页面完成登录或人机验证后，系统会自动抓取会话 Cookie（如 `ews_token`, `PHPSESSID` 等）并持久化保存。
 
 ---

@@ -3,7 +3,7 @@
 [![iOS](https://img.shields.io/badge/Platform-iOS%2015.0%2B-blue.svg)](https://developer.apple.com/ios/)
 [![Swift](https://img.shields.io/badge/Swift-5.0%2B-orange.svg)](https://swift.org)
 [![Xcode](https://img.shields.io/badge/Xcode-14.0%2B-blue.svg)](https://developer.apple.com/xcode/)
-[![Release](https://img.shields.io/badge/Release-v0.2.0-green.svg)](https://github.com/SeitoMoyi/Legado-iOS/releases)
+[![Release](https://img.shields.io/badge/Release-v0.2.0-green.svg)](https://github.com/FactorCitrus/Legado-iOS/releases)
 [![License](https://img.shields.io/badge/License-GPLv3-lightgrey.svg)](LICENSE)
 
 > **Legado iOS** 是使用 **SwiftUI** 与 **Swift** 现代化技术栈构建的开源网络小说阅读器，高度兼容 Android 端 **Legado (开源阅读 3.0)** 书源生态、解析规则与 WebDAV 多端同步机制。
@@ -15,7 +15,7 @@
 - 📚 **全面兼容 Legado 3.0 书源生态**
   - 支持 CSS 选择器、JSONPath、XPath、正则表达式、JavaScript 动态脚本与模版语法的多重混合解析。
   - 支持从**本地 `.json` 文件**、网络链接或剪贴板一键导入与批量更新书源。
-  - 内置书源预设升级：示例书源书源深度集成个人中心（**阅读历史**、**默认收藏夹**）与全源发现，示例书源 书源统一命名规范。
+  - 仓库不预置任何书源；请通过本地 `.json` 文件、网络链接或剪贴板自行导入。
   - 支持内置 Web 浏览器交互式登录（适配复杂防爬或需要 Cookie 验证的书源，支持双域会话镜像）。
   - 📖 详细规范请参阅：[**书源制作与兼容性规范指南 (BOOKSOURCE_GUIDE.md)**](BOOKSOURCE_GUIDE.md)。
 
@@ -82,7 +82,7 @@ Legado-iOS/
 ### 本地编译
 1. 克隆代码仓库：
    ```bash
-   git clone git@github.com:SeitoMoyi/Legado-iOS.git
+   git clone https://github.com/FactorCitrus/Legado-iOS.git
    cd Legado-iOS
    ```
 2. 运行单元测试（使用 Swift Package Manager）：

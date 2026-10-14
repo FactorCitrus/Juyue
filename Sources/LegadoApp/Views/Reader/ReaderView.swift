@@ -2267,6 +2267,15 @@ public struct ReaderView: View {
         .padding(.bottom, 6)
     }
 
+    /// iOS 上附带仿真翻页的手势计数，方便截屏排查；其他平台为空。
+    private var pagerDebugSuffix: String {
+        #if os(iOS)
+        return " · 手势 pan\(PageCurlPager.Coordinator.panEnds)/\(PageCurlPager.Coordinator.panHits) swipe\(PageCurlPager.Coordinator.swipeHits) tap\(PageCurlPager.Coordinator.tapHits)"
+        #else
+        return ""
+        #endif
+    }
+
     private var settingsHeader: some View {
         HStack(spacing: 8) {
             Image(systemName: "textformat.size")
@@ -2280,7 +2289,7 @@ public struct ReaderView: View {
                     .font(.system(size: 16, weight: .semibold))
                     .foregroundColor(readerConfig.textColor)
                 // 这行小字带状态：翻页出问题时截一张就能看出来卡在哪
-                Text("\(settingsPanel.rawValue) · \(readerConfig.pageMode.rawValue) · 章 \(currentChapterIndex + 1)/\(chapters.count) · 页 \(currentPageIndex + 1)/\(currentLoadedChapter?.pages.count ?? 0) · 手势 pan\(PageCurlPager.Coordinator.panEnds)/\(PageCurlPager.Coordinator.panHits) swipe\(PageCurlPager.Coordinator.swipeHits) tap\(PageCurlPager.Coordinator.tapHits)\(isSwitchingChapter ? " · 换章中" : "")")
+                Text("\(settingsPanel.rawValue) · \(readerConfig.pageMode.rawValue) · 章 \(currentChapterIndex + 1)/\(chapters.count) · 页 \(currentPageIndex + 1)/\(currentLoadedChapter?.pages.count ?? 0)\(pagerDebugSuffix)\(isSwitchingChapter ? " · 换章中" : "")")
                     .font(.system(size: 10))
                     .foregroundColor(readerConfig.textColor.opacity(0.45))
             }

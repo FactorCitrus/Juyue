@@ -13,8 +13,8 @@
 ## 2. 协议与格式
 
 - 书源规则（Legado BookSource JSON）：属**兼容实现**，未复制其规则引擎源码。
-  随包预置的 `Sources/LegadoApp/Resources/bookSources.json` 含 2 条书源（示例书源、示例书源），
-  来源于公开分享，属第三方内容 —— 来源与再分发许可**未核实**，随包发布前请确认。
+  仓库**不预置任何书源**：`Sources/LegadoApp/Resources/bookSources.json` 为空数组 `[]`。
+  书源由使用者自行导入，其来源合法性与再分发许可由使用者自行确认。
 
 ## 3. 第三方代码
 
@@ -43,3 +43,4 @@
 - 全仓无 Java/Kotlin 文件，即未搬入 gedoor/legado 及其分支的源码。
 - 提交作者统计：`Codex` 24 / `FactorCitrus` 11 / `baseline` 1，全部为本地提交。
 - **未执行**：与外部仓库的逐行相似度比对（需 `jscpd`、simian 等工具或人工抽查）。
+- **发布前清理（2026-10-14）**：移除预置书源数据、测试中的真实账号凭据与他人本机路径，并重写 Git 历史（`git filter-repo`）。

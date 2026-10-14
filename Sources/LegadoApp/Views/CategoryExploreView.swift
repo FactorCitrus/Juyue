@@ -445,7 +445,7 @@ public struct CategoryExploreView: View {
             Text("暂无可用分类书源")
                 .font(.headline)
                 .foregroundColor(.secondary)
-            Text("请在「设置 - 书源管理」中导入并启用支持预设分类的书源（如示例书源、示例书源）")
+            Text("请在「设置 - 书源管理」中导入并启用支持预设分类的书源")
                 .font(.caption)
                 .foregroundColor(.secondary)
                 .multilineTextAlignment(.center)
