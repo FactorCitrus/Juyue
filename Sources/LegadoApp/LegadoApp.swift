@@ -17,6 +17,7 @@ public struct LegadoApp: App {
     }
 
     public init() {
+        AppLog.install()
         preloadDefaultSources()
         // 导入过的自定义字体要在用之前注册进进程，否则 CoreText 认不出来
         CustomFontService.shared.loadAll()
