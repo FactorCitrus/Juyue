@@ -248,7 +248,8 @@ public class WebDAVService {
             }
         }
 
-        return "连接成功 (HTTP \(httpResponse.statusCode))"
+        // 其它状态码不能当成功报：500/502/超限这类要如实说出来，别让用户以为连上了
+        throw WebDAVError.custom("服务器返回 HTTP \(httpResponse.statusCode)，连接未通过")
     }
 
     /// Creates the directory via MKCOL if it doesn't exist
@@ -265,7 +266,12 @@ public class WebDAVService {
             if httpResponse.statusCode == 401 || httpResponse.statusCode == 403 {
                 throw WebDAVError.unauthorized
             }
-            // 201 Created or 405 Method Not Allowed (already exists) are fine
+            // 201 Created / 204 成功，405 表示目录已存在；其余状态码（500/502/507…）要报错，
+            // 不能默默当「已创建」，否则后面所有上传都会失败得莫名其妙
+            let ok: Set<Int> = [200, 201, 204, 405]
+            if !ok.contains(httpResponse.statusCode) {
+                throw WebDAVError.custom("创建目录失败：HTTP \(httpResponse.statusCode)")
+            }
         }
     }
 
