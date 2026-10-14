@@ -61,15 +61,14 @@ enum SystemVoiceSelection {
 /// 运行顺序：先看设置里填的（UserDefaults），没填才用这里的本地默认值。
 /// 公开仓库里 `localDefaults` 是空字符串，谁用谁自己填。
 enum BaiduCredentials {
-    /// 本地默认凭据（公开版本会是空值）
+    /// 本地默认凭据。公开版本保持为空，凭据在设置页里填。
+    ///
+    /// 不要在这里提交真实值——一旦提交，凭据就永久留在 Git 历史里。
     enum LocalDefaults {
         static let appId = ""
         static let apiKey = ""
         static let secretKey = ""
-        static let serials = [
-            "",
-            ""
-        ]
+        static let serials: [String] = []
     }
 
     private static var defaults: UserDefaults { .standard }
