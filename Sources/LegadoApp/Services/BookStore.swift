@@ -149,30 +149,6 @@ public class BookStore: ObservableObject {
             self.bookshelf = decoded
         }
 
-        // Migrate any legacy example books and remove example source
-        var booksNeedSave = false
-        for i in 0..<bookshelf.count {
-            if bookshelf[i].origin.contains("example.com") {
-                bookshelf[i].origin = "https://example.com"
-                booksNeedSave = true
-            }
-            if bookshelf[i].bookUrl.contains("example.com") {
-                bookshelf[i].bookUrl = bookshelf[i].bookUrl.replacingOccurrences(of: "example.com", with: "example.com")
-                booksNeedSave = true
-            }
-            if bookshelf[i].tocUrl.contains("example.com") {
-                bookshelf[i].tocUrl = bookshelf[i].tocUrl.replacingOccurrences(of: "example.com", with: "example.com")
-                booksNeedSave = true
-            }
-        }
-        if booksNeedSave {
-            saveBookshelf()
-        }
-
-        if sources.contains(where: { $0.bookSourceUrl.contains("example.com") }) {
-            sources.removeAll(where: { $0.bookSourceUrl.contains("example.com") })
-            saveSources()
-        }
     }
 
     public func loadBundledSources(forceReset: Bool = false) {
@@ -190,11 +166,10 @@ public class BookStore: ObservableObject {
 
         var didChange = false
         for s in defaultSources {
-            // Match existing source by URL, name, or 示例书源 alias
+            // Match existing source by URL or name
             if let idx = sources.firstIndex(where: {
                 $0.bookSourceUrl == s.bookSourceUrl ||
-                $0.bookSourceName == s.bookSourceName ||
-                (s.bookSourceName == "示例书源" && ($0.bookSourceName == "示例书源二" || $0.bookSourceName == "示例书源二"))
+                $0.bookSourceName == s.bookSourceName
             }) {
                 // Update rules and configuration from bundled version while preserving user login state and toggles
                 var updated = s
@@ -236,18 +211,7 @@ public class BookStore: ObservableObject {
         var sourcesCount = 0
 
         if let newBooks = books {
-            for var b in newBooks {
-                // Normalize legacy example URLs to example.com directly at data level
-                if b.origin.contains("example.com") {
-                    b.origin = "https://example.com"
-                }
-                if b.bookUrl.contains("example.com") {
-                    b.bookUrl = b.bookUrl.replacingOccurrences(of: "example.com", with: "example.com")
-                }
-                if b.tocUrl.contains("example.com") {
-                    b.tocUrl = b.tocUrl.replacingOccurrences(of: "example.com", with: "example.com")
-                }
-
+            for b in newBooks {
                 if let idx = bookshelf.firstIndex(where: { $0.bookUrl == b.bookUrl }) {
                     // Update metadata and reading progress
                     bookshelf[idx] = b
@@ -261,10 +225,6 @@ public class BookStore: ObservableObject {
 
         if let newSources = sources {
             for s in newSources {
-                // Do not re-add old example source
-                if s.bookSourceUrl.contains("example.com") {
-                    continue
-                }
                 if let idx = self.sources.firstIndex(where: { $0.bookSourceUrl == s.bookSourceUrl }) {
                     self.sources[idx] = s
                 } else {
@@ -411,10 +371,7 @@ public class BookStore: ObservableObject {
         let imported = try JSONDecoder().decode([BookSource].self, from: data)
 
         var count = 0
-        for var s in imported {
-            if s.bookSourceUrl == "https://example.com" || s.bookSourceUrl == "http://example.com" {
-                s.bookSourceUrl = "https://example.com"
-            }
+        for s in imported {
             if let idx = sources.firstIndex(where: { $0.bookSourceUrl == s.bookSourceUrl || $0.bookSourceName == s.bookSourceName }) {
                 sources[idx] = s
             } else {
@@ -456,7 +413,7 @@ public class BookStore: ObservableObject {
             return s
         }
 
-        // 3. Domain / Host Match (e.g. example.com / example.com, example.com / example.com)
+        // 3. Domain / Host Match
         let bookHost = URL(string: book.origin)?.host ?? URL(string: book.bookUrl)?.host ?? ""
         if !bookHost.isEmpty {
             for s in sources {
@@ -467,23 +424,7 @@ public class BookStore: ObservableObject {
             }
         }
 
-        // 4. Known aliases & proxies (Novelia <-> example / example)
-        let isNoveliaBook = book.origin.contains("example.com") || book.origin.contains("example.com") || book.origin.contains("example.com") || book.bookUrl.contains("example.com") || book.bookUrl.contains("example.com")
-        if isNoveliaBook {
-            if let s = sources.first(where: { $0.bookSourceUrl.contains("example.com") || $0.bookSourceUrl.contains("example.com") || $0.bookSourceName.contains("示例书源") }) {
-                return s
-            }
-        }
-
-        // 5. 示例书源 aliases
-        let isEsjBook = book.origin.lowercased().contains("esj") || book.bookUrl.lowercased().contains("esj")
-        if isEsjBook {
-            if let s = sources.first(where: { $0.bookSourceUrl.lowercased().contains("esj") || $0.bookSourceName.lowercased().contains("esj") }) {
-                return s
-            }
-        }
-
-        // 6. Substring / URL contains matching
+        // 4. Substring / URL contains matching
         if let s = sources.first(where: {
             book.origin.contains($0.bookSourceUrl) ||
             $0.bookSourceUrl.contains(book.origin) ||
@@ -510,8 +451,7 @@ public class BookStore: ObservableObject {
         var bookshelfModified = false
         for i in 0..<bookshelf.count {
             if bookshelf[i].origin == oldUrl ||
-               bookshelf[i].originName == oldName ||
-               (oldUrl.contains("example.com") && (bookshelf[i].origin.contains("example.com") || bookshelf[i].originName.contains("示例书源"))) {
+               bookshelf[i].originName == oldName {
                 bookshelf[i].origin = newSource.bookSourceUrl
                 bookshelf[i].originName = newSource.bookSourceName
                 bookshelfModified = true

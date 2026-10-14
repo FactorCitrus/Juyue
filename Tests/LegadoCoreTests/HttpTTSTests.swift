@@ -25,7 +25,11 @@ final class HttpTTSTests: XCTestCase {
         let sources = try HttpTTS.parse(json: json)
         XCTAssertEqual(sources.count, 2)
         XCTAssertEqual(sources[0].id, -100)
-        XCTAssertEqual(sources[1].loginUi, "[{\"type\":\"text\",\"name\":\"AppKey\"}]")
+        // 字典 key 顺序不固定，解析成对象再逐字段断言
+        let loginUiData = try XCTUnwrap(sources[1].loginUi?.data(using: .utf8))
+        let loginUi = try JSONSerialization.jsonObject(with: loginUiData) as? [[String: String]]
+        XCTAssertEqual(loginUi?.first?["name"], "AppKey")
+        XCTAssertEqual(loginUi?.first?["type"], "text")
     }
 
     func testParseRejectsMissingURL() {
