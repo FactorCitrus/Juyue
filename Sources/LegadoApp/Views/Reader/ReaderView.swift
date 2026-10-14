@@ -2399,6 +2399,8 @@ public struct ReaderView: View {
             ForEach(ReaderQuickPanel.allCases) { panel in
                 let isOn = settingsPanel == panel
                 Button {
+                    // 面包屑：面板崩了至少知道是点哪个进去的，并带上当时的值
+                    AppLog.write("切面板 → \(panel.rawValue)｜字体=\(readerConfig.font.postScriptName.isEmpty ? "(空)" : readerConfig.font.postScriptName) 字距=\(readerConfig.letterSpacing) 段距=\(readerConfig.paragraphSpacing) 页眉=\(readerConfig.headerEnabled) 页脚=\(readerConfig.footerEnabled) 标题模板=\(readerConfig.chapterTitleHTMLTemplate.count)字 主题=\(readerConfig.theme.rawValue)")
                     withAnimation(.easeInOut(duration: 0.18)) { settingsPanel = panel }
                 } label: {
                     HStack(spacing: 5) {
