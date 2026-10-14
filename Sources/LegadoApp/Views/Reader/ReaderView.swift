@@ -17,10 +17,11 @@ struct CollapsibleSettingBlock<Content: View>: View {
     let initiallyExpanded: Bool
     @ViewBuilder let content: () -> Content
 
-    @State private var expanded = false
+    @State private var expanded: Bool
 
     /// initiallyExpanded = true 的块等于不折：进来就把内容铺出来
     init(title: String, tint: Color, initiallyExpanded: Bool = false, @ViewBuilder content: @escaping () -> Content) {
+        self._expanded = State(initialValue: initiallyExpanded)
         self.title = title
         self.tint = tint
         self.initiallyExpanded = initiallyExpanded
@@ -633,7 +634,6 @@ public struct ReaderView: View {
             readerConfig.theme = theme
         }
     }
-
 
 
     // MARK: - 阅读页背景
@@ -1721,7 +1721,6 @@ public struct ReaderView: View {
         }
     }
 
-
     private func statusText(_ content: ReaderBarContent) -> String {
         readerBarText(content, barContext)
     }
@@ -2333,6 +2332,7 @@ public struct ReaderView: View {
             settingsHeader
             if !panelCollapsed {
                 settingsPanelSwitcher
+                brightnessRow
             ScrollView {
                 VStack(alignment: .leading, spacing: 14) {
                     switch settingsPanel {
@@ -2532,6 +2532,27 @@ public struct ReaderView: View {
         }
     }
 
+    /// 亮度：放在卡片靠上，随手能拖（原来埋在「显示」里）
+    private var brightnessRow: some View {
+            HStack(spacing: 10) {
+                Image(systemName: "sun.min")
+                    .font(.system(size: 12))
+                    .foregroundColor(readerConfig.textColor.opacity(0.6))
+                Slider(value: $readerConfig.brightness, in: 0.2...1.0, step: 0.05)
+                    .tint(readerConfig.textColor.opacity(0.65))
+                Image(systemName: "sun.max")
+                    .font(.system(size: 13))
+                    .foregroundColor(readerConfig.textColor.opacity(0.6))
+                Text("\(Int(readerConfig.brightness * 100))%")
+                    .font(.system(size: 11, weight: .medium, design: .monospaced))
+                    .foregroundColor(readerConfig.textColor.opacity(0.6))
+                    .frame(width: 50, alignment: .trailing)
+                    .padding(.vertical, 2)
+                    .padding(.horizontal, 6)
+                    .background(Capsule().fill(readerConfig.textColor.opacity(0.07)))
+            }
+    }
+
     /// 显示：亮度 + 自动夜间
     private var displaySection: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -2553,23 +2574,7 @@ public struct ReaderView: View {
             Text("调布局时把面板调淡，能看见被它挡住的正文和页眉页脚。")
                 .font(.system(size: 11))
                 .foregroundColor(readerConfig.textColor.opacity(0.5))
-            HStack(spacing: 10) {
-                Image(systemName: "sun.min")
-                    .font(.system(size: 12))
-                    .foregroundColor(readerConfig.textColor.opacity(0.6))
-                Slider(value: $readerConfig.brightness, in: 0.2...1.0, step: 0.05)
-                    .tint(readerConfig.textColor.opacity(0.65))
-                Image(systemName: "sun.max")
-                    .font(.system(size: 13))
-                    .foregroundColor(readerConfig.textColor.opacity(0.6))
-                Text("\(Int(readerConfig.brightness * 100))%")
-                    .font(.system(size: 11, weight: .medium, design: .monospaced))
-                    .foregroundColor(readerConfig.textColor.opacity(0.6))
-                    .frame(width: 50, alignment: .trailing)
-                    .padding(.vertical, 2)
-                    .padding(.horizontal, 6)
-                    .background(Capsule().fill(readerConfig.textColor.opacity(0.07)))
-            }
+
             Toggle(isOn: $readerConfig.autoNight) {
                 Text("自动夜间（22:00–07:00 自动切暗黑）")
                     .font(.system(size: 12, weight: .medium))
@@ -3954,7 +3959,6 @@ public struct ReaderSearchSheet: View {
 // MARK: - CoreText Two-End Justified Page View (两端对齐与定高排版组件)
 #if os(macOS)
 import AppKit
-
 
 public struct CoreTextPageView: NSViewRepresentable {
     public let lines: [String]
