@@ -2680,6 +2680,18 @@ public struct ReaderView: View {
                 }
                 .pickerStyle(.segmented)
             }
+
+            Button(role: .destructive) {
+                readerConfig.resetLayoutToDefaults()
+                downloadHint = "排版设置已恢复默认"
+                Task {
+                    try? await Task.sleep(nanoseconds: 2_500_000_000)
+                    await MainActor.run { downloadHint = nil }
+                }
+            } label: {
+                Label("重置排版设置", systemImage: "arrow.counterclockwise")
+                    .font(.system(size: 12, weight: .medium))
+            }
         }
     }
 
