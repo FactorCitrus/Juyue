@@ -1,3 +1,4 @@
+#if !NO_BAIDU_TTS
 #if os(iOS)
 import Foundation
 import AVFoundation
@@ -511,5 +512,60 @@ extension BaiduOfflineTTS: BDSSpeechSynthesizerDelegate {
             break
         }
     }
+}
+#endif
+
+#else
+// 没有百度离线 SDK 的构建（比如 CI）：只提供同形状的空实现，功能关掉
+import Foundation
+import Combine
+
+public final class BaiduOfflineTTS: ObservableObject {
+    public struct Voice: Identifiable, Hashable {
+        public var id: String
+        public var name: String
+        public var note: String
+        public init(id: String, name: String, note: String = "") {
+            self.id = id
+            self.name = name
+            self.note = note
+        }
+    }
+
+    public static let shared = BaiduOfflineTTS()
+
+    @Published public private(set) var isPlaying = false
+    @Published public private(set) var isPaused = false
+    @Published public private(set) var currentIndex = 0
+    @Published public private(set) var totalChunks = 0
+    @Published public private(set) var lastError: String?
+    @Published public private(set) var loadedVoiceId: String?
+    @Published public private(set) var isPreparing = false
+    @Published public private(set) var statusText = "未编译百度离线引擎"
+
+    public var onFinish: (() -> Void)?
+
+    public static var allVoices: [Voice] { [] }
+    public static var userVoices: [Voice] { [] }
+    public static var activeVoiceId: String? {
+        get { nil }
+        set { }
+    }
+    public static var activeVoice: Voice? { nil }
+    public static func voice(id: String?) -> Voice? { nil }
+    @discardableResult public static func deleteVoices(_ voices: [Voice]) -> Int { 0 }
+    public static func refreshUserVoices() -> [Voice] { [] }
+    @discardableResult public static func importPackage(from zipURL: URL) throws -> Int { 0 }
+    public func preload(voice: Voice) {}
+    public func diagnose(voice: Voice) -> [String] { ["这个构建没带百度离线引擎，无法诊断。"] }
+    public static func enableVoice(_ id: String) { }
+    public static func setActiveVoiceId(_ id: String?) { }
+
+    public func start(voice: Voice, text: String, speed: Int, maxChunkLength: Int = 150) {
+        lastError = "这个构建没带百度离线引擎。"
+    }
+    public func stop() {}
+    public func pause() {}
+    public func resume() {}
 }
 #endif
