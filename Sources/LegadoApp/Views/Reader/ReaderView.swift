@@ -2399,6 +2399,9 @@ public struct ReaderView: View {
             ForEach(ReaderQuickPanel.allCases) { panel in
                 let isOn = settingsPanel == panel
                 Button {
+                    // 自定义字体是导入来的，换容器/重装后可能只剩注册记录、文件早没了：
+                    // 先按文件夹重建一次注册表，失效条目会自动出列，不会再拿它去构建字体
+                    CustomFontService.shared.loadAll()
                     // 面包屑：面板崩了至少知道是点哪个进去的，并带上当时的值
                     AppLog.write("切面板 → \(panel.rawValue)｜字体=\(readerConfig.font.postScriptName.isEmpty ? "(空)" : readerConfig.font.postScriptName) 字距=\(readerConfig.letterSpacing) 段距=\(readerConfig.paragraphSpacing) 页眉=\(readerConfig.headerEnabled) 页脚=\(readerConfig.footerEnabled) 标题模板=\(readerConfig.chapterTitleHTMLTemplate.count)字 主题=\(readerConfig.theme.rawValue)")
                     withAnimation(.easeInOut(duration: 0.18)) { settingsPanel = panel }
@@ -2533,6 +2536,7 @@ public struct ReaderView: View {
         VStack(alignment: .leading, spacing: 10) {
             sectionDivider
             sectionTitle("排版")
+            let _ = AppLog.write("面板①：字体菜单开始")
 
             Menu {
                 ForEach(ReaderFont.available) { font in
@@ -2555,12 +2559,14 @@ public struct ReaderView: View {
                 }
             }
 
+            let _ = AppLog.write("面板②：字体菜单过了，进预览")
             Text("天地玄黄，宇宙洪荒。日月盈昃，辰宿列张。")
                 .font(resolvedTypographyPreviewFont(size: 15))
                 .foregroundColor(readerConfig.textColor.opacity(0.85))
                 .lineLimit(2)
                 .padding(.vertical, 2)
 
+            let _ = AppLog.write("面板③：预览过了，进间距滑块")
             settingSlider("字间距", value: $readerConfig.letterSpacing, range: 0...4, step: 0.5)
             settingSlider("段间距", value: $readerConfig.paragraphSpacing, range: 0...30, step: 1)
             HStack(spacing: 8) {
