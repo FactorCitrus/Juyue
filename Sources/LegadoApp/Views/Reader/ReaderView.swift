@@ -212,6 +212,8 @@ public struct ReaderView: View {
     @State private var paginationTask: Task<Void, Never>?
     @State private var showTitleDesigner = false
     @State private var showReplaceRules = false
+    /// 下载缓存这类「做完了」的提示，别用 errorMessage（那是错误页的开关）
+    @State private var downloadHint: String? = nil
 
     public var onDismiss: (() -> Void)? = nil
 
@@ -387,6 +389,18 @@ public struct ReaderView: View {
                         insertion: .move(edge: .bottom).combined(with: .opacity),
                         removal: .move(edge: .bottom).combined(with: .opacity)
                     ))
+                }
+            }
+            .overlay(alignment: .top) {
+                if let downloadHint {
+                    Text(downloadHint)
+                        .font(.system(size: 13))
+                        .foregroundColor(readerConfig.textColor)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 8)
+                        .background(.ultraThinMaterial, in: Capsule())
+                        .padding(.top, 56)
+                        .transition(.opacity)
                 }
             }
             .onAppear {
@@ -2193,7 +2207,11 @@ public struct ReaderView: View {
             source: source,
             indices: indices
         )
-        errorMessage = "已加入下载队列：第 \(start + 1)–\(end + 1) 章（共 \(indices.count) 章）"
+        downloadHint = "已加入下载队列：第 \(start + 1)–\(end + 1) 章（共 \(indices.count) 章）"
+        Task {
+            try? await Task.sleep(nanoseconds: 2_500_000_000)
+            await MainActor.run { downloadHint = nil }
+        }
     }
 
     /// 刷新本章：把缓存里这一章丢掉重抓，尽量停在当前页
