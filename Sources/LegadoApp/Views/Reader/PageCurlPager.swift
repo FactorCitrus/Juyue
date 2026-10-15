@@ -2,6 +2,20 @@
 import SwiftUI
 import UIKit
 
+/// 系统卷页会给卷起来那张纸打一层「往白里提」的高光，而且没开关。
+/// 浅色主题（羊皮纸那种本来就接近白的）提亮看不出来；饱和色主题（护眼绿）
+/// 一提就显成折痕边上的白边。
+///
+/// 对策只能反过来做：把背面那页的底色**预先压暗一档**，被高光提完之后
+/// 正好落回主题色。只动背面的填充，正文、正面、卷页几何都不碰。
+private func curlBackColor(_ color: Color) -> Color {
+    let ui = UIColor(color)
+    var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
+    guard ui.getRed(&r, green: &g, blue: &b, alpha: &a) else { return color }
+    let k: CGFloat = 0.90
+    return Color(red: Double(r * k), green: Double(g * k), blue: Double(b * k)).opacity(Double(a))
+}
+
 /// 仿真翻页：用 UIPageViewController 的 .pageCurl，就是系统书城那种卷页效果。
 ///
 /// 只负责当前章的页面；翻过头或翻回来时通知外层换章。
@@ -448,7 +462,7 @@ public struct PageCurlPager: UIViewControllerRepresentable {
 
         private func makeBackController(at index: Int) -> UIViewController {
             let back = UIHostingController(rootView: PageCurlBackPage(
-                backgroundColor: parent.backgroundColor,
+                backgroundColor: curlBackColor(parent.backgroundColor),
                 backgroundImage: parent.backgroundImage,
                 spineOnRight: false,
                 faintLines: parent.pages[index].map { $0.text },
@@ -467,7 +481,7 @@ public struct PageCurlPager: UIViewControllerRepresentable {
                 paddingLeft: parent.paddingLeft,
                 paddingRight: parent.paddingRight
             ))
-            back.view.backgroundColor = UIColor(parent.backgroundColor)
+            back.view.backgroundColor = UIColor(curlBackColor(parent.backgroundColor))
             back.view.tag = index
             return back
         }
