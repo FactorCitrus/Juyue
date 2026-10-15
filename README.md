@@ -136,3 +136,20 @@ Legado-iOS/
 3. **只能侧载安装**：未签名 ipa，用 TrollStore / AltStore / SideStore / Sideloadly / 爱思助手之类安装，不要指望上架 App Store。
 4. **授权 GPL-3.0**：本项目基于上游 `SeitoMoyi/Legado-iOS`（GPL-3.0）继续开发，分发必须附带源码并保持 GPL-3.0。
 5. 本软件（橘阅）只是一个解析工具，本身并不提供任何内容，没有自己的服务器，配置和显示内容完全由用户决定，和本软件无关，您可以完全把它理解成一个定制版的浏览器。
+
+❤️ 支持项目
+
+如果 Legado-iOS 对你有帮助，欢迎自愿赞助，支持项目持续维护与开发。
+
+赞助完全自愿，不影响软件使用，也不影响用户依据 GPL-3.0 许可证享有的权利。
+<table>
+  <tr>
+    <td align="center"><strong>微信赞赏</strong></td>
+    <td align="center"><strong>支付宝赞赏</strong></td>
+  </tr>
+  <tr>
+    <td align="center"><img src="sponsors/wechat.png" width="200" alt="微信赞赏码"></td>
+    <td align="center"><img src="sponsors/alipay.png" width="200" alt="支付宝赞赏码"></td>
+  </tr>
+</table>
+感谢支持开源项目！
