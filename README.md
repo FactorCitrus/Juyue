@@ -149,7 +149,6 @@ Legado-iOS/
   </tr>
   <tr>
     <td align="center"><img src="sponsors/wechat.png" width="200" alt="微信赞赏码"></td>
-    <td align="center"><img src="sponsors/alipay.png" width="200" alt="支付宝赞赏码"></td>
   </tr>
 </table>
 感谢支持开源项目！
