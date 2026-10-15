@@ -258,10 +258,10 @@ public struct SourceManagerView: View {
             .alert("删除这些书源？", isPresented: $showBatchDeleteAlert) {
                 Button("取消", role: .cancel) {}
                 Button("删除 \(filteredSources.count) 个", role: .destructive) {
-                    let targets = filteredSources.map { $0.bookSourceUrl }
-                    for url in targets {
-                        bookStore.deleteSource(sourceUrl: url)
-                    }
+                    // 一次删完：逐条删等于每删一条就把整张表编码写盘一遍，批量删会卡
+                    let targets = Set(filteredSources.map { $0.bookSourceUrl })
+                    bookStore.deleteSources(sourceUrls: targets)
+                    AppLog.write("[书源] 批量删除 \(targets.count) 条")
                     alertMessage = "已删除 \(targets.count) 个书源"
                     showAlert = true
                 }

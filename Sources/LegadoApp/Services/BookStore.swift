@@ -434,7 +434,16 @@ public class BookStore: ObservableObject {
     }
 
     public func deleteSource(sourceUrl: String) {
-        sources.removeAll { $0.bookSourceUrl == sourceUrl }
+        deleteSources(sourceUrls: [sourceUrl])
+    }
+
+    /// 批量删除：一次扫描、一次写盘、一次刷新。
+    ///
+    /// 逐条调 `deleteSource` 的话，删 500 条就会做 500 次「全表扫描 + 整张书源表
+    /// 编码写进 UserDefaults + 发一次 @Published」，界面会卡住好一会儿。
+    public func deleteSources(sourceUrls: Set<String>) {
+        guard !sourceUrls.isEmpty else { return }
+        sources.removeAll { sourceUrls.contains($0.bookSourceUrl) }
         saveSources()
     }
 
