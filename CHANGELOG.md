@@ -1,5 +1,10 @@
 # 更新日志
 
+## v4.7.3
+- **新增**：网络请求写进诊断日志。`NetworkClient.requestSync` 原来是 `guard let data = data else { return }` —— 断网、超时、DNS 失败全都静默返回 nil，日志页一个字都看不到，只能靠猜
+- 记录内容：`[NET] <host> <状态码> <字节数> <耗时>ms`，失败记 `[NET] <host> 失败 code=<错误码> <耗时>ms`
+- 隐私边界照旧：只记 host，不记 path / query；失败只记错误码，不记系统错误描述（那里面可能把整条 URL 带出来）
+
 ## v4.7.2
 - **修复**：书源脚本用的 `cookie` 对象之前完全没实现 —— `cookie.getCookie` / `setCookie` / `removeCookie` / `getKey` 全部缺失，脚本第一行就抛 ReferenceError。现在补了 cookie 罐（按 host 存、落 UserDefaults），`java.ajax` / `java.post` / `java.connect` 发请求时自动带上该 host 的 cookie
 - **修复**：`java.toast` / `java.longToast` / `java.log` / `java.deviceID` / `java.androidId` / `java.hexDecodeToString` 缺失 —— 聚合源登录函数第一行就是 `java.longToast(...)`，拼 cookie 要用 `deviceID()`，正文又靠 `hexDecodeToString` 解码，缺任何一个都在那一行断掉

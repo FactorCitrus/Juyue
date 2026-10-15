@@ -154,12 +154,26 @@ public class NetworkClient {
 
         var result: NetworkResponse?
         let semaphore = DispatchSemaphore(value: 0)
+        let started = Date()
+        // 只记 host，不碰 path / query；出错也只记错误码，不记 localiedDescription，
+        // 因为系统错误描述里有可能把整条 URL 带出来。
+        let host = parsed.url.host ?? "?"
 
         let task = session.dataTask(with: req) { data, response, error in
             defer { semaphore.signal() }
-            guard let data = data else { return }
+            let elapsed = Int(Date().timeIntervalSince(started) * 1000)
+
+            if let error = error {
+                LegadoLog.log("[NET] \(host) 失败 code=\((error as NSError).code) \(elapsed)ms")
+                return
+            }
+            guard let data = data else {
+                LegadoLog.log("[NET] \(host) 空响应 \(elapsed)ms")
+                return
+            }
             let httpResponse = response as? HTTPURLResponse
             let statusCode = httpResponse?.statusCode ?? 200
+            LegadoLog.log("[NET] \(host) \(statusCode) \(data.count)B \(elapsed)ms")
 
             var respHeaders: [String: String] = [:]
             if let allHeaderFields = httpResponse?.allHeaderFields {
