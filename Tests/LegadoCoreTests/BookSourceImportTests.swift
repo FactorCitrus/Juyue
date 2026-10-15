@@ -39,4 +39,32 @@ final class BookSourceImportTests: XCTestCase {
         XCTAssertEqual(sources.first?.bookSourceUrl, "https://example.com")
         XCTAssertEqual(sources.first?.bookSourceName, "示例书源")
     }
+
+    /// 真实书源包里同一个字段类型会飘：lastUpdateTime 有写数字的、有写字符串的，
+    /// enabled 有 true / 1 / "true"。严格 decode 撞上一条会把整份文件判成失败。
+    func testLenientNumericAndBoolFields() throws {
+        let json = #"""
+        [{
+          "bookSourceUrl": "https://example.org",
+          "bookSourceName": "宽松字段",
+          "bookSourceType": "0",
+          "customOrder": "2",
+          "enabled": "true",
+          "enabledExplore": 1,
+          "lastUpdateTime": "1760000000000",
+          "respondTime": 180000,
+          "weight": "3"
+        }]
+        """#
+        let data = try XCTUnwrap(json.data(using: .utf8))
+        let sources = try JSONDecoder().decode([BookSource].self, from: data)
+        let s = try XCTUnwrap(sources.first)
+        XCTAssertEqual(s.bookSourceType, 0)
+        XCTAssertEqual(s.customOrder, 2)
+        XCTAssertEqual(s.enabled, true)
+        XCTAssertEqual(s.enabledExplore, true)
+        XCTAssertEqual(s.lastUpdateTime, 1_760_000_000_000)
+        XCTAssertEqual(s.respondTime, 180_000)
+        XCTAssertEqual(s.weight, 3)
+    }
 }

@@ -133,11 +133,11 @@ public struct BookSource: Codable, Identifiable, Equatable {
         self.bookSourceUrl = try container.decodeIfPresent(String.self, forKey: .bookSourceUrl) ?? ""
         self.bookSourceName = try container.decodeIfPresent(String.self, forKey: .bookSourceName) ?? ""
         self.bookSourceGroup = try container.decodeIfPresent(String.self, forKey: .bookSourceGroup)
-        self.bookSourceType = try container.decodeIfPresent(Int.self, forKey: .bookSourceType)
+        self.bookSourceType = Self.lenientInt(container, .bookSourceType)
         self.bookUrlPattern = try container.decodeIfPresent(String.self, forKey: .bookUrlPattern)
-        self.customOrder = try container.decodeIfPresent(Int.self, forKey: .customOrder)
-        self.enabled = try container.decodeIfPresent(Bool.self, forKey: .enabled)
-        self.enabledExplore = try container.decodeIfPresent(Bool.self, forKey: .enabledExplore)
+        self.customOrder = Self.lenientInt(container, .customOrder)
+        self.enabled = Self.lenientBool(container, .enabled)
+        self.enabledExplore = Self.lenientBool(container, .enabledExplore)
         self.header = try container.decodeIfPresent(String.self, forKey: .header)
         self.loginUrl = try container.decodeIfPresent(String.self, forKey: .loginUrl)
         self.loginUi = try container.decodeIfPresent(String.self, forKey: .loginUi)
@@ -145,9 +145,9 @@ public struct BookSource: Codable, Identifiable, Equatable {
         self.coverDecodeJs = try container.decodeIfPresent(String.self, forKey: .coverDecodeJs)
         self.bookSourceComment = try container.decodeIfPresent(String.self, forKey: .bookSourceComment)
         self.variableComment = try container.decodeIfPresent(String.self, forKey: .variableComment)
-        self.lastUpdateTime = try container.decodeIfPresent(Int64.self, forKey: .lastUpdateTime)
-        self.respondTime = try container.decodeIfPresent(Int64.self, forKey: .respondTime)
-        self.weight = try container.decodeIfPresent(Int.self, forKey: .weight)
+        self.lastUpdateTime = Self.lenientInt64(container, .lastUpdateTime)
+        self.respondTime = Self.lenientInt64(container, .respondTime)
+        self.weight = Self.lenientInt(container, .weight)
         self.exploreUrl = try container.decodeIfPresent(String.self, forKey: .exploreUrl)
         self.exploreScreen = try container.decodeIfPresent(String.self, forKey: .exploreScreen)
         self.searchUrl = try container.decodeIfPresent(String.self, forKey: .searchUrl)
@@ -161,5 +161,38 @@ public struct BookSource: Codable, Identifiable, Equatable {
         self.loginInfo = try container.decodeIfPresent(String.self, forKey: .loginInfo)
         self.loginHeader = try container.decodeIfPresent(String.self, forKey: .loginHeader)
         self.variable = try container.decodeIfPresent(String.self, forKey: .variable)
+    }
+
+    /// 宽松取数。
+    ///
+    /// 安卓导出的书源里，同一个字段在不同来源下类型会变：`lastUpdateTime` 有时是
+    /// `1760000000000`，有时是 `"1760000000000"`，也有写 `"2026-10-11"` 的；
+    /// `enabled` 有 `true`、`1`、`"true"` 三种写法。
+    /// 严格 decode 只要撞上一条就把**整份文件**判成解析失败（558 条全废），所以这里全按宽松处理。
+    private static func lenientInt64(_ c: KeyedDecodingContainer<CodingKeys>, _ k: CodingKeys) -> Int64? {
+        if let v = try? c.decode(Int64.self, forKey: k) { return v }
+        if let d = try? c.decode(Double.self, forKey: k) { return Int64(d) }
+        if let s = try? c.decode(String.self, forKey: k) { return Int64(s.trimmingCharacters(in: .whitespaces)) }
+        return nil
+    }
+
+    private static func lenientInt(_ c: KeyedDecodingContainer<CodingKeys>, _ k: CodingKeys) -> Int? {
+        if let v = try? c.decode(Int.self, forKey: k) { return v }
+        if let d = try? c.decode(Double.self, forKey: k) { return Int(d) }
+        if let s = try? c.decode(String.self, forKey: k) { return Int(s.trimmingCharacters(in: .whitespaces)) }
+        return nil
+    }
+
+    private static func lenientBool(_ c: KeyedDecodingContainer<CodingKeys>, _ k: CodingKeys) -> Bool? {
+        if let v = try? c.decode(Bool.self, forKey: k) { return v }
+        if let i = try? c.decode(Int.self, forKey: k) { return i != 0 }
+        if let s = try? c.decode(String.self, forKey: k) {
+            switch s.trimmingCharacters(in: .whitespaces).lowercased() {
+            case "true", "1", "yes", "on": return true
+            case "false", "0", "no", "off": return false
+            default: return nil
+            }
+        }
+        return nil
     }
 }
