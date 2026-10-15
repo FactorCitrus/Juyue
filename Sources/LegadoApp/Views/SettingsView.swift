@@ -66,7 +66,7 @@ public struct SettingsView: View {
                         HStack {
                             Text("诊断日志")
                             Spacer()
-                            Text("查崩溃 · 复制给我")
+                            Text("查崩溃")
                                 .foregroundColor(.secondary)
                         }
                     }
@@ -339,6 +339,16 @@ public struct SettingsView: View {
                         Spacer()
                         Text("Swift 原生 + JavaScriptCore")
                             .foregroundColor(.secondary)
+                    }
+
+                    Link(destination: URL(string: "https://github.com/FactorCitrus/Legado-iOS")!) {
+                        HStack {
+                            Text("GitHub")
+                            Spacer()
+                            Text("github.com/FactorCitrus/Legado-iOS")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        }
                     }
                 }
             }
