@@ -101,6 +101,10 @@ jobs:
               found && index($0, "## ") == 1 { exit }
               found { print }
             ' CHANGELOG.md
+            echo
+            echo "---"
+            echo
+            echo "**安装**：下载下方的 \`Legado-*.ipa\`，侧载安装即可（TrollStore / AltStore / SideStore / Sideloadly / 爱思助手 都行）。"
           } > build/RELEASE_NOTES.md
           cat build/RELEASE_NOTES.md
 
