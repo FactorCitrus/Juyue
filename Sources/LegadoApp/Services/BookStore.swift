@@ -550,19 +550,29 @@ public class BookStore: ObservableObject {
         }
 
         // 表单值要注入脚本里的 result，源脚本靠 result['邮箱'] 这类取值
-        _ = jsEngine.eval(script: loginScript, result: credentials)
+        _ = jsEngine.eval(script: JSEngine.unwrapJsScript(loginScript), result: credentials)
 
         // 相当一部分书源（例：大灰狼聚合）的 loginUrl 只定义函数，真正触发登录的是
         // loginUi 里的按钮 action，例如 {"type":"button","action":"login(true)"}。
         // 宿主不执行这些 action，脚本跑完就等于什么都没干。
         if capturedHeader?.isEmpty ?? true {
             for action in Self.loginButtonActions(from: source.loginUi) {
-                _ = jsEngine.eval(script: action, result: credentials)
+                _ = jsEngine.eval(script: JSEngine.unwrapJsScript(action), result: credentials)
                 if let header = capturedHeader, !header.isEmpty { break }
             }
         }
 
-        guard let finalHeader = capturedHeader ?? updatedSource.loginHeader, !finalHeader.isEmpty else {
+        var finalHeader = capturedHeader ?? updatedSource.loginHeader
+        if finalHeader?.isEmpty ?? true {
+            // 有些脚本（例：大灰狼聚合）只把 token 写进 cookie，从不调 putLoginHeader。
+            // 这里给 cookie 兜底，否则脚本跑通了照样判失败。
+            let jarCookies = CookieJar.shared.cookieString(for: source.bookSourceUrl)
+            if !jarCookies.isEmpty {
+                finalHeader = "Cookie: \(jarCookies)"
+            }
+        }
+
+        guard let resolvedHeader = finalHeader, !resolvedHeader.isEmpty else {
             let detail = jsEngine.lastError.map { "（脚本报错：\($0)）" } ?? ""
             throw NSError(domain: "BookStore", code: 2, userInfo: [NSLocalizedDescriptionKey: "登录未返回有效凭据，请检查账号密码\(detail)"])
         }
@@ -570,12 +580,12 @@ public class BookStore: ObservableObject {
         await MainActor.run {
             if let idx = sources.firstIndex(where: { $0.bookSourceUrl == source.bookSourceUrl }) {
                 sources[idx].loginInfo = credJson
-                sources[idx].loginHeader = finalHeader
+                sources[idx].loginHeader = resolvedHeader
                 saveSources()
             }
         }
 
-        return finalHeader
+        return resolvedHeader
     }
 
     /// 从 loginUi 里挑出真正「触发登录」的按钮 action。

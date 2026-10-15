@@ -1,5 +1,12 @@
 # 更新日志
 
+## v4.7.2
+- **修复**：书源脚本用的 `cookie` 对象之前完全没实现 —— `cookie.getCookie` / `setCookie` / `removeCookie` / `getKey` 全部缺失，脚本第一行就抛 ReferenceError。现在补了 cookie 罐（按 host 存、落 UserDefaults），`java.ajax` / `java.post` / `java.connect` 发请求时自动带上该 host 的 cookie
+- **修复**：`java.toast` / `java.longToast` / `java.log` / `java.deviceID` / `java.androidId` / `java.hexDecodeToString` 缺失 —— 聚合源登录函数第一行就是 `java.longToast(...)`，拼 cookie 要用 `deviceID()`，正文又靠 `hexDecodeToString` 解码，缺任何一个都在那一行断掉
+- **修复**：`loginUrl` 与 `loginUi` 的 action 若带 `<js>...</js>` 包裹或 `@js:` 前缀，之前直接丢给 `evaluateScript` 会语法错误；现在统一剥壳
+- **修复**：只把 token 写进 cookie、不调 `putLoginHeader` 的脚本（大灰狼这类）照样被判「登录失败」；现在 cookie 拿到值也算登录成功，并转成 `Cookie: ...` 存进书源 header
+- **验证**：新增 `BookSourceLoginTests`，4 条用例覆盖 cookie 对象、`<js>` 剥壳、常用 java API、hex 解码
+
 ## v4.7.1
 - **修复**：靠 `loginUi` 按钮触发的登录脚本（如「大灰狼聚合」）必定报「登录未返回有效凭据」—— 这类书源 `loginUrl` 顶层只定义函数，真正触发登录的是 `loginUi` 里那条 `action`（`login(true)`），宿主从没执行过它；现在会注入表单值并自动执行登录类按钮，注册 / 退出 / 用户后台 / 切服务器 / 番茄网页登录 / 检测 / 清设备这些按钮一律跳过
 - **修复**：登录脚本报错被吞掉 —— `JSEngine` 记下脚本异常原文，登录失败提示直接把它带出来

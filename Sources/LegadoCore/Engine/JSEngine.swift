@@ -14,6 +14,12 @@ import SwiftSoup
     func base64Decode(_ str: String) -> String
     func timeFormat(_ timestamp: JSValue) -> String
     func getString(_ path: String) -> String
+    func toast(_ message: String)
+    func longToast(_ message: String)
+    func log(_ message: JSValue)
+    func deviceID() -> String
+    func androidId() -> String
+    func hexDecodeToString(_ hex: String) -> String
 }
 
 @objc public class JavaShim: NSObject, JavaShimProtocol {
@@ -26,14 +32,20 @@ import SwiftSoup
         super.init()
     }
 
+    /// 书源脚本用 cookie.setCookie 存下来的登录态，请求时自动带上。
+    private func jarCookieHeader(for url: String) -> String {
+        let cookies = CookieJar.shared.cookieString(for: url)
+        return cookies.isEmpty ? "" : "Cookie: \(cookies)"
+    }
+
     public func ajax(_ url: String) -> String {
-        guard let parsed = NetworkClient.parseLegadoUrl(url) else { return "" }
+        guard let parsed = NetworkClient.parseLegadoUrl(url, defaultHeader: jarCookieHeader(for: url)) else { return "" }
         let resp = NetworkClient.shared.requestSync(parsed: parsed)
         return resp?.bodyString ?? ""
     }
 
     public func connect(_ url: String) -> JSValue {
-        return connect(url, "")
+        return connect(url, jarCookieHeader(for: url))
     }
 
     public func connect(_ url: String, _ header: String) -> JSValue {
@@ -80,6 +92,10 @@ import SwiftSoup
         if headerDict["Content-Type"] == nil {
             headerDict["Content-Type"] = "application/json"
         }
+        if headerDict["Cookie"] == nil, headerDict["cookie"] == nil {
+            let jar = CookieJar.shared.cookieString(for: url)
+            if !jar.isEmpty { headerDict["Cookie"] = jar }
+        }
 
         let bodyData = body.data(using: .utf8)
         guard let cleanUrl = URL(string: url) ?? URL(string: url.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? url) else {
@@ -106,6 +122,60 @@ import SwiftSoup
         lock.lock()
         defer { lock.unlock() }
         return kvStore[key]
+    }
+
+    // MARK: - 脚本会顺手调用的杂项
+    //
+    // 这些看着不重要，但书源脚本把它们当默认存在的东西用：
+    //   java.longToast("正在登录中...")   ← 登录函数第一行
+    //   java.deviceID() / java.androidId()  ← 拼 cookie 用的设备指纹
+    // 缺任何一个，脚本当场抛 TypeError，后面的登录逻辑一行都跑不到。
+
+    public func toast(_ message: String) {
+        LegadoLog.log("[toast] \(message)")
+    }
+
+    public func longToast(_ message: String) {
+        LegadoLog.log("[toast] \(message)")
+    }
+
+    public func log(_ message: JSValue) {
+        LegadoLog.log("[js] \(message.toString() ?? "")")
+    }
+
+    public func deviceID() -> String {
+        Self.persistentDeviceID()
+    }
+
+    public func androidId() -> String {
+        Self.persistentDeviceID()
+    }
+
+    /// 聚合源常把正文以 hex 字符串回传，脚本第一件事就是解它。
+    public func hexDecodeToString(_ hex: String) -> String {
+        let cleaned = hex.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard cleaned.count >= 2, cleaned.count % 2 == 0 else { return cleaned }
+
+        var bytes = [UInt8]()
+        bytes.reserveCapacity(cleaned.count / 2)
+        var index = cleaned.startIndex
+        while index < cleaned.endIndex {
+            let next = cleaned.index(index, offsetBy: 2)
+            guard let byte = UInt8(cleaned[index..<next], radix: 16) else { return cleaned }
+            bytes.append(byte)
+            index = next
+        }
+        return String(decoding: bytes, as: UTF8.self)
+    }
+
+    private static func persistentDeviceID() -> String {
+        let key = "legado.scriptDeviceID"
+        if let existing = UserDefaults.standard.string(forKey: key), !existing.isEmpty {
+            return existing
+        }
+        let generated = UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased()
+        UserDefaults.standard.set(generated, forKey: key)
+        return generated
     }
 
     public func put(_ key: String, _ value: String) -> String {
@@ -241,6 +311,27 @@ public class JSEngine {
 
         context.setObject(sourceObj, forKeyedSubscript: "source" as NSString)
 
+        // Legado 书源脚本的 cookie API。脚本靠它存登录态，缺了这个全局对象，
+        // 像「大灰狼聚合」那种登录脚本第一行就抛 ReferenceError。
+        let cookieObj = JSValue(newObjectIn: context)
+        let getCookieBlock: @convention(block) (String) -> String = { url in
+            CookieJar.shared.cookieString(for: url)
+        }
+        let setCookieBlock: @convention(block) (String, String) -> Void = { url, value in
+            CookieJar.shared.setCookies(value, for: url)
+        }
+        let removeCookieBlock: @convention(block) (String) -> Void = { url in
+            CookieJar.shared.remove(for: url)
+        }
+        let getCookieKeyBlock: @convention(block) (String, String) -> String = { url, name in
+            CookieJar.shared.value(for: url, name: name) ?? ""
+        }
+        cookieObj?.setValue(getCookieBlock, forProperty: "getCookie")
+        cookieObj?.setValue(setCookieBlock, forProperty: "setCookie")
+        cookieObj?.setValue(removeCookieBlock, forProperty: "removeCookie")
+        cookieObj?.setValue(getCookieKeyBlock, forProperty: "getKey")
+        context.setObject(cookieObj, forKeyedSubscript: "cookie" as NSString)
+
         // Expose book object
         let bookObj = JSValue(newObjectIn: context)
         let getBookVarBlock: @convention(block) (String) -> String = { _ in "" }
@@ -329,6 +420,20 @@ public class JSEngine {
     /// JavaScriptCore can only bridge Objective-C classes. Handing it a Swift-only
     /// class (e.g. SwiftSoup.Element) aborts the process inside `classInfoForClass:`,
     /// so every value crossing into JS is converted here first.
+    /// 剥掉书源规则常见的 `<js>...</js>` 包裹与 `@js:` 前缀。
+    /// loginUrl 和 loginUi 的 action 也可能带这层壳，直接丢给 evaluateScript 会语法错误。
+    public static func unwrapJsScript(_ raw: String) -> String {
+        var text = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let open = text.range(of: "<js>"),
+           let close = text.range(of: "</js>", options: .backwards),
+           open.upperBound <= close.lowerBound {
+            text = String(text[open.upperBound..<close.lowerBound])
+        } else if text.hasPrefix("@js:") {
+            text = String(text.dropFirst(4))
+        }
+        return text.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
     static func jsSafeValue(_ value: Any) -> Any {
         switch value {
         case let js as JSValue:
