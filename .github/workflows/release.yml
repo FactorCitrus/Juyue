@@ -104,9 +104,9 @@ jobs:
               found { print }
             ' CHANGELOG.md
             echo
-            echo "---"
-            echo
-            echo "**安装**：下载下方的 \`Legado-*.ipa\`，侧载安装即可（TrollStore / AltStore / SideStore / Sideloadly / 爱思助手 都行）。"
+            echo "#### 📱 安装说明"
+            echo "下载下方的 \`Legado-*.ipa\` 附件，侧载安装：**TrollStore**（巨魔，推荐）/ AltStore / SideStore / Sideloadly / 爱思助手。"
+            echo "> CI 构建不含百度语音 SDK，只有系统语音与 HTTP 语音源。"
           } > build/RELEASE_NOTES.md
           cat build/RELEASE_NOTES.md
 
