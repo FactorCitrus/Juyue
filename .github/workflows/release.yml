@@ -98,11 +98,17 @@ jobs:
             echo
             echo "#### 🌟 核心更新与特性"
             echo
-            awk -v tag="$TAG" '
+            SECTION=$(awk -v tag="$TAG" '
               index($0, "## " tag) == 1 { found = 1; next }
               found && index($0, "## ") == 1 { exit }
               found { print }
-            ' CHANGELOG.md
+            ' CHANGELOG.md)
+            # 这一版 CHANGELOG 里没有条目时给一句通用的，免得只留个空标题
+            if [ -z "$(printf '%s' "$SECTION" | tr -d '[:space:]')" ]; then
+              echo "- 更新稳定性，提高流畅度。"
+            else
+              printf '%s\n' "$SECTION"
+            fi
             echo
             echo "#### 📱 安装说明"
             echo "下载下方的 \`Legado-*.ipa\` 附件，侧载安装：**TrollStore**（巨魔，推荐）/ AltStore / SideStore / Sideloadly / 爱思助手。"
