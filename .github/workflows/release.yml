@@ -105,7 +105,6 @@ jobs:
             echo "#### 📱 安装说明"
             echo "下载下方的 \`Legado-*.ipa\` 附件，侧载安装：**TrollStore**（巨魔，推荐）/ AltStore / SideStore / Sideloadly / 爱思助手。"
             echo
-            echo "> CI 构建不含百度语音 SDK，只有系统语音与 HTTP 语音源；带你本机百度音色的完整版用企业微信发的那份。"
           } > build/RELEASE_NOTES.md
           cat build/RELEASE_NOTES.md
 
