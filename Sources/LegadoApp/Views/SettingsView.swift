@@ -18,6 +18,9 @@ public struct SettingsView: View {
     @State private var showRestoreAlert: Bool = false
     @State private var restoreSuccessMessage: String? = nil
     @State private var showClearCacheAlert: Bool = false
+    /// WebDAV 那行的小字：填了地址就算「已配置」，同步过才是「已同步」。
+    /// 之前只看 lastSyncTime，所以填完地址回来还显示「未配置」。
+    @State private var webDAVStatusText: String = "未配置"
     @State private var clearCacheMessage: String? = nil
 
     public init() {}
@@ -268,15 +271,9 @@ public struct SettingsView: View {
                         HStack {
                             Label("WebDAV 云同步", systemImage: "icloud.and.arrow.up")
                             Spacer()
-                            if WebDAVService.shared.loadConfig().lastSyncTime != nil {
-                                Text("已同步")
-                                    .font(.caption)
-                                    .foregroundColor(.secondary)
-                            } else {
-                                Text("未配置")
-                                    .font(.caption)
-                                    .foregroundColor(.secondary)
-                            }
+                            Text(webDAVStatusText)
+                                .font(.caption)
+                                .foregroundColor(.secondary)
                         }
                     }
                 }
@@ -353,6 +350,14 @@ public struct SettingsView: View {
                 }
             }
             .navigationTitle("设置")
+            .onAppear {
+                let cfg = WebDAVService.shared.loadConfig()
+                if cfg.url.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    webDAVStatusText = "未配置"
+                } else {
+                    webDAVStatusText = cfg.lastSyncTime != nil ? "已同步" : "已配置"
+                }
+            }
             .alert("重置书源", isPresented: $showRestoreAlert) {
                 Button("取消", role: .cancel) {}
                 Button("确定重置", role: .destructive) {
