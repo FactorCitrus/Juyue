@@ -27,9 +27,10 @@ public class BookContentService {
             }
         }
 
-        print("[BookDetail] 🚀 [\(source.bookSourceName)] Fetching details and TOC from: \(targetUrl)")
+        // 脱敏：URL 只记域名，path 与 query 常含私有参数
+        LegadoLog.log("[BookDetail] [\(source.bookSourceName)] 抓详情与目录 host=\(URL(string: targetUrl)?.host ?? "-")")
         guard let parsedReq = NetworkClient.parseLegadoUrl(targetUrl, defaultHeader: headerToUse, baseUrl: source.bookSourceUrl) else {
-            print("[BookDetail] ❌ [\(source.bookSourceName)] Failed to parse URL: \(targetUrl)")
+            LegadoLog.log("[BookDetail] ❌ [\(source.bookSourceName)] 详情 URL 解析失败 host=\(URL(string: targetUrl)?.host ?? "-")")
             return (book, [])
         }
 
@@ -126,7 +127,7 @@ public class BookContentService {
                 frontier = nextURLs
                 onProgress?(discovered.count, pageLimit)
             }
-            print("[BookDetail] 📚 [\(source.bookSourceName)] 目录抓完 \(chapters.count) 章 / \(discovered.count) 页 / \(round) 轮")
+            LegadoLog.log("[BookDetail] [\(source.bookSourceName)] 目录抓完 \(chapters.count) 章 / \(discovered.count) 页 / \(round) 轮")
         }
 
         // 2. Parse Book Metadata (Author, Intro, Kind, WordCount)
@@ -203,7 +204,9 @@ public class BookContentService {
             }
         }
 
-        print("[BookDetail] ✅ [\(source.bookSourceName)] Parsed book '\(updatedBook.name)' by '\(updatedBook.author)', intro length: \(updatedBook.intro?.count ?? 0), chapters: \(chapters.count)")
+        // 脱敏：书名与作者不记原文，只记一个稳定指纹和长度
+        let nameTag = String(CryptoUtils.md5(updatedBook.name).prefix(8))
+        LegadoLog.log("[BookDetail] ✅ [\(source.bookSourceName)] 解析完成 book#\(nameTag) 书名/作者长度=\(updatedBook.name.count)/\(updatedBook.author.count) 简介=\(updatedBook.intro?.count ?? 0) 章数=\(chapters.count)")
         return (updatedBook, chapters)
     }
 
@@ -360,9 +363,10 @@ public class BookContentService {
             }
         }
 
-        print("[Content] 🚀 [\(source.bookSourceName)] Fetching chapter '\(chapter.title)' from: \(chapterUrl)")
+        // 脱敏：不记章节标题与 URL 路径
+        LegadoLog.log("[Content] [\(source.bookSourceName)] 抓正文 第 \(chapter.index + 1) 章 host=\(URL(string: chapterUrl)?.host ?? "-")")
         guard let parsedReq = NetworkClient.parseLegadoUrl(chapterUrl, defaultHeader: headerToUse, baseUrl: source.bookSourceUrl) else {
-            print("[Content] ❌ [\(source.bookSourceName)] Failed to parse chapter URL: \(chapterUrl)")
+            LegadoLog.log("[Content] ❌ [\(source.bookSourceName)] 正文 URL 解析失败 第 \(chapter.index + 1) 章 host=\(URL(string: chapterUrl)?.host ?? "-")")
             return ""
         }
 

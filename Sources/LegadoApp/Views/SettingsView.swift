@@ -1657,14 +1657,33 @@ enum AppLog {
         }
         let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "?"
         let build = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "?"
+        // Core 层的日志出口接到这里：LegadoCore 不依赖 App 层，只能运行时注入
+        LegadoLog.handler = { line in AppLog.write(line) }
         // 启动行属于常规日志，跟着开关走
         write("—— 启动 v\(version) (\(build)) ——")
+    }
+
+    /// 落盘前的隐私过滤。
+    ///
+    /// 规矩：日志只记「操作类型 / 序数 / 耗时 / 状态码 / 字节数 / 错误类型」，
+    /// 不记搜索词、书名作者、章节标题、正文、URL 的 path 与 query、任何凭据、
+    /// 设备名、绝对路径。调用方本来就该先抹干净，这里再兜一道——命中就整行不写。
+    static func sanitize(_ line: String) -> String {
+        let banned = [
+            "password", "passwd", "secret", "apikey", "api_key", "appid", "app_id",
+            "serial", "token", "authorization", "key=", "keyword=", "/users/", "/var/"
+        ]
+        let lowered = line.lowercased()
+        if banned.contains(where: { lowered.contains($0) }) {
+            return "[已过滤] 这一行命中隐私关键词，未写入"
+        }
+        return line
     }
 
     /// 信号处理里能安全调用的写盘方式（只有 open/write/close）
     static func writeSync(_ line: String) {
         let stamp = ISO8601DateFormatter().string(from: Date())
-        let text = "[\(stamp)] \(line)\n"
+        let text = "[\(stamp)] \(sanitize(line))\n"
         let dir = fileURL.deletingLastPathComponent()
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         let fd = Darwin.open(fileURL.path, O_WRONLY | O_APPEND | O_CREAT, 0o644)
@@ -1688,7 +1707,7 @@ enum AppLog {
     static func write(_ line: String) {
         guard isEnabled else { return }
         let stamp = ISO8601DateFormatter().string(from: Date())
-        let text = "[\(stamp)] \(line)\n"
+        let text = "[\(stamp)] \(sanitize(line))\n"
         let dir = fileURL.deletingLastPathComponent()
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         if let handle = try? FileHandle(forWritingTo: fileURL) {

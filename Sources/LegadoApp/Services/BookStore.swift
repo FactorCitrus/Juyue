@@ -370,7 +370,7 @@ public class BookStore: ObservableObject {
         let networkBooks = bookshelf.filter { $0.origin != "local" }
         guard !networkBooks.isEmpty else { return }
 
-        print("[Bookshelf] 🔄 Starting full refresh for \(networkBooks.count) network books...")
+        AppLog.write("[Bookshelf] 开始整架刷新，网络书 \(networkBooks.count) 本")
 
         await withTaskGroup(of: Book?.self) { group in
             for book in networkBooks {
@@ -386,7 +386,9 @@ public class BookStore: ObservableObject {
                         }
                         return updated
                     } catch {
-                        print("[Bookshelf] ⚠️ Failed to refresh '\(book.name)': \(error.localizedDescription)")
+                        // 脱敏：书名不记原文，只留指纹
+                        let tag = String(CryptoUtils.md5(book.name).prefix(8))
+                        AppLog.write("[Bookshelf] ⚠️ 刷新失败 book#\(tag): \(error.localizedDescription)")
                         return nil
                     }
                 }
@@ -400,7 +402,7 @@ public class BookStore: ObservableObject {
                 }
             }
         }
-        print("[Bookshelf] ✅ Finished refresh for all books")
+        AppLog.write("[Bookshelf] ✅ 整架刷新完成")
     }
 
     // MARK: - Source Management
@@ -408,17 +410,18 @@ public class BookStore: ObservableObject {
         guard let data = json.data(using: .utf8) else { return 0 }
         let imported = try JSONDecoder().decode([BookSource].self, from: data)
 
-        var count = 0
         for s in imported {
             if let idx = sources.firstIndex(where: { $0.bookSourceUrl == s.bookSourceUrl || $0.bookSourceName == s.bookSourceName }) {
                 sources[idx] = s
             } else {
                 sources.append(s)
-                count += 1
             }
         }
         saveSources()
-        return count
+        // 已存在的书源是「覆盖更新」，也算导入成功。
+        // 只返回新增数的话，第二次导入同一个文件会得到 0，
+        // 界面那边就会误报「未在文件中发现有效书源」。
+        return imported.count
     }
 
     public func toggleSource(sourceUrl: String) {

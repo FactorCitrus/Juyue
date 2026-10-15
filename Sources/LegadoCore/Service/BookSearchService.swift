@@ -68,23 +68,24 @@ public class BookSearchService {
             }
         }
 
-        print("[Search] 🚀 [\(source.bookSourceName)] Rendered URL: \(renderedUrl)")
+        // 脱敏：渲染后的 URL 里带着搜索关键词，只记域名
+        LegadoLog.log("[Search] [\(source.bookSourceName)] 请求已构造 host=\(URL(string: renderedUrl)?.host ?? "-")")
 
         guard let parsedReq = NetworkClient.parseLegadoUrl(renderedUrl, defaultHeader: headerToUse, baseUrl: source.bookSourceUrl) else {
-            print("[Search] ❌ [\(source.bookSourceName)] Failed to parse request URL: \(renderedUrl)")
+            LegadoLog.log("[Search] ❌ [\(source.bookSourceName)] 请求 URL 解析失败 host=\(URL(string: renderedUrl)?.host ?? "-")")
             return []
         }
 
         let response = try await NetworkClient.shared.request(parsed: parsedReq)
-        print("[Search] 📡 [\(source.bookSourceName)] HTTP \(response.statusCode), received \(response.data.count) bytes")
+        LegadoLog.log("[Search] [\(source.bookSourceName)] HTTP \(response.statusCode)，收到 \(response.data.count) 字节")
 
         guard response.statusCode >= 200 && response.statusCode < 400 else {
-            print("[Search] ⚠️ [\(source.bookSourceName)] Non-success HTTP status \(response.statusCode) - skipping")
+            LegadoLog.log("[Search] ⚠️ [\(source.bookSourceName)] HTTP \(response.statusCode) 非成功状态，跳过")
             return []
         }
 
         guard let searchRule = source.ruleSearch else {
-            print("[Search] ⚠️ [\(source.bookSourceName)] No ruleSearch configured")
+            LegadoLog.log("[Search] ⚠️ [\(source.bookSourceName)] 没有配置搜索规则")
             return []
         }
 
@@ -97,7 +98,7 @@ public class BookSearchService {
         )
 
         let bookElements = analyzer.getElements(searchRule.bookList)
-        print("[Search] 🔎 [\(source.bookSourceName)] Found \(bookElements.count) book candidate elements")
+        LegadoLog.log("[Search] [\(source.bookSourceName)] 候选条目 \(bookElements.count) 个")
         var searchBooks: [SearchBook] = []
 
         for item in bookElements {
@@ -135,7 +136,7 @@ public class BookSearchService {
             searchBooks.append(book)
         }
 
-        print("[Search] ✅ [\(source.bookSourceName)] Successfully parsed \(searchBooks.count) books")
+        LegadoLog.log("[Search] ✅ [\(source.bookSourceName)] 解析出 \(searchBooks.count) 本书")
         return searchBooks
     }
 
@@ -146,7 +147,8 @@ public class BookSearchService {
         page: Int = 1
     ) -> AsyncStream<(source: BookSource, books: [SearchBook])> {
         let enabledSources = sources.filter { $0.enabled != false && $0.searchUrl != nil }
-        print("[Search] 🔍 Multi-source search initiated for '\(key)' (page: \(page)) across \(enabledSources.count) enabled sources: \(enabledSources.map { $0.bookSourceName }.joined(separator: ", "))")
+        // 脱敏：不记关键词原文，也不列全部书源名
+        LegadoLog.log("[Search] 开始多源搜索 page=\(page) 源数=\(enabledSources.count) 关键词长度=\(key.count)")
 
         return AsyncStream { continuation in
             Task {
@@ -157,7 +159,7 @@ public class BookSearchService {
                                 let books = try await self.search(source: source, key: key, page: page)
                                 return (source, books)
                             } catch {
-                                print("[Search] ❌ [\(source.bookSourceName)] Request error (page: \(page)): \(error.localizedDescription)")
+                                LegadoLog.log("[Search] ❌ [\(source.bookSourceName)] 请求出错 page=\(page): \(error.localizedDescription)")
                                 return (source, [])
                             }
                         }

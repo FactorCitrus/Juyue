@@ -3427,7 +3427,7 @@ public struct ReaderView: View {
                 self.isLoadingNextChapter = false
                 self.preCacheNeighbors(around: nextIndex)
             } catch {
-                print("[ReaderView] ⚠️ Failed to preload chapter \(nextIndex): \(error)")
+                AppLog.write("[ReaderView] ⚠️ 预取章节 \(nextIndex) 失败：\(error)")
                 self.isLoadingNextChapter = false
             }
         }
