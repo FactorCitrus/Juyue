@@ -186,6 +186,8 @@ public class JSEngine {
         context.exceptionHandler = { [weak self] _, exception in
             let message = exception?.toString() ?? "unknown error"
             self?.lastError = message
+            // 书源脚本的未捕获异常统一进诊断日志，搜索/目录/正文出问题时能自己查到原因
+            LegadoLog.log("[JS] \(message)")
             #if DEBUG
             print("[JSEngine Error] \(message)")
             #endif
