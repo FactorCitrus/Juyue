@@ -1,5 +1,8 @@
 import SwiftUI
 import UniformTypeIdentifiers
+#if os(iOS)
+import UIKit
+#endif
 #if canImport(LegadoCore)
 import LegadoCore
 #endif
@@ -8,7 +11,6 @@ public struct SourceManagerView: View {
     @ObservedObject var bookStore = BookStore.shared
 
     @State private var showImportSheet: Bool = false
-    @State private var showFileImporter: Bool = false
     /// 书源导出（存到「文件」）
     @State private var showSourceExporter: Bool = false
     @State private var sourceExportDocument: ExportedFile?
@@ -266,51 +268,6 @@ public struct SourceManagerView: View {
             } message: {
                 Text("删的是上面「筛选」的结果，共 \(filteredSources.count) 个。删掉就找不回来了，除非重新导入。")
             }
-            .fileImporter(
-                isPresented: $showFileImporter,
-                allowedContentTypes: [.json, .plainText],
-                allowsMultipleSelection: true
-            ) { result in
-                switch result {
-                case .success(let urls):
-                    var totalCount = 0
-                    var errorCount = 0
-                    for url in urls {
-                        let canAccess = url.startAccessingSecurityScopedResource()
-                        defer {
-                            if canAccess { url.stopAccessingSecurityScopedResource() }
-                        }
-                        do {
-                            let data = try Data(contentsOf: url)
-                            // 中文书源文件常见 GBK/ANSI 存法，只按 UTF-8/UTF-16 读会读不出来，
-                            // 表现就是「解析失败」。加一层 GB18030 兜底。
-                            let gb18030 = String.Encoding(rawValue: CFStringConvertEncodingToNSStringEncoding(
-                                CFStringEncoding(CFStringEncodings.GB_18030_2000.rawValue)))
-                            if let str = String(data: data, encoding: .utf8)
-                                ?? String(data: data, encoding: gb18030)
-                                ?? String(data: data, encoding: .unicode) {
-                                let count = try bookStore.importSources(json: str)
-                                totalCount += count
-                            } else {
-                                errorCount += 1
-                            }
-                        } catch {
-                            errorCount += 1
-                        }
-                    }
-                    AppLog.write("[书源] 文件导入：\(urls.count) 个文件，解析 \(totalCount) 条，失败 \(errorCount) 个")
-                    showImportSheet = false
-                    if totalCount > 0 {
-                        alertMessage = "成功导入 \(totalCount) 个书源！" + (errorCount > 0 ? " (\(errorCount)个文件解析失败)" : "")
-                    } else {
-                        alertMessage = errorCount > 0 ? "导入失败：未能成功解析书源文件" : "未在文件中发现有效书源"
-                    }
-                    showAlert = true
-                case .failure(let error):
-                    alertMessage = "打开文件失败: \(error.localizedDescription)"
-                    showAlert = true
-                }
-            }
             .fileExporter(
                 isPresented: $showSourceExporter,
                 document: sourceExportDocument,
@@ -342,6 +299,91 @@ public struct SourceManagerView: View {
         sourceExportDocument = ExportedFile(data: data)
         showSourceExporter = true
     }
+
+    /// 选完文件之后的导入流程
+    private func handlePickedSourceFiles(_ urls: [URL]) {
+        var totalCount = 0
+        var errorCount = 0
+        for url in urls {
+            let canAccess = url.startAccessingSecurityScopedResource()
+            defer {
+                if canAccess { url.stopAccessingSecurityScopedResource() }
+            }
+            do {
+                let data = try Data(contentsOf: url)
+                // 中文书源文件常见 GBK/ANSI 存法，只按 UTF-8/UTF-16 读会读不出来，
+                // 表现就是「解析失败」。加一层 GB18030 兜底。
+                let gb18030 = String.Encoding(rawValue: CFStringConvertEncodingToNSStringEncoding(
+                    CFStringEncoding(CFStringEncodings.GB_18030_2000.rawValue)))
+                if let str = String(data: data, encoding: .utf8)
+                    ?? String(data: data, encoding: gb18030)
+                    ?? String(data: data, encoding: .unicode) {
+                    let count = try bookStore.importSources(json: str)
+                    totalCount += count
+                } else {
+                    errorCount += 1
+                }
+            } catch {
+                errorCount += 1
+            }
+        }
+        AppLog.write("[书源] 文件导入：\(urls.count) 个文件，解析 \(totalCount) 条，失败 \(errorCount) 个")
+        showImportSheet = false
+        if totalCount > 0 {
+            alertMessage = "成功导入 \(totalCount) 个书源！" + (errorCount > 0 ? " (\(errorCount)个文件解析失败)" : "")
+        } else {
+            alertMessage = errorCount > 0 ? "导入失败：未能成功解析书源文件" : "未在文件中发现有效书源"
+        }
+        showAlert = true
+    }
+
+#if os(iOS)
+/// 直接弹系统文档选择器（UIKit），不走 SwiftUI 的 .fileImporter。
+///
+/// 原因：`.fileImporter` 从 sheet 里触发时，iOS 16 上「选完文件点打开」的回调
+/// 不触发（真机 iOS 16.1.1 复现，模拟器 iOS 26 正常）。UIKit 这条路没有这个问题。
+/// 用 `asCopy: true`：拿到的是沙盒里能直接读的副本，不受安全作用域限制。
+enum SourceDocumentPicker {
+    private static var retained: Delegate?
+
+    static func present(contentTypes: [UTType], onPicked: @escaping ([URL]) -> Void) {
+        guard let top = topViewController() else { return }
+        let picker = UIDocumentPickerViewController(forOpeningContentTypes: contentTypes, asCopy: true)
+        picker.allowsMultipleSelection = true
+        let delegate = Delegate(onPicked: onPicked)
+        retained = delegate
+        picker.delegate = delegate
+        top.present(picker, animated: true)
+    }
+
+    private static func topViewController() -> UIViewController? {
+        let scenes = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
+        let window = scenes.flatMap { $0.windows }.first(where: { $0.isKeyWindow })
+            ?? scenes.first?.windows.first
+        var controller = window?.rootViewController
+        while let presented = controller?.presentedViewController {
+            controller = presented
+        }
+        return controller
+    }
+
+    private final class Delegate: NSObject, UIDocumentPickerDelegate {
+        let onPicked: ([URL]) -> Void
+        init(onPicked: @escaping ([URL]) -> Void) {
+            self.onPicked = onPicked
+        }
+
+        func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
+            SourceDocumentPicker.retained = nil
+            onPicked(urls)
+        }
+
+        func documentPickerWasCancelled(_ controller: UIDocumentPickerViewController) {
+            SourceDocumentPicker.retained = nil
+        }
+    }
+}
+#endif
 
     private func refreshSource(_ source: BookSource) {
         let cats = BookExploreService.shared.parseExploreCategories(source: source)
@@ -432,13 +474,18 @@ public struct SourceManagerView: View {
             Form {
                 Section(header: Text("本地文件导入")) {
                     Button {
-                        // fileImporter 挂在父视图上，而这里在 sheet 里面 ——
-                        // 父视图被 sheet 盖着时 picker 弹不出来，表现就是「点了没反应」。
-                        // 所以先把 sheet 收掉，等父视图露出来再弹。
-                        showImportSheet = false
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
-                            showFileImporter = true
+#if os(iOS)
+                        // 直接用 UIKit 的文档选择器：SwiftUI 的 .fileImporter 在
+                        // 「从 sheet 里触发」这套组合下，iOS 16 上选完文件点「打开」
+                        // 回调不触发（真机 iOS 16.1.1 复现，模拟器上正常）。
+                        SourceDocumentPicker.present(contentTypes: [.json, .plainText]) { urls in
+                            handlePickedSourceFiles(urls)
                         }
+#else
+                        // 这个包在 macOS 上只用于编译校验（swift test），入口只有 iOS
+                        alertMessage = "当前平台不支持文件选择"
+                        showAlert = true
+#endif
                     } label: {
                         Label("从本地文件导入 (.json)", systemImage: "doc.badge.plus")
                     }
