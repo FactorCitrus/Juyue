@@ -9,6 +9,10 @@ public struct SourceManagerView: View {
 
     @State private var showImportSheet: Bool = false
     @State private var showFileImporter: Bool = false
+    /// 书源导出（存到「文件」）
+    @State private var showSourceExporter: Bool = false
+    @State private var sourceExportDocument: ExportedFile?
+    @State private var sourceExportName: String = "bookSource.json"
     @State private var selectedSourceForLogin: BookSource? = nil
     @State private var selectedSourceForEdit: BookSource? = nil
     @State private var selectedSourceForSearch: BookSource? = nil
@@ -226,6 +230,11 @@ public struct SourceManagerView: View {
                         Image(systemName: "plus")
                     }
                 }
+                ToolbarItem(placement: .primaryAction) {
+                    Button(action: { exportSources() }) {
+                        Image(systemName: "square.and.arrow.up")
+                    }
+                }
             }
             .sheet(isPresented: $showImportSheet) {
                 importSourceSheet
@@ -273,7 +282,13 @@ public struct SourceManagerView: View {
                         }
                         do {
                             let data = try Data(contentsOf: url)
-                            if let str = String(data: data, encoding: .utf8) ?? String(data: data, encoding: .unicode) {
+                            // 中文书源文件常见 GBK/ANSI 存法，只按 UTF-8/UTF-16 读会读不出来，
+                            // 表现就是「解析失败」。加一层 GB18030 兜底。
+                            let gb18030 = String.Encoding(rawValue: CFStringConvertEncodingToNSStringEncoding(
+                                CFStringEncoding(CFStringEncodings.GB_18030_2000.rawValue)))
+                            if let str = String(data: data, encoding: .utf8)
+                                ?? String(data: data, encoding: gb18030)
+                                ?? String(data: data, encoding: .unicode) {
                                 let count = try bookStore.importSources(json: str)
                                 totalCount += count
                             } else {
@@ -295,6 +310,36 @@ public struct SourceManagerView: View {
                     showAlert = true
                 }
             }
+            .fileExporter(
+                isPresented: $showSourceExporter,
+                document: sourceExportDocument,
+                contentType: .json,
+                defaultFilename: sourceExportName
+            ) { result in
+                switch result {
+                case .success:
+                    alertMessage = "已导出 \(bookStore.sources.count) 个书源"
+                case .failure(let error):
+                    alertMessage = "导出失败: \(error.localizedDescription)"
+                }
+                showAlert = true
+            }
+    }
+
+    /// 导出全部书源成 JSON（和导入同一套格式，导回来能直接用）
+    private func exportSources() {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .withoutEscapingSlashes]
+        guard let data = try? encoder.encode(bookStore.sources) else {
+            alertMessage = "导出失败：书源编码出错"
+            showAlert = true
+            return
+        }
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyyMMdd"
+        sourceExportName = "bookSource-\(formatter.string(from: Date())).json"
+        sourceExportDocument = ExportedFile(data: data)
+        showSourceExporter = true
     }
 
     private func refreshSource(_ source: BookSource) {
@@ -386,7 +431,13 @@ public struct SourceManagerView: View {
             Form {
                 Section(header: Text("本地文件导入")) {
                     Button {
-                        showFileImporter = true
+                        // fileImporter 挂在父视图上，而这里在 sheet 里面 ——
+                        // 父视图被 sheet 盖着时 picker 弹不出来，表现就是「点了没反应」。
+                        // 所以先把 sheet 收掉，等父视图露出来再弹。
+                        showImportSheet = false
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
+                            showFileImporter = true
+                        }
                     } label: {
                         Label("从本地文件导入 (.json)", systemImage: "doc.badge.plus")
                     }

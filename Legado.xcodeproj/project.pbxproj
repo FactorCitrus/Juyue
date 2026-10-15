@@ -64,6 +64,24 @@
 			<key>isa</key>
 			<string>PBXBuildFile</string>
 		</dict>
+		<key>BB01AA000000000000001A41</key>
+		<dict>
+			<key>isa</key>
+			<string>PBXFileReference</string>
+			<key>lastKnownFileType</key>
+			<string>sourcecode.swift</string>
+			<key>path</key>
+			<string>Sources/LegadoApp/Services/ExportedFile.swift</string>
+			<key>sourceTree</key>
+			<string>&lt;group&gt;</string>
+		</dict>
+		<key>BB01AA000000000000001B52</key>
+		<dict>
+			<key>fileRef</key>
+			<string>BB01AA000000000000001A41</string>
+			<key>isa</key>
+			<string>PBXBuildFile</string>
+		</dict>
 		<key>BB01AA0000000000000005A5</key>
 		<dict>
 			<key>isa</key>
@@ -375,7 +393,7 @@
 				<key>CODE_SIGN_STYLE</key>
 				<string>Automatic</string>
 				<key>CURRENT_PROJECT_VERSION</key>
-				<string>45</string>
+				<string>46</string>
 				<key>DEVELOPMENT_TEAM</key>
 				<string></string>
 				<key>ENABLE_PREVIEWS</key>
@@ -846,6 +864,7 @@
 				<string>782B4C6BAD3FD51D78E1607C</string>
 				<string>BB01AA0000000000000006A6</string>
 				<string>BB01AA0000000000000009A9</string>
+				<string>BB01AA000000000000001B52</string>
 				<string>BB01AA000000000000000AC2</string>
 			</array>
 			<key>isa</key>
@@ -1177,7 +1196,7 @@
 				<key>CODE_SIGN_STYLE</key>
 				<string>Automatic</string>
 				<key>CURRENT_PROJECT_VERSION</key>
-				<string>45</string>
+				<string>46</string>
 				<key>DEVELOPMENT_TEAM</key>
 				<string></string>
 				<key>ENABLE_PREVIEWS</key>

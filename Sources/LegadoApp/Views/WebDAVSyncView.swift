@@ -21,6 +21,10 @@ public struct WebDAVSyncView: View {
     @State private var remoteBackups: [RemoteBackupInfo] = []
     @State private var showBackupPickerSheet: Bool = false
     @State private var showFileImporter: Bool = false
+    /// 备份包存到「文件」（不用连 WebDAV 也能备份）
+    @State private var showBackupExporter: Bool = false
+    @State private var backupExportDocument: ExportedFile?
+    @State private var backupExportName: String = "backup.zip"
 
     @State private var alertTitle: String = ""
     @State private var alertMessage: String = ""
@@ -83,6 +87,22 @@ public struct WebDAVSyncView: View {
             allowsMultipleSelection: false
         ) { result in
             handleLocalZipImport(result: result)
+        }
+        .fileExporter(
+            isPresented: $showBackupExporter,
+            document: backupExportDocument,
+            contentType: .zip,
+            defaultFilename: backupExportName
+        ) { result in
+            switch result {
+            case .success:
+                alertTitle = "备份包已导出"
+                alertMessage = "已存到「文件」：\(backupExportName)"
+            case .failure(let error):
+                alertTitle = "导出失败"
+                alertMessage = error.localizedDescription
+            }
+            showAlert = true
         }
     }
 
@@ -276,7 +296,16 @@ public struct WebDAVSyncView: View {
 
     @ViewBuilder
     private var localBackupSection: some View {
-        Section(header: Text("本地备份导入 (兼容 Android Legado)")) {
+        Section(header: Text("本地备份 (兼容 Android Legado)")) {
+            Button {
+                exportBackupToFiles()
+            } label: {
+                HStack {
+                    Image(systemName: "square.and.arrow.up")
+                    Text("导出备份包到「文件」")
+                }
+            }
+
             Button {
                 showFileImporter = true
             } label: {
@@ -286,9 +315,27 @@ public struct WebDAVSyncView: View {
                 }
             }
 
-            Text("支持选取 Android 版 Legado 导出的 backup*.zip 备份包（可配合 bookProgress 进度目录），自动恢复 100% 书籍、书源与阅读进度，无需经过网络直接生效。")
+            Text("导出：把书架、书源和应用设置打成和安卓一致的 backup*.zip，存到本机「文件」里 —— 不用配 WebDAV 也能备份。导入：支持选取 Android 版 Legado 导出的 backup*.zip（可配合 bookProgress 进度目录），自动恢复书籍、书源与阅读进度。")
                 .font(.caption2)
                 .foregroundColor(.secondary)
+        }
+    }
+
+    /// 不出网也备份：直接把 zip 存到「文件」
+    private func exportBackupToFiles() {
+        do {
+            let result = try WebDAVService.shared.createBackupZip(
+                books: bookStore.bookshelf,
+                sources: bookStore.sources,
+                settingsJSON: AppSettingsBackup.makeJSON()
+            )
+            backupExportName = result.fileName
+            backupExportDocument = ExportedFile(data: result.data)
+            showBackupExporter = true
+        } catch {
+            alertTitle = "导出失败"
+            alertMessage = error.localizedDescription
+            showAlert = true
         }
     }
 
