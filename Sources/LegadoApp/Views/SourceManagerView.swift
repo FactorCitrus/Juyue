@@ -298,6 +298,7 @@ public struct SourceManagerView: View {
                             errorCount += 1
                         }
                     }
+                    AppLog.write("[书源] 文件导入：\(urls.count) 个文件，解析 \(totalCount) 条，失败 \(errorCount) 个")
                     showImportSheet = false
                     if totalCount > 0 {
                         alertMessage = "成功导入 \(totalCount) 个书源！" + (errorCount > 0 ? " (\(errorCount)个文件解析失败)" : "")
@@ -479,6 +480,7 @@ public struct SourceManagerView: View {
     private func importFromText() {
         do {
             let count = try bookStore.importSources(json: importText)
+            AppLog.write("[书源] 文本导入：解析 \(count) 条")
             showImportSheet = false
             importText = ""
             alertMessage = "成功导入 \(count) 个书源！"
@@ -510,6 +512,7 @@ public struct SourceManagerView: View {
                 await MainActor.run {
                     do {
                         let count = try bookStore.importSources(json: jsonStr)
+                        AppLog.write("[书源] 网络导入：host=\(url.host ?? "-") 解析 \(count) 条")
                         showImportSheet = false
                         importUrl = ""
                         alertMessage = "成功从网络导入 \(count) 个书源！"

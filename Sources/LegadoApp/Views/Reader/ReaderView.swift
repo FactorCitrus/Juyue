@@ -3192,6 +3192,7 @@ public struct ReaderView: View {
                     localChapters[i].index = i
                 }
                 self.chapters = localChapters
+                AppLog.write("[阅读] 打开本地书籍，共 \(localChapters.count) 章")
                 if currentChapterIndex >= localChapters.count {
                     currentChapterIndex = max(0, localChapters.count - 1)
                 }
@@ -3221,6 +3222,7 @@ public struct ReaderView: View {
                 fetchedChapters[i].index = i
             }
             self.chapters = fetchedChapters
+            AppLog.write("[阅读] 打开网络书籍，共 \(fetchedChapters.count) 章")
             guard !fetchedChapters.isEmpty else {
                 // 换源之后目录空，说明这个源用不了，直接退回原来的源
                 if previousBook != nil {
