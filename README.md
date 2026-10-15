@@ -3,14 +3,14 @@
 [![iOS](https://img.shields.io/badge/Platform-iOS%2015.0%2B-blue.svg)](https://developer.apple.com/ios/)
 [![Swift](https://img.shields.io/badge/Swift-5.0%2B-orange.svg)](https://swift.org)
 [![Xcode](https://img.shields.io/badge/Xcode-14.0%2B-blue.svg)](https://developer.apple.com/xcode/)
-[![Release](https://img.shields.io/badge/Release-v0.4.5%20(22)-green.svg)](https://github.com/FactorCitrus/Legado-iOS/releases)
+[![Release](https://img.shields.io/badge/Release-4.7.2-green.svg)](https://github.com/FactorCitrus/Legado-iOS/releases)
 [![License](https://img.shields.io/badge/License-GPLv3-lightgrey.svg)](LICENSE)
 
 > **Legado iOS** 是使用 **SwiftUI** 与 **Swift** 现代化技术栈构建的开源网络小说阅读器，高度兼容 Android 端 **Legado (开源阅读 3.0)** 书源生态、解析规则与 WebDAV 多端同步机制。
 
 ---
 
-## 核心特性 (v0.4.5)
+## 核心特性 (v4.7.2)
 
 - 📚 **全面兼容 Legado 3.0 书源生态**
   - 支持 CSS 选择器、JSONPath、XPath、正则表达式、JavaScript 动态脚本与模版语法的多重混合解析。
@@ -174,7 +174,7 @@ Legado-iOS/
 - **GitHub Issues**：https://github.com/FactorCitrus/Legado-iOS/issues
 - 装了 App 的也可以从「设置 → 关于」点进 GitHub 仓库
 
-反馈时带上这几样，能省一半来回：**应用版本**（设置 → 关于，形如 `0.4.6 (46)`）、**机型 + iOS 版本**、**复现步骤**，再加一段**诊断日志**（设置 → 诊断日志 → 复制全部）。
+反馈时带上这几样，能省一半来回：**应用版本**（设置 → 关于，形如 `4.7.2 (4.7.2)`）、**机型 + iOS 版本**、**复现步骤**，再加一段**诊断日志**（设置 → 诊断日志 → 复制全部）。
 
 ## 支持项目
 
