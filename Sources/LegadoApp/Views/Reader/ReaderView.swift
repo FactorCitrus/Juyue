@@ -1902,6 +1902,7 @@ public struct ReaderView: View {
     }
 
     private func jumpToChapter(_ targetIndex: Int, toEnd: Bool = false) {
+        AppLog.write("[阅读] 换章 → 第 \(targetIndex + 1) 章 / 共 \(chapters.count) 章")
         guard targetIndex >= 0 && targetIndex < chapters.count else { return }
         audioService.stop()
         currentChapterIndex = targetIndex
@@ -3469,6 +3470,7 @@ public struct ReaderView: View {
     }
 
     private func recomputePagination() {
+        AppLog.write("[排版] 触发重排：当前第 \(currentChapterIndex + 1) 章")
         let charPos = currentChapterCharOffset()
 
         // 分页是按当前排版算出来的，排版一变缓存里的页也是旧的，就地重排（别直接清空，

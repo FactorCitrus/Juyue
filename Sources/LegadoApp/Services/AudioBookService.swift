@@ -360,6 +360,7 @@ public class AudioBookService: NSObject, ObservableObject, AVSpeechSynthesizerDe
     }
 
     public func speak(text: String, language: String = "zh-CN") {
+        AppLog.write("[听书] 开始朗读，文本长度 \(text.count)")
         stop()
         guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
 
@@ -462,6 +463,7 @@ public class AudioBookService: NSObject, ObservableObject, AVSpeechSynthesizerDe
     }
 
     public func stop() {
+        AppLog.write("[听书] 停止朗读")
         // 停就整条序一起停，别留着半截角色队列
         castActive = false
         castSegments = []
@@ -515,6 +517,7 @@ public class AudioBookService: NSObject, ObservableObject, AVSpeechSynthesizerDe
 
     /// 按「旁白 / 对话 / 关键词」把整章切段，逐段换音色往外播
     public func speakWithCast(_ text: String, language: String = "zh-CN") {
+        AppLog.write("[听书] 开始多角色朗读，文本长度 \(text.count)，角色 \(TTSCastStore.shared.roles.count) 个")
         stop()
         let roles = TTSCastStore.shared.roles.filter { $0.enabled }
         let segments = AudioBookService.segmentsForCast(text, roles: roles)

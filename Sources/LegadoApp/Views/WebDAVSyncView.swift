@@ -323,6 +323,7 @@ public struct WebDAVSyncView: View {
 
     /// 不出网也备份：直接把 zip 存到「文件」
     private func exportBackupToFiles() {
+        AppLog.write("[云备份] 导出备份包到本地")
         do {
             let result = try WebDAVService.shared.createBackupZip(
                 books: bookStore.bookshelf,
@@ -397,6 +398,7 @@ public struct WebDAVSyncView: View {
     }
 
     private func handleLocalZipImport(result: Result<[URL], Error>) {
+        AppLog.write("[云备份] 导入本地备份包")
         do {
             guard let selectedUrl = try result.get().first else { return }
             let canAccess = selectedUrl.startAccessingSecurityScopedResource()
@@ -439,6 +441,7 @@ public struct WebDAVSyncView: View {
     }
 
     private func testConnection() {
+        AppLog.write("[云备份] 测试连接")
         isTesting = true
         Task {
             do {
@@ -488,6 +491,7 @@ public struct WebDAVSyncView: View {
     }
 
     private func backupToWebDAV() {
+        AppLog.write("[云备份] 备份到 WebDAV")
         isBackingUp = true
         Task {
             do {
@@ -516,6 +520,7 @@ public struct WebDAVSyncView: View {
     }
 
     private func restoreFromWebDAV(backupFileName: String? = nil, mode: BookStore.RestoreMode = .merge) {
+        AppLog.write("[云备份] 从 WebDAV 恢复")
         isRestoring = true
         Task {
             do {
