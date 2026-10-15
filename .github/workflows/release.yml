@@ -96,6 +96,8 @@ jobs:
           {
             echo "## $TAG"
             echo
+            echo "#### 🌟 核心更新与特性"
+            echo
             awk -v tag="$TAG" '
               index($0, "## " tag) == 1 { found = 1; next }
               found && index($0, "## ") == 1 { exit }
