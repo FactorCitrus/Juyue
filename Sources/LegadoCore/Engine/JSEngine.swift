@@ -171,6 +171,8 @@ public class JSEngine {
     public let context: JSContext
     private let javaShim: JavaShim
     public var onLoginHeaderUpdated: ((String) -> Void)?
+    /// 最近一次脚本异常。登录这类同步流程出错时，把原文带出去，别让调用方只看到一句笼统失败。
+    public private(set) var lastError: String?
 
     public init(bookSource: BookSource? = nil, baseUrl: String? = nil) {
         self.context = JSContext()
@@ -181,9 +183,11 @@ public class JSEngine {
 
     private func setupEnvironment(bookSource: BookSource?, baseUrl: String?) {
         // Exception handler
-        context.exceptionHandler = { _, exception in
+        context.exceptionHandler = { [weak self] _, exception in
+            let message = exception?.toString() ?? "unknown error"
+            self?.lastError = message
             #if DEBUG
-            print("[JSEngine Error] \(exception?.toString() ?? "unknown error")")
+            print("[JSEngine Error] \(message)")
             #endif
         }
 
@@ -267,6 +271,10 @@ public class JSEngine {
             context.setObject(JSEngine.jsSafeValue(result), forKeyedSubscript: "result" as NSString)
         }
         let val = context.evaluateScript(script)
+        if let exception = context.exception {
+            lastError = exception.toString()
+            context.exception = nil
+        }
         if val?.isUndefined == true || val?.isNull == true {
             return nil
         }

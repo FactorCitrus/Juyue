@@ -549,10 +549,22 @@ public class BookStore: ObservableObject {
             capturedHeader = newH
         }
 
-        _ = jsEngine.eval(script: loginScript)
+        // 表单值要注入脚本里的 result，源脚本靠 result['邮箱'] 这类取值
+        _ = jsEngine.eval(script: loginScript, result: credentials)
+
+        // 相当一部分书源（例：大灰狼聚合）的 loginUrl 只定义函数，真正触发登录的是
+        // loginUi 里的按钮 action，例如 {"type":"button","action":"login(true)"}。
+        // 宿主不执行这些 action，脚本跑完就等于什么都没干。
+        if capturedHeader?.isEmpty ?? true {
+            for action in Self.loginButtonActions(from: source.loginUi) {
+                _ = jsEngine.eval(script: action, result: credentials)
+                if let header = capturedHeader, !header.isEmpty { break }
+            }
+        }
 
         guard let finalHeader = capturedHeader ?? updatedSource.loginHeader, !finalHeader.isEmpty else {
-            throw NSError(domain: "BookStore", code: 2, userInfo: [NSLocalizedDescriptionKey: "登录未返回有效凭据，请检查账号密码"])
+            let detail = jsEngine.lastError.map { "（脚本报错：\($0)）" } ?? ""
+            throw NSError(domain: "BookStore", code: 2, userInfo: [NSLocalizedDescriptionKey: "登录未返回有效凭据，请检查账号密码\(detail)"])
         }
 
         await MainActor.run {
@@ -564,6 +576,40 @@ public class BookStore: ObservableObject {
         }
 
         return finalHeader
+    }
+
+    /// 从 loginUi 里挑出真正「触发登录」的按钮 action。
+    /// 跳过注册、退出、切服务器、番茄网页登录、检测、清设备这些会改状态或弹浏览器的按钮。
+    static func loginButtonActions(from loginUi: String?) -> [String] {
+        guard let loginUi,
+              let data = loginUi.data(using: .utf8),
+              let items = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] else {
+            return []
+        }
+
+        var actions: [String] = []
+        for item in items {
+            guard (item["type"] as? String) == "button" else { continue }
+            let name = (item["name"] as? String) ?? ""
+            let action = ((item["action"] as? String) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !action.isEmpty else { continue }
+
+            let lower = action.lowercased()
+            if name.contains("退出") || lower.hasPrefix("logout") { continue }
+            if name.contains("注册") || lower.hasPrefix("register") { continue }
+            if lower.hasPrefix("fq_login")
+                || lower.hasPrefix("loginqt")
+                || lower.hasPrefix("checkstatus")
+                || lower.hasPrefix("cleardevice")
+                || lower.hasPrefix("set_server")
+                || lower.hasPrefix("vip")
+                || lower.hasPrefix("api") { continue }
+
+            if lower.hasPrefix("login") || name.contains("登录") || name.contains("登陆") {
+                actions.append(action)
+            }
+        }
+        return actions
     }
 
     public func logoutSource(sourceUrl: String) {
