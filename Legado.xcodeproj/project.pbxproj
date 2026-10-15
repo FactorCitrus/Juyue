@@ -246,17 +246,28 @@
 			<key>productName</key>
 			<string>SwiftSoup</string>
 		</dict>
-		<key>19545F1A0E67955825D76F05</key>
-		<dict>
-			<key>isa</key>
-			<string>PBXFileReference</string>
-			<key>lastKnownFileType</key>
-			<string>sourcecode.swift</string>
-			<key>path</key>
-			<string>Sources/LegadoCore/Utils/CryptoUtils.swift</string>
-			<key>sourceTree</key>
-			<string>&lt;group&gt;</string>
-		</dict>
+			<key>19545F1A0E67955825D76F05</key>
+			<dict>
+				<key>isa</key>
+				<string>PBXFileReference</string>
+				<key>lastKnownFileType</key>
+				<string>sourcecode.swift</string>
+				<key>path</key>
+				<string>Sources/LegadoCore/Utils/CryptoUtils.swift</string>
+				<key>sourceTree</key>
+				<string>&lt;group&gt;</string>
+			</dict>
+			<key>CC02BB0000000000000001A1</key>
+			<dict>
+				<key>isa</key>
+				<string>PBXFileReference</string>
+				<key>lastKnownFileType</key>
+				<string>sourcecode.swift</string>
+				<key>path</key>
+				<string>Sources/LegadoCore/Utils/CookieJar.swift</string>
+				<key>sourceTree</key>
+				<string>&lt;group&gt;</string>
+			</dict>
 		<key>1BABC9FE70385367B81EC546</key>
 		<dict>
 			<key>children</key>
@@ -648,6 +659,7 @@
 				<string>C4123C85F16890446C4DBE23</string>
 				<string>66F32E672C0230504DDD4CA3</string>
 				<string>19545F1A0E67955825D76F05</string>
+				<string>CC02BB0000000000000001A1</string>
 				<string>68646EC4E211DD50A3990412</string>
 				<string>7560F3034B738FD64AA2D8E9</string>
 				<string>8F780BEA163A75FC49EE6F25</string>
@@ -829,6 +841,7 @@
 				<string>34374E0265B35B4F4B136A15</string>
 				<string>75B697AEAF7E95CCBAB260E3</string>
 				<string>A17D23166431189F8B5F0FC7</string>
+				<string>CC02BB0000000000000001A2</string>
 				<string>1225A115A7137F5380507CA8</string>
 				<string>27B065D2EA4C624A3CA9B5FD</string>
 				<string>8B61983D6CE362549689E48B</string>
@@ -872,13 +885,20 @@
 			<key>runOnlyForDeploymentPostprocessing</key>
 			<string>0</string>
 		</dict>
-		<key>A17D23166431189F8B5F0FC7</key>
-		<dict>
-			<key>fileRef</key>
-			<string>19545F1A0E67955825D76F05</string>
-			<key>isa</key>
-			<string>PBXBuildFile</string>
-		</dict>
+			<key>A17D23166431189F8B5F0FC7</key>
+			<dict>
+				<key>fileRef</key>
+				<string>19545F1A0E67955825D76F05</string>
+				<key>isa</key>
+				<string>PBXBuildFile</string>
+			</dict>
+			<key>CC02BB0000000000000001A2</key>
+			<dict>
+				<key>fileRef</key>
+				<string>CC02BB0000000000000001A1</string>
+				<key>isa</key>
+				<string>PBXBuildFile</string>
+			</dict>
 		<key>A28EB252C1E67213AA584A69</key>
 		<dict>
 			<key>fileRef</key>
