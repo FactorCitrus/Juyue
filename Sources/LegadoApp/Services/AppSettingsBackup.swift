@@ -1,5 +1,7 @@
 import Foundation
+#if canImport(LegadoCore)
 import LegadoCore
+#endif
 
 /// WebDAV 备份里的应用内设置（zip 根目录下的 `settings.json`）。
 ///
