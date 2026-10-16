@@ -621,10 +621,10 @@ public class BookStore: ObservableObject {
 
         // 脚本自己改写过的登录信息（聚合源把 token 存这儿）要落盘：登录失败时脚本
         // 也会删掉过期 token 再写回，跟着存才对。
-        if let capturedLoginInfo {
+        if let scriptLoginInfo = capturedLoginInfo {
             await MainActor.run {
                 if let idx = sources.firstIndex(where: { $0.bookSourceUrl == source.bookSourceUrl }) {
-                    sources[idx].loginInfo = capturedLoginInfo
+                    sources[idx].loginInfo = scriptLoginInfo
                     saveSources()
                 }
             }
@@ -657,9 +657,11 @@ public class BookStore: ObservableObject {
             throw NSError(domain: "BookStore", code: 2, userInfo: [NSLocalizedDescriptionKey: "登录未返回有效凭据，请检查账号密码\(detail)"])
         }
 
+        // 取成不可变值再进并发闭包，别在闭包里读被脚本回调改写的 var
+        let resolvedLoginInfo = capturedLoginInfo ?? credJson
         await MainActor.run {
             if let idx = sources.firstIndex(where: { $0.bookSourceUrl == source.bookSourceUrl }) {
-                sources[idx].loginInfo = capturedLoginInfo ?? credJson
+                sources[idx].loginInfo = resolvedLoginInfo
                 sources[idx].loginHeader = resolvedHeader
                 saveSources()
             }
