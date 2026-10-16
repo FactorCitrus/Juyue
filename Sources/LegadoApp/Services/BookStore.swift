@@ -524,6 +524,33 @@ public class BookStore: ObservableObject {
         saveSources()
     }
 
+    /// 置顶 / 取消置顶。
+    ///
+    /// 用 `customOrder` 记状态（-1 = 置顶）而不是只挪数组位置 —— 只挪位置的话
+    /// 没法「取消置顶」，用户也看不出到底顶没顶。置顶时顺带挪到最前，
+    /// 保证「默认顺序」下也是连续的。
+    public func setPinned(_ pinned: Bool, sourceUrl: String) {
+        guard let idx = sources.firstIndex(where: { $0.bookSourceUrl == sourceUrl }) else { return }
+        sources[idx].customOrder = pinned ? -1 : nil
+        if pinned {
+            let item = sources.remove(at: idx)
+            sources.insert(item, at: 0)
+        }
+        saveSources()
+    }
+
+    public func isPinned(_ source: BookSource) -> Bool {
+        (source.customOrder ?? 0) < 0
+    }
+
+    /// 改分组（分类）。传空串等于清掉分组
+    public func setSourceGroup(sourceUrl: String, group: String?) {
+        guard let idx = sources.firstIndex(where: { $0.bookSourceUrl == sourceUrl }) else { return }
+        let trimmed = group?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        sources[idx].bookSourceGroup = trimmed.isEmpty ? nil : trimmed
+        saveSources()
+    }
+
     public func updateSourceHeader(sourceUrl: String, header: String) {
         if let idx = sources.firstIndex(where: { $0.bookSourceUrl == sourceUrl }) {
             sources[idx].loginHeader = header
@@ -531,7 +558,32 @@ public class BookStore: ObservableObject {
         }
     }
 
+    /// 表单登录：跑 loginUrl，再跑 loginUi 里挑出来的登录按钮 action。
     public func performLogin(source: BookSource, credentials: [String: String]) async throws -> String {
+        try await runLoginFlow(source: source,
+                               credentials: credentials,
+                               actions: Self.loginButtonActions(from: source.loginUi),
+                               requireCredentials: true)
+    }
+
+    /// 跑 `loginUi` 里某个按钮自己的 action。
+    ///
+    /// 安卓的登录面板就是一排按钮（登录书源 / 注册书源 / 番茄登录 / 切换服务器 / 检测登录…），
+    /// 每按一个就执行它那段脚本。宿主只认「登录」那一个按钮的话，其余按钮点了没反应。
+    public func runLoginAction(source: BookSource, credentials: [String: String], action: String) async throws -> String {
+        try await runLoginFlow(source: source,
+                               credentials: credentials,
+                               actions: [action],
+                               // 非登录类按钮（检测/切换服务器那些）本来就不会产出凭据，别因此报错
+                               requireCredentials: false)
+    }
+
+    private func runLoginFlow(
+        source: BookSource,
+        credentials: [String: String],
+        actions: [String],
+        requireCredentials: Bool
+    ) async throws -> String {
         guard let loginScript = source.loginUrl, !loginScript.isEmpty else {
             throw NSError(domain: "BookStore", code: 1, userInfo: [NSLocalizedDescriptionKey: "该书源未配置登录脚本"])
         }
@@ -559,7 +611,7 @@ public class BookStore: ObservableObject {
         // loginUi 里的按钮 action，例如 {"type":"button","action":"login(true)"}。
         // 宿主不执行这些 action，脚本跑完就等于什么都没干。
         if capturedHeader?.isEmpty ?? true {
-            for action in Self.loginButtonActions(from: source.loginUi) {
+            for action in actions {
                 _ = jsEngine.eval(script: JSEngine.unwrapJsScript(action), result: credentials)
                 if let header = capturedHeader, !header.isEmpty { break }
             }
@@ -583,6 +635,11 @@ public class BookStore: ObservableObject {
         }
 
         guard let resolvedHeader = finalHeader, !resolvedHeader.isEmpty else {
+            if !requireCredentials {
+                // 非登录按钮：脚本没产出凭据是正常的，把脚本错误（如果有）捎回去就行
+                if let err = jsEngine.lastError { throw NSError(domain: "BookStore", code: 3, userInfo: [NSLocalizedDescriptionKey: "脚本报错：\(err)"]) }
+                return ""
+            }
             let detail = jsEngine.lastError.map { "（脚本报错：\($0)）" } ?? ""
             throw NSError(domain: "BookStore", code: 2, userInfo: [NSLocalizedDescriptionKey: "登录未返回有效凭据，请检查账号密码\(detail)"])
         }

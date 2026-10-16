@@ -20,6 +20,8 @@ public struct SourceWebLoginView: View {
     @State private var manualCookieInput: String = ""
     @State private var alertMessage: String = ""
     @State private var showAlert: Bool = false
+    /// 可编辑的地址栏：聚合源的 loginUrl 是脚本，网址得从脚本里扒或手填
+    @State private var urlText: String = ""
 
     public init(source: BookSource, onLoginCompleted: ((BookSource) -> Void)? = nil) {
         self.source = source
@@ -38,7 +40,39 @@ public struct SourceWebLoginView: View {
         let candidates = [source.loginUrl ?? "", source.bookSourceUrl]
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
         let firstUsable = candidates.first { Self.isLoadableWebUrl($0) }
+        // 都不可用时，从脚本里扒候选主机当默认 —— 聚合源把登录页写在脚本里
+        // （host = ['https://v5.langge.uk', ...]），比空着地址栏强得多。
+        let derived = firstUsable ?? Self.candidateHosts(from: source).first ?? ""
         self._currentUrl = State(initialValue: firstUsable.flatMap { URL(string: $0) })
+        self._urlText = State(initialValue: derived)
+    }
+
+    /// 候选主机的中文名。
+    /// 脚本里只存域名，列表光甩一串网址不好认；这里按常见站点给个可读标签，
+    /// 认不出来的按序号叫「线路 N」。
+    static func hostLabel(_ host: String, index: Int) -> String {
+        let lower = host.lowercased()
+        if lower.contains("fanqienovel") { return "番茄小说（\(host)）" }
+        if lower.contains("langge") { return "大灰狼线路 \(index + 1)（\(host)）" }
+        if lower.contains("cloudflare") { return "CDN 线路（\(host)）" }
+        return "线路 \(index + 1)（\(host)）"
+    }
+
+    /// 从登录脚本 / JS 库里扒出候选主机（去重、保序，最多 6 个）。
+    /// 聚合源的登录页地址是运行时拼的（`getArgument('server') + '/login'`），
+    /// 静态只能扒到它脚本里出现过的那些主机，所以给个候选让用户挑。
+    static func candidateHosts(from source: BookSource) -> [String] {
+        let text = [source.loginUrl ?? "", source.jsLib ?? "", source.bookSourceUrl].joined(separator: "\n")
+        guard let regex = try? NSRegularExpression(pattern: #"https?://[A-Za-z0-9.\-]+"#) else { return [] }
+        let ns = text as NSString
+        var seen = Set<String>()
+        var out: [String] = []
+        regex.enumerateMatches(in: text, range: NSRange(location: 0, length: ns.length)) { match, _, _ in
+            guard let match, out.count < 6 else { return }
+            let host = ns.substring(with: match.range)
+            if seen.insert(host).inserted { out.append(host) }
+        }
+        return out
     }
 
     /// 能不能直接交给 WebView 打开：必须是带 host 的 http(s) 地址。
@@ -59,7 +93,7 @@ public struct SourceWebLoginView: View {
                 .foregroundColor(.secondary)
             Text("这个书源没有可直接打开的网页登录地址")
                 .font(.subheadline.weight(.medium))
-            Text("它的 loginUrl 是一段脚本、bookSourceUrl 也不是网址。\n请返回上一页用「表单登录」（邮箱 / 密码），或者在这里「手动粘贴 Cookie」。")
+            Text("它的 loginUrl 是一段脚本、bookSourceUrl 也不是网址。\n上面地址栏里是从脚本里扒出来的主机，填上真实登录页地址点「打开」即可；也可以直接「手动粘贴 Cookie」，或者回上一页走「表单脚本登录」。")
                 .font(.caption)
                 .foregroundColor(.secondary)
                 .multilineTextAlignment(.center)
@@ -83,10 +117,34 @@ public struct SourceWebLoginView: View {
                             .font(.caption)
                     }
 
-                    Text(currentUrl?.absoluteString ?? source.bookSourceUrl)
+                    // 地址可改：聚合源的登录页写在脚本里，扒出来的主机不一定就是登录页
+                    TextField("登录页地址（https://…）", text: $urlText)
                         .font(.caption2)
-                        .foregroundColor(.secondary)
-                        .lineLimit(1)
+                        .textFieldStyle(.plain)
+                        #if os(iOS)
+                        .autocapitalization(.none)
+                        .disableAutocorrection(true)
+                        .keyboardType(.URL)
+                        #endif
+                        .onSubmit { openTypedUrl() }
+
+                    Button("打开") { openTypedUrl() }
+                        .font(.caption)
+                        .disabled(urlText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+
+                    let hosts = Self.candidateHosts(from: source)
+                    if hosts.count > 1 {
+                        Menu {
+                            ForEach(Array(hosts.enumerated()), id: \.element) { index, host in
+                                Button(Self.hostLabel(host, index: index)) {
+                                    urlText = host
+                                }
+                            }
+                        } label: {
+                            Image(systemName: "list.bullet")
+                                .font(.caption)
+                        }
+                    }
 
                     Spacer()
 
@@ -244,6 +302,14 @@ public struct SourceWebLoginView: View {
     // MARK: - Cookie Extraction & Saving
     private func loadInitialUrl() {
         guard let url = currentUrl else { return }
+        webView.load(URLRequest(url: url))
+    }
+
+    /// 打开地址栏里那条地址
+    private func openTypedUrl() {
+        let text = urlText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let url = URL(string: text), url.scheme?.hasPrefix("http") == true else { return }
+        currentUrl = url
         webView.load(URLRequest(url: url))
     }
 

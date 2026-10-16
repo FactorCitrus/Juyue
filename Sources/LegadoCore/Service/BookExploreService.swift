@@ -101,6 +101,14 @@ public class BookExploreService {
             renderedUrl = jsEngine.renderTemplate(renderedUrl, variables: ["page": page])
         }
 
+        // 分类里有些条目不是「去抓一个网址」，而是「点一下执行一段脚本」——
+        // 例如大灰狼的「登录番茄」：url 就是 `{{java.startBrowser("https://fanqienovel.com/","番茄登录");}}`。
+        // 这类渲染完 URL 是空的，动作（弹浏览器）已经执行过了，返回空列表即可，
+        // 不能当成「网址解析失败」抛错 —— 之前就是这儿冒出一个满载失败页。
+        guard !renderedUrl.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return []
+        }
+
         guard let parsedReq = NetworkClient.parseLegadoUrl(
             renderedUrl,
             defaultHeader: source.loginHeader ?? source.header,

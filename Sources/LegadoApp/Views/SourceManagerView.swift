@@ -29,6 +29,9 @@ public struct SourceManagerView: View {
     @State private var selectedGroup: String? = nil
     @State private var onlyEnabled: Bool = false
     @State private var sortMode: SourceSortMode = .manual
+    /// 正在改分组的书源
+    @State private var groupEditTarget: BookSource?
+    @State private var groupEditText: String = ""
 
     public init() {}
 
@@ -97,7 +100,14 @@ public struct SourceManagerView: View {
         case .enabledFirst:
             list.sort { ($0.enabled ?? true ? 0 : 1) < ($1.enabled ?? true ? 0 : 1) }
         }
-        return list
+        // 置顶的永远在最前（各排序模式下都生效）—— 否则用户看不出置顶起作用了
+        return list.enumerated()
+            .sorted { lhs, rhs in
+                let lp = bookStore.isPinned(lhs.element), rp = bookStore.isPinned(rhs.element)
+                if lp != rp { return lp }
+                return lhs.offset < rhs.offset
+            }
+            .map(\.element)
     }
 
     public var body: some View {
@@ -183,9 +193,17 @@ public struct SourceManagerView: View {
                             }
 
                             Button {
-                                bookStore.pinSource(sourceUrl: source.bookSourceUrl)
+                                bookStore.setPinned(!bookStore.isPinned(source), sourceUrl: source.bookSourceUrl)
                             } label: {
-                                Label("置顶", systemImage: "pin")
+                                Label(bookStore.isPinned(source) ? "取消置顶" : "置顶",
+                                      systemImage: bookStore.isPinned(source) ? "pin.slash" : "pin")
+                            }
+
+                            Button {
+                                groupEditText = source.bookSourceGroup ?? ""
+                                groupEditTarget = source
+                            } label: {
+                                Label("编辑分类", systemImage: "folder")
                             }
 
                             if source.loginUi != nil || source.loginUrl != nil {
@@ -240,6 +258,9 @@ public struct SourceManagerView: View {
             }
             .sheet(isPresented: $showImportSheet) {
                 importSourceSheet
+            }
+            .sheet(item: $groupEditTarget) { target in
+                groupEditor(for: target)
             }
             .sheet(item: $selectedSourceForLogin) { source in
                 SourceLoginSheet(source: source)
@@ -469,6 +490,68 @@ enum SourceDocumentPicker {
         showAlert = true
     }
 
+    /// 编辑书源的分类（分组）。可以手打，也可以点已有分类直接加。
+    @ViewBuilder
+    private func groupEditor(for target: BookSource) -> some View {
+        NavigationView {
+            Form {
+                Section(header: Text("分类（分组）")) {
+                    TextField("多个分类用英文逗号分隔", text: $groupEditText)
+                        #if os(iOS)
+                        .autocapitalization(.none)
+                        .disableAutocorrection(true)
+                        #endif
+                    Text("留空 = 不分组")
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
+                }
+
+                if !allGroups.isEmpty {
+                    Section(header: Text("已有分类（点一下切换）")) {
+                        ForEach(allGroups, id: \.self) { group in
+                            Button {
+                                toggleGroup(group)
+                            } label: {
+                                HStack {
+                                    Text(group)
+                                    Spacer()
+                                    if SourceManagerView.splitGroups(groupEditText).contains(group) {
+                                        Image(systemName: "checkmark")
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            .navigationTitle("编辑分类")
+            #if os(iOS)
+            .navigationBarTitleDisplayMode(.inline)
+            #endif
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("取消") { groupEditTarget = nil }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("保存") {
+                        bookStore.setSourceGroup(sourceUrl: target.bookSourceUrl, group: groupEditText)
+                        groupEditTarget = nil
+                    }
+                }
+            }
+        }
+    }
+
+    private func toggleGroup(_ group: String) {
+        var groups = SourceManagerView.splitGroups(groupEditText)
+        if let idx = groups.firstIndex(of: group) {
+            groups.remove(at: idx)
+        } else {
+            groups.append(group)
+        }
+        groupEditText = groups.joined(separator: ",")
+    }
+
     private var importSourceSheet: some View {
         NavigationView {
             Form {
@@ -588,11 +671,23 @@ public struct SourceLoginSheet: View {
     @State private var isLoggingIn: Bool = false
     @State private var errorMessage: String? = nil
     @State private var successMessage: String? = nil
+    @State private var loginButtons: [LoginButton] = []
+    @State private var runningAction: String? = nil
 
     struct LoginField: Identifiable {
         var id: String { name }
         let name: String
         let type: String
+    }
+
+    /// `loginUi` 里的按钮项。安卓那边就是一排按钮，每个按钮带一段 action 脚本，
+    /// 宽度由 style 里的 `layout_flexBasisPercent` 定（0.4 = 一行两个，1 = 独占一行）。
+    struct LoginButton: Identifiable {
+        var id: String { "\(index)-\(name)" }
+        let index: Int
+        let name: String
+        let action: String
+        let width: Double
     }
 
     private var isWebLoginDefault: Bool {
@@ -674,6 +769,33 @@ public struct SourceLoginSheet: View {
                     }
                 }
 
+                if !loginButtons.isEmpty {
+                    Section(header: Text("脚本按钮")) {
+                        ForEach(Array(buttonRows.enumerated()), id: \.offset) { _, row in
+                            HStack(spacing: 8) {
+                                ForEach(row) { button in
+                                    Button {
+                                        runLoginAction(button)
+                                    } label: {
+                                        HStack(spacing: 4) {
+                                            if runningAction == button.action {
+                                                ProgressView().scaleEffect(0.7)
+                                            }
+                                            Text(button.name)
+                                                .font(.subheadline)
+                                                .lineLimit(1)
+                                                .minimumScaleFactor(0.7)
+                                        }
+                                        .frame(maxWidth: .infinity)
+                                    }
+                                    .buttonStyle(.bordered)
+                                    .disabled(runningAction != nil)
+                                }
+                            }
+                        }
+                    }
+                }
+
                 if let err = errorMessage {
                     Section {
                         Text(err)
@@ -691,6 +813,8 @@ public struct SourceLoginSheet: View {
                 }
 
                 Section {
+                    // loginUi 自带登录按钮时就不再塞一个「立即登录」，跟安卓一致
+                    if !hasLoginButton {
                     Button(action: performLogin) {
                         if isLoggingIn {
                             HStack {
@@ -705,6 +829,7 @@ public struct SourceLoginSheet: View {
                         }
                     }
                     .disabled(isLoggingIn)
+                    }
 
                     if source.isLogged {
                         Button(role: .destructive, action: {
@@ -739,18 +864,93 @@ public struct SourceLoginSheet: View {
         guard let uiJson = source.loginUi, let data = uiJson.data(using: .utf8),
               let arr = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] else {
             fields = [LoginField(name: "账号", type: "text"), LoginField(name: "密码", type: "password")]
+            loginButtons = []
             return
         }
 
         var parsed: [LoginField] = []
-        for item in arr {
+        var buttons: [LoginButton] = []
+        for (index, item) in arr.enumerated() {
             let name = (item["name"] as? String) ?? ""
             let type = (item["type"] as? String) ?? "text"
-            if !name.isEmpty && type != "button" {
+            if type == "button" {
+                guard !name.isEmpty, let action = item["action"] as? String, !action.isEmpty else { continue }
+                buttons.append(LoginButton(index: index,
+                                           name: name,
+                                           action: action,
+                                           width: Self.parseFlexWidth(item["style"])))
+            } else if !name.isEmpty {
                 parsed.append(LoginField(name: name, type: type))
             }
         }
         self.fields = parsed
+        self.loginButtons = buttons
+    }
+
+    /// 取 style 里的 layout_flexBasisPercent。
+    ///
+    /// 注意安卓导出的是**单引号伪 JSON**：`{'layout_flexGrow': 1, 'layout_flexBasisPercent': 0.4}`，
+    /// 直接丢给 JSONSerialization 会解析失败，得先把单引号换成双引号。
+    static func parseFlexWidth(_ style: Any?) -> Double {
+        var text: String?
+        if let s = style as? String { text = s }
+        else if let dict = style as? [String: Any], let v = dict["layout_flexBasisPercent"] {
+            return (v as? Double) ?? Double("\(v)") ?? 1
+        }
+        guard let raw = text else { return 1 }
+        let normalized = raw.replacingOccurrences(of: "'", with: "\"")
+        guard let data = normalized.data(using: .utf8),
+              let dict = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return 1 }
+        if let v = dict["layout_flexBasisPercent"] as? Double { return v }
+        if let v = dict["layout_flexBasisPercent"], let d = Double("\(v)") { return d }
+        return 1
+    }
+
+    /// 按宽度把按钮折成几行：一行里宽度加起来不超过 1.0。
+    /// 单行总宽不足 1 时按比例撑满（对齐安卓 flexGrow 的效果）。
+    private var buttonRows: [[LoginButton]] {
+        var rows: [[LoginButton]] = []
+        var current: [LoginButton] = []
+        var sum = 0.0
+        for button in loginButtons {
+            let w = min(1.0, max(0.2, button.width))
+            if !current.isEmpty && sum + w > 1.0001 {
+                rows.append(current)
+                current = []
+                sum = 0
+            }
+            current.append(button)
+            sum += w
+        }
+        if !current.isEmpty { rows.append(current) }
+        return rows
+    }
+
+    /// loginUi 里有没有自带「登录」按钮（有的话就不再用宿主那个「立即登录」）
+    private var hasLoginButton: Bool {
+        loginButtons.contains { $0.action.lowercased().contains("login(") }
+    }
+
+    /// 跑某个按钮自己的 action。安卓的登录面板就是靠这个把「注册 / 番茄登录 / 切换服务器」
+    /// 这些按钮跑起来的；之前 iOS 只认登录那一个 action，其余点了没反应。
+    private func runLoginAction(_ button: LoginButton) {
+        runningAction = button.action
+        errorMessage = nil
+        successMessage = nil
+        Task {
+            do {
+                let header = try await BookStore.shared.runLoginAction(source: source,
+                                                                      credentials: fieldValues,
+                                                                      action: button.action)
+                runningAction = nil
+                successMessage = header.isEmpty
+                    ? "「\(button.name)」已执行"
+                    : "「\(button.name)」已执行，并拿到凭据"
+            } catch {
+                runningAction = nil
+                errorMessage = error.localizedDescription
+            }
+        }
     }
 
     private func performLogin() {

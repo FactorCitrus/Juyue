@@ -1,6 +1,7 @@
 import Foundation
 import JavaScriptCore
 import SwiftSoup
+import CommonCrypto
 
 @objc public protocol JavaShimProtocol: JSExport {
     func ajax(_ url: String) -> String
@@ -20,6 +21,34 @@ import SwiftSoup
     func deviceID() -> String
     func androidId() -> String
     func hexDecodeToString(_ hex: String) -> String
+    // 下面这几个是给 Rhino 那套 Java 互操作做适配用的（聚合源大量依赖）：
+    func base64EncodeBytes(_ bytes: JSValue) -> String
+    func sleepMs(_ ms: JSValue)
+    func createSymmetricCrypto(_ transformation: String, _ key: String) -> JSValue
+    func createSymmetricCrypto(_ transformation: String, _ key: String, _ iv: String) -> JSValue
+    // 需要弹浏览器的那些按钮：注册 / 用户后台 / 使用教程 / 永久发布页 / 番茄登录 / 打赏
+    func startBrowser(_ url: String, _ title: String)
+    func startBrowserAwait(_ url: String, _ title: String) -> JSValue
+    func startBrowserAwait(_ url: String, _ title: String, _ wait: Bool) -> JSValue
+    func startBrowserDp(_ url: String, _ title: String)
+    func showBrowser(_ url: String, _ title: String)
+    func showReadingBrowser(_ url: String, _ title: String)
+    /// `cache.remove(key)`：脚本缓存登录态用的全局 cache 对象靠它删键
+    func removeCache(_ key: String)
+}
+
+/// 脚本要弹浏览器的请求。
+///
+/// 书源的 `java.startBrowserAwait(url, title)` 要「打开网页 → 用户操作 → 关掉 → 脚本拿结果」，
+/// 而 JS 是同步的：宿主必须能阻塞调用线程直到网页关闭。Core 层只负责发请求，
+/// 真正弹窗由 App 层注册 handler 实现 —— Core 不依赖 UIKit，桌面端也能各自接。
+public final class ScriptBrowser {
+    public static let shared = ScriptBrowser()
+
+    /// 参数：url、标题、是否等网页关闭。返回：最终页面 HTML 与 URL（拿不到就给空串）。
+    public var present: ((String, String, Bool) -> (body: String, url: String))?
+
+    private init() {}
 }
 
 @objc public class JavaShim: NSObject, JavaShimProtocol {
@@ -168,6 +197,185 @@ import SwiftSoup
         return String(decoding: bytes, as: UTF8.self)
     }
 
+    // MARK: - Rhino / Java 互操作适配
+    //
+    // 安卓的 JS 引擎是 Rhino，聚合源的脚本大量用 Java 互操作：
+    // `new JavaImporter()` + `with(javaImport){...}` / `Packages.android.util.Base64` /
+    // `java.createSymmetricCrypto("AES", key).encrypt(bytes)`。JSC 里这些一个都没有，
+    // 脚本第一行就 ReferenceError。这里把用到的那些按语义近似实现。
+
+    /// `Packages.android.util.Base64.encodeToString(bytes, flags)`
+    /// flags 里的 2 是 Android 的 NO_WRAP，正好等于标准 base64 不带换行。
+    public func base64EncodeBytes(_ bytes: JSValue) -> String {
+        Data(Self.byteArray(from: bytes)).base64EncodedString()
+    }
+
+    /// `Packages.java.lang.Thread.sleep(ms)` —— 脚本用它来等异步、限速。
+    public func sleepMs(_ ms: JSValue) {
+        let value = ms.isNumber ? ms.toInt32() : (Int32(ms.toString() ?? "0") ?? 0)
+        let clamped = max(0, min(value, 10_000))
+        if clamped > 0 { Thread.sleep(forTimeInterval: Double(clamped) / 1000.0) }
+    }
+
+    public func createSymmetricCrypto(_ transformation: String, _ key: String) -> JSValue {
+        makeCrypto(transformation: transformation, key: key, iv: nil)
+    }
+
+    public func createSymmetricCrypto(_ transformation: String, _ key: String, _ iv: String) -> JSValue {
+        makeCrypto(transformation: transformation, key: key, iv: iv)
+    }
+
+    /// 只按安卓 BouncyCastle 的默认惯例来：只写算法名（"AES"）当作
+    /// `<算法>/ECB/PKCS5Padding`；密钥和 IV 都按 UTF-8 取字节。
+    private func makeCrypto(transformation: String, key: String, iv: String?) -> JSValue {
+        guard let ctx = jsContext else { return JSValue(undefinedIn: JSContext()) }
+        let parts = transformation.uppercased().split(separator: "/").map(String.init)
+        let algorithm = parts.first ?? "AES"
+        let mode = parts.count > 1 ? parts[1] : "ECB"
+        let keyData = Data(key.utf8)
+        let ivData = iv.map { Data($0.utf8) }
+
+        let encrypt: @convention(block) (JSValue) -> JSValue = { [weak self] input in
+            let plain = Self.byteArray(from: input)
+            let out = Self.symmetric(algorithm: algorithm, mode: mode, key: keyData,
+                                     iv: ivData, input: plain, encrypt: true) ?? []
+            return self?.jsArray(out) ?? JSValue(undefinedIn: ctx)
+        }
+        let decrypt: @convention(block) (JSValue) -> JSValue = { [weak self] input in
+            let cipher = Self.byteArray(from: input)
+            let out = Self.symmetric(algorithm: algorithm, mode: mode, key: keyData,
+                                     iv: ivData, input: cipher, encrypt: false) ?? []
+            return self?.jsArray(out) ?? JSValue(undefinedIn: ctx)
+        }
+        let encryptBase64: @convention(block) (JSValue) -> JSValue = { [weak ctx] input in
+            let plain = Self.byteArray(from: input)
+            let out = Self.symmetric(algorithm: algorithm, mode: mode, key: keyData,
+                                     iv: ivData, input: plain, encrypt: true) ?? []
+            return JSValue(object: Data(out).base64EncodedString(), in: ctx)
+        }
+        let decryptBase64: @convention(block) (JSValue) -> JSValue = { [weak self, weak ctx] input in
+            let raw = input.toString() ?? ""
+            let cipher = [UInt8](Data(base64Encoded: raw) ?? Data())
+            let out = Self.symmetric(algorithm: algorithm, mode: mode, key: keyData,
+                                     iv: ivData, input: cipher, encrypt: false) ?? []
+            return self?.jsArray(out) ?? JSValue(undefinedIn: ctx)
+        }
+        let obj: [String: Any] = [
+            "encrypt": encrypt,
+            "decrypt": decrypt,
+            "encryptBase64": encryptBase64,
+            "decryptBase64": decryptBase64
+        ]
+        return JSValue(object: obj, in: ctx)
+    }
+
+    private func jsArray(_ bytes: [UInt8]) -> JSValue {
+        let ctx = jsContext ?? JSContext()
+        return JSValue(object: bytes.map { Int($0) }, in: ctx)
+    }
+
+    /// 脚本传进来的可能是 [Int] 数组、也可能是字符串（按 UTF-8 取字节）。
+    static func byteArray(from value: JSValue) -> [UInt8] {
+        if let text = value.toString(), !value.isArray { return [UInt8](text.utf8) }
+        if let array = value.toArray() {
+            return array.compactMap { item in
+                if let n = item as? NSNumber { return UInt8(truncatingIfNeeded: n.intValue) }
+                if let n = item as? Int { return UInt8(truncatingIfNeeded: n) }
+                return nil
+            }
+        }
+        return []
+    }
+
+    /// AES/DES 的 ECB / CBC(PKCS5=PKCS7) —— 就是 BouncyCastle 那几种默认写法
+    static func symmetric(
+        algorithm: String, mode: String, key: Data, iv: Data?, input: [UInt8], encrypt: Bool
+    ) -> [UInt8]? {
+        guard !input.isEmpty else { return [] }
+        let ccAlgorithm: CCAlgorithm
+        switch algorithm {
+        case "AES": ccAlgorithm = CCAlgorithm(kCCAlgorithmAES)
+        case "DES": ccAlgorithm = CCAlgorithm(kCCAlgorithmDES)
+        case "DESEDE", "3DES": ccAlgorithm = CCAlgorithm(kCCAlgorithm3DES)
+        default: return nil
+        }
+        let operation = CCOperation(encrypt ? kCCEncrypt : kCCDecrypt)
+        let options = CCOptions(mode == "CBC" ? 0 : kCCOptionECBMode)
+        var outLength = 0
+        var out = [UInt8](repeating: 0, count: input.count + kCCBlockSizeAES128)
+        let status = iv?.withUnsafeBytes { ivBytes -> CCCryptorStatus in
+            key.withUnsafeBytes { keyBytes in
+                input.withUnsafeBytes { inputBytes in
+                    CCCrypt(operation, ccAlgorithm, options,
+                            keyBytes.baseAddress, key.count,
+                            ivBytes.baseAddress,
+                            inputBytes.baseAddress, input.count,
+                            &out, out.count, &outLength)
+                }
+            }
+        } ?? key.withUnsafeBytes { keyBytes in
+            input.withUnsafeBytes { inputBytes in
+                CCCrypt(operation, ccAlgorithm, options,
+                        keyBytes.baseAddress, key.count,
+                        nil,
+                        inputBytes.baseAddress, input.count,
+                        &out, out.count, &outLength)
+            }
+        }
+        guard status == kCCSuccess else { return nil }
+        return Array(out.prefix(outLength))
+    }
+
+    // MARK: - 脚本要弹浏览器
+
+    /// 删缓存键（脚本的全局 cache 对象用）
+    public func removeCache(_ key: String) {
+        lock.lock()
+        defer { lock.unlock() }
+        kvStore.removeValue(forKey: key)
+    }
+
+    /// 不等结果：把网页交给宿主打开就行（教程、永久发布页这类）。
+    public func startBrowser(_ url: String, _ title: String) {
+        _ = ScriptBrowser.shared.present?(url, title, false)
+    }
+
+    /// 等结果：脚本要拿到用户操作后的页面内容（注册、书源设置中心、番茄登录这类）。
+    /// “等”是同步阻塞当前脚本线程实现的 —— 所以调用它的脚本不能跑在主线程上，
+    /// 登录面板那几个按钮走的是 Task，正好不占主线程。
+    public func startBrowserAwait(_ url: String, _ title: String) -> JSValue {
+        browserResult(url: url, title: title, wait: true)
+    }
+
+    public func startBrowserAwait(_ url: String, _ title: String, _ wait: Bool) -> JSValue {
+        browserResult(url: url, title: title, wait: wait)
+    }
+
+    // 安卓侧的几个近亲，脚本里也在用；语义一样，都走同一个宿主入口
+    public func startBrowserDp(_ url: String, _ title: String) {
+        _ = ScriptBrowser.shared.present?(url, title, false)
+    }
+
+    public func showBrowser(_ url: String, _ title: String) {
+        _ = ScriptBrowser.shared.present?(url, title, false)
+    }
+
+    public func showReadingBrowser(_ url: String, _ title: String) {
+        _ = ScriptBrowser.shared.present?(url, title, false)
+    }
+
+    private func browserResult(url: String, title: String, wait: Bool) -> JSValue {
+        let ctx = jsContext ?? JSContext()
+        guard let result = ScriptBrowser.shared.present?(url, title, wait) else {
+            return JSValue(object: ["url": url, "body": "", "code": 0], in: ctx)
+        }
+        return JSValue(object: [
+            "url": result.url.isEmpty ? url : result.url,
+            "body": result.body,
+            "code": 200
+        ], in: ctx)
+    }
+
     private static func persistentDeviceID() -> String {
         let key = "legado.scriptDeviceID"
         if let existing = UserDefaults.standard.string(forKey: key), !existing.isEmpty {
@@ -249,6 +457,14 @@ public class JSEngine {
         self.javaShim = JavaShim(context: context)
 
         setupEnvironment(bookSource: bookSource, baseUrl: baseUrl)
+
+        // 把书源自带的 jsLib 注入上下文。
+        // 聚合源（大灰狼那一类）把 getArguments / setArgument / 各种加解密助手全写在 jsLib 里，
+        // 正文、搜索、登录脚本直接调；不注入的话脚本第一行就
+        // `ReferenceError: Can't find variable: getArguments`，整份源等于废掉。
+        if let lib = bookSource?.jsLib, !lib.isEmpty {
+            _ = eval(script: JSEngine.unwrapJsScript(lib))
+        }
     }
 
     private func setupEnvironment(bookSource: BookSource?, baseUrl: String?) {
@@ -306,6 +522,9 @@ public class JSEngine {
         sourceObj?.setValue(getVariableBlock, forProperty: "getVariable")
         sourceObj?.setValue(setVariableBlock, forProperty: "setVariable")
         sourceObj?.setValue(bookSource?.loginUrl ?? "", forProperty: "loginUrl")
+        // 聚合源拿它当「这本书源的缓存键」用：cache.put(`userInfo_${source.getKey()}`, ...)
+        let getKeyBlock: @convention(block) () -> String = { bookSource?.bookSourceUrl ?? "" }
+        sourceObj?.setValue(getKeyBlock, forProperty: "getKey")
         sourceObj?.setValue(bookSource?.bookSourceUrl ?? "", forProperty: "bookSourceUrl")
         sourceObj?.setValue(bookSource?.bookSourceName ?? "", forProperty: "bookSourceName")
 
@@ -356,6 +575,34 @@ public class JSEngine {
         function annotate(text, kanji) { return text || ''; }
         function update(url, token) { }
         """)
+
+        // Rhino 的 Java 互操作壳。
+        //
+        // 安卓那边脚本跑在 Rhino 上，聚合源大量用 `new JavaImporter()` + `with(javaImport){...}`、
+        // `importClass(...)`、`Packages.android.util.Base64.encodeToString(...)`、
+        // `Packages.java.lang.Thread.sleep(...)`。JSC 里这些全局一个都没有，
+        // 脚本第一行就 ReferenceError（实测大灰狼 5.9.30 就是卡在 JavaImporter）。
+        // 这里按语义把用到的那些补上，缺的部分脚本自己大多包在 try/catch 里会降级。
+        context.evaluateScript("""
+        var JavaImporter = function(){ return { importClass: function(){}, importPackage: function(){} }; };
+        var importClass = function(){};
+        var importPackage = function(){};
+        var Packages = {
+          android: { util: { Base64: { encodeToString: function(bytes, flags){ return java.base64EncodeBytes(bytes); } } } },
+          java: { lang: { Thread: { sleep: function(ms){ java.sleepMs(ms); } } } },
+          io: { legato: { kazusa: { utils: { TimeoutCancellationException: function(message){ this.message = message; this.name = 'TimeoutCancellationException'; } } } } }
+        };
+        if (!java.refreshExplore) { java.refreshExplore = function(){}; }
+
+        // 全局 cache：脚本用它存登录态之类的短期数据（cache.put('userInfo_xxx', ...)）。
+        // 安卓那边是宿主提供的，缺了就 ReferenceError，聚合源登录的最后一步正好用它。
+        var cache = {
+          put: function(key, value){ java.put(String(key), String(value)); },
+          get: function(key){ var v = java.get(String(key)); return (v === undefined || v === null) ? '' : v; },
+          remove: function(key){ java.removeCache(String(key)); }
+        };
+        """)
+        context.exception = nil
     }
 
     /// Evaluates a JavaScript snippet with optional `result` value

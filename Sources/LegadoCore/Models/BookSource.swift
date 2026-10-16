@@ -35,6 +35,19 @@ public struct BookSource: Codable, Identifiable, Equatable {
     public var loginHeader: String?
     public var variable: String?
 
+    /// 书源自带的 JS 助手库。
+    ///
+    /// 聚合源（大灰狼那一类）把 `getArguments` / `setArgument` / 一堆加解密函数全写在这里，
+    /// 正文、搜索、登录脚本直接调。宿主不接这个字段的话，脚本第一行就
+    /// `ReferenceError: Can't find variable: getArguments` —— 整份源等于废掉。
+    public var jsLib: String?
+    /// 事件监听 / 自定义按钮 / 启用 CookieJar：安卓编辑器里的开关，先收进来别丢
+    public var eventListener: Bool?
+    public var customButton: Bool?
+    public var enabledCookieJar: Bool?
+    /// 并发率，形如 "1/1000"
+    public var concurrentRate: String?
+
     public var isLogged: Bool {
         guard let h = loginHeader, !h.isEmpty else { return false }
         return true
@@ -70,6 +83,11 @@ public struct BookSource: Codable, Identifiable, Equatable {
         case loginInfo
         case loginHeader
         case variable
+        case jsLib
+        case eventListener
+        case customButton
+        case enabledCookieJar
+        case concurrentRate
     }
 
     public init(
@@ -98,7 +116,12 @@ public struct BookSource: Codable, Identifiable, Equatable {
         ruleSearch: SearchRule? = nil,
         ruleBookInfo: BookInfoRule? = nil,
         ruleToc: TocRule? = nil,
-        ruleContent: ContentRule? = nil
+        ruleContent: ContentRule? = nil,
+        jsLib: String? = nil,
+        eventListener: Bool? = nil,
+        customButton: Bool? = nil,
+        enabledCookieJar: Bool? = nil,
+        concurrentRate: String? = nil
     ) {
         self.bookSourceUrl = bookSourceUrl
         self.bookSourceName = bookSourceName
@@ -126,6 +149,11 @@ public struct BookSource: Codable, Identifiable, Equatable {
         self.ruleBookInfo = ruleBookInfo
         self.ruleToc = ruleToc
         self.ruleContent = ruleContent
+        self.jsLib = jsLib
+        self.eventListener = eventListener
+        self.customButton = customButton
+        self.enabledCookieJar = enabledCookieJar
+        self.concurrentRate = concurrentRate
     }
 
     public init(from decoder: Decoder) throws {
@@ -161,6 +189,11 @@ public struct BookSource: Codable, Identifiable, Equatable {
         self.loginInfo = try container.decodeIfPresent(String.self, forKey: .loginInfo)
         self.loginHeader = try container.decodeIfPresent(String.self, forKey: .loginHeader)
         self.variable = try container.decodeIfPresent(String.self, forKey: .variable)
+        self.jsLib = try container.decodeIfPresent(String.self, forKey: .jsLib)
+        self.eventListener = Self.lenientBool(container, .eventListener)
+        self.customButton = Self.lenientBool(container, .customButton)
+        self.enabledCookieJar = Self.lenientBool(container, .enabledCookieJar)
+        self.concurrentRate = try container.decodeIfPresent(String.self, forKey: .concurrentRate)
     }
 
     /// 宽松取数。

@@ -1,5 +1,19 @@
 # 更新日志
 
+## v4.7.5
+- **修复**：`jsLib`（书源自带的 JS 助手库）以前模型里根本没这个字段，导入即丢 —— 聚合源（大灰狼那类）的 `getArguments` / 各种加解密助手全在里面，脚本第一行就 `ReferenceError`，搜书目录正文登录全废。现在字段补上，并在 JS 引擎初始化时把 jsLib 注入上下文
+- **适配**：Rhino 的 Java 互操作垫片 —— `JavaImporter` / `importClass` / `Packages.android.util.Base64` / `Packages.java.lang.Thread.sleep` / `TimeoutCancellationException`
+- **新增**：`java.createSymmetricCrypto("AES", key)`（AES/DES/3DES × ECB/CBC × PKCS5，另有 encrypt/decrypt/encryptBase64/decryptBase64）—— 聚合源缓存登录态用它加密
+- **新增**：全局 `cache` 对象（put/get/remove）—— 脚本缓存登录态用
+- **新增**：`java.startBrowser` / `startBrowserAwait`（含 Dp/showBrowser/showReadingBrowser）—— 应用内 WKWebView；`Await` 用信号量挡住脚本线程（不挡主线程）等用户关网页，再把最终页面 HTML 交回脚本。注册书源 / 用户后台 / 使用教程 / 永久发布页 / 番茄登录 / 打赏这六个按钮由此可用
+- **修复**：cookie 型书源登录成功仍报「未返回有效凭据」—— 判定时只按 `bookSourceUrl` 查 cookie，而脚本写在真实 host 下；`bookSourceUrl` 不是域名的源必然查空。现在按这次登录实际写入的 host 兜底
+- **修复**：网页登录页在没有可用地址时是一片空白 —— 现在只认带 host 的 http(s) 地址，否则给说明
+- **改进**：网页/Cookie 登录加了**可编辑地址栏** + 「打开」按钮 + 候选主机列表（从 loginUrl / jsLib 里扒），聚合源的登录页地址是运行时拼的，静态只能给候选
+- **修复**：分类里「点一下执行脚本」的条目（例：大灰狼的「登录番茄」，url 是 `{{java.startBrowser(...)}}`）被当网址去抓，冒出一个「无法解析分类网址」失败页。现在渲染后为空即视为动作已执行，返回空列表不报错
+- **修复**：书源「从本地文件导入」点了没反应（`fileImporter` 挂在父视图、按钮在 sheet 里）；导入补 GB18030 编码兜底
+- **新增**：书源导出（书源管理页右上角，JSON，与导入同格式）；备份导出到本地（WebDAV 页「导出备份包到「文件」」，不连服务器也能备份）
+- **变更**：设置「诊断日志」副标题去「复制给我」；「关于」页加 GitHub 地址
+
 ## v4.7.4
 - **修复**：cookie 型书源登录成功仍报「未返回有效凭据」—— 登录脚本把 token 写在自己算出来的**真实 host** 下（大灰狼聚合写的是 `host[0]` 那一批），而宿主判定时只按 `bookSourceUrl` 查 cookie；`bookSourceUrl` 不是域名的源（大灰狼是「大灰狼融合VIP5.0」）必然查空，于是明明登录成功也判失败。现在跑登录脚本前清一次「最近写入的 host」，脚本跑完后按**这次实际写入的 host** 兜底查询
 - **修复**：书源的网页登录页在拿不到可用地址时是一片空白 —— `loginUrl` 是一整段 JS、`bookSourceUrl` 又不是网址，`URL(string:)` 解不出来、WebView 什么都不加载。现在只认带 host 的 http(s) 地址才交给 WebView，否则给出说明并提示改用「表单登录」或「手动粘贴 Cookie」
