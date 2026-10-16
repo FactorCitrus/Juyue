@@ -31,8 +31,42 @@ public struct SourceWebLoginView: View {
         wv.customUserAgent = "Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Mobile/15E148 Safari/604.1"
         self._webView = State(initialValue: wv)
 
-        let initialStr = source.loginUrl?.trimmingCharacters(in: .whitespacesAndNewlines) ?? source.bookSourceUrl
-        self._currentUrl = State(initialValue: URL(string: initialStr))
+        // 只认能真正打开的 http(s) 地址。
+        // 有些书源（例：大灰狼聚合）的 loginUrl 是一整段 JS，bookSourceUrl 又只是个
+        // 标识（"大灰狼融合VIP5.0"）不是网址 —— 直接丢给 URL(string:) 解不出来，
+        // WebView 什么都不加载，用户看到的就是一片空白。
+        let candidates = [source.loginUrl ?? "", source.bookSourceUrl]
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+        let firstUsable = candidates.first { Self.isLoadableWebUrl($0) }
+        self._currentUrl = State(initialValue: firstUsable.flatMap { URL(string: $0) })
+    }
+
+    /// 能不能直接交给 WebView 打开：必须是带 host 的 http(s) 地址。
+    /// 一堆 JS 文本、或者 "大灰狼融合VIP5.0" 这种纯标识，都不算。
+    static func isLoadableWebUrl(_ str: String) -> Bool {
+        guard let url = URL(string: str),
+              let scheme = url.scheme?.lowercased(),
+              scheme == "http" || scheme == "https",
+              let host = url.host, !host.isEmpty else { return false }
+        return true
+    }
+
+    /// 没有可打开的网页地址时顶上来的说明，别让用户对着一片白。
+    private var noWebUrlHint: some View {
+        VStack(spacing: 8) {
+            Image(systemName: "globe")
+                .font(.system(size: 30))
+                .foregroundColor(.secondary)
+            Text("这个书源没有可直接打开的网页登录地址")
+                .font(.subheadline.weight(.medium))
+            Text("它的 loginUrl 是一段脚本、bookSourceUrl 也不是网址。\n请返回上一页用「表单登录」（邮箱 / 密码），或者在这里「手动粘贴 Cookie」。")
+                .font(.caption)
+                .foregroundColor(.secondary)
+                .multilineTextAlignment(.center)
+                .padding(.horizontal, 24)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 24)
     }
 
     public var body: some View {
@@ -104,6 +138,10 @@ public struct SourceWebLoginView: View {
                     }
                 )
                 #endif
+
+                if currentUrl == nil {
+                    noWebUrlHint
+                }
 
                 Divider()
 

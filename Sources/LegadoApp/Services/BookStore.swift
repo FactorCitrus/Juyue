@@ -549,6 +549,9 @@ public class BookStore: ObservableObject {
             capturedHeader = newH
         }
 
+        // 跑脚本前清掉「最近写入的 host」，只认这一次登录写的 cookie
+        CookieJar.shared.resetLastWrite()
+
         // 表单值要注入脚本里的 result，源脚本靠 result['邮箱'] 这类取值
         _ = jsEngine.eval(script: JSEngine.unwrapJsScript(loginScript), result: credentials)
 
@@ -569,6 +572,13 @@ public class BookStore: ObservableObject {
             let jarCookies = CookieJar.shared.cookieString(for: source.bookSourceUrl)
             if !jarCookies.isEmpty {
                 finalHeader = "Cookie: \(jarCookies)"
+            } else if let hostKey = CookieJar.shared.lastWrittenHostKey {
+                // bookSourceUrl 不是域名时（「大灰狼融合VIP5.0」这种），按它查 cookie 必然查不到。
+                // 脚本刚把 cookie 写在了真实 host 上，用那个 host 再查一次。
+                let hostCookies = CookieJar.shared.cookieString(for: hostKey)
+                if !hostCookies.isEmpty {
+                    finalHeader = "Cookie: \(hostCookies)"
+                }
             }
         }
 

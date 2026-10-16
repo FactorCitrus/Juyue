@@ -67,4 +67,19 @@ final class BookSourceImportTests: XCTestCase {
         XCTAssertEqual(s.respondTime, 180_000)
         XCTAssertEqual(s.weight, 3)
     }
+    /// 拿真实文件过一遍解析：设了 BS_FILE 环境变量就跑，没设就跳过（CI 不受影响）。
+    /// 用法：BS_FILE=/tmp/bs_dahualang.json swift test --filter testDecodeRealFile
+    func testDecodeRealFile() throws {
+        guard let path = ProcessInfo.processInfo.environment["BS_FILE"] else {
+            throw XCTSkip("未设置 BS_FILE，跳过")
+        }
+        let data = try Data(contentsOf: URL(fileURLWithPath: path))
+        let sources = try JSONDecoder().decode([BookSource].self, from: data)
+        XCTAssertFalse(sources.isEmpty)
+        for s in sources {
+            print("解析成功:", s.bookSourceName, "|", s.bookSourceUrl,
+                  "| loginUi 长度", s.loginUi?.count ?? 0,
+                  "| 有 searchUrl", s.searchUrl != nil)
+        }
+    }
 }

@@ -14,6 +14,19 @@ public final class CookieJar {
     private let lock = NSLock()
     private var store: [String: String]
 
+    /// 最近一次写入落在哪个 host 上。
+    /// 有些书源（例：大灰狼聚合）的 `bookSourceUrl` 不是域名（写的是「大灰狼融合VIP5.0」），
+    /// 登录脚本却把 cookie 写在真实 host 下；宿主判「登录成没成」时得知道写到哪儿去了，
+    /// 否则明明登录成功、cookie 也存下来了，还是被判成「未返回有效凭据」。
+    public private(set) var lastWrittenHostKey: String?
+
+    /// 跑登录脚本前清一次，免得拿到上一次的残留。
+    public func resetLastWrite() {
+        lock.lock()
+        defer { lock.unlock() }
+        lastWrittenHostKey = nil
+    }
+
     /// 只当 cookie 属性看，不当 cookie 名。
     private static let attributeNames: Set<String> = [
         "path", "domain", "expires", "max-age", "samesite", "secure", "httponly", "version"
@@ -58,6 +71,7 @@ public final class CookieJar {
 
         lock.lock()
         defer { lock.unlock() }
+        lastWrittenHostKey = key
 
         var jar = Self.parse(store[key] ?? "")
         let incoming = cookieString.split(separator: ";", omittingEmptySubsequences: true)

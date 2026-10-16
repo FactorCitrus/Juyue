@@ -1,5 +1,10 @@
 # 更新日志
 
+## v4.7.4
+- **修复**：cookie 型书源登录成功仍报「未返回有效凭据」—— 登录脚本把 token 写在自己算出来的**真实 host** 下（大灰狼聚合写的是 `host[0]` 那一批），而宿主判定时只按 `bookSourceUrl` 查 cookie；`bookSourceUrl` 不是域名的源（大灰狼是「大灰狼融合VIP5.0」）必然查空，于是明明登录成功也判失败。现在跑登录脚本前清一次「最近写入的 host」，脚本跑完后按**这次实际写入的 host** 兜底查询
+- **修复**：书源的网页登录页在拿不到可用地址时是一片空白 —— `loginUrl` 是一整段 JS、`bookSourceUrl` 又不是网址，`URL(string:)` 解不出来、WebView 什么都不加载。现在只认带 host 的 http(s) 地址才交给 WebView，否则给出说明并提示改用「表单登录」或「手动粘贴 Cookie」
+- **测试**：补 `BookSourceImportTests.testDecodeRealFile` —— 用环境变量 `BS_FILE` 指向真实书源文件跑一遍解析（CI 不设就跳过），真文件导入这类问题以后能先在这里撞出来
+
 ## v4.7.3
 - **新增**：网络请求写进诊断日志。`NetworkClient.requestSync` 原来是 `guard let data = data else { return }` —— 断网、超时、DNS 失败全都静默返回 nil，日志页一个字都看不到，只能靠猜
 - 记录内容：`[NET] <host> <状态码> <字节数> <耗时>ms`，失败记 `[NET] <host> 失败 code=<错误码> <耗时>ms`
