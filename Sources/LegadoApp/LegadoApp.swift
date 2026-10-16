@@ -43,14 +43,12 @@ public struct LegadoApp: App {
     @ViewBuilder
     private var rootContent: some View {
         #if os(iOS)
+        // scriptBrowser 不参与布局了：网页现在由 ScriptBrowserWindow 单独开窗显示。
+        // 保留这一行是因为脚本浏览器的 present 回调挂在它自己的 init 里，取一次 shared
+        // 才能保证脚本还没弹过网页时宿主就已经接好。
         MainTabView()
             .environmentObject(bookStore)
             .preferredColorScheme(selectedColorScheme)
-            .sheet(item: $scriptBrowser.request) { request in
-                ScriptBrowserSheet(request: request) { webView, pageUrl in
-                    scriptBrowser.close(webView: webView, pageUrl: pageUrl)
-                }
-            }
         #else
         MainTabView()
             .environmentObject(bookStore)
@@ -184,6 +182,8 @@ final class ScriptBrowserPresenter: ObservableObject {
     private var completion: ((String, String) -> Void)?
     /// 取 HTML 期间持有 WKWebView
     private var retainedWebView: WKWebView?
+    /// 等用户关网页的上限。超时只写日志，脚本那边按空 HTML 继续。
+    private static let waitTimeout: TimeInterval = 600
 
     private init() {
         ScriptBrowser.shared.present = { [weak self] url, title, wait in
@@ -204,12 +204,11 @@ final class ScriptBrowserPresenter: ObservableObject {
                     semaphore?.signal()
                 }
                 previous?("", url)
-                // 同一地址重复弹时复用现有 sheet，不叠层
-                if self.request?.url != url {
-                    self.request = Request(url: url, title: title)
-                }
+                self.showPage(Request(url: url, title: title))
             }
-            if let semaphore { _ = semaphore.wait(timeout: .now() + 600) }
+            if let semaphore, semaphore.wait(timeout: .now() + Self.waitTimeout) == .timedOut {
+                LegadoLog.log("[网页] 等网页关闭超时 \(Int(Self.waitTimeout))s")
+            }
             return (body, finalUrl)
             #else
             // 桌面端没有内嵌网页这一套：交给系统浏览器，脚本那边直接放行
@@ -219,7 +218,21 @@ final class ScriptBrowserPresenter: ObservableObject {
         }
     }
 
-    /// 用户点「关闭 / 完成」：先收 sheet，再取最终 HTML。
+    /// 把网页交给独立窗口显示。
+    ///
+    /// 以前挂在根视图的 `.sheet` 上：登录面板、书源编辑这些自己就是 sheet，系统看到
+    /// 「已经有一个 sheet 在展示」会把新的推迟到旧的关掉之后，表现就是点了按钮没反应、
+    /// 设置中心一直转圈。独立窗口不参与这套队列，从哪一层点都能立刻显示。
+    private func showPage(_ request: Request) {
+        self.request = request
+        #if os(iOS)
+        ScriptBrowserWindow.shared.show(request: request) { [weak self] webView, pageUrl in
+            self?.close(webView: webView, pageUrl: pageUrl)
+        }
+        #endif
+    }
+
+    /// 用户点「关闭 / 完成」：先收网页，再取最终 HTML。
     /// 页面卡住时 evaluateJavaScript 长时间不回调，不能等它。
     func close(webView: WKWebView, pageUrl: String) {
         request = nil
@@ -231,16 +244,30 @@ final class ScriptBrowserPresenter: ObservableObject {
         }
         retainedWebView = webView
         var delivered = false
+        var finalPageUrl = pageUrl
         let deliver: (String) -> Void = { [weak self] html in
             guard !delivered else { return }
             delivered = true
-            pending(html, pageUrl)
+            pending(html, finalPageUrl)
             self?.retainedWebView = nil
         }
         // 抓不到就按空 HTML 放行，不阻塞脚本线程
         DispatchQueue.main.asyncAfter(deadline: .now() + 2) { deliver("") }
-        webView.evaluateJavaScript("document.documentElement.outerHTML") { value, _ in
-            deliver((value as? String) ?? "")
+        // 顺手把页面自己的 location.href 带回去：书源设置中心把结果写进地址
+        // （`#config=` / `?source_settings_result=`），而 WKWebView 里这一步是
+        // loadHTMLString，webView.url 只会是 about:blank，拿不到页面改过的地址。
+        webView.evaluateJavaScript("JSON.stringify({ h: document.documentElement.outerHTML, u: String(location.href) })") { value, _ in
+            guard let json = value as? String,
+                  let data = json.data(using: .utf8),
+                  let obj = try? JSONSerialization.jsonObject(with: data) as? [String: String]
+            else {
+                deliver("")
+                return
+            }
+            if let href = obj["u"], !href.isEmpty, href != "about:blank" {
+                finalPageUrl = href
+            }
+            deliver(obj["h"] ?? "")
         }
     }
 }
@@ -341,26 +368,34 @@ final class ScriptPageLoadState: NSObject, ObservableObject, WKNavigationDelegat
 
     private var startedAt: Date?
     private var currentUrl: String?
+    private var watchdog: DispatchWorkItem?
+    /// didStart 之后既不来 didFinish 也不来 didFail 的上限。
+    /// 以前只有转圈没有出口，用户只能自己关掉重来。
+    private static let loadTimeout: TimeInterval = 15
 
     func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
         isLoading = true
         failure = nil
         startedAt = Date()
         currentUrl = webView.url?.absoluteString
+        startWatchdog()
     }
 
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+        stopWatchdog()
         isLoading = false
         logElapsed(status: "完成")
     }
 
     func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
+        stopWatchdog()
         isLoading = false
         failure = error.localizedDescription
         logElapsed(status: "失败")
     }
 
     func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
+        stopWatchdog()
         isLoading = false
         let nsError = error as NSError
         // 用户自己点关闭时的取消不算加载失败
@@ -369,11 +404,80 @@ final class ScriptPageLoadState: NSObject, ObservableObject, WKNavigationDelegat
         logElapsed(status: "失败")
     }
 
+    private func startWatchdog() {
+        watchdog?.cancel()
+        let item = DispatchWorkItem { [weak self] in
+            guard let self, self.isLoading else { return }
+            self.isLoading = false
+            self.failure = "网页加载超时，检查网络后重试"
+            self.logElapsed(status: "超时")
+        }
+        watchdog = item
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.loadTimeout, execute: item)
+    }
+
+    private func stopWatchdog() {
+        watchdog?.cancel()
+        watchdog = nil
+    }
+
     private func logElapsed(status: String) {
         let ms = startedAt.map { Int(Date().timeIntervalSince($0) * 1000) } ?? -1
         // 地址可能是几十 KB 的 data: 页面，日志里只留前 120 字符
         AppLog.write("[网页] \(status) \(ms)ms \(String((currentUrl ?? "").prefix(120)))")
         startedAt = nil
+    }
+}
+
+/// 脚本网页的独立窗口。
+///
+/// 单独开窗而不是挂 `.sheet`：登录面板、书源编辑自己就是 sheet，往 sheet 上再叠 sheet
+/// 会被系统推迟甚至丢掉，表现就是点了按钮没反应。窗口层级压在主窗口和它的 sheet 之上，
+/// 「关闭 / 完成」交回去之后再把 key 还给原来的窗口。
+final class ScriptBrowserWindow {
+    static let shared = ScriptBrowserWindow()
+
+    private var window: UIWindow?
+    private var host: UIHostingController<ScriptBrowserSheet>?
+    private weak var previousKeyWindow: UIWindow?
+
+    private init() {}
+
+    func show(request: ScriptBrowserPresenter.Request, onFinish: @escaping (WKWebView, String) -> Void) {
+        guard let scene = UIApplication.shared.connectedScenes
+            .compactMap({ $0 as? UIWindowScene })
+            .first(where: { $0.activationState == .foregroundActive })
+            ?? UIApplication.shared.connectedScenes.compactMap({ $0 as? UIWindowScene }).first
+        else { return }
+
+        // 上一页还开着就又点了一次：整个换掉，不在旧窗口里复用旧页面
+        hide()
+
+        let page = ScriptBrowserSheet(request: request) { [weak self] webView, pageUrl in
+            onFinish(webView, pageUrl)
+            self?.hide()
+        }
+
+        previousKeyWindow = scene.windows.first { $0.isKeyWindow }
+        let hosting = UIHostingController(rootView: page)
+        let win = UIWindow(windowScene: scene)
+        win.rootViewController = hosting
+        // 压在主窗口之上，主窗口里的 sheet 就盖不住这一页
+        win.windowLevel = .normal + 1
+        win.backgroundColor = .systemBackground
+        win.makeKeyAndVisible()
+        host = hosting
+        window = win
+        AppLog.write("[网页] 独立窗口打开 \(request.title)")
+    }
+
+    func hide() {
+        window?.isHidden = true
+        window = nil
+        host = nil
+        // 不还回去的话输入焦点留在空窗口上，主界面点不动
+        previousKeyWindow?.makeKey()
+        previousKeyWindow = nil
     }
 }
 #endif

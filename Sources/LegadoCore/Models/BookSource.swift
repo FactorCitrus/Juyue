@@ -30,6 +30,7 @@ public struct BookSource: Codable, Identifiable, Equatable {
     public var ruleBookInfo: BookInfoRule?
     public var ruleToc: TocRule?
     public var ruleContent: ContentRule?
+    public var ruleReview: ReviewRule?
 
     public var loginInfo: String?
     public var loginHeader: String?
@@ -77,6 +78,7 @@ public struct BookSource: Codable, Identifiable, Equatable {
         case ruleBookInfo
         case ruleToc
         case ruleContent
+        case ruleReview
         case loginInfo
         case loginHeader
         case variable
@@ -114,6 +116,7 @@ public struct BookSource: Codable, Identifiable, Equatable {
         ruleBookInfo: BookInfoRule? = nil,
         ruleToc: TocRule? = nil,
         ruleContent: ContentRule? = nil,
+        ruleReview: ReviewRule? = nil,
         jsLib: String? = nil,
         eventListener: Bool? = nil,
         customButton: Bool? = nil,
@@ -146,6 +149,7 @@ public struct BookSource: Codable, Identifiable, Equatable {
         self.ruleBookInfo = ruleBookInfo
         self.ruleToc = ruleToc
         self.ruleContent = ruleContent
+        self.ruleReview = ruleReview
         self.jsLib = jsLib
         self.eventListener = eventListener
         self.customButton = customButton
@@ -182,6 +186,7 @@ public struct BookSource: Codable, Identifiable, Equatable {
         self.ruleBookInfo = decodeRule(BookInfoRule.self, from: container, forKey: .ruleBookInfo)
         self.ruleToc = decodeRule(TocRule.self, from: container, forKey: .ruleToc)
         self.ruleContent = decodeRule(ContentRule.self, from: container, forKey: .ruleContent)
+        self.ruleReview = decodeRule(ReviewRule.self, from: container, forKey: .ruleReview)
 
         self.loginInfo = try container.decodeIfPresent(String.self, forKey: .loginInfo)
         self.loginHeader = try container.decodeIfPresent(String.self, forKey: .loginHeader)

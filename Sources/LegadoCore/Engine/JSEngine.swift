@@ -351,8 +351,13 @@ public final class ScriptBrowser {
         browserResult(url: url, title: title, wait: true)
     }
 
+    /// 第三个参数只为对齐安卓签名保留，语义上当作「等」处理。
+    ///
+    /// `Await` 的契约就是等用户关网页再把最终 HTML / URL 交回去。书源的设置中心靠返回值
+    /// 读结果（`readSettingsResultFromBody(browserResult.body())`），传 false 也照等；
+    /// 按参数立刻返回空 body 的话，脚本必然走到「未读取到设置结果」。
     public func startBrowserAwait(_ url: String, _ title: String, _ wait: Bool) -> JSValue {
-        browserResult(url: url, title: title, wait: wait)
+        browserResult(url: url, title: title, wait: true)
     }
 
     // 安卓同类接口，语义相同，走同一个宿主入口
@@ -615,6 +620,15 @@ public class JSEngine {
         };
         """)
         context.exception = nil
+    }
+
+    /// 跑规则脚本，外面套一层块级作用域。
+    ///
+    /// 书源的规则脚本会被反复执行（列表里每本书跑一次），脚本里写了顶层 `let` / `const`
+    /// 的话，第二次就会抛 `Can't create duplicate variable`，整页解析全废。
+    /// 套成 `{ … }` 之后每次是一份新的块作用域，返回值照旧是最后一条语句的值。
+    public func evalRule(script: String, result: Any? = nil) -> Any? {
+        eval(script: "{ \(script)\n}", result: result)
     }
 
     /// Evaluates a JavaScript snippet with optional `result` value

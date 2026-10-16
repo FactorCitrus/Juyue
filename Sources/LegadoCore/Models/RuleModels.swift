@@ -138,6 +138,7 @@ public struct TocRule: Codable, Equatable {
 public struct ContentRule: Codable, Equatable {
     public var content: String?
     public var title: String?
+    public var subContent: String?
     public var nextContentUrl: String?
     public var webJs: String?
     public var sourceRegex: String?
@@ -145,20 +146,24 @@ public struct ContentRule: Codable, Equatable {
     public var imageStyle: String?
     public var imageDecode: String?
     public var payAction: String?
+    public var callBackJs: String?
 
     public init(
         content: String? = nil,
         title: String? = nil,
+        subContent: String? = nil,
         nextContentUrl: String? = nil,
         webJs: String? = nil,
         sourceRegex: String? = nil,
         replaceRegex: String? = nil,
         imageStyle: String? = nil,
         imageDecode: String? = nil,
-        payAction: String? = nil
+        payAction: String? = nil,
+        callBackJs: String? = nil
     ) {
         self.content = content
         self.title = title
+        self.subContent = subContent
         self.nextContentUrl = nextContentUrl
         self.webJs = webJs
         self.sourceRegex = sourceRegex
@@ -166,6 +171,7 @@ public struct ContentRule: Codable, Equatable {
         self.imageStyle = imageStyle
         self.imageDecode = imageDecode
         self.payAction = payAction
+        self.callBackJs = callBackJs
     }
 }
 
@@ -182,6 +188,23 @@ public struct BookInfoRule: Codable, Equatable {
     public var coverUrl: String?
     public var tocUrl: String?
     public var wordCount: String?
+    /// 允许改名
+    public var canReName: String?
+
+    // 安卓导出的键是 `init`，不映射的话这条预处理规则会被整个丢掉
+    enum CodingKeys: String, CodingKey {
+        case initRule = "init"
+        case name
+        case author
+        case intro
+        case kind
+        case lastChapter
+        case updateTime
+        case coverUrl
+        case tocUrl
+        case wordCount
+        case canReName
+    }
 
     public init(
         initRule: String? = nil,
@@ -193,7 +216,8 @@ public struct BookInfoRule: Codable, Equatable {
         updateTime: String? = nil,
         coverUrl: String? = nil,
         tocUrl: String? = nil,
-        wordCount: String? = nil
+        wordCount: String? = nil,
+        canReName: String? = nil
     ) {
         self.initRule = initRule
         self.name = name
@@ -205,5 +229,60 @@ public struct BookInfoRule: Codable, Equatable {
         self.coverUrl = coverUrl
         self.tocUrl = tocUrl
         self.wordCount = wordCount
+        self.canReName = canReName
+    }
+}
+
+// MARK: - ReviewRule（书评规则）
+
+public struct InlineHotReview: Codable, Equatable {
+    public var urlRule: String?
+    public var listRule: String?
+    public var contentRule: String?
+
+    public init(urlRule: String? = nil, listRule: String? = nil, contentRule: String? = nil) {
+        self.urlRule = urlRule
+        self.listRule = listRule
+        self.contentRule = contentRule
+    }
+}
+
+public struct ReviewRule: Codable, Equatable {
+    public var reviewUrl: String?
+    public var avatarRule: String?
+    public var contentRule: String?
+    public var postTimeRule: String?
+    public var inlineHotReview: InlineHotReview?
+    public var reviewQuoteUrl: String?
+    public var voteUpUrl: String?
+    public var voteDownUrl: String?
+    public var postReviewUrl: String?
+    public var postQuoteUrl: String?
+    public var deleteUrl: String?
+
+    public init(
+        reviewUrl: String? = nil,
+        avatarRule: String? = nil,
+        contentRule: String? = nil,
+        postTimeRule: String? = nil,
+        inlineHotReview: InlineHotReview? = nil,
+        reviewQuoteUrl: String? = nil,
+        voteUpUrl: String? = nil,
+        voteDownUrl: String? = nil,
+        postReviewUrl: String? = nil,
+        postQuoteUrl: String? = nil,
+        deleteUrl: String? = nil
+    ) {
+        self.reviewUrl = reviewUrl
+        self.avatarRule = avatarRule
+        self.contentRule = contentRule
+        self.postTimeRule = postTimeRule
+        self.inlineHotReview = inlineHotReview
+        self.reviewQuoteUrl = reviewQuoteUrl
+        self.voteUpUrl = voteUpUrl
+        self.voteDownUrl = voteDownUrl
+        self.postReviewUrl = postReviewUrl
+        self.postQuoteUrl = postQuoteUrl
+        self.deleteUrl = deleteUrl
     }
 }

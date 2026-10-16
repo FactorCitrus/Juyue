@@ -61,7 +61,7 @@ public class RuleAnalyzer {
                     .replacingOccurrences(of: "\\n", with: "\n")
                     .replacingOccurrences(of: "\\t", with: "\t")
             } else if innerExpr.starts(with: "java.") || innerExpr.starts(with: "source.") || innerExpr.starts(with: "book.") {
-                let jsRes = jsEngine.eval(script: innerExpr, result: content)
+                let jsRes = jsEngine.evalRule(script: innerExpr, result: content)
                 evaluatedValue = jsRes != nil ? "\(jsRes!)" : ""
             } else {
                 evaluatedValue = getString(innerExpr)
@@ -103,7 +103,7 @@ public class RuleAnalyzer {
                     targetContent = prefixVal
                 }
             }
-            let evalResult = jsEngine.eval(script: script, result: targetContent)
+            let evalResult = jsEngine.evalRule(script: script, result: targetContent)
             let resStr = evalResult != nil ? "\(evalResult!)" : ""
             return isUrl ? resolveUrl(resStr) : resStr
         }
@@ -142,7 +142,7 @@ public class RuleAnalyzer {
         // If pure JS: @js:script or <js>...</js>
         if rule.starts(with: "@js:") {
             let script = String(rule.dropFirst(4))
-            let evalResult = jsEngine.eval(script: script, result: content)
+            let evalResult = jsEngine.evalRule(script: script, result: content)
             if let arr = evalResult as? [Any] {
                 return arr.map { "\(isUrl ? resolveUrl("\($0)") : "\($0)")" }
             } else if let single = evalResult {
@@ -154,7 +154,7 @@ public class RuleAnalyzer {
             let start = rule.range(of: "<js>")?.upperBound ?? rule.startIndex
             let end = rule.range(of: "</js>")?.lowerBound ?? rule.endIndex
             let script = String(rule[start..<end])
-            let evalResult = jsEngine.eval(script: script, result: content)
+            let evalResult = jsEngine.evalRule(script: script, result: content)
             if let arr = evalResult as? [Any] {
                 return arr.map { "\(isUrl ? resolveUrl("\($0)") : "\($0)")" }
             } else if let single = evalResult {
@@ -204,7 +204,7 @@ public class RuleAnalyzer {
                         )
                     }
                 case .js(let script):
-                    let res = jsEngine.eval(script: script, result: text)
+                    let res = jsEngine.evalRule(script: script, result: text)
                     if let res = res {
                         text = "\(res)"
                     }
@@ -241,7 +241,7 @@ public class RuleAnalyzer {
                     targetContent = prefixElements
                 }
             }
-            if let evalResult = jsEngine.eval(script: script, result: targetContent) {
+            if let evalResult = jsEngine.evalRule(script: script, result: targetContent) {
                 if let array = evalResult as? [Any] {
                     return array
                 } else if let dict = evalResult as? [String: Any] {
