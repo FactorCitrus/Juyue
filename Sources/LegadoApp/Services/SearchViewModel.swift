@@ -7,7 +7,6 @@ public class SearchViewModel: ObservableObject {
     public static let shared = SearchViewModel()
 
     @Published public var searchQuery: String = ""
-    @Published public var searchResults: [SearchBook] = []
     @Published public var isSearching: Bool = false
     @Published public var isLoadingMore: Bool = false
     @Published public var currentPage: Int = 1
@@ -16,8 +15,65 @@ public class SearchViewModel: ObservableObject {
     /// 最近搜索过的词，点一下就能重搜
     @Published public var history: [String] = []
 
+    /// 搜索范围与匹配选项（跟换源面板一个路子，记住下次沿用）
+    @Published public var sourceNameFilter: String = "" {
+        didSet { persistOptions() }
+    }
+    @Published public var groupFilter: String? = nil {
+        didSet { persistOptions() }
+    }
+    @Published public var matchField: SourceMatchRules.SearchField = .either {
+        didSet { persistOptions() }
+    }
+    @Published public var exactMatch: Bool = false {
+        didSet { persistOptions() }
+    }
+
+    /// 抓回来的原始结果（没过滤）。分页都往这里加，界面读下面的 `searchResults`。
+    @Published private var allResults: [SearchBook] = []
+    /// 上一次真正搜过的关键词：过滤按它算，免得用户改了输入框还没搜就把结果筛没了
+    private var lastQuery = ""
+
+    /// 界面上的结果：按匹配口径就地过滤，改选项立刻重筛，不重新联网搜。
+    public var searchResults: [SearchBook] {
+        let key = lastQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !key.isEmpty else { return allResults }
+        return allResults.filter {
+            SourceMatchRules.matchesKeyword($0, keyword: key, field: matchField, exact: exactMatch)
+        }
+    }
+
+    /// 有多少条被匹配口径挡掉了（给个提示，免得以为源不行）
+    public var hiddenByFilterCount: Int {
+        max(0, allResults.count - searchResults.count)
+    }
+
+    /// 「范围与匹配」收起时显示的一行口径
+    public var optionsSummary: String {
+        let field: String
+        switch matchField {
+        case .title: field = "书名"
+        case .author: field = "作者"
+        case .either: field = "书名或作者"
+        }
+        var parts = ["\(field)·\(exactMatch ? "精确" : "包含")"]
+        if let group = groupFilter, !group.isEmpty { parts.append("分组「\(group)」") }
+        let filter = sourceNameFilter.trimmingCharacters(in: .whitespaces)
+        if !filter.isEmpty { parts.append("限定「\(filter)」") }
+        parts.append("\(availableSources.count) 个源")
+        return parts.joined(separator: " · ")
+    }
+
     private let historyKey = "search_history_v1"
     private let historyLimit = 20
+    private let optionsKey = "search_options_v1"
+
+    private struct StoredOptions: Codable {
+        var nameFilter: String = ""
+        var group: String?
+        var field: String = SourceMatchRules.SearchField.either.rawValue
+        var exact: Bool = false
+    }
 
     private var exhaustedSourceUrls: Set<String> = []
     private var seenBookIds: Set<String> = []
@@ -25,6 +81,23 @@ public class SearchViewModel: ObservableObject {
 
     public init() {
         history = UserDefaults.standard.stringArray(forKey: historyKey) ?? []
+        if let data = UserDefaults.standard.data(forKey: optionsKey),
+           let stored = try? JSONDecoder().decode(StoredOptions.self, from: data) {
+            sourceNameFilter = stored.nameFilter
+            groupFilter = stored.group
+            matchField = SourceMatchRules.SearchField(rawValue: stored.field) ?? .either
+            exactMatch = stored.exact
+        }
+    }
+
+    private func persistOptions() {
+        let stored = StoredOptions(nameFilter: sourceNameFilter,
+                                   group: groupFilter,
+                                   field: matchField.rawValue,
+                                   exact: exactMatch)
+        if let data = try? JSONEncoder().encode(stored) {
+            UserDefaults.standard.set(data, forKey: optionsKey)
+        }
     }
 
     public func rememberQuery(_ raw: String) {
@@ -42,7 +115,18 @@ public class SearchViewModel: ObservableObject {
     }
 
     public var availableSources: [BookSource] {
-        BookStore.shared.sources.filter { $0.enabled != false && $0.searchUrl != nil }
+        let enabled = BookStore.shared.sources.filter { $0.enabled != false && $0.searchUrl != nil }
+        // 范围：限定源（源名 / 分组含这几个字）+ 指定分组
+        return SourceMatchRules.filterSources(enabled, nameFilter: sourceNameFilter, group: groupFilter)
+    }
+
+    /// 启用且可搜的源里出现过的分组，给「范围」下拉用
+    public var availableGroups: [String] {
+        let groups = BookStore.shared.sources
+            .filter { $0.enabled != false && $0.searchUrl != nil }
+            .compactMap { $0.bookSourceGroup?.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+        return Array(Set(groups)).sorted()
     }
 
     public var targetSources: [BookSource] {
@@ -56,7 +140,7 @@ public class SearchViewModel: ObservableObject {
     public func cancelAndReset() {
         currentSearchTask?.cancel()
         currentSearchTask = nil
-        searchResults.removeAll()
+        allResults.removeAll()
         seenBookIds.removeAll()
         exhaustedSourceUrls.removeAll()
         isSearching = false
@@ -71,6 +155,7 @@ public class SearchViewModel: ObservableObject {
         rememberQuery(key)
 
         cancelAndReset()
+        lastQuery = key
         isSearching = true
 
         let sources = targetSources
@@ -100,7 +185,7 @@ public class SearchViewModel: ObservableObject {
             await MainActor.run {
                 self.isSearching = false
                 self.currentPage = 1
-                if self.exhaustedSourceUrls.count >= sources.count || self.searchResults.isEmpty {
+                if self.exhaustedSourceUrls.count >= sources.count || self.allResults.isEmpty {
                     self.hasMore = false
                 } else {
                     self.hasMore = true
@@ -129,7 +214,7 @@ public class SearchViewModel: ObservableObject {
 
         isLoadingMore = true
         let nextPage = currentPage + 1
-        let countBeforeNextPage = searchResults.count
+        let countBeforeNextPage = allResults.count
 
         currentSearchTask = Task {
             let stream = BookSearchService.shared.searchMultiSources(sources: sourcesToQuery, key: key, page: nextPage)
@@ -151,7 +236,7 @@ public class SearchViewModel: ObservableObject {
             await MainActor.run {
                 self.isLoadingMore = false
                 self.currentPage = nextPage
-                let foundAny = self.searchResults.count > countBeforeNextPage
+                let foundAny = self.allResults.count > countBeforeNextPage
                 let remainingSources = self.targetSources.filter { !self.exhaustedSourceUrls.contains($0.bookSourceUrl) }
                 if remainingSources.isEmpty || !foundAny {
                     self.hasMore = false
@@ -168,6 +253,6 @@ public class SearchViewModel: ObservableObject {
                 added.append(book)
             }
         }
-        self.searchResults.append(contentsOf: added)
+        self.allResults.append(contentsOf: added)
     }
 }

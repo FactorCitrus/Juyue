@@ -19,6 +19,9 @@ public class BookStore: ObservableObject {
     private let sourcesKey = "legado_sources_v1"
     private let bookmarksKey = "legado_bookmarks_v1"
     private let groupsKey = "legado_book_groups_v1"
+    private let replaceRulesKey = "legado_text_replace_v1"
+    /// 按书的正文替换规则（阅读页里选的「把这段换成…」）
+    @Published public var textReplaceRulesMap: [String: [TextReplaceRule]] = [:]
 
     /// 书签 / 笔记：按书存，读取时按书过滤
     @Published public var bookmarks: [BookBookmark] = []
@@ -27,6 +30,37 @@ public class BookStore: ObservableObject {
         loadData()
         loadBookmarks()
         loadGroups()
+        if let data = UserDefaults.standard.data(forKey: replaceRulesKey),
+           let decoded = try? JSONDecoder().decode([String: [TextReplaceRule]].self, from: data) {
+            textReplaceRulesMap = decoded
+        }
+        // 脚本用 source.setVariable 存的状态要落盘：聚合源的「切换服务器」与书源设置中心
+        // 结果都写在书源 variable 里，不写回去每次点击都从旧值重算（服务器永远停在同一台）。
+        JSEngine.variableSink = { url, variable in
+            guard !url.isEmpty else { return }
+            DispatchQueue.main.async {
+                let store = BookStore.shared
+                guard let idx = store.sources.firstIndex(where: { $0.bookSourceUrl == url }) else { return }
+                // 脚本爱怎么刷怎么刷，值没变就不写盘
+                guard store.sources[idx].variable != variable else { return }
+                store.sources[idx].variable = variable
+                store.saveSources()
+            }
+        }
+        // 脚本改写「当前这本书」（book.setVariable / book.setUseReplaceRule）也要落盘，
+        // 否则聚合源每次都会重新按「没记过」处理，替换净化开关永远回默认。
+        JSEngine.bookUpdateSink = { updated in
+            guard !updated.bookUrl.isEmpty else { return }
+            DispatchQueue.main.async {
+                let store = BookStore.shared
+                guard let idx = store.bookshelf.firstIndex(where: { $0.bookUrl == updated.bookUrl }) else { return }
+                let old = store.bookshelf[idx]
+                guard old.variable != updated.variable || old.useReplaceRule != updated.useReplaceRule else { return }
+                store.bookshelf[idx].variable = updated.variable
+                store.bookshelf[idx].useReplaceRule = updated.useReplaceRule
+                store.saveBookshelf()
+            }
+        }
     }
 
     private func loadBookmarks() {
@@ -44,6 +78,85 @@ public class BookStore: ObservableObject {
 
     public func bookmarks(for bookUrl: String) -> [BookBookmark] {
         bookmarks.filter { $0.bookUrl == bookUrl }.sorted { $0.createdAt > $1.createdAt }
+    }
+
+    /// 段落级标注（下划线 / 底色）：同一段只留一种样式，重复点就是取消。
+    /// 返回 true 表示这次是「加上」，false 表示「取消掉」。
+    @discardableResult
+    public func toggleAnnotation(
+        bookUrl: String,
+        chapterIndex: Int,
+        chapterTitle: String,
+        blockId: Int,
+        length: Int,
+        kind: BookBookmark.Kind,
+        color: String? = nil,
+        snippet: String = ""
+    ) -> Bool {
+        let existing = bookmarks.firstIndex {
+            $0.bookUrl == bookUrl && $0.chapterIndex == chapterIndex
+                && $0.blockId == blockId && $0.kind == kind
+        }
+        if let existing {
+            bookmarks.remove(at: existing)
+            saveBookmarks()
+            return false
+        }
+        // 一段只留一种样式：先把这一段其它标注清掉，免得下划线和底色打架
+        bookmarks.removeAll {
+            $0.bookUrl == bookUrl && $0.chapterIndex == chapterIndex
+                && $0.blockId == blockId && $0.kind != .bookmark
+        }
+        bookmarks.append(BookBookmark(
+            bookUrl: bookUrl,
+            chapterIndex: chapterIndex,
+            chapterTitle: chapterTitle,
+            charOffset: 0,
+            snippet: String(snippet.prefix(60)),
+            blockId: blockId,
+            length: length,
+            color: color,
+            kind: kind
+        ))
+        saveBookmarks()
+        return true
+    }
+
+    /// 这一章的标注，按 blockId 索引 —— 渲染时按段查
+    public func annotations(bookUrl: String, chapterIndex: Int) -> [Int: BookBookmark] {
+        var map: [Int: BookBookmark] = [:]
+        for item in bookmarks
+        where item.bookUrl == bookUrl && item.chapterIndex == chapterIndex && item.kind != .bookmark {
+            if let blockId = item.blockId { map[blockId] = item }
+        }
+        return map
+    }
+
+    // MARK: - 正文替换（阅读页选中一段做替换，按书生效）
+
+    public func textReplaceRules(bookUrl: String) -> [TextReplaceRule] {
+        textReplaceRulesMap[bookUrl] ?? []
+    }
+
+    public func addTextReplaceRule(bookUrl: String, from: String, to: String) {
+        let trimmedFrom = from.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedFrom.isEmpty else { return }
+        var rules = textReplaceRulesMap[bookUrl] ?? []
+        rules.removeAll { $0.from == trimmedFrom }
+        rules.append(TextReplaceRule(from: trimmedFrom, to: to))
+        textReplaceRulesMap[bookUrl] = rules
+        saveTextReplaceRules()
+    }
+
+    public func clearTextReplaceRules(bookUrl: String) {
+        textReplaceRulesMap[bookUrl] = nil
+        saveTextReplaceRules()
+    }
+
+    private func saveTextReplaceRules() {
+        if let data = try? JSONEncoder().encode(textReplaceRulesMap) {
+            UserDefaults.standard.set(data, forKey: replaceRulesKey)
+        }
     }
 
     public func addBookmark(_ bookmark: BookBookmark) {
@@ -583,6 +696,12 @@ public class BookStore: ObservableObject {
         actions: [String],
         requireCredentials: Bool
     ) async throws -> String {
+        // 面板手里的 source 是打开面板那一刻的快照，脚本上一轮改过的 variable（当前服务器、
+        // 设置中心结果、token）不在里面。每一步都取仓库里最新的一份，否则「切换服务器」
+        // 永远从同一个旧值算下一台。
+        let source = await MainActor.run {
+            BookStore.shared.sources.first { $0.bookSourceUrl == source.bookSourceUrl } ?? source
+        }
         guard let loginScript = source.loginUrl, !loginScript.isEmpty else {
             throw NSError(domain: "BookStore", code: 1, userInfo: [NSLocalizedDescriptionKey: "该书源未配置登录脚本"])
         }
@@ -1014,7 +1133,7 @@ public final class ChapterDownloadManager: ObservableObject {
                 } else {
                     await self.setCurrentChapter(jobId, chapter.title)
                     do {
-                        _ = try await BookContentService.shared.fetchChapterContent(chapter: chapter, source: source)
+                        _ = try await BookContentService.shared.fetchChapterContent(chapter: chapter, source: source, book: book)
                         await self.mark(jobId, finished: 1)
                     } catch {
                         await self.mark(jobId, failed: 1)

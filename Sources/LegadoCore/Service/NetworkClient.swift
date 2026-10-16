@@ -29,13 +29,30 @@ public class NetworkClient {
         public let body: Data?
     }
 
+    /// 默认 UA：普通请求与脚本里的 `java.getWebViewUA()` 用同一个，免得两边对不上。
+    public static let defaultUserAgent = "Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Mobile/15E148 Safari/604.1"
+
+    /// `data:;base64,<载荷>,<ext>` 不是真网址：聚合源把请求参数打包在里面。
+    ///
+    /// 宿主不该去请求它 —— 载荷当 `result` 交给规则脚本（详情走 ruleBookInfo.init、
+    /// 目录走 chapterList、正文走 ruleContent.content），脚本自己发请求再把内容返回。
+    /// 返回解出来的载荷，不是 data: 网址就返回 nil。
+    public static func dataURLPayload(_ rawUrl: String) -> String? {
+        guard rawUrl.hasPrefix("data:") else { return nil }
+        guard let marker = rawUrl.range(of: "base64,") else { return nil }
+        let rest = rawUrl[marker.upperBound...]
+        let payload = rest.prefix { $0 != "," }
+        guard !payload.isEmpty, let data = Data(base64Encoded: String(payload)) else { return nil }
+        return String(data: data, encoding: .utf8)
+    }
+
     /// Parses Legado's custom URL syntax:
     /// e.g. "https://domain.com/search,{\"method\":\"POST\",\"body\":{\"key\":\"val\"},\"headers\":{\"X\":\"Y\"}}"
     public static func parseLegadoUrl(_ rawUrl: String, defaultHeader: String? = nil, baseUrl: String? = nil) -> ParsedRequest? {
         var cleanUrl = rawUrl.trimmingCharacters(in: .whitespacesAndNewlines)
         var method = "GET"
         var headers: [String: String] = [
-            "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Mobile/15E148 Safari/604.1"
+            "User-Agent": NetworkClient.defaultUserAgent
         ]
         var bodyData: Data? = nil
 

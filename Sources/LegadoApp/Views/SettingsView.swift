@@ -244,41 +244,7 @@ public struct SettingsView: View {
                     }
                 }
 
-                // Section 2: Bookshelf & Storage
-                Section(header: Text("书架与存储")) {
-                    HStack {
-                        Text("书架藏书")
-                        Spacer()
-                        Text("\(bookStore.bookshelf.count) 本")
-                            .foregroundColor(.secondary)
-                    }
-
-                    Button(role: .destructive) {
-                        showClearCacheAlert = true
-                    } label: {
-                        HStack {
-                            Text("清理阅读缓存")
-                            Spacer()
-                            Image(systemName: "trash")
-                                .foregroundColor(.red)
-                        }
-                    }
-                }
-
-                // Section 3: Data & Cloud Sync (WebDAV)
-                Section(header: Text("数据与云备份")) {
-                    NavigationLink(destination: WebDAVSyncView()) {
-                        HStack {
-                            Label("WebDAV 云同步", systemImage: "icloud.and.arrow.up")
-                            Spacer()
-                            Text(webDAVStatusText)
-                                .font(.caption)
-                                .foregroundColor(.secondary)
-                        }
-                    }
-                }
-
-                // Section 4: Book Sources
+                // Section 2: Book Sources
                 Section(header: Text("书源管理")) {
                     NavigationLink(destination: SourceManagerView()) {
                         HStack {
@@ -302,7 +268,40 @@ public struct SettingsView: View {
                     }
                 }
 
-                // Section 4: About
+                // Section 3: Bookshelf & Storage
+                Section(header: Text("书架与存储")) {
+                    HStack {
+                        Text("书架藏书")
+                        Spacer()
+                        Text("\(bookStore.bookshelf.count) 本")
+                            .foregroundColor(.secondary)
+                    }
+
+                    Button(role: .destructive) {
+                        showClearCacheAlert = true
+                    } label: {
+                        HStack {
+                            Text("清理阅读缓存")
+                            Spacer()
+                            Image(systemName: "trash")
+                                .foregroundColor(.red)
+                        }
+                    }
+                }
+
+                // Section 4: Data & Cloud Sync (WebDAV)
+                Section(header: Text("数据与云备份")) {
+                    NavigationLink(destination: WebDAVSyncView()) {
+                        HStack {
+                            Label("WebDAV 云同步", systemImage: "icloud.and.arrow.up")
+                            Spacer()
+                            Text(webDAVStatusText)
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        }
+                    }
+                }
+
                 // Section 5: 听书语音源
                 Section(header: Text("听书（朗读引擎）")) {
                     NavigationLink(destination: TTSourceManagerView()) {

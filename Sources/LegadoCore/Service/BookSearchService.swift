@@ -188,3 +188,106 @@ public class BookSearchService {
         }
     }
 }
+
+// MARK: - 换源时候选书的匹配口径
+
+/// 换源界面用哪几个字段判定「这是同一本书」。
+public struct SourceMatchOptions: Equatable {
+    /// 要求书名中
+    public var matchTitle: Bool
+    /// 要求作者中
+    public var matchAuthor: Bool
+    /// 精确匹配：归一化后完全相等；否则双向包含
+    public var exact: Bool
+
+    public init(matchTitle: Bool = true, matchAuthor: Bool = false, exact: Bool = false) {
+        self.matchTitle = matchTitle
+        self.matchAuthor = matchAuthor
+        self.exact = exact
+    }
+}
+
+/// 候选书与目标书的匹配判定。
+///
+/// 开了几个字段就是几个字段都要中（AND）：开了书名和作者，就要求候选书名中、作者也中，
+/// 只用 OR 的话同名不同作者的书会混进换源列表。
+public enum SourceMatchRules {
+
+    /// 搜索页只看一个关键词：命中选中字段里的任意一个就算。
+    public enum SearchField: String, CaseIterable {
+        case title
+        case author
+        case either
+    }
+
+    /// 搜索结果过滤：关键词落在选中的字段里就算命中。
+    /// 换源那边两个字段是两个不同的目标、按 AND；搜索页只有一个关键词，所以是 OR。
+    public static func matchesKeyword(
+        _ candidate: SearchBook,
+        keyword: String,
+        field: SearchField,
+        exact: Bool
+    ) -> Bool {
+        guard !normalized(keyword).isEmpty else { return true }
+        switch field {
+        case .title:
+            return hit(candidate.name, keyword, exact: exact)
+        case .author:
+            return hit(candidate.author, keyword, exact: exact)
+        case .either:
+            return hit(candidate.name, keyword, exact: exact) || hit(candidate.author, keyword, exact: exact)
+        }
+    }
+
+    /// 搜索范围：按「源名 / 分组含这几个字」和分组过滤要搜的源。
+    public static func filterSources(
+        _ sources: [BookSource],
+        nameFilter: String,
+        group: String?
+    ) -> [BookSource] {
+        var list = sources
+        if let group, !group.isEmpty {
+            list = list.filter { ($0.bookSourceGroup ?? "") == group }
+        }
+        let needle = nameFilter.trimmingCharacters(in: .whitespaces).lowercased()
+        guard !needle.isEmpty else { return list }
+        return list.filter {
+            $0.bookSourceName.lowercased().contains(needle)
+                || ($0.bookSourceGroup ?? "").lowercased().contains(needle)
+        }
+    }
+
+    /// 归一化：去掉空白（含全角）、书名号 / 引号 / 间隔号，英文转小写。
+    /// 「《凡人修仙传》」「凡人 修仙传」「凡人·修仙传」都算同一个书名。
+    public static func normalized(_ text: String) -> String {
+        let dropped: Set<Character> = [" ", "\t", "\n", "\u{3000}", "《", "》", "「", "」", "『", "』",
+                                       "“", "”", "‘", "’", "\"", "'", "·", "•"]
+        return String(text.filter { !dropped.contains($0) }).lowercased()
+    }
+
+    public static func matches(
+        _ candidate: SearchBook,
+        title: String,
+        author: String,
+        options: SourceMatchOptions
+    ) -> Bool {
+        var checked = 0
+        if options.matchTitle {
+            checked += 1
+            guard hit(candidate.name, title, exact: options.exact) else { return false }
+        }
+        if options.matchAuthor {
+            checked += 1
+            guard hit(candidate.author, author, exact: options.exact) else { return false }
+        }
+        // 一个字段都没开就没法判定「是同一本书」
+        return checked > 0
+    }
+
+    private static func hit(_ candidateValue: String, _ wanted: String, exact: Bool) -> Bool {
+        let value = normalized(candidateValue)
+        let target = normalized(wanted)
+        guard !value.isEmpty, !target.isEmpty else { return false }
+        return exact ? value == target : (value.contains(target) || target.contains(value))
+    }
+}

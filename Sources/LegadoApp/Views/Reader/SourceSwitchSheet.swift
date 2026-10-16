@@ -9,27 +9,26 @@ public struct SourceSwitchSheet: View {
     let currentSourceUrl: String?
     let onSelect: (BookSource, SearchBook) -> Void
 
-    /// 拿什么去搜：书名、作者，或者两个都要
-    enum MatchMode: String, CaseIterable, Identifiable {
-        case title = "书名"
-        case author = "作者"
-        case both = "书名+作者"
-        var id: String { rawValue }
-    }
-
     @Environment(\.dismiss) private var dismiss
     @ObservedObject private var bookStore = BookStore.shared
 
-    @State private var results: [(source: BookSource, book: SearchBook)] = []
+    /// 匹配口径与展示偏好记住，下次换源沿用；关键词、限定源是临时的
+    @AppStorage("switch_source_match_title") private var matchTitle: Bool = true
+    @AppStorage("switch_source_match_author") private var matchAuthor: Bool = false
+    @AppStorage("switch_source_exact") private var exactMatch: Bool = false
+    @AppStorage("switch_source_show_detail") private var showDetail: Bool = true
+
+    /// 搜回来的原始候选，按当前口径就地筛，改开关不用重搜
+    @State private var rawResults: [(source: BookSource, book: SearchBook)] = []
     @State private var isSearching = false
     @State private var searchTask: Task<Void, Never>?
     @State private var finishedSources = 0
     @State private var totalSources = 0
     @State private var errorMessage: String?
-    @State private var hitNote: String?
-    @State private var matchMode: MatchMode
     @State private var keyword: String
     @State private var sourceFilter: String = ""
+    /// 搜索条件默认收起，换源时先看候选；收起状态是临时的，每次打开都收着
+    @State private var showSearchOptions = false
 
     public init(
         book: Book,
@@ -39,11 +38,28 @@ public struct SourceSwitchSheet: View {
         self.book = book
         self.currentSourceUrl = currentSourceUrl
         self.onSelect = onSelect
-        // 名字特别短的书（「家」「序」这种）按书名搜全是噪音，默认改成按作者搜
+        // 名字特别短的书（「家」「序」这种）按书名搜全是噪音，默认用作者当关键词
         let shortTitle = book.name.trimmingCharacters(in: .whitespaces).count <= 2
-        let initialMode: MatchMode = (shortTitle && !book.author.isEmpty) ? .author : .title
-        self._matchMode = State(initialValue: initialMode)
-        self._keyword = State(initialValue: initialMode == .author ? book.author : book.name)
+        self._keyword = State(initialValue: (shortTitle && !book.author.isEmpty) ? book.author : book.name)
+    }
+
+    private var options: SourceMatchOptions {
+        SourceMatchOptions(matchTitle: matchTitle, matchAuthor: matchAuthor, exact: exactMatch)
+    }
+
+    private var results: [(source: BookSource, book: SearchBook)] {
+        rawResults.filter {
+            SourceMatchRules.matches($0.book, title: book.name, author: book.author, options: options)
+        }
+    }
+
+    /// 给提示用：现在是按什么口径筛的
+    private var criteriaText: String {
+        var fields: [String] = []
+        if matchTitle { fields.append("书名") }
+        if matchAuthor { fields.append("作者") }
+        let fieldText = fields.isEmpty ? "未选字段" : fields.joined(separator: "+")
+        return "\(fieldText)·\(exactMatch ? "精确" : "包含")"
     }
 
     public var body: some View {
@@ -80,45 +96,48 @@ public struct SourceSwitchSheet: View {
                     }
                 }
 
-                Section(header: Text("搜索条件")) {
-                    Picker("匹配", selection: $matchMode) {
-                        ForEach(MatchMode.allCases) { m in
-                            Text(m.rawValue).tag(m)
+                Section {
+                    DisclosureGroup(isExpanded: $showSearchOptions) {
+                        // 选中的字段是 AND：书名和作者都开，就两个都要中，同名不同作者的书不会混进来
+                        Toggle("匹配书名", isOn: $matchTitle)
+                        Toggle("匹配作者", isOn: $matchAuthor)
+                        Toggle("精确匹配", isOn: $exactMatch)
+                        if !matchTitle && !matchAuthor {
+                            Text("至少选一个匹配字段，否则没法判断是不是同一本书。")
+                                .font(.caption)
+                                .foregroundColor(.orange)
                         }
-                    }
-                    .pickerStyle(.segmented)
-                    .onChange(of: matchMode) { newValue in
-                        switch newValue {
-                        case .title:
-                            keyword = book.name
-                        case .author:
-                            keyword = book.author.isEmpty ? book.name : book.author
-                        case .both:
-                            keyword = book.author.isEmpty ? book.name : "\(book.name) \(book.author)"
+
+                        HStack {
+                            Text("关键词")
+                                .font(.subheadline)
+                                .foregroundColor(.secondary)
+                                .frame(width: 52, alignment: .leading)
+                            PlaceholderField(placeholder: "要搜的内容", text: $keyword)
+                            Button("搜索") { startSearch() }
+                                .buttonStyle(.borderedProminent)
+                                .controlSize(.small)
+                                .disabled(keyword.trimmingCharacters(in: .whitespaces).isEmpty || (!matchTitle && !matchAuthor))
                         }
-                        startSearch()
-                    }
 
-                    HStack {
-                        Text("关键词")
-                            .frame(width: 52, alignment: .leading)
-                        TextField("要搜的内容", text: $keyword)
-                            #if os(iOS)
-                            .autocapitalization(.none)
-                            .disableAutocorrection(true)
-                            #endif
-                        Button("搜索") { startSearch() }
-                            .disabled(keyword.trimmingCharacters(in: .whitespaces).isEmpty)
-                    }
+                        HStack {
+                            Text("限定源")
+                                .font(.subheadline)
+                                .foregroundColor(.secondary)
+                                .frame(width: 52, alignment: .leading)
+                            PlaceholderField(placeholder: "只搜名称 / 分组里含这几个字的源", text: $sourceFilter)
+                        }
 
-                    HStack {
-                        Text("限定源")
-                            .frame(width: 52, alignment: .leading)
-                        TextField("只搜名称 / 分组里含这几个字的源", text: $sourceFilter)
-                            #if os(iOS)
-                            .autocapitalization(.none)
-                            .disableAutocorrection(true)
-                            #endif
+                        Toggle("显示书籍详情", isOn: $showDetail)
+                    } label: {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("搜索条件")
+                            // 收起时也得看得出现在是按什么口径搜的
+                            Text("\(criteriaText) · 关键词「\(keyword)」")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                                .lineLimit(1)
+                        }
                     }
                 }
 
@@ -130,14 +149,6 @@ public struct SourceSwitchSheet: View {
                                 .font(.caption)
                                 .foregroundColor(.secondary)
                         }
-                    }
-                }
-
-                if let hitNote {
-                    Section {
-                        Text(hitNote)
-                            .font(.caption)
-                            .foregroundColor(.secondary)
                     }
                 }
 
@@ -158,11 +169,14 @@ public struct SourceSwitchSheet: View {
                             } label: {
                                 VStack(alignment: .leading, spacing: 4) {
                                     HStack {
-                                        Text(item.source.bookSourceName)
+                                        Text(item.book.name)
                                             .font(.subheadline.weight(.medium))
                                             .foregroundColor(.primary)
+                                            .lineLimit(2)
                                         Spacer()
-                                        if item.source.bookSourceUrl == currentSourceUrl {
+                                        // 只有「现在这本、在当前源上」才算「当前」，同一个源里的别的书不算
+                                        if item.source.bookSourceUrl == currentSourceUrl,
+                                           item.book.bookUrl == book.bookUrl {
                                             Text("当前")
                                                 .font(.caption2)
                                                 .padding(.horizontal, 6)
@@ -171,16 +185,37 @@ public struct SourceSwitchSheet: View {
                                                 .cornerRadius(4)
                                         }
                                     }
-                                    if !item.book.author.isEmpty {
-                                        Text("作者：\(item.book.author)")
-                                            .font(.caption)
-                                            .foregroundColor(.secondary)
-                                    }
-                                    if let latest = item.book.latestChapterTitle, !latest.isEmpty {
-                                        Text("最新：\(latest)")
-                                            .font(.caption2)
-                                            .foregroundColor(.secondary)
-                                            .lineLimit(1)
+
+                                    Text("来源：\(item.source.bookSourceName)")
+                                        .font(.caption)
+                                        .foregroundColor(.secondary)
+
+                                    if showDetail {
+                                        if !item.book.author.isEmpty {
+                                            Text("作者：\(item.book.author)")
+                                                .font(.caption)
+                                                .foregroundColor(.secondary)
+                                        }
+                                        let meta = [item.book.kind, item.book.wordCount]
+                                            .compactMap { $0?.trimmingCharacters(in: .whitespaces) }
+                                            .filter { !$0.isEmpty }
+                                        if !meta.isEmpty {
+                                            Text(meta.joined(separator: " · "))
+                                                .font(.caption2)
+                                                .foregroundColor(.secondary)
+                                        }
+                                        if let latest = item.book.latestChapterTitle, !latest.isEmpty {
+                                            Text("最新：\(latest)")
+                                                .font(.caption2)
+                                                .foregroundColor(.secondary)
+                                                .lineLimit(1)
+                                        }
+                                        if let intro = item.book.intro, !intro.isEmpty {
+                                            Text(intro)
+                                                .font(.caption2)
+                                                .foregroundColor(.secondary)
+                                                .lineLimit(1)
+                                        }
                                     }
                                 }
                             }
@@ -188,9 +223,15 @@ public struct SourceSwitchSheet: View {
                     }
                 } else if !isSearching {
                     Section {
-                        Text("没有在其他书源找到这本书。换个匹配方式或关键词再试。")
-                            .font(.caption)
-                            .foregroundColor(.secondary)
+                        if rawResults.isEmpty {
+                            Text("没有在其他书源找到这本书。换个匹配方式或关键词再试。")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        } else {
+                            Text("搜到 \(rawResults.count) 条，但都不符合当前口径（\(criteriaText)）。放开字段或关掉精确匹配再试。")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        }
                     }
                 }
             }
@@ -211,15 +252,19 @@ public struct SourceSwitchSheet: View {
 
     private func startSearch() {
         searchTask?.cancel()
-        results = []
+        rawResults = []
         errorMessage = nil
-        hitNote = nil
         finishedSources = 0
 
         let trimmedKeyword = keyword.trimmingCharacters(in: .whitespaces)
         guard !trimmedKeyword.isEmpty else {
             isSearching = false
             errorMessage = "先填关键词。"
+            return
+        }
+        guard matchTitle || matchAuthor else {
+            isSearching = false
+            errorMessage = "先选一个匹配字段。"
             return
         }
 
@@ -241,34 +286,23 @@ public struct SourceSwitchSheet: View {
         }
 
         let requestKey = requestKeyword(from: trimmedKeyword)
-        let mode = matchMode
-        let bookName = book.name
-        let bookAuthor = book.author
 
         searchTask = Task {
             let stream = BookSearchService.shared.searchMultiSources(sources: sources, key: requestKey, page: 1)
-            var mismatched = 0
             for await (source, books) in stream {
                 if Task.isCancelled { return }
                 await MainActor.run {
                     finishedSources += 1
-                    // 按选中的口径过滤，避免同名不同书混进来
-                    let matched = books.filter {
-                        Self.matches($0, mode: mode, bookName: bookName, author: bookAuthor)
-                    }
-                    mismatched += books.count - matched.count
-                    for candidate in matched {
-                        if !results.contains(where: { $0.book.bookUrl == candidate.bookUrl }) {
-                            results.append((source: source, book: candidate))
+                    // 原样收着，展示时按当前口径筛（改开关不用重新搜一遍）
+                    for candidate in books {
+                        if !rawResults.contains(where: { $0.book.bookUrl == candidate.bookUrl }) {
+                            rawResults.append((source: source, book: candidate))
                         }
                     }
                 }
             }
             await MainActor.run {
                 isSearching = false
-                if results.isEmpty, mismatched > 0 {
-                    hitNote = "搜到 \(mismatched) 条，但都不符合「\(mode.rawValue)」的匹配口径。"
-                }
             }
         }
     }
@@ -279,19 +313,4 @@ public struct SourceSwitchSheet: View {
         return parts.max(by: { $0.count < $1.count }) ?? raw
     }
 
-    /// 按选中的口径判断这条结果算不算同一本书
-    private static func matches(_ candidate: SearchBook, mode: MatchMode, bookName: String, author: String) -> Bool {
-        let nameHit = !bookName.isEmpty
-            && (candidate.name.contains(bookName) || bookName.contains(candidate.name))
-        let authorHit = !author.isEmpty && !candidate.author.isEmpty
-            && (candidate.author.contains(author) || author.contains(candidate.author))
-        switch mode {
-        case .title:
-            return nameHit
-        case .author:
-            return authorHit
-        case .both:
-            return nameHit || authorHit
-        }
-    }
 }

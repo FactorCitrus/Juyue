@@ -29,29 +29,63 @@ public class BookContentService {
 
         // 脱敏：URL 只记域名，path 与 query 常含私有参数
         LegadoLog.log("[BookDetail] [\(source.bookSourceName)] 抓详情与目录 host=\(URL(string: targetUrl)?.host ?? "-")")
-        guard let parsedReq = NetworkClient.parseLegadoUrl(targetUrl, defaultHeader: headerToUse, baseUrl: source.bookSourceUrl) else {
-            LegadoLog.log("[BookDetail] ❌ [\(source.bookSourceName)] 详情 URL 解析失败 host=\(URL(string: targetUrl)?.host ?? "-")")
-            return (book, [])
+
+        let bodyString: String
+        let pageBaseUrl: String
+        let jsEngine: JSEngine
+        /// 目录脚本吃的内容：普通站是详情页本身，data: 包里是那份载荷
+        let tocContent: Any
+
+        if let payload = NetworkClient.dataURLPayload(targetUrl) {
+            // data: 协议：聚合源把请求参数打包在 bookUrl 里，这个网址不用请求。
+            // ruleBookInfo.init 拿到载荷自己发请求，把响应体作为返回值交回来。
+            let js = JSEngine(bookSource: source, baseUrl: targetUrl, book: book)
+            jsEngine = js
+            pageBaseUrl = targetUrl
+            tocContent = payload
+            var detail = ""
+            if let initRule = source.ruleBookInfo?.initRule, !initRule.isEmpty {
+                if let out = js.eval(script: JSEngine.unwrapJsScript(initRule), result: payload) {
+                    detail = out as? String ?? "\(out)"
+                }
+                if let err = js.lastError {
+                    LegadoLog.log("[BookDetail] ⚠️ [\(source.bookSourceName)] 详情 init 脚本报错：\(err)")
+                }
+            }
+            bodyString = detail
+        } else {
+            guard let parsedReq = NetworkClient.parseLegadoUrl(targetUrl, defaultHeader: headerToUse, baseUrl: source.bookSourceUrl) else {
+                LegadoLog.log("[BookDetail] ❌ [\(source.bookSourceName)] 详情 URL 解析失败 host=\(URL(string: targetUrl)?.host ?? "-")")
+                return (book, [])
+            }
+            let response = try await NetworkClient.shared.request(parsed: parsedReq)
+            bodyString = response.bodyString
+            pageBaseUrl = parsedReq.url.absoluteString
+            jsEngine = JSEngine(bookSource: source, baseUrl: pageBaseUrl, book: book)
+            tocContent = response.bodyString
         }
 
-        let response = try await NetworkClient.shared.request(parsed: parsedReq)
-        let jsEngine = JSEngine(bookSource: source, baseUrl: parsedReq.url.absoluteString)
-
         let analyzer = RuleAnalyzer(
-            content: response.bodyString,
-            baseUrl: parsedReq.url.absoluteString,
+            content: bodyString,
+            baseUrl: pageBaseUrl,
+            bookSource: source,
+            jsEngine: jsEngine
+        )
+        let tocAnalyzer = RuleAnalyzer(
+            content: tocContent,
+            baseUrl: pageBaseUrl,
             bookSource: source,
             jsEngine: jsEngine
         )
 
         // 1. Parse Chapters
-        let chapterElements = analyzer.getElements(tocRule.chapterList)
+        let chapterElements = tocAnalyzer.getElements(tocRule.chapterList)
         var chapters: [BookChapter] = []
 
         for (_, item) in chapterElements.enumerated() {
             let itemAnalyzer = RuleAnalyzer(
                 content: item,
-                baseUrl: parsedReq.url.absoluteString,
+                baseUrl: pageBaseUrl,
                 bookSource: source,
                 jsEngine: jsEngine
             )
@@ -72,13 +106,15 @@ public class BookContentService {
 
         // 目录分页：有的站点一页只给 40 章，靠 nextTocUrl 把后面的翻出来。
         // 各页之间没有依赖（每页的页码表都列全），所以并发抓，不能一页一页等。
-        if let nextRule = tocRule.nextTocUrl?.trimmingCharacters(in: .whitespacesAndNewlines), !nextRule.isEmpty {
+        if let nextRule = tocRule.nextTocUrl?.trimmingCharacters(in: .whitespacesAndNewlines), !nextRule.isEmpty,
+           // data: 包没有「下一页网址」这回事，别拿载荷当网址去翻页
+           NetworkClient.dataURLPayload(targetUrl) == nil {
             let pageLimit = 60
             let pageTimeout: TimeInterval = 20
 
             var chapterURLs = Set(chapters.map(\.url))
-            var discovered: Set<String> = [parsedReq.url.absoluteString]
-            var frontier = BookContentService.extractURLs(from: analyzer, rule: nextRule, baseUrl: parsedReq.url.absoluteString)
+            var discovered: Set<String> = [pageBaseUrl]
+            var frontier = BookContentService.extractURLs(from: analyzer, rule: nextRule, baseUrl: pageBaseUrl)
             var round = 0
 
             while !frontier.isEmpty, discovered.count < pageLimit, round < 4 {
@@ -156,7 +192,7 @@ public class BookContentService {
         }
 
         // Apply intelligent JSON metadata extraction (e.g. for Novelia and generic novel REST APIs)
-        if let data = response.bodyString.data(using: .utf8),
+        if let data = bodyString.data(using: .utf8),
            let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
 
             // Author extraction from JSON
@@ -306,7 +342,7 @@ public class BookContentService {
     }
 
     /// Fetches and cleans chapter text content
-    public func fetchChapterContent(chapter: BookChapter, source: BookSource? = nil) async throws -> String {
+    public func fetchChapterContent(chapter: BookChapter, source: BookSource? = nil, book: Book? = nil) async throws -> String {
         // 漫画 / PDF：章节就是一张本地图片，直接交给阅读器的图片链路
         if chapter.url.hasPrefix("imgpage://") {
             return "[image:" + String(chapter.url.dropFirst("imgpage://".count)) + "]"
@@ -365,17 +401,31 @@ public class BookContentService {
 
         // 脱敏：不记章节标题与 URL 路径
         LegadoLog.log("[Content] [\(source.bookSourceName)] 抓正文 第 \(chapter.index + 1) 章 host=\(URL(string: chapterUrl)?.host ?? "-")")
-        guard let parsedReq = NetworkClient.parseLegadoUrl(chapterUrl, defaultHeader: headerToUse, baseUrl: source.bookSourceUrl) else {
-            LegadoLog.log("[Content] ❌ [\(source.bookSourceName)] 正文 URL 解析失败 第 \(chapter.index + 1) 章 host=\(URL(string: chapterUrl)?.host ?? "-")")
-            return ""
+
+        let bodyString: String
+        let pageBaseUrl: String
+        let jsEngine: JSEngine
+
+        if let payload = NetworkClient.dataURLPayload(chapterUrl) {
+            // data: 协议：章节网址也是打包的，正文规则（ruleContent.content 那段 JS）
+            // 拿着载荷自己发请求，把正文取回来。
+            jsEngine = JSEngine(bookSource: source, baseUrl: chapterUrl, book: book)
+            pageBaseUrl = chapterUrl
+            bodyString = payload
+        } else {
+            guard let parsedReq = NetworkClient.parseLegadoUrl(chapterUrl, defaultHeader: headerToUse, baseUrl: source.bookSourceUrl) else {
+                LegadoLog.log("[Content] ❌ [\(source.bookSourceName)] 正文 URL 解析失败 第 \(chapter.index + 1) 章 host=\(URL(string: chapterUrl)?.host ?? "-")")
+                return ""
+            }
+            let response = try await NetworkClient.shared.request(parsed: parsedReq)
+            jsEngine = JSEngine(bookSource: source, baseUrl: parsedReq.url.absoluteString, book: book)
+            pageBaseUrl = parsedReq.url.absoluteString
+            bodyString = response.bodyString
         }
 
-        let response = try await NetworkClient.shared.request(parsed: parsedReq)
-        let jsEngine = JSEngine(bookSource: source, baseUrl: parsedReq.url.absoluteString)
-
         let analyzer = RuleAnalyzer(
-            content: response.bodyString,
-            baseUrl: parsedReq.url.absoluteString,
+            content: bodyString,
+            baseUrl: pageBaseUrl,
             bookSource: source,
             jsEngine: jsEngine
         )
@@ -399,9 +449,12 @@ public class BookContentService {
         }
 
         // Clean up common web garbage and sanitize HTML tags
-        contentText = BookContentService.cleanHtml(contentText, baseUrl: parsedReq.url.absoluteString)
+        contentText = BookContentService.cleanHtml(contentText, baseUrl: pageBaseUrl)
         // 替换净化：正则/普通文本规则过一遍，去广告水印
-        contentText = TextPurifier.shared.apply(contentText)
+        // 这本书被源显式关掉替换净化时跳过（聚合源自己清理过正文，再净化一遍会误伤）
+        if book?.useReplaceRule != false {
+            contentText = TextPurifier.shared.apply(contentText)
+        }
 
         if !contentText.isEmpty {
             saveCachedChapterContent(bookUrl: chapter.bookUrl, chapterIndex: chapter.index, content: contentText)
@@ -615,6 +668,32 @@ public struct ReplacementRule: Codable, Identifiable, Equatable {
 }
 
 /// 正文替换净化：规则存 UserDefaults，抓完正文依次过一遍
+/// 阅读页里选一段做「替换」时记下来的规则，按书存、按书生效。
+public struct TextReplaceRule: Codable, Equatable, Identifiable {
+    public var id: UUID
+    public var from: String
+    public var to: String
+
+    public init(from: String, to: String) {
+        self.id = UUID()
+        self.from = from
+        self.to = to
+    }
+}
+
+public enum TextReplaceRules {
+    /// 依次套用，长串优先 —— 否则短串先替换会把长串切碎。
+    public static func apply(_ text: String, rules: [TextReplaceRule]) -> String {
+        guard !text.isEmpty, !rules.isEmpty else { return text }
+        var result = text
+        for rule in rules.sorted(by: { $0.from.count > $1.from.count }) {
+            guard !rule.from.isEmpty else { continue }
+            result = result.replacingOccurrences(of: rule.from, with: rule.to)
+        }
+        return result
+    }
+}
+
 public final class TextPurifier: ObservableObject {
     public static let shared = TextPurifier()
 

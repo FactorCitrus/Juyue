@@ -26,6 +26,10 @@ public struct Book: Codable, Identifiable, Equatable {
     public var lastCheckTime: Int64
     /// 书架分组（nil = 未分组）
     public var groupId: UUID?
+    /// 书级变量：脚本用 `book.setVariable` 存的 JSON，聚合源拿它存这本书的自定义配置
+    public var variable: String?
+    /// 这本书用不用替换净化。nil = 跟随全局设置（安卓那边是 `book.readConfig.useReplaceRule`）
+    public var useReplaceRule: Bool?
 
     public init(
         bookUrl: String,
@@ -45,7 +49,9 @@ public struct Book: Codable, Identifiable, Equatable {
         durChapterTime: Int64 = 0,
         totalChapterNum: Int = 0,
         lastCheckTime: Int64 = Int64(Date().timeIntervalSince1970 * 1000),
-        groupId: UUID? = nil
+        groupId: UUID? = nil,
+        variable: String? = nil,
+        useReplaceRule: Bool? = nil
     ) {
         self.bookUrl = bookUrl
         self.name = name
@@ -65,6 +71,8 @@ public struct Book: Codable, Identifiable, Equatable {
         self.totalChapterNum = totalChapterNum
         self.lastCheckTime = lastCheckTime
         self.groupId = groupId
+        self.variable = variable
+        self.useReplaceRule = useReplaceRule
     }
 
     enum CodingKeys: String, CodingKey {
@@ -72,6 +80,7 @@ public struct Book: Codable, Identifiable, Equatable {
         case origin, originName, tocUrl, wordCount, latestChapterTitle
         case durChapterTitle, durChapterIndex, durChapterPos, durChapterTime, totalChapterNum, lastCheckTime
         case groupId
+        case variable, useReplaceRule
     }
 
     public init(from decoder: Decoder) throws {
@@ -94,6 +103,8 @@ public struct Book: Codable, Identifiable, Equatable {
         self.totalChapterNum = (try? container.decode(Int.self, forKey: .totalChapterNum)) ?? 0
         self.lastCheckTime = (try? container.decode(Int64.self, forKey: .lastCheckTime)) ?? Int64(Date().timeIntervalSince1970 * 1000)
         self.groupId = try? container.decodeIfPresent(UUID.self, forKey: .groupId)
+        self.variable = try? container.decodeIfPresent(String.self, forKey: .variable)
+        self.useReplaceRule = try? container.decodeIfPresent(Bool.self, forKey: .useReplaceRule)
     }
 }
 
@@ -201,6 +212,13 @@ public struct SearchBook: Codable, Identifiable, Equatable {
 // MARK: - 书签 / 笔记
 /// 一条书签：章节 + 位置 + 当时摘的句子，可以再写备注
 public struct BookBookmark: Codable, Identifiable, Equatable {
+    /// 标注类型：书签 / 下划线 / 底色（一条记录三种用途，复用同一份存储与列表）
+    public enum Kind: String, Codable {
+        case bookmark
+        case underline
+        case highlight
+    }
+
     public var id: UUID
     public var bookUrl: String
     public var chapterIndex: Int
@@ -209,8 +227,29 @@ public struct BookBookmark: Codable, Identifiable, Equatable {
     public var snippet: String
     public var note: String
     public var createdAt: Date
+    /// 标注落在哪一段（阅读器的 ContentBlock.id）。书签用不上，留空。
+    public var blockId: Int?
+    /// 区间长度（字符数）。段落级标注就是整段长度，将来做句子级/逐字时用它。
+    public var length: Int?
+    /// 底色标注的颜色名（raw value 存字符串，方便跨版本）
+    public var color: String?
+    /// nil 当书签处理，老数据不用迁移
+    public var kindRaw: String?
 
-    public init(bookUrl: String, chapterIndex: Int, chapterTitle: String, charOffset: Int, snippet: String = "", note: String = "") {
+    public var kind: Kind { Kind(rawValue: kindRaw ?? "") ?? .bookmark }
+
+    public init(
+        bookUrl: String,
+        chapterIndex: Int,
+        chapterTitle: String,
+        charOffset: Int,
+        snippet: String = "",
+        note: String = "",
+        blockId: Int? = nil,
+        length: Int? = nil,
+        color: String? = nil,
+        kind: Kind = .bookmark
+    ) {
         self.id = UUID()
         self.bookUrl = bookUrl
         self.chapterIndex = chapterIndex
@@ -219,5 +258,26 @@ public struct BookBookmark: Codable, Identifiable, Equatable {
         self.snippet = snippet
         self.note = note
         self.createdAt = Date()
+        self.blockId = blockId
+        self.length = length
+        self.color = color
+        self.kindRaw = kind.rawValue
+    }
+
+    /// 新增字段都按可选解，老数据（没有这些键）照样能读出来
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.id = (try? container.decode(UUID.self, forKey: .id)) ?? UUID()
+        self.bookUrl = (try? container.decode(String.self, forKey: .bookUrl)) ?? ""
+        self.chapterIndex = (try? container.decode(Int.self, forKey: .chapterIndex)) ?? 0
+        self.chapterTitle = (try? container.decode(String.self, forKey: .chapterTitle)) ?? ""
+        self.charOffset = (try? container.decode(Int.self, forKey: .charOffset)) ?? 0
+        self.snippet = (try? container.decode(String.self, forKey: .snippet)) ?? ""
+        self.note = (try? container.decode(String.self, forKey: .note)) ?? ""
+        self.createdAt = (try? container.decode(Date.self, forKey: .createdAt)) ?? Date()
+        self.blockId = try? container.decodeIfPresent(Int.self, forKey: .blockId)
+        self.length = try? container.decodeIfPresent(Int.self, forKey: .length)
+        self.color = try? container.decodeIfPresent(String.self, forKey: .color)
+        self.kindRaw = try? container.decodeIfPresent(String.self, forKey: .kindRaw)
     }
 }

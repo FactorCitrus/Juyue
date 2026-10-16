@@ -20,6 +20,9 @@ import CommonCrypto
     func log(_ message: JSValue)
     func deviceID() -> String
     func androidId() -> String
+    func getWebViewUA() -> String
+    func getCookie(_ url: String) -> String
+    func refreshExplore()
     func hexDecodeToString(_ hex: String) -> String
     // Rhino 的 Java 互操作适配，聚合源依赖这几个：
     func base64EncodeBytes(_ bytes: JSValue) -> String
@@ -60,7 +63,12 @@ public final class ScriptBrowser {
 }
 
 @objc public class JavaShim: NSObject, JavaShimProtocol {
-    private var kvStore: [String: String] = [:]
+    /// `cache` / `java.put`/`java.get` 的存储。
+    ///
+    /// 脚本把登录态、段评正文、临时标记放这儿，一个引擎跑一次、下一次点按钮又是新引擎，
+    /// 所以必须跨引擎共享（安卓那边是 app 级缓存）。进程内共享，退出即清。
+    private static var sharedStore: [String: String] = [:]
+    private static let storeLock = NSLock()
     private let lock = NSLock()
     private weak var jsContext: JSContext?
 
@@ -156,9 +164,9 @@ public final class ScriptBrowser {
     }
 
     public func get(_ key: String) -> String? {
-        lock.lock()
-        defer { lock.unlock() }
-        return kvStore[key]
+        Self.storeLock.lock()
+        defer { Self.storeLock.unlock() }
+        return Self.sharedStore[key]
     }
 
     // MARK: - 脚本杂项调用
@@ -185,6 +193,23 @@ public final class ScriptBrowser {
 
     public func androidId() -> String {
         Self.persistentDeviceID()
+    }
+
+    /// 脚本自己拼 header 时要一个 WebView 的 UA（聚合源的 69书吧分支用它）。
+    public func getWebViewUA() -> String {
+        NetworkClient.defaultUserAgent
+    }
+
+    /// 有的源把 `java.getCookie` 当 `cookie.getCookie` 的兜底（`|| java.getCookie(url)`）。
+    public func getCookie(_ url: String) -> String {
+        CookieJar.shared.cookieString(for: url)
+    }
+
+    /// 脚本改完设置（换服务器、设置中心结果）会调它，安卓那边是刷新分类页。
+    /// 分类缓存本身按「exploreUrl + 源变量」做签名，变量一变下次解析就是新的，
+    /// 这里只负责让界面重新拉一遍。
+    public func refreshExplore() {
+        JSEngine.exploreRefreshSink?()
     }
 
     /// 正文常以 hex 字符串回传。
@@ -335,9 +360,9 @@ public final class ScriptBrowser {
 
     /// 删缓存键
     public func removeCache(_ key: String) {
-        lock.lock()
-        defer { lock.unlock() }
-        kvStore.removeValue(forKey: key)
+        Self.storeLock.lock()
+        defer { Self.storeLock.unlock() }
+        Self.sharedStore.removeValue(forKey: key)
     }
 
     /// 不问结果，把网址交给宿主打开。
@@ -396,9 +421,9 @@ public final class ScriptBrowser {
     }
 
     public func put(_ key: String, _ value: String) -> String {
-        lock.lock()
-        defer { lock.unlock() }
-        kvStore[key] = value
+        Self.storeLock.lock()
+        defer { Self.storeLock.unlock() }
+        Self.sharedStore[key] = value
         return value
     }
 
@@ -457,15 +482,32 @@ public final class ScriptBrowser {
 public class JSEngine {
     public let context: JSContext
     private let javaShim: JavaShim
+    /// 当前这本书。脚本读写 `book.getVariable` / `book.setUseReplaceRule` 都落在这份拷贝上，
+    /// 改完通过 `bookUpdateSink` 交回 App 层落盘。
+    private var book: Book?
+    /// 暴露给脚本的 `book.readConfig`，改书写回时也要同步它，否则同一引擎里读到旧值
+    private var bookReadConfig: JSValue?
+    /// 脚本 `source.setVariable(...)` 写进的状态往哪送。
+    ///
+    /// 聚合源把「当前服务器」「设置中心结果」「token」全放在书源 variable 里（`setArgument`
+    /// 就是读写它）。不写回书源的话，每次点击都从旧值重算：切服务器永远停在同一台，
+    /// 设置中心改了下次打开又回到原样。Core 不认识书源仓库，和 LegadoLog 一样由 App 层注入。
+    public static var variableSink: ((_ bookSourceUrl: String, _ variable: String) -> Void)?
+    /// 脚本改写了「当前这本书」的状态（书级变量、是否替换净化）就往这儿送一份，
+    /// 由 App 层落盘。Core 不认识书架，跟 LegadoLog 一样注入。
+    public static var bookUpdateSink: ((_ book: Book) -> Void)?
+    /// 脚本调 `java.refreshExplore()`（安卓语义：刷新分类页）
+    public static var exploreRefreshSink: (() -> Void)?
     public var onLoginHeaderUpdated: ((String) -> Void)?
     /// 脚本用 `source.putLoginInfo` 改写过的登录信息（聚合源把 token 存在这里）。
     public var onLoginInfoUpdated: ((String) -> Void)?
     /// 最近一次脚本异常，供调用方拿到原始错误信息。
     public private(set) var lastError: String?
 
-    public init(bookSource: BookSource? = nil, baseUrl: String? = nil) {
+    public init(bookSource: BookSource? = nil, baseUrl: String? = nil, book: Book? = nil) {
         self.context = JSContext()
         self.javaShim = JavaShim(context: context)
+        self.book = book
 
         setupEnvironment(bookSource: bookSource, baseUrl: baseUrl)
 
@@ -518,7 +560,10 @@ public class JSEngine {
             self?.onLoginInfoUpdated?(newInfo)
         }
         let getVariableBlock: @convention(block) () -> String = { variableStr ?? "" }
-        let setVariableBlock: @convention(block) (String) -> Void = { newV in variableStr = newV }
+        let setVariableBlock: @convention(block) (String) -> Void = { newV in
+            variableStr = newV
+            JSEngine.variableSink?(bookSource?.bookSourceUrl ?? "", newV)
+        }
 
         let getLoginInfoMapBlock: @convention(block) () -> JSValue = { [weak self] in
             guard let ctx = self?.context else { return JSValue(nullIn: JSContext()) }
@@ -574,11 +619,42 @@ public class JSEngine {
 
         // Expose book object
         let bookObj = JSValue(newObjectIn: context)
-        let getBookVarBlock: @convention(block) (String) -> String = { _ in "" }
-        let setBookVarBlock: @convention(block) (String, String) -> Void = { _, _ in }
+        bookObj?.setValue(book?.name ?? "", forProperty: "name")
+        bookObj?.setValue(book?.author ?? "", forProperty: "author")
+        bookObj?.setValue(book?.bookUrl ?? "", forProperty: "bookUrl")
+        bookObj?.setValue(book?.durChapterIndex ?? 0, forProperty: "durChapterIndex")
+        bookObj?.setValue(book?.durChapterTitle ?? "", forProperty: "durChapterTitle")
+        bookObj?.setValue(book?.totalChapterNum ?? 0, forProperty: "totalChapterNum")
+        bookObj?.setValue(bookSource?.bookSourceUrl ?? book?.origin ?? "", forProperty: "origin")
+
+        // book.readConfig：源会读 `book.readConfig.useReplaceRule`，null 表示「还没记过」
+        let readConfigObj = JSValue(newObjectIn: context)
+        bookReadConfig = readConfigObj
+        if let useReplace = book?.useReplaceRule {
+            readConfigObj?.setValue(useReplace, forProperty: "useReplaceRule")
+        } else {
+            readConfigObj?.setValue(JSValue(nullIn: context), forProperty: "useReplaceRule")
+        }
+        bookObj?.setValue(readConfigObj, forProperty: "readConfig")
+
+        let getBookVarBlock: @convention(block) (String) -> String = { [weak self] key in
+            self?.bookVariable(key) ?? ""
+        }
+        let setBookVarBlock: @convention(block) (String, String) -> Void = { [weak self] key, value in
+            self?.setBookVariable(key, value)
+        }
+        let getUseReplaceRuleBlock: @convention(block) () -> JSValue = { [weak self] in
+            guard let ctx = self?.context else { return JSValue(nullIn: JSContext()) }
+            guard let flag = self?.book?.useReplaceRule else { return JSValue(nullIn: ctx) }
+            return JSValue(object: flag, in: ctx)
+        }
+        let setUseReplaceRuleBlock: @convention(block) (Bool) -> Void = { [weak self] flag in
+            self?.setUseReplaceRule(flag)
+        }
         bookObj?.setValue(getBookVarBlock, forProperty: "getVariable")
         bookObj?.setValue(setBookVarBlock, forProperty: "setVariable")
-        bookObj?.setValue(bookSource?.bookSourceUrl ?? "", forProperty: "origin")
+        bookObj?.setValue(getUseReplaceRuleBlock, forProperty: "getUseReplaceRule")
+        bookObj?.setValue(setUseReplaceRuleBlock, forProperty: "setUseReplaceRule")
         context.setObject(bookObj, forKeyedSubscript: "book" as NSString)
 
         if let baseUrl = baseUrl {
@@ -620,6 +696,43 @@ public class JSEngine {
         };
         """)
         context.exception = nil
+    }
+
+    // MARK: - 书对象
+
+    /// `book.getVariable(key)`：读书级变量（存在 Book.variable 的 JSON 里）。
+    /// 没有这个键就返回空串，源里一般写成 `String(book.getVariable('custom'))`。
+    private func bookVariable(_ key: String) -> String {
+        guard let dict = Self.bookVariableDict(from: book?.variable),
+              let value = dict[key] else { return "" }
+        return "\(value)"
+    }
+
+    /// `book.setVariable(key, value)`：写书级变量，写完交回宿主落盘。
+    private func setBookVariable(_ key: String, _ value: String) {
+        guard var current = book else { return }
+        var dict = Self.bookVariableDict(from: current.variable) ?? [:]
+        dict[key] = value
+        guard let data = try? JSONSerialization.data(withJSONObject: dict, options: [.sortedKeys]),
+              let text = String(data: data, encoding: .utf8) else { return }
+        current.variable = text
+        book = current
+        JSEngine.bookUpdateSink?(current)
+    }
+
+    /// `book.setUseReplaceRule(false)`：这本书用不用替换净化。安卓拿它决定正文要不要净化，
+    /// 聚合源自己清理过正文，会主动关掉。
+    private func setUseReplaceRule(_ flag: Bool) {
+        guard var current = book else { return }
+        current.useReplaceRule = flag
+        book = current
+        bookReadConfig?.setValue(flag, forProperty: "useReplaceRule")
+        JSEngine.bookUpdateSink?(current)
+    }
+
+    private static func bookVariableDict(from raw: String?) -> [String: Any]? {
+        guard let raw, !raw.isEmpty, let data = raw.data(using: .utf8) else { return nil }
+        return try? JSONSerialization.jsonObject(with: data) as? [String: Any]
     }
 
     /// 跑规则脚本，外面套一层块级作用域。

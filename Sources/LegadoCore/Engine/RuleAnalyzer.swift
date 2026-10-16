@@ -104,6 +104,18 @@ public class RuleAnalyzer {
                 }
             }
             let evalResult = jsEngine.evalRule(script: script, result: targetContent)
+
+            // `<js>…</js>$.content` 这种写法尾巴上还挂一段规则：先跑 JS，再把尾巴套在
+            // JS 的结果上（聚合源的正文脚本就是回 `{"content":"…"}` 再取 `$.content`，
+            // 不接尾巴的话正文字典会带着 JSON 壳和 \n 直接上屏）。
+            if let jsEnd = rule.range(of: "</js>") {
+                let suffix = String(rule[jsEnd.upperBound...]).trimmingCharacters(in: .whitespacesAndNewlines)
+                if !suffix.isEmpty {
+                    let nested = RuleAnalyzer(content: evalResult ?? "", baseUrl: baseUrl, bookSource: nil, jsEngine: jsEngine)
+                    return nested.getString(suffix, isUrl: isUrl)
+                }
+            }
+
             let resStr = evalResult != nil ? "\(evalResult!)" : ""
             return isUrl ? resolveUrl(resStr) : resStr
         }
@@ -217,6 +229,26 @@ public class RuleAnalyzer {
     }
 
     /// Evaluates a rule that returns multiple elements/objects (e.g. book list, chapter list)
+    /// 脚本回一串 JSON 时，把里面的元素数组取出来。
+    ///
+    /// 聚合源的章节列表惯例是回 `{"code":0,…,"data":[…]}`，条目字段再用 `$.title` 这类
+    /// 规则取；直接把它当一个元素、或者整串丢掉，目录就空了。
+    static func elementsFromJSONText(_ text: String) -> [Any]? {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.hasPrefix("{") || trimmed.hasPrefix("[") else { return nil }
+        guard let data = trimmed.data(using: .utf8),
+              let json = try? JSONSerialization.jsonObject(with: data, options: [.fragmentsAllowed])
+        else { return nil }
+        if let array = json as? [Any], !array.isEmpty { return array }
+        guard let dict = json as? [String: Any] else { return nil }
+        for key in ["data", "list", "chapters", "items", "result"] {
+            if let array = dict[key] as? [Any], !array.isEmpty { return array }
+        }
+        let arrays = dict.values.compactMap { $0 as? [Any] }.filter { !$0.isEmpty }
+        if arrays.count == 1 { return arrays[0] }
+        return nil
+    }
+
     public func getElements(_ rule: String?) -> [Any] {
         guard let rule = rule?.trimmingCharacters(in: .whitespacesAndNewlines), !rule.isEmpty else {
             return []
@@ -246,6 +278,12 @@ public class RuleAnalyzer {
                     return array
                 } else if let dict = evalResult as? [String: Any] {
                     return [dict]
+                } else if let text = evalResult as? String {
+                    // 聚合源的章节脚本直接回一串 JSON（章节列表在 data 里），
+                    // 这不是「一个元素」，是新的页面内容，接着往下解析。
+                    if let array = RuleAnalyzer.elementsFromJSONText(text) {
+                        return array
+                    }
                 }
             }
             return []

@@ -11,6 +11,8 @@ import AppKit
 
 public struct CategoryExploreView: View {
     @ObservedObject var bookStore = BookStore.shared
+    /// 书源脚本改完设置会调 `java.refreshExplore()`（安卓语义：刷新分类页），这里跟着重拉
+    @ObservedObject private var exploreRefresh = ExploreRefreshCenter.shared
 
     @State private var selectedSourceUrl: String = ""
     @State private var categories: [ExploreCategory] = []
@@ -135,6 +137,10 @@ public struct CategoryExploreView: View {
             }
             .onChange(of: isActive) { active in
                 if active { initializeIfNeeded() }
+            }
+            .onChange(of: exploreRefresh.tick) { _ in
+                // 源变量变了解析缓存本来就会失效，这里负责让界面重新走一遍
+                if let src = currentSource { loadCategories(for: src) }
             }
             .onReceive(bookStore.$sources) { sources in
                 refreshCachedSources(sources)
@@ -504,6 +510,19 @@ public struct CategoryExploreView: View {
     }
 
     // MARK: - Logic & Actions
+    /// 脚本调 `java.refreshExplore()` 的中转：只负责让分类页重拉一遍。
+    /// 分类解析本身按「exploreUrl + 源变量」做签名缓存，变量一改下次解析就是新的。
+    final class ExploreRefreshCenter: ObservableObject {
+        static let shared = ExploreRefreshCenter()
+        @Published private(set) var tick = 0
+
+        private init() {
+            JSEngine.exploreRefreshSink = { [weak self] in
+                DispatchQueue.main.async { self?.tick += 1 }
+            }
+        }
+    }
+
     private func initializeIfNeeded() {
         if currentSource == nil && !availableSources.isEmpty {
             selectedSourceUrl = availableSources[0].bookSourceUrl
