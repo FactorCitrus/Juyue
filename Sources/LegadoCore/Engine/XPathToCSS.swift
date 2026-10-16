@@ -3,7 +3,7 @@ import Foundation
 /// 把常见写法的 XPath 转成 CSS 选择器，交给 SwiftSoup 执行。
 ///
 /// 国内书源的目录规则大量写成 XPath，而 SwiftSoup 只有 CSS 引擎，
-/// 之前这类规则会静默返回空数组，表现就是「目录为空」。
+/// 这类规则以前静默返回空数组，目录会显示为空。
 /// 这里只覆盖书源里高频的那几种写法，遇到不认识的谓词返回 nil，
 /// 让调用方保持原来的行为，不会猜错。
 public enum XPathToCSS {

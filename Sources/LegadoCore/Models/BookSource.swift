@@ -35,13 +35,10 @@ public struct BookSource: Codable, Identifiable, Equatable {
     public var loginHeader: String?
     public var variable: String?
 
-    /// 书源自带的 JS 助手库。
-    ///
-    /// 聚合源（大灰狼那一类）把 `getArguments` / `setArgument` / 一堆加解密函数全写在这里，
-    /// 正文、搜索、登录脚本直接调。宿主不接这个字段的话，脚本第一行就
-    /// `ReferenceError: Can't find variable: getArguments` —— 整份源等于废掉。
+    /// 书源自带的 JS 助手库。聚合源把 `getArguments`、`setArgument`、加解密函数写在这里，
+    /// 正文、搜索、登录脚本直接调，模型缺这个字段会导致脚本 ReferenceError。
     public var jsLib: String?
-    /// 事件监听 / 自定义按钮 / 启用 CookieJar：安卓编辑器里的开关，先收进来别丢
+    /// 事件监听 / 自定义按钮 / 启用 CookieJar，对应安卓编辑器里的开关
     public var eventListener: Bool?
     public var customButton: Bool?
     public var enabledCookieJar: Bool?
@@ -196,12 +193,9 @@ public struct BookSource: Codable, Identifiable, Equatable {
         self.concurrentRate = try container.decodeIfPresent(String.self, forKey: .concurrentRate)
     }
 
-    /// 宽松取数。
-    ///
-    /// 安卓导出的书源里，同一个字段在不同来源下类型会变：`lastUpdateTime` 有时是
-    /// `1760000000000`，有时是 `"1760000000000"`，也有写 `"2026-10-11"` 的；
-    /// `enabled` 有 `true`、`1`、`"true"` 三种写法。
-    /// 严格 decode 只要撞上一条就把**整份文件**判成解析失败（558 条全废），所以这里全按宽松处理。
+    /// 宽松取数。安卓导出的书源里同一字段类型会变：`lastUpdateTime` 有
+    /// `1760000000000`、`"1760000000000"`、`"2026-10-11"` 三种，`enabled` 有
+    /// `true`、`1`、`"true"`。严格 decode 撞上一条就整份解析失败，所以按宽松处理。
     private static func lenientInt64(_ c: KeyedDecodingContainer<CodingKeys>, _ k: CodingKeys) -> Int64? {
         if let v = try? c.decode(Int64.self, forKey: k) { return v }
         if let d = try? c.decode(Double.self, forKey: k) { return Int64(d) }

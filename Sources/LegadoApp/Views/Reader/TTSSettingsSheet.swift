@@ -402,7 +402,7 @@ public struct TTSSettingsSheet: View {
         audio.stop()
     }
 
-    /// 系统音色区上面那行说明，别让用户对着「默认」两个字发呆。
+    /// 系统音色区上方的说明文字。
     private var systemVoiceHint: String {
         "想更真人一点：设置 → 辅助功能 → 朗读内容 → 声音 → 中文，把「增强」或「高级」那版下下来，回来这里会标出来。"
     }

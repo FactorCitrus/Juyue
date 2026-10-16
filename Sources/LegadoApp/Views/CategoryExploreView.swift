@@ -30,7 +30,7 @@ public struct CategoryExploreView: View {
     @State private var selectedBookForDetail: SearchBook? = nil
 
     /// 这个页签是不是当前选中的。TabView 会把三个页签都建出来，
-    /// 分类页一被建出来就去联网拉书，启动那一下的卡顿就是这么来的，
+    /// 分类页一被建出来就联网拉书，会造成启动卡顿，
     /// 所以初始化要等它真的被选中。
     var isActive: Bool = true
 
@@ -38,9 +38,8 @@ public struct CategoryExploreView: View {
         self.isActive = isActive
     }
 
-    /// 可用书源。原来是每次 body 求值都重新过滤一遍全部书源（还要做字符串 trim），
-    /// 而这个属性在一次 body 里被读好几处，列表滚动时等于每帧都重算。
-    /// 现在只在书源真的变化时刷新一次。
+    /// 可用书源，只在书源列表变化时刷新一次。
+    /// 每次 body 求值都过滤一遍全部书源（含 trim）的开销按帧计算。
     @State private var cachedSources: [BookSource] = []
 
     private var availableSources: [BookSource] { cachedSources }
@@ -343,8 +342,7 @@ public struct CategoryExploreView: View {
                     .foregroundColor(.secondary)
                     .multilineTextAlignment(.center)
                     .padding(.horizontal)
-                // 401/403 基本都是这个分类要登录（书源自带的账号密码登录），
-                // 直白说清楚，顺手给一条能看的分类，别让人对着 HTTP 代码发呆
+                // 401/403 一般是这个分类要登录，附带一个不用登录也能看的分类
                 if isAuthError(error), let publicCategory {
                     Text("这个分类要登录这个书源才能看。登录完再回来这句就不见了。")
                         .font(.caption)
@@ -523,21 +521,32 @@ public struct CategoryExploreView: View {
     }
 
     private func loadCategories(for source: BookSource) {
-        let cats = BookExploreService.shared.parseExploreCategories(source: source)
-        self.categories = cats
+        // 解析要跑书源 JS，手机上几秒，放后台线程；BookExploreService 里有缓存
+        Task.detached(priority: .userInitiated) {
+            let cats = BookExploreService.shared.parseExploreCategories(source: source)
+            await MainActor.run {
+                self.categories = cats
 
-        // Prefer selecting "全部" as initial category so public books load immediately; presets like 阅读历史 remain available in the top bar
-        if let allCategory = cats.first(where: { $0.title == "全部" && $0.url != nil && !$0.url!.isEmpty }) {
-            selectCategory(allCategory)
-        } else if let firstActionable = cats.first(where: { !$0.isHeader && $0.url != nil && !$0.url!.isEmpty }) {
-            selectCategory(firstActionable)
-        } else {
-            selectedCategory = nil
-            books = []
+                // Prefer selecting "全部" as initial category so public books load immediately; presets like 阅读历史 remain available in the top bar
+                if let allCategory = cats.first(where: { $0.title == "全部" && !($0.url ?? "").isEmpty }) {
+                    selectCategory(allCategory)
+                } else if let firstActionable = cats.first(where: { !$0.isHeader && !($0.url ?? "").isEmpty && !$0.isAction }) {
+                    selectCategory(firstActionable)
+                } else {
+                    selectedCategory = nil
+                    books = []
+                }
+            }
         }
     }
 
     private func selectCategory(_ category: ExploreCategory) {
+        // 动作类分类没有书可抓，直接执行脚本，不切页面：切了过去先看到「暂无书籍」，
+        // 登录页再叠在上面，退出来要退两次。
+        if category.isAction {
+            runActionCategory(category)
+            return
+        }
         selectedCategory = category
         books = []
         currentPage = 1
@@ -545,7 +554,12 @@ public struct CategoryExploreView: View {
         loadBooks(for: category, page: 1)
     }
 
-    /// 401/403 这种就是没登录，别当普通网络错误处理
+    private func runActionCategory(_ category: ExploreCategory) {
+        guard let src = currentSource, let rawUrl = category.url else { return }
+        Task { await BookExploreService.shared.runActionCategory(source: src, categoryUrl: rawUrl) }
+    }
+
+    /// 401/403 视为未登录
     private func isAuthError(_ message: String) -> Bool {
         message.contains("401") || message.contains("403")
     }

@@ -63,7 +63,7 @@ enum SystemVoiceSelection {
 enum BaiduCredentials {
     /// 本地默认凭据。公开版本保持为空，凭据在设置页里填。
     ///
-    /// 不要在这里提交真实值——一旦提交，凭据就永久留在 Git 历史里。
+    /// 不要在这里提交真实值，凭据会留在 Git 历史里。
     enum LocalDefaults {
         static let appId = ""
         static let apiKey = ""
@@ -492,7 +492,7 @@ public class AudioBookService: NSObject, ObservableObject, AVSpeechSynthesizerDe
     // MARK: - AVSpeechSynthesizerDelegate
     public func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didFinish utterance: AVSpeechUtterance) {
         if castActive {
-            // 多角色：这只是其中一段播完，接着下一段，别把整章当成结束
+            // 多角色：一段播完继续下一段，不作为整章结束
             completeCastSegment()
             return
         }

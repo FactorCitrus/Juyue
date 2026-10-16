@@ -227,10 +227,10 @@ public class BookStore: ObservableObject {
                         bookshelf[idx] = b
                         continue
                     }
-                    // 合并：整条替换会把用户侧的东西冲掉，所以逐项来
+                    // 合并模式逐项覆盖，整条替换会丢掉本地字段
                     var merged = b
                     let existing = bookshelf[idx]
-                    // 远端备份比本地旧时，别把阅读进度倒退回去
+                    // 远端备份更旧时不回退阅读进度
                     if existing.durChapterTime > merged.durChapterTime {
                         merged.durChapterIndex = existing.durChapterIndex
                         merged.durChapterTitle = existing.durChapterTitle
@@ -286,8 +286,8 @@ public class BookStore: ObservableObject {
     }
 
     @discardableResult
-    /// overwriteCover 只在「用户明确改了封面」时为 true：
-    /// 平时不带封面去更新（比如刷新详情）不该把用户自己设的封面冲掉。
+    /// overwriteCover 为 true 时才用传入的封面覆盖本地封面。
+    /// 刷新详情这类更新不传封面，不能覆盖用户自己设的封面。
     public func saveOrUpdateBook(_ book: Book, overwriteCover: Bool = false) -> Book {
         if let index = bookshelf.firstIndex(where: { $0.bookUrl == book.bookUrl }) {
             var existing = bookshelf[index]
@@ -326,7 +326,7 @@ public class BookStore: ObservableObject {
         target.durChapterTitle = oldBook.durChapterTitle
         target.durChapterPos = oldBook.durChapterPos
         target.durChapterTime = oldBook.durChapterTime
-        // 用户侧的东西要跟着走：分了组、自己设过封面（新源没给封面时别把它冲掉）
+        // 分组和用户设过的封面跟着书走，新源没封面时保留旧封面
         target.groupId = oldBook.groupId
         if (target.coverUrl ?? "").isEmpty, let oldCover = oldBook.coverUrl, !oldCover.isEmpty {
             target.coverUrl = oldCover
@@ -517,18 +517,13 @@ public class BookStore: ObservableObject {
         updateSource(originalSource: original, newSource: source)
     }
 
+    /// 置顶书源。和书源列表里的「置顶」走同一条路，否则这里只挪位置、不写置顶状态。
     public func pinSource(sourceUrl: String) {
-        guard let idx = sources.firstIndex(where: { $0.bookSourceUrl == sourceUrl }) else { return }
-        let item = sources.remove(at: idx)
-        sources.insert(item, at: 0)
-        saveSources()
+        setPinned(true, sourceUrl: sourceUrl)
     }
 
-    /// 置顶 / 取消置顶。
-    ///
-    /// 用 `customOrder` 记状态（-1 = 置顶）而不是只挪数组位置 —— 只挪位置的话
-    /// 没法「取消置顶」，用户也看不出到底顶没顶。置顶时顺带挪到最前，
-    /// 保证「默认顺序」下也是连续的。
+    /// 置顶 / 取消置顶。状态记在 `customOrder`（-1 = 置顶），
+    /// 同时把条目挪到数组最前，让「默认顺序」也连续。
     public func setPinned(_ pinned: Bool, sourceUrl: String) {
         guard let idx = sources.firstIndex(where: { $0.bookSourceUrl == sourceUrl }) else { return }
         sources[idx].customOrder = pinned ? -1 : nil
@@ -543,7 +538,7 @@ public class BookStore: ObservableObject {
         (source.customOrder ?? 0) < 0
     }
 
-    /// 改分组（分类）。传空串等于清掉分组
+    /// 改分组。传空串或 nil 为清掉分组
     public func setSourceGroup(sourceUrl: String, group: String?) {
         guard let idx = sources.firstIndex(where: { $0.bookSourceUrl == sourceUrl }) else { return }
         let trimmed = group?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
@@ -566,16 +561,20 @@ public class BookStore: ObservableObject {
                                requireCredentials: true)
     }
 
-    /// 跑 `loginUi` 里某个按钮自己的 action。
-    ///
-    /// 安卓的登录面板就是一排按钮（登录书源 / 注册书源 / 番茄登录 / 切换服务器 / 检测登录…），
-    /// 每按一个就执行它那段脚本。宿主只认「登录」那一个按钮的话，其余按钮点了没反应。
+    /// 跑 `loginUi` 里某个按钮的 action。
+    /// 登录面板每个按钮各带一段脚本（登录 / 注册 / 番茄登录 / 切换服务器 / 检测登录）。
     public func runLoginAction(source: BookSource, credentials: [String: String], action: String) async throws -> String {
-        try await runLoginFlow(source: source,
-                               credentials: credentials,
-                               actions: [action],
-                               // 非登录类按钮（检测/切换服务器那些）本来就不会产出凭据，别因此报错
-                               requireCredentials: false)
+        let header = try await runLoginFlow(source: source,
+                                            credentials: credentials,
+                                            actions: [action],
+                                            // 非登录按钮（检测、切换服务器）不产出凭据，不算失败
+                                            requireCredentials: false)
+        // 退出登录只清 cookie，宿主这边的登录态一起清
+        let lower = action.lowercased()
+        if lower.hasPrefix("logout") || lower.contains("logout(") {
+            await MainActor.run { logoutSource(sourceUrl: source.bookSourceUrl) }
+        }
+        return header
     }
 
     private func runLoginFlow(
@@ -600,6 +599,10 @@ public class BookStore: ObservableObject {
         jsEngine.onLoginHeaderUpdated = { newH in
             capturedHeader = newH
         }
+        var capturedLoginInfo: String? = nil
+        jsEngine.onLoginInfoUpdated = { newInfo in
+            capturedLoginInfo = newInfo
+        }
 
         // 跑脚本前清掉「最近写入的 host」，只认这一次登录写的 cookie
         CookieJar.shared.resetLastWrite()
@@ -607,13 +610,23 @@ public class BookStore: ObservableObject {
         // 表单值要注入脚本里的 result，源脚本靠 result['邮箱'] 这类取值
         _ = jsEngine.eval(script: JSEngine.unwrapJsScript(loginScript), result: credentials)
 
-        // 相当一部分书源（例：大灰狼聚合）的 loginUrl 只定义函数，真正触发登录的是
-        // loginUi 里的按钮 action，例如 {"type":"button","action":"login(true)"}。
-        // 宿主不执行这些 action，脚本跑完就等于什么都没干。
+        // 很多书源的 loginUrl 只定义函数，真正触发登录的是按钮 action，
+        // 例如 {"type":"button","action":"login(true)"}。
         if capturedHeader?.isEmpty ?? true {
             for action in actions {
                 _ = jsEngine.eval(script: JSEngine.unwrapJsScript(action), result: credentials)
                 if let header = capturedHeader, !header.isEmpty { break }
+            }
+        }
+
+        // 脚本自己改写过的登录信息（聚合源把 token 存这儿）要落盘：登录失败时脚本
+        // 也会删掉过期 token 再写回，跟着存才对。
+        if let capturedLoginInfo {
+            await MainActor.run {
+                if let idx = sources.firstIndex(where: { $0.bookSourceUrl == source.bookSourceUrl }) {
+                    sources[idx].loginInfo = capturedLoginInfo
+                    saveSources()
+                }
             }
         }
 
@@ -646,7 +659,7 @@ public class BookStore: ObservableObject {
 
         await MainActor.run {
             if let idx = sources.firstIndex(where: { $0.bookSourceUrl == source.bookSourceUrl }) {
-                sources[idx].loginInfo = credJson
+                sources[idx].loginInfo = capturedLoginInfo ?? credJson
                 sources[idx].loginHeader = resolvedHeader
                 saveSources()
             }

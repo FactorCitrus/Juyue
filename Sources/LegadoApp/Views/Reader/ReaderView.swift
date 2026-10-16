@@ -395,7 +395,7 @@ public struct ReaderView: View {
                             }
                             .frame(maxWidth: .infinity, maxHeight: .infinity)
                             // 按页翻时整页要铺到屏幕边缘：否则状态栏那一条是外层静止的背景，
-                            // 翻页时看起来就是「最上面没跟着翻」
+                            // 翻页时顶部内容不跟着移动
                             .ignoresSafeArea(edges: readerConfig.pageMode == .scroll ? [] : .all)
                         }
                     }
@@ -584,7 +584,7 @@ public struct ReaderView: View {
             handlePageModeChange(to: newMode)
         }
         // 字号/行距/段间距/边距/页眉页脚一改，一页能装多少行就变了，必须重排，
-        // 否则会出现「段间距调小了，页面下半部分空着」——那是旧分页的行数还没更新
+        // 旧分页的行数未更新时，页面下半部分会空着
         .onChange(of: layoutSignature) { _ in
             // 拉滑杆会连着触发很多次，稍微等一下再重排，别每帧都排一遍
             paginationTask?.cancel()
@@ -1110,7 +1110,7 @@ public struct ReaderView: View {
             // 这里不要再挂 .id / .transition：给 pager 换 id 会让 SwiftUI 整块重建，
             // 换章就变成左右位移、没有卷页动画了。换章的卷页由 pager 内部做。
             // 仿真翻页整页也要贴屏幕物理边缘：只忽略底部的话，页眉那条会从安全区下面起算，
-            // 「距顶」怎么调都顶不到灵动岛上（页脚却是贴底的，看起来就是上下都有空）
+            // 距顶调不到灵动岛位置时，页脚贴底而顶部留空
             .ignoresSafeArea(edges: .all)
         }
         #else
@@ -1135,7 +1135,7 @@ public struct ReaderView: View {
                     let usableWidth = max(200, readerContainerSize.width - readerConfig.paddingLeft - readerConfig.paddingRight)
 
                     // GeometryReader 是贪高的：不把正文这块钉死高度，它会吃掉整页，
-                    // 把 19pt 的页脚挤出可视区（页脚"看不见"就是这么来的）
+                    // 把 19pt 的页脚挤出可视区
                     let barHeight: CGFloat = 19
                     // 「距顶/距底」是离屏幕上沿/下沿的绝对距离，0 = 贴边。
                     // 整页本来就是贴屏幕物理边缘画的，这两条要一起算进预留高度。
@@ -1240,8 +1240,7 @@ public struct ReaderView: View {
                 }
 
                 // 点击区 + 拖拽合成一层手势。
-                // 以前是三块 Color.clear 各挂 onTapGesture，父级再挂 DragGesture：
-                // 子视图的点按会把父级的拖拽抢走，结果就是「根本滑不动，只能点边缘」。
+                // 子视图挂点按手势会抢走父级的拖拽，只剩边缘能滑。所以点按和拖拽合成一层。
                 Color.clear
                     .contentShape(Rectangle())
             }
@@ -1289,7 +1288,7 @@ public struct ReaderView: View {
                         let projected = value.predictedEndTranslation.width
                         let dragged = value.translation.width
                         let threshold = width * 0.22
-                        // 甩得快用投影距离，慢慢拖就按实际位移判，别让人拖到一半松手却没反应
+                        // 快速甩动按投影距离判，慢拖按实际位移判，避免拖到一半松手不翻页
                         let forwardDistance = min(projected, dragged)
                         let backwardDistance = max(projected, dragged)
                         if forwardDistance < -threshold {
@@ -1307,8 +1306,8 @@ public struct ReaderView: View {
     }
 
     /// 分页要用的容器尺寸。
-    /// 按页翻时整页贴屏幕物理边缘（= 安全区高度 + 上下安全区），用安全区高度当页高会少算约 120pt，
-    /// 表现就是每页末尾空两三行——「段间距调小了，下面还是空的」就是这么来的。
+    /// 按页翻时整页贴屏幕物理边缘（= 安全区高度 + 上下安全区），
+    /// 用安全区高度当页高会少算约 120pt，每页末尾空出两三行。
     private func paginationContainerSize(for size: CGSize) -> CGSize {
         guard readerConfig.pageMode != .scroll else {
             return CGSize(width: size.width, height: max(200, size.height - 26))
@@ -1409,7 +1408,7 @@ public struct ReaderView: View {
     private func turnPage(forward: Bool) {
         guard let current = currentLoadedChapter else { return }
         let totalPages = current.pages.count
-        // 末尾可能有空白页（分页收尾留下的），别让它把换章挡在后面：后面全是空页就当本章到头
+        // 分页收尾可能留下空白页，后面全是空页时按本章结束处理
         let hasContentAfter = (currentPageIndex + 1..<max(0, totalPages)).contains { idx in
             current.pages[idx].contains { !$0.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || $0.isImage }
         }
@@ -1589,7 +1588,7 @@ public struct ReaderView: View {
     private var screenBottomInset: CGFloat { max(0, safeInsets.bottom) }
 
     /// 真机安全区得问窗口：NavigationView 里的 GeometryReader 有时报 0，负 padding 又会被布局钳掉，
-    /// 两条一起出问题就是「距顶拉到 -70 页眉还在灵动岛下面」。
+    /// 两条一起出错时，距顶拉到 -70 页眉仍在灵动岛下方。
     private static func windowSafeInsets() -> EdgeInsets {
         #if os(iOS)
         let scenes = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
@@ -2280,7 +2279,7 @@ public struct ReaderView: View {
         guard let source = effectiveSource, !chapters.isEmpty else { return }
         let start = max(0, currentChapterIndex)
         let span = max(1, chosen ?? readerConfig.cachedChapterCount)
-        // 现挑的数量顺手记成默认，下次点和设置里显示的都对得上
+        // 当前选择记为默认值，与设置页显示一致
         if let chosen { readerConfig.cachedChapterCount = chosen }
         let end = min(chapters.count - 1, start + span - 1)
         guard start <= end else { return }
@@ -2537,7 +2536,7 @@ public struct ReaderView: View {
         }
     }
 
-    /// 亮度：放在卡片靠上，随手能拖（原来埋在「显示」里）
+    /// 亮度调节，放在卡片靠上位置
     private var brightnessRow: some View {
             HStack(spacing: 10) {
                 Image(systemName: "sun.min")
@@ -3634,8 +3633,8 @@ public struct ReaderView: View {
         return titleFontSize * 1.45 * CGFloat(lines) + 12.0
     }
 
-    /// 这里必须返回高度而不是行数——段间距也要占地方，按行数算会低估，
-    /// 渲染出来超出预算的那半行就会压到页脚上（正文糊在页脚上）。
+    /// 返回高度而非行数：段间距占位，按行数算会低估，
+    /// 超出预算的部分会压到页脚上。
     private func calculateLayoutMetrics(title: String? = nil) -> (pageHeight: CGFloat, firstPageHeight: CGFloat) {
         let height = max(400, readerContainerSize.height)
 
@@ -3699,8 +3698,8 @@ public struct ReaderView: View {
     }
 
     /// 标点禁则：行首不该出现句读/收尾类标点，行尾不该出现开引号、开括号。
-    /// 行首禁则按「标点挤压」处理——把标点拉到上一行，那点宽度交给两端对齐吸收；
-    /// 行尾禁则把那个字符挪到下一行。CoreText 自己不做中文禁则，得在这里补。
+    /// 行首禁则按「标点挤压」处理：把标点拉到上一行，宽度交给两端对齐吸收；
+    /// 行尾禁则把该字符挪到下一行。CoreText 不做中文禁则，需要在这里补。
     private static let forbiddenLineStart: Set<unichar> = {
         var set = Set<unichar>()
         for scalar in "。，、；：？！…～·）】》」』〉”’.，;:?!)]}%".unicodeScalars where scalar.value <= 0xFFFF {
@@ -3752,7 +3751,7 @@ public struct ReaderView: View {
 
     private static func applyLineBreakRules(nsStr: NSString, start: Int, count: Int, textLen: Int) -> Int {
         var adjusted = count
-        // 行首禁则：后面紧跟的是句读类标点就拉到本行，一次最多拉两个，别把整行挤爆
+        // 行首禁则：后方紧跟句读类标点时拉到本行，一次最多两个
         var pulled = 0
         var next = start + count
         while pulled < 2, next < textLen, forbiddenLineStart.contains(nsStr.character(at: next)) {

@@ -634,7 +634,7 @@ public class ReaderConfig: ObservableObject {
         paddingRight = d.object(forKey: "reader_padding_right") != nil ? CGFloat(d.double(forKey: "reader_padding_right")) : legacyHorizontal
         if d.object(forKey: "reader_header_offset") != nil { headerOffset = CGFloat(d.double(forKey: "reader_header_offset")) }
         // 老配置里可能存着超出滑块范围的数（滑块 range 一变就出这种脏值），
-        // 而 SwiftUI 的 Slider 拿到范围外的值会直接 trap——统一夹一次
+        // SwiftUI 的 Slider 拿到范围外的值会 trap，统一夹一次
         headerOffset = min(max(0, headerOffset), 160)
         footerOffset = min(max(0, footerOffset), 160)
         shortTitleLength = min(max(1, shortTitleLength), 20)
@@ -984,7 +984,7 @@ public final class ReplaceRuleStore: ObservableObject {
         rules.filter { $0.isGlobal || ($0.bookUrl != nil && $0.bookUrl == bookUrl) }
     }
 
-    /// 对正文跑一遍净化。正则写错就跳过这条，别把整章弄没了。
+    /// 对正文跑一遍净化，正则出错时跳过本条规则。
     public func apply(to text: String, bookUrl: String?) -> String {
         rules(for: bookUrl).reduce(text) { $1.apply(to: $0) }
     }

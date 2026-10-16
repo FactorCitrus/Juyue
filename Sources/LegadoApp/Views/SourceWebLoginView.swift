@@ -20,7 +20,7 @@ public struct SourceWebLoginView: View {
     @State private var manualCookieInput: String = ""
     @State private var alertMessage: String = ""
     @State private var showAlert: Bool = false
-    /// 可编辑的地址栏：聚合源的 loginUrl 是脚本，网址得从脚本里扒或手填
+    /// 地址栏可编辑：聚合源的 loginUrl 是脚本，网址要从脚本里扒或手填
     @State private var urlText: String = ""
 
     public init(source: BookSource, onLoginCompleted: ((BookSource) -> Void)? = nil) {
@@ -33,14 +33,12 @@ public struct SourceWebLoginView: View {
         wv.customUserAgent = "Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Mobile/15E148 Safari/604.1"
         self._webView = State(initialValue: wv)
 
-        // 只认能真正打开的 http(s) 地址。
-        // 有些书源（例：大灰狼聚合）的 loginUrl 是一整段 JS，bookSourceUrl 又只是个
-        // 标识（"大灰狼融合VIP5.0"）不是网址 —— 直接丢给 URL(string:) 解不出来，
-        // WebView 什么都不加载，用户看到的就是一片空白。
+        // 只认能打开的 http(s) 地址。聚合源的 loginUrl 是一整段 JS，
+        // bookSourceUrl 只是个标识（"大灰狼融合VIP5.0"），URL(string:) 解不出来会白屏。
         let candidates = [source.loginUrl ?? "", source.bookSourceUrl]
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
         let firstUsable = candidates.first { Self.isLoadableWebUrl($0) }
-        // 都不可用时，从脚本里扒候选主机当默认 —— 聚合源把登录页写在脚本里
+        // 都不可用时，用脚本里扒出来的候选主机当默认值
         // （host = ['https://v5.langge.uk', ...]），比空着地址栏强得多。
         let derived = firstUsable ?? Self.candidateHosts(from: source).first ?? ""
         self._currentUrl = State(initialValue: firstUsable.flatMap { URL(string: $0) })
@@ -48,8 +46,7 @@ public struct SourceWebLoginView: View {
     }
 
     /// 候选主机的中文名。
-    /// 脚本里只存域名，列表光甩一串网址不好认；这里按常见站点给个可读标签，
-    /// 认不出来的按序号叫「线路 N」。
+    /// 按常见站点给可读名字，认不出来的按序号叫「线路 N」。
     static func hostLabel(_ host: String, index: Int) -> String {
         let lower = host.lowercased()
         if lower.contains("fanqienovel") { return "番茄小说（\(host)）" }
@@ -59,8 +56,8 @@ public struct SourceWebLoginView: View {
     }
 
     /// 从登录脚本 / JS 库里扒出候选主机（去重、保序，最多 6 个）。
-    /// 聚合源的登录页地址是运行时拼的（`getArgument('server') + '/login'`），
-    /// 静态只能扒到它脚本里出现过的那些主机，所以给个候选让用户挑。
+    /// 登录页地址是运行时拼的（`getArgument('server') + '/login'`），
+    /// 只能扒出脚本里出现过的主机，作为候选给用户挑。
     static func candidateHosts(from source: BookSource) -> [String] {
         let text = [source.loginUrl ?? "", source.jsLib ?? "", source.bookSourceUrl].joined(separator: "\n")
         guard let regex = try? NSRegularExpression(pattern: #"https?://[A-Za-z0-9.\-]+"#) else { return [] }
@@ -75,8 +72,8 @@ public struct SourceWebLoginView: View {
         return out
     }
 
-    /// 能不能直接交给 WebView 打开：必须是带 host 的 http(s) 地址。
-    /// 一堆 JS 文本、或者 "大灰狼融合VIP5.0" 这种纯标识，都不算。
+    /// 能否交给 WebView 打开：需要带 host 的 http(s) 地址，
+    /// JS 文本和 "大灰狼融合VIP5.0" 这类标识都不算。
     static func isLoadableWebUrl(_ str: String) -> Bool {
         guard let url = URL(string: str),
               let scheme = url.scheme?.lowercased(),
@@ -85,7 +82,7 @@ public struct SourceWebLoginView: View {
         return true
     }
 
-    /// 没有可打开的网页地址时顶上来的说明，别让用户对着一片白。
+    /// 没有可打开的地址时显示的说明。
     private var noWebUrlHint: some View {
         VStack(spacing: 8) {
             Image(systemName: "globe")
@@ -117,7 +114,7 @@ public struct SourceWebLoginView: View {
                             .font(.caption)
                     }
 
-                    // 地址可改：聚合源的登录页写在脚本里，扒出来的主机不一定就是登录页
+                    // 地址可改：扒出来的主机不一定就是登录页
                     TextField("登录页地址（https://…）", text: $urlText)
                         .font(.caption2)
                         .textFieldStyle(.plain)
@@ -329,18 +326,21 @@ public struct SourceWebLoginView: View {
     }
 
     private func filterRelevantCookies(_ cookies: [HTTPCookie]) -> [HTTPCookie] {
-        let sourceHost = URL(string: source.bookSourceUrl)?.host?.lowercased() ?? ""
-        let loginHost = URL(string: source.loginUrl ?? "")?.host?.lowercased() ?? ""
+        // 聚合源的 bookSourceUrl 只是个标识（"大灰狼融合VIP5.0"）、loginUrl 是一段脚本，
+        // 两者的 host 都取不到，只按它们过滤会一条 cookie 都留不下。当前打开的网页 host
+        // 是真实登录域，要一起算进来。
+        var hosts: [String] = []
+        for candidate in [source.bookSourceUrl, source.loginUrl ?? "", currentUrl?.absoluteString ?? ""] {
+            if let host = URL(string: candidate)?.host?.lowercased(), !host.isEmpty, !hosts.contains(host) {
+                hosts.append(host)
+            }
+        }
+        guard !hosts.isEmpty else { return [] }
 
         return cookies.filter { c in
-            let domain = c.domain.lowercased()
-            if !sourceHost.isEmpty && (domain.contains(sourceHost) || sourceHost.contains(domain)) {
-                return true
-            }
-            if !loginHost.isEmpty && (domain.contains(loginHost) || loginHost.contains(domain)) {
-                return true
-            }
-            return false
+            let domain = c.domain.lowercased().trimmingCharacters(in: CharacterSet(charactersIn: "."))
+            guard !domain.isEmpty else { return false }
+            return hosts.contains { $0.contains(domain) || domain.contains($0) }
         }
     }
 

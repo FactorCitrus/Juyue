@@ -5,6 +5,9 @@ import WebKit
 #if canImport(AppKit)
 import AppKit
 #endif
+#if canImport(UIKit)
+import UIKit
+#endif
 #if canImport(LegadoCore)
 import LegadoCore
 #endif
@@ -13,6 +16,7 @@ import LegadoCore
 public struct LegadoApp: App {
     @StateObject private var bookStore = BookStore.shared
     @StateObject private var scriptBrowser = ScriptBrowserPresenter.shared
+    @StateObject private var toastPresenter = ToastPresenter.shared
     @AppStorage("legado_app_theme") private var appTheme: String = "system"
 
     private var selectedColorScheme: ColorScheme? {
@@ -43,8 +47,8 @@ public struct LegadoApp: App {
             .environmentObject(bookStore)
             .preferredColorScheme(selectedColorScheme)
             .sheet(item: $scriptBrowser.request) { request in
-                ScriptBrowserSheet(request: request) { html, url in
-                    scriptBrowser.finish(html: html, url: url)
+                ScriptBrowserSheet(request: request) { webView, pageUrl in
+                    scriptBrowser.close(webView: webView, pageUrl: pageUrl)
                 }
             }
         #else
@@ -66,11 +70,107 @@ public struct LegadoApp: App {
     }
 }
 
+/// 脚本 toast 的上屏入口。
+final class ToastPresenter: ObservableObject {
+    static let shared = ToastPresenter()
+
+    private init() {
+        ScriptToast.shared.handler = { text in
+            let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else { return }
+            ScriptToastWindow.shared.show(trimmed)
+        }
+    }
+}
+
+#if os(iOS)
+/// 承载 toast 的独立窗口，2.6 秒后隐藏。
+///
+/// 挂在视图上的 overlay 会被 sheet 盖住（登录面板就是 sheet），所以单开一层窗口。
+/// 窗口不吃触摸，点击照旧落到下面的界面。
+final class ScriptToastWindow {
+    static let shared = ScriptToastWindow()
+
+    private var window: UIWindow?
+    private var host: UIHostingController<ScriptToastBanner>?
+    private var hideTask: DispatchWorkItem?
+
+    private init() {}
+
+    func show(_ text: String) {
+        DispatchQueue.main.async {
+            guard let scene = UIApplication.shared.connectedScenes
+                .compactMap({ $0 as? UIWindowScene })
+                .first(where: { $0.activationState == .foregroundActive }) ?? UIApplication.shared.connectedScenes.compactMap({ $0 as? UIWindowScene }).first
+            else { return }
+
+            if self.window == nil {
+                let win = ScriptToastHostWindow(windowScene: scene)
+                win.windowLevel = .alert + 1
+                win.backgroundColor = .clear
+                // 不吃触摸，点击落到下面的界面
+                win.isUserInteractionEnabled = false
+                let host = UIHostingController(rootView: ScriptToastBanner(message: text))
+                host.view.backgroundColor = .clear
+                win.rootViewController = host
+                self.window = win
+                self.host = host
+            }
+
+            self.host?.rootView = ScriptToastBanner(message: text)
+            self.window?.frame = scene.coordinateSpace.bounds
+            self.window?.isHidden = false
+            self.window?.alpha = 1
+
+            self.hideTask?.cancel()
+            let task = DispatchWorkItem { [weak self] in
+                self?.window?.isHidden = true
+            }
+            self.hideTask = task
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2.6, execute: task)
+        }
+    }
+}
+
+/// 只负责显示 toast，不参与键盘焦点，否则弹提示会把输入框的键盘收掉。
+final class ScriptToastHostWindow: UIWindow {
+    override var canBecomeKey: Bool { false }
+    override var canBecomeFocused: Bool { false }
+}
+
+struct ScriptToastBanner: View {
+    let message: String
+
+    var body: some View {
+        VStack {
+            Text(message)
+                .font(.subheadline)
+                .foregroundColor(.white)
+                .multilineTextAlignment(.center)
+                .lineLimit(4)
+                .padding(.horizontal, 16)
+                .padding(.vertical, 10)
+                .background(Capsule().fill(Color.black.opacity(0.82)))
+                .padding(.top, 64)
+                .padding(.horizontal, 32)
+            Spacer(minLength: 0)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .allowsHitTesting(false)
+    }
+}
+#else
+/// 桌面端 toast 只进日志。
+final class ScriptToastWindow {
+    static let shared = ScriptToastWindow()
+    private init() {}
+    func show(_ text: String) {}
+}
+#endif
+
 /// 脚本要弹浏览器时的宿主实现。
 ///
-/// 书源的 `java.startBrowserAwait(url, title)` 要「打开网页 → 用户操作 → 关掉 → 脚本拿结果」，
-/// 而 JS 是同步的：这里用信号量挡住的是**脚本线程**（登录面板那几个按钮走 Task，不占主线程），
-/// 主线程照常弹 WKWebView，关掉时再把最终页面 HTML 交回脚本。
+/// 等待网页关闭靠信号量阻塞脚本线程，主线程弹 WKWebView，关掉时把页面 HTML 交回去。
 final class ScriptBrowserPresenter: ObservableObject {
     struct Request: Identifiable {
         let id = UUID()
@@ -82,6 +182,8 @@ final class ScriptBrowserPresenter: ObservableObject {
 
     @Published var request: Request?
     private var completion: ((String, String) -> Void)?
+    /// 取 HTML 期间持有 WKWebView
+    private var retainedWebView: WKWebView?
 
     private init() {
         ScriptBrowser.shared.present = { [weak self] url, title, wait in
@@ -89,15 +191,23 @@ final class ScriptBrowserPresenter: ObservableObject {
             #if os(iOS)
             var body = ""
             var finalUrl = url
-            let semaphore = wait ? DispatchSemaphore(value: 0) : nil
+            // 主线程上不能等：弹窗要排在主线程，等它就互锁
+            let canWait = wait && !Thread.isMainThread
+            let semaphore = canWait ? DispatchSemaphore(value: 0) : nil
             DispatchQueue.main.async {
+                // 上一个等结果的调用先放行，避免一直阻塞
+                let previous = self.completion
                 self.completion = { html, pageUrl in
                     body = html
                     finalUrl = pageUrl.isEmpty ? url : pageUrl
+                    // 等结果的调用要等网页关闭才放行
+                    semaphore?.signal()
                 }
-                self.request = Request(url: url, title: title)
-                // 不等结果的（教程、永久发布页这类）：弹出来就立刻放行
-                semaphore?.signal()
+                previous?("", url)
+                // 同一地址重复弹时复用现有 sheet，不叠层
+                if self.request?.url != url {
+                    self.request = Request(url: url, title: title)
+                }
             }
             if let semaphore { _ = semaphore.wait(timeout: .now() + 600) }
             return (body, finalUrl)
@@ -109,10 +219,29 @@ final class ScriptBrowserPresenter: ObservableObject {
         }
     }
 
-    func finish(html: String, url: String) {
+    /// 用户点「关闭 / 完成」：先收 sheet，再取最终 HTML。
+    /// 页面卡住时 evaluateJavaScript 长时间不回调，不能等它。
+    func close(webView: WKWebView, pageUrl: String) {
         request = nil
-        completion?(html, url)
+        let pending = completion
         completion = nil
+        guard let pending else {
+            retainedWebView = nil
+            return
+        }
+        retainedWebView = webView
+        var delivered = false
+        let deliver: (String) -> Void = { [weak self] html in
+            guard !delivered else { return }
+            delivered = true
+            pending(html, pageUrl)
+            self?.retainedWebView = nil
+        }
+        // 抓不到就按空 HTML 放行，不阻塞脚本线程
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2) { deliver("") }
+        webView.evaluateJavaScript("document.documentElement.outerHTML") { value, _ in
+            deliver((value as? String) ?? "")
+        }
     }
 }
 
@@ -120,13 +249,42 @@ final class ScriptBrowserPresenter: ObservableObject {
 /// 脚本要求弹出的网页（注册书源 / 用户后台 / 使用教程 / 永久发布页 / 番茄登录 / 打赏）。
 struct ScriptBrowserSheet: View {
     let request: ScriptBrowserPresenter.Request
-    let onFinish: (String, String) -> Void
+    let onFinish: (WKWebView, String) -> Void
 
     @State private var webView = WKWebView()
+    @StateObject private var loader = ScriptPageLoadState()
 
     var body: some View {
         NavigationView {
-            ScriptWebViewBox(webView: webView)
+            ZStack {
+                ScriptWebViewBox(webView: webView)
+                if loader.isLoading {
+                    VStack(spacing: 10) {
+                        ProgressView()
+                        Text("正在加载网页…")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
+                    .padding(.horizontal, 18)
+                    .padding(.vertical, 14)
+                    .background(RoundedRectangle(cornerRadius: 12).fill(Color(.systemBackground).opacity(0.92)))
+                }
+                if let failure = loader.failure {
+                    VStack(spacing: 10) {
+                        Image(systemName: "wifi.exclamationmark")
+                            .font(.title2)
+                            .foregroundColor(.orange)
+                        Text(failure)
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                            .multilineTextAlignment(.center)
+                        Button("重试") { load(request.url) }
+                            .buttonStyle(.bordered)
+                    }
+                    .padding(18)
+                    .background(RoundedRectangle(cornerRadius: 12).fill(Color(.systemBackground).opacity(0.92)))
+                }
+            }
                 .navigationTitle(request.title.isEmpty ? "网页" : request.title)
                 .navigationBarTitleDisplayMode(.inline)
                 .toolbar {
@@ -139,18 +297,33 @@ struct ScriptBrowserSheet: View {
                 }
         }
         .onAppear {
-            guard let url = URL(string: request.url) else { return }
-            webView.load(URLRequest(url: url))
+            webView.navigationDelegate = loader
+            load(request.url)
         }
     }
 
-    private func finish() {
-        // 把最终页面 HTML 交回脚本 —— 聚合源靠它解析登录/注册结果
-        let pageUrl = webView.url?.absoluteString ?? request.url
-        webView.evaluateJavaScript("document.documentElement.outerHTML") { value, _ in
-            let html = (value as? String) ?? ""
-            DispatchQueue.main.async { onFinish(html, pageUrl) }
+    private func load(_ raw: String) {
+        // 书源设置中心用 `data:text/html;base64,...` 传页面，WKWebView 不允许顶层导航到
+        // data: 地址（load 完是白屏），这里解出 HTML 直接交给 loadHTMLString。
+        if raw.hasPrefix("data:text/html"), let comma = raw.firstIndex(of: ",") {
+            let meta = raw[raw.startIndex..<comma]
+            let payload = String(raw[raw.index(after: comma)...])
+            let html = meta.contains("base64")
+                ? Data(base64Encoded: payload).flatMap { String(data: $0, encoding: .utf8) }
+                : payload.removingPercentEncoding
+            if let html {
+                webView.loadHTMLString(html, baseURL: nil)
+                return
+            }
         }
+        guard let url = URL(string: raw) else { return }
+        webView.load(URLRequest(url: url))
+    }
+
+    private func finish() {
+        // 不等 evaluateJavaScript 回调，先收 sheet，HTML 由 presenter 收尾时再取
+        let pageUrl = webView.url?.absoluteString ?? ""
+        onFinish(webView, pageUrl.isEmpty || pageUrl == "about:blank" ? request.url : pageUrl)
     }
 }
 
@@ -158,6 +331,50 @@ private struct ScriptWebViewBox: UIViewRepresentable {
     let webView: WKWebView
     func makeUIView(context: Context) -> WKWebView { webView }
     func updateUIView(_ uiView: WKWebView, context: Context) {}
+}
+
+/// 网页加载状态：给脚本弹出的网页加加载中提示，并把耗时写进诊断日志。
+/// 这些页在小服务器或境外站点上白屏十几秒很常见，日志里能分清是加载慢还是脚本没跑。
+final class ScriptPageLoadState: NSObject, ObservableObject, WKNavigationDelegate {
+    @Published var isLoading = false
+    @Published var failure: String?
+
+    private var startedAt: Date?
+    private var currentUrl: String?
+
+    func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
+        isLoading = true
+        failure = nil
+        startedAt = Date()
+        currentUrl = webView.url?.absoluteString
+    }
+
+    func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+        isLoading = false
+        logElapsed(status: "完成")
+    }
+
+    func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
+        isLoading = false
+        failure = error.localizedDescription
+        logElapsed(status: "失败")
+    }
+
+    func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
+        isLoading = false
+        let nsError = error as NSError
+        // 用户自己点关闭时的取消不算加载失败
+        guard nsError.code != NSURLErrorCancelled else { return }
+        failure = error.localizedDescription
+        logElapsed(status: "失败")
+    }
+
+    private func logElapsed(status: String) {
+        let ms = startedAt.map { Int(Date().timeIntervalSince($0) * 1000) } ?? -1
+        // 地址可能是几十 KB 的 data: 页面，日志里只留前 120 字符
+        AppLog.write("[网页] \(status) \(ms)ms \(String((currentUrl ?? "").prefix(120)))")
+        startedAt = nil
+    }
 }
 #endif
 

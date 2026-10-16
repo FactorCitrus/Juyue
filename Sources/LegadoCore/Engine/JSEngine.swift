@@ -21,31 +21,39 @@ import CommonCrypto
     func deviceID() -> String
     func androidId() -> String
     func hexDecodeToString(_ hex: String) -> String
-    // 下面这几个是给 Rhino 那套 Java 互操作做适配用的（聚合源大量依赖）：
+    // Rhino 的 Java 互操作适配，聚合源依赖这几个：
     func base64EncodeBytes(_ bytes: JSValue) -> String
     func sleepMs(_ ms: JSValue)
     func createSymmetricCrypto(_ transformation: String, _ key: String) -> JSValue
     func createSymmetricCrypto(_ transformation: String, _ key: String, _ iv: String) -> JSValue
-    // 需要弹浏览器的那些按钮：注册 / 用户后台 / 使用教程 / 永久发布页 / 番茄登录 / 打赏
+    // 需要弹浏览器的方法：注册 / 用户后台 / 教程 / 发布页 / 番茄登录 / 打赏
     func startBrowser(_ url: String, _ title: String)
     func startBrowserAwait(_ url: String, _ title: String) -> JSValue
     func startBrowserAwait(_ url: String, _ title: String, _ wait: Bool) -> JSValue
     func startBrowserDp(_ url: String, _ title: String)
     func showBrowser(_ url: String, _ title: String)
     func showReadingBrowser(_ url: String, _ title: String)
-    /// `cache.remove(key)`：脚本缓存登录态用的全局 cache 对象靠它删键
+    /// `cache.remove(key)`
     func removeCache(_ key: String)
 }
 
 /// 脚本要弹浏览器的请求。
 ///
-/// 书源的 `java.startBrowserAwait(url, title)` 要「打开网页 → 用户操作 → 关掉 → 脚本拿结果」，
-/// 而 JS 是同步的：宿主必须能阻塞调用线程直到网页关闭。Core 层只负责发请求，
-/// 真正弹窗由 App 层注册 handler 实现 —— Core 不依赖 UIKit，桌面端也能各自接。
+/// `java.startBrowserAwait(url, title)` 是同步调用：宿主阻塞脚本线程，等网页关闭后把
+/// 最终 HTML 和 URL 交回去。Core 只发请求，弹窗由 App 层注册 handler 实现。
+/// 脚本里的 `java.toast` / `java.longToast` 也走这里。
+///
+/// 宿主不接 handler 时只写日志，界面上没有反馈。
+public final class ScriptToast {
+    public static let shared = ScriptToast()
+    public var handler: ((String) -> Void)?
+    private init() {}
+}
+
 public final class ScriptBrowser {
     public static let shared = ScriptBrowser()
 
-    /// 参数：url、标题、是否等网页关闭。返回：最终页面 HTML 与 URL（拿不到就给空串）。
+    /// 返回最终页面 HTML 与 URL，拿不到时返回空串。
     public var present: ((String, String, Bool) -> (body: String, url: String))?
 
     private init() {}
@@ -153,19 +161,18 @@ public final class ScriptBrowser {
         return kvStore[key]
     }
 
-    // MARK: - 脚本会顺手调用的杂项
+    // MARK: - 脚本杂项调用
     //
-    // 这些看着不重要，但书源脚本把它们当默认存在的东西用：
-    //   java.longToast("正在登录中...")   ← 登录函数第一行
-    //   java.deviceID() / java.androidId()  ← 拼 cookie 用的设备指纹
-    // 缺任何一个，脚本当场抛 TypeError，后面的登录逻辑一行都跑不到。
+    // 脚本默认这些接口存在：longToast、deviceID、androidId。缺一个就抛 TypeError。
 
     public func toast(_ message: String) {
         LegadoLog.log("[toast] \(message)")
+        ScriptToast.shared.handler?(message)
     }
 
     public func longToast(_ message: String) {
         LegadoLog.log("[toast] \(message)")
+        ScriptToast.shared.handler?(message)
     }
 
     public func log(_ message: JSValue) {
@@ -180,7 +187,7 @@ public final class ScriptBrowser {
         Self.persistentDeviceID()
     }
 
-    /// 聚合源常把正文以 hex 字符串回传，脚本第一件事就是解它。
+    /// 正文常以 hex 字符串回传。
     public func hexDecodeToString(_ hex: String) -> String {
         let cleaned = hex.trimmingCharacters(in: .whitespacesAndNewlines)
         guard cleaned.count >= 2, cleaned.count % 2 == 0 else { return cleaned }
@@ -199,18 +206,16 @@ public final class ScriptBrowser {
 
     // MARK: - Rhino / Java 互操作适配
     //
-    // 安卓的 JS 引擎是 Rhino，聚合源的脚本大量用 Java 互操作：
-    // `new JavaImporter()` + `with(javaImport){...}` / `Packages.android.util.Base64` /
-    // `java.createSymmetricCrypto("AES", key).encrypt(bytes)`。JSC 里这些一个都没有，
-    // 脚本第一行就 ReferenceError。这里把用到的那些按语义近似实现。
+    // 聚合源用了 JavaImporter、with(javaImport)、Packages.android.util.Base64、
+    // java.createSymmetricCrypto 这些 Rhino 能力，这里按语义近似实现。
 
     /// `Packages.android.util.Base64.encodeToString(bytes, flags)`
-    /// flags 里的 2 是 Android 的 NO_WRAP，正好等于标准 base64 不带换行。
+    /// flags=2 对应 Android 的 NO_WRAP，即标准 base64，不带换行。
     public func base64EncodeBytes(_ bytes: JSValue) -> String {
         Data(Self.byteArray(from: bytes)).base64EncodedString()
     }
 
-    /// `Packages.java.lang.Thread.sleep(ms)` —— 脚本用它来等异步、限速。
+    /// `Packages.java.lang.Thread.sleep(ms)`，脚本用它等待异步、限速。
     public func sleepMs(_ ms: JSValue) {
         let value = ms.isNumber ? ms.toInt32() : (Int32(ms.toString() ?? "0") ?? 0)
         let clamped = max(0, min(value, 10_000))
@@ -225,8 +230,8 @@ public final class ScriptBrowser {
         makeCrypto(transformation: transformation, key: key, iv: iv)
     }
 
-    /// 只按安卓 BouncyCastle 的默认惯例来：只写算法名（"AES"）当作
-    /// `<算法>/ECB/PKCS5Padding`；密钥和 IV 都按 UTF-8 取字节。
+    /// 只写算法名（"AES"）时按 BouncyCastle 惯例补成 `<算法>/ECB/PKCS5Padding`；
+    /// 密钥和 IV 按 UTF-8 取字节。
     private func makeCrypto(transformation: String, key: String, iv: String?) -> JSValue {
         guard let ctx = jsContext else { return JSValue(undefinedIn: JSContext()) }
         let parts = transformation.uppercased().split(separator: "/").map(String.init)
@@ -274,7 +279,7 @@ public final class ScriptBrowser {
         return JSValue(object: bytes.map { Int($0) }, in: ctx)
     }
 
-    /// 脚本传进来的可能是 [Int] 数组、也可能是字符串（按 UTF-8 取字节）。
+    /// 入参是 [Int] 数组或字符串，字符串按 UTF-8 取字节。
     static func byteArray(from value: JSValue) -> [UInt8] {
         if let text = value.toString(), !value.isArray { return [UInt8](text.utf8) }
         if let array = value.toArray() {
@@ -287,7 +292,7 @@ public final class ScriptBrowser {
         return []
     }
 
-    /// AES/DES 的 ECB / CBC(PKCS5=PKCS7) —— 就是 BouncyCastle 那几种默认写法
+    /// AES/DES 的 ECB 与 CBC，PKCS5 按 PKCS7 处理
     static func symmetric(
         algorithm: String, mode: String, key: Data, iv: Data?, input: [UInt8], encrypt: Bool
     ) -> [UInt8]? {
@@ -328,21 +333,20 @@ public final class ScriptBrowser {
 
     // MARK: - 脚本要弹浏览器
 
-    /// 删缓存键（脚本的全局 cache 对象用）
+    /// 删缓存键
     public func removeCache(_ key: String) {
         lock.lock()
         defer { lock.unlock() }
         kvStore.removeValue(forKey: key)
     }
 
-    /// 不等结果：把网页交给宿主打开就行（教程、永久发布页这类）。
+    /// 不问结果，把网址交给宿主打开。
     public func startBrowser(_ url: String, _ title: String) {
         _ = ScriptBrowser.shared.present?(url, title, false)
     }
 
-    /// 等结果：脚本要拿到用户操作后的页面内容（注册、书源设置中心、番茄登录这类）。
-    /// “等”是同步阻塞当前脚本线程实现的 —— 所以调用它的脚本不能跑在主线程上，
-    /// 登录面板那几个按钮走的是 Task，正好不占主线程。
+    /// 要拿用户操作后的页面内容（注册、书源设置中心、番茄登录）。
+    /// 等待靠阻塞脚本线程实现，调用方不能是主线程。
     public func startBrowserAwait(_ url: String, _ title: String) -> JSValue {
         browserResult(url: url, title: title, wait: true)
     }
@@ -351,7 +355,7 @@ public final class ScriptBrowser {
         browserResult(url: url, title: title, wait: wait)
     }
 
-    // 安卓侧的几个近亲，脚本里也在用；语义一样，都走同一个宿主入口
+    // 安卓同类接口，语义相同，走同一个宿主入口
     public func startBrowserDp(_ url: String, _ title: String) {
         _ = ScriptBrowser.shared.present?(url, title, false)
     }
@@ -449,7 +453,9 @@ public class JSEngine {
     public let context: JSContext
     private let javaShim: JavaShim
     public var onLoginHeaderUpdated: ((String) -> Void)?
-    /// 最近一次脚本异常。登录这类同步流程出错时，把原文带出去，别让调用方只看到一句笼统失败。
+    /// 脚本用 `source.putLoginInfo` 改写过的登录信息（聚合源把 token 存在这里）。
+    public var onLoginInfoUpdated: ((String) -> Void)?
+    /// 最近一次脚本异常，供调用方拿到原始错误信息。
     public private(set) var lastError: String?
 
     public init(bookSource: BookSource? = nil, baseUrl: String? = nil) {
@@ -458,12 +464,20 @@ public class JSEngine {
 
         setupEnvironment(bookSource: bookSource, baseUrl: baseUrl)
 
-        // 把书源自带的 jsLib 注入上下文。
-        // 聚合源（大灰狼那一类）把 getArguments / setArgument / 各种加解密助手全写在 jsLib 里，
-        // 正文、搜索、登录脚本直接调；不注入的话脚本第一行就
-        // `ReferenceError: Can't find variable: getArguments`，整份源等于废掉。
+        // 注入书源自带的 jsLib（getArguments、加解密等助手）。
+        // 正文、搜索、登录脚本直接调这些函数，不注入就 ReferenceError。
         if let lib = bookSource?.jsLib, !lib.isEmpty {
-            _ = eval(script: JSEngine.unwrapJsScript(lib))
+            // 只注一次：jsLib 里有 const 声明，重复注入 JSC 报 duplicate variable。
+            if context.objectForKeyedSubscript("__legadoJsLibLoaded")?.toBool() != true {
+                _ = eval(script: JSEngine.unwrapJsScript(lib))
+                let ok = lastError == nil
+                context.setObject(ok, forKeyedSubscript: "__legadoJsLibLoaded" as NSString)
+                // jsLib 自身报错另行记录，不算业务脚本错误
+                if !ok {
+                    LegadoLog.log("[JS] jsLib 注入失败：\(lastError ?? "")")
+                    lastError = nil
+                }
+            }
         }
     }
 
@@ -472,7 +486,7 @@ public class JSEngine {
         context.exceptionHandler = { [weak self] _, exception in
             let message = exception?.toString() ?? "unknown error"
             self?.lastError = message
-            // 书源脚本的未捕获异常统一进诊断日志，搜索/目录/正文出问题时能自己查到原因
+            // 未捕获异常统一进诊断日志
             LegadoLog.log("[JS] \(message)")
             #if DEBUG
             print("[JSEngine Error] \(message)")
@@ -494,7 +508,10 @@ public class JSEngine {
             self?.onLoginHeaderUpdated?(newH)
         }
         let getLoginInfoBlock: @convention(block) () -> String? = { loginInfoStr }
-        let putLoginInfoBlock: @convention(block) (String) -> Void = { newInfo in loginInfoStr = newInfo }
+        let putLoginInfoBlock: @convention(block) (String) -> Void = { [weak self] newInfo in
+            loginInfoStr = newInfo
+            self?.onLoginInfoUpdated?(newInfo)
+        }
         let getVariableBlock: @convention(block) () -> String = { variableStr ?? "" }
         let setVariableBlock: @convention(block) (String) -> Void = { newV in variableStr = newV }
 
@@ -522,7 +539,7 @@ public class JSEngine {
         sourceObj?.setValue(getVariableBlock, forProperty: "getVariable")
         sourceObj?.setValue(setVariableBlock, forProperty: "setVariable")
         sourceObj?.setValue(bookSource?.loginUrl ?? "", forProperty: "loginUrl")
-        // 聚合源拿它当「这本书源的缓存键」用：cache.put(`userInfo_${source.getKey()}`, ...)
+        // 脚本用它做缓存键：cache.put(`userInfo_${source.getKey()}`, ...)
         let getKeyBlock: @convention(block) () -> String = { bookSource?.bookSourceUrl ?? "" }
         sourceObj?.setValue(getKeyBlock, forProperty: "getKey")
         sourceObj?.setValue(bookSource?.bookSourceUrl ?? "", forProperty: "bookSourceUrl")
@@ -530,8 +547,7 @@ public class JSEngine {
 
         context.setObject(sourceObj, forKeyedSubscript: "source" as NSString)
 
-        // Legado 书源脚本的 cookie API。脚本靠它存登录态，缺了这个全局对象，
-        // 像「大灰狼聚合」那种登录脚本第一行就抛 ReferenceError。
+        // cookie API，脚本用它存登录态，缺了这个全局对象会 ReferenceError。
         let cookieObj = JSValue(newObjectIn: context)
         let getCookieBlock: @convention(block) (String) -> String = { url in
             CookieJar.shared.cookieString(for: url)
@@ -576,13 +592,9 @@ public class JSEngine {
         function update(url, token) { }
         """)
 
-        // Rhino 的 Java 互操作壳。
-        //
-        // 安卓那边脚本跑在 Rhino 上，聚合源大量用 `new JavaImporter()` + `with(javaImport){...}`、
-        // `importClass(...)`、`Packages.android.util.Base64.encodeToString(...)`、
-        // `Packages.java.lang.Thread.sleep(...)`。JSC 里这些全局一个都没有，
-        // 脚本第一行就 ReferenceError（实测大灰狼 5.9.30 就是卡在 JavaImporter）。
-        // 这里按语义把用到的那些补上，缺的部分脚本自己大多包在 try/catch 里会降级。
+        // Rhino 的 Java 互操作壳：JavaImporter、with(javaImport)、importClass、
+        // Packages.android.util.Base64、Packages.java.lang.Thread.sleep。
+        // JSC 没有这些全局，缺了脚本会 ReferenceError。
         context.evaluateScript("""
         var JavaImporter = function(){ return { importClass: function(){}, importPackage: function(){} }; };
         var importClass = function(){};
@@ -594,8 +606,8 @@ public class JSEngine {
         };
         if (!java.refreshExplore) { java.refreshExplore = function(){}; }
 
-        // 全局 cache：脚本用它存登录态之类的短期数据（cache.put('userInfo_xxx', ...)）。
-        // 安卓那边是宿主提供的，缺了就 ReferenceError，聚合源登录的最后一步正好用它。
+        // 全局 cache，脚本用它存登录态等短期数据（cache.put('userInfo_xxx', ...)），
+        // 安卓由宿主提供。
         var cache = {
           put: function(key, value){ java.put(String(key), String(value)); },
           get: function(key){ var v = java.get(String(key)); return (v === undefined || v === null) ? '' : v; },
@@ -667,8 +679,7 @@ public class JSEngine {
     /// JavaScriptCore can only bridge Objective-C classes. Handing it a Swift-only
     /// class (e.g. SwiftSoup.Element) aborts the process inside `classInfoForClass:`,
     /// so every value crossing into JS is converted here first.
-    /// 剥掉书源规则常见的 `<js>...</js>` 包裹与 `@js:` 前缀。
-    /// loginUrl 和 loginUi 的 action 也可能带这层壳，直接丢给 evaluateScript 会语法错误。
+    /// 剥掉规则里的 `<js>...</js>` 包裹和 `@js:` 前缀，loginUrl 与按钮 action 也带这层壳。
     public static func unwrapJsScript(_ raw: String) -> String {
         var text = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         if let open = text.range(of: "<js>"),

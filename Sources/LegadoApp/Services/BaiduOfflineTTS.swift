@@ -206,7 +206,7 @@ final class BaiduOfflineTTS: NSObject, ObservableObject {
     }
 
     /// 删掉自己导进来的音色（连同它所在的包目录）。
-    /// SDK 自带的音色删不了——那是打进包里的，删了没意义。
+    /// SDK 自带音色不能删，已打进包内。
     @discardableResult
     static func deleteVoices(_ voices: [Voice]) -> Int {
         let fm = FileManager.default

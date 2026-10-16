@@ -115,7 +115,7 @@ public class NetworkClient {
         try await request(parsed: parsed, timeout: nil)
     }
 
-    /// 带超时的异步请求，目录分页这种批量抓取用它，避免单页卡住拖死整轮。
+    /// 带超时的异步请求，用于目录分页这类批量抓取，避免单页卡住整轮。
     public func request(parsed: ParsedRequest, timeout: TimeInterval?) async throws -> NetworkResponse {
         var req = URLRequest(url: parsed.url)
         req.httpMethod = parsed.method

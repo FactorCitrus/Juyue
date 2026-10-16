@@ -2,11 +2,11 @@
 import SwiftUI
 import UIKit
 
-/// 系统卷页会给卷起来那张纸打一层「往白里提」的高光，而且没开关。
+/// 系统卷页会给卷起的那张纸加一层提亮高光，无法关闭。
 /// 浅色主题（羊皮纸那种本来就接近白的）提亮看不出来；饱和色主题（护眼绿）
 /// 一提就显成折痕边上的白边。
 ///
-/// 对策只能反过来做：把背面那页的底色**预先压暗一档**，被高光提完之后
+/// 处理方式相反：把背面那页的底色预先压暗一档，被高光提亮之后
 /// 正好落回主题色。只动背面的填充，正文、正面、卷页几何都不碰。
 private func curlBackColor(_ color: Color) -> Color {
     let ui = UIColor(color)
@@ -206,7 +206,7 @@ public struct PageCurlPager: UIViewControllerRepresentable {
     /// 一次投几张，按 UIKit 的校验规则来（模拟器 iOS 26.3 实测，和 `isDoubleSided`、
     /// 有没有上屏都无关）：
     ///
-    /// - 不带画：严格按书脊给 —— `.min` 只收 1 张，`.mid` 收 2 张；
+    /// - 不带画：严格按书脊切分，`.min` 1 张，`.mid` 2 张；
     /// - 带动画：固定按 2 张校验，只给 1 张同样抛
     ///   "The number of view controllers provided (1) doesn't match the number required (2) for the requested transition"。
     ///
@@ -371,7 +371,7 @@ public struct PageCurlPager: UIViewControllerRepresentable {
         }
 
         /// UIPageViewController 翻页时会反复要页面。每次重建 hosting controller
-        /// 等于每次翻页重新搭一棵 SwiftUI 视图树 + 重排一次正文，动画就卡。
+        /// 每次翻页都会重建 SwiftUI 视图树并重排正文，动画会卡。
         func controller(at index: Int) -> UIViewController? {
             guard index >= 0, index < parent.pages.count else { return nil }
             resetCacheIfNeeded()
@@ -537,7 +537,7 @@ public struct PageCurlPager: UIViewControllerRepresentable {
                 pan.addTarget(self, action: #selector(handlePanEnd(_:)))
             }
             // 边界那一下（本章最后一页再往前、第一页再往后）UIKit 没有下一页可给，
-            // pan 可能压根不认，所以再挂两个 swipe 识别器兜底
+            // pan 手势可能不被识别，另挂两个 swipe 识别器兜底
             for direction: UISwipeGestureRecognizer.Direction in [.left, .right] {
                 let swipe = UISwipeGestureRecognizer(target: self, action: #selector(handleSwipe(_:)))
                 swipe.direction = direction
@@ -900,7 +900,7 @@ struct PageCurlContent: View {
             }
         }
         // UIPageViewController 里的 SwiftUI 会按窗口安全区给自己留边，不忽略的话
-        // 这一页的 0 点其实在灵动岛下面，「距顶 0」永远顶不到屏幕上沿
+        // 这一页的 0 点在灵动岛下方，「距顶 0」到不了屏幕上沿
         .ignoresSafeArea(edges: .all)
         .background(pageBackground)
     }

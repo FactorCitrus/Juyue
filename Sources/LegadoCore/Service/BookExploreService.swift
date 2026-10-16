@@ -6,6 +6,13 @@ public struct ExploreCategory: Identifiable, Hashable {
     public var url: String?
     public var isHeader: Bool { url == nil || url?.isEmpty == true }
 
+    /// 「点一下执行脚本」的分类条目：url 本身是一段 java 调用，渲染后没有网址可抓，
+    /// 例如 `{java.startBrowser("https://fanqienovel.com/","番茄登录");}`。
+    public var isAction: Bool {
+        let raw = (url ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        return raw.hasPrefix("{") && raw.contains("java.") && raw.hasSuffix("}")
+    }
+
     public init(title: String, url: String? = nil) {
         self.title = title
         self.url = url
@@ -17,8 +24,37 @@ public class BookExploreService {
 
     public init() {}
 
-    /// Parses the categories configured in a BookSource's `exploreUrl`
+    /// 分类解析缓存。解析要跑一遍书源 JS（聚合源的 jsLib 三万字符），手机上几秒。
+    /// 缓存键是 bookSourceUrl，值里带 exploreUrl 和源变量做签名，源一变就失效。
+    private var categoryCache: [String: (signature: String, value: [ExploreCategory])] = [:]
+    private let categoryLock = NSLock()
+
     public func parseExploreCategories(source: BookSource) -> [ExploreCategory] {
+        let signature = "\(source.exploreUrl ?? "")|\(source.variable ?? "")"
+        let key = source.bookSourceUrl
+
+        categoryLock.lock()
+        if let cached = categoryCache[key], cached.signature == signature {
+            categoryLock.unlock()
+            return cached.value
+        }
+        categoryLock.unlock()
+
+        let result = computeExploreCategories(source: source)
+
+        categoryLock.lock()
+        categoryCache[key] = (signature, result)
+        categoryLock.unlock()
+        return result
+    }
+
+    /// 执行动作类分类：脚本弹浏览器或弹提示，没有书可抓。
+    public func runActionCategory(source: BookSource, categoryUrl: String) async {
+        _ = try? await fetchExploreBooks(source: source, categoryUrl: categoryUrl, page: 1)
+    }
+
+    /// Parses the categories configured in a BookSource's `exploreUrl`
+    private func computeExploreCategories(source: BookSource) -> [ExploreCategory] {
         guard let exploreUrl = source.exploreUrl?.trimmingCharacters(in: .whitespacesAndNewlines),
               !exploreUrl.isEmpty else {
             return []
@@ -101,10 +137,9 @@ public class BookExploreService {
             renderedUrl = jsEngine.renderTemplate(renderedUrl, variables: ["page": page])
         }
 
-        // 分类里有些条目不是「去抓一个网址」，而是「点一下执行一段脚本」——
-        // 例如大灰狼的「登录番茄」：url 就是 `{{java.startBrowser("https://fanqienovel.com/","番茄登录");}}`。
-        // 这类渲染完 URL 是空的，动作（弹浏览器）已经执行过了，返回空列表即可，
-        // 不能当成「网址解析失败」抛错 —— 之前就是这儿冒出一个满载失败页。
+        // 有些分类条目是「点一下执行脚本」，例如大灰狼的「登录番茄」，url 就是
+        // `{{java.startBrowser("https://fanqienovel.com/","番茄登录");}}`。
+        // 渲染后 url 为空，动作已执行，返回空列表，不按解析失败处理。
         guard !renderedUrl.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             return []
         }

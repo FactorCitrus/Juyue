@@ -124,7 +124,8 @@ public struct ExploreBookListView: View {
             .hidden()
         )
         .onAppear {
-            if books.isEmpty {
+            // 动作类分类取不到书，重复触发只会反复弹登录页
+            if books.isEmpty && !category.isAction {
                 loadBooks(page: 1)
             }
         }

@@ -270,7 +270,7 @@ public class WebDAVService {
             }
         }
 
-        // 其它状态码不能当成功报：500/502/超限这类要如实说出来，别让用户以为连上了
+        // 其它状态码如实报错，500/502/超限不算连接成功
         throw WebDAVError.custom("服务器返回 HTTP \(httpResponse.statusCode)，连接未通过")
     }
 

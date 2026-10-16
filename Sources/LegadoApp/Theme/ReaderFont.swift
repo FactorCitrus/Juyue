@@ -75,7 +75,7 @@ public extension ReaderFont {
 /// 自定义字体：导入的 ttf/otf 拷进 App 的 Documents/CustomFonts，
 /// 启动时注册到进程，再从字体文件里读真实 PostScript 名。
 ///
-/// 必须走 CFURL 注册这条路——只把文件放进目录是不会被 CoreText 认出来的。
+/// 必须走 CFURL 注册，只把文件放进目录 CoreText 不认。
 public final class CustomFontService: ObservableObject {
     public static let shared = CustomFontService()
 
@@ -187,7 +187,7 @@ public final class CustomFontService: ObservableObject {
             return nil
         }
         // 和系统/内置清单里的字体同名的，导进来也不会有任何视觉变化，
-        // 直接说清楚，别让用户以为导入成功了却没反应
+        // 明确报出失败原因，不静默成功
         if let dup = ReaderFont.candidates.first(where: {
             $0.postScriptName.caseInsensitiveCompare(postScriptName) == .orderedSame && $0.isAvailable
         }) {

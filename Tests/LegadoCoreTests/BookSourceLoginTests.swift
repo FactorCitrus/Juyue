@@ -56,7 +56,7 @@ final class BookSourceLoginTests: XCTestCase {
         XCTAssertGreaterThan(header?.count ?? 0, "Cookie:deviceId=".count, "deviceID 不该是空串")
     }
 
-    /// 聚合源把正文以 hex 回传，脚本第一件事就是解它，解不出来正文就是空的。
+    /// 聚合源把正文以 hex 回传，脚本先解它，解不出来正文为空。
     func testHexDecodeToString() throws {
         let engine = JSEngine()
         XCTAssertEqual(engine.eval(script: "java.hexDecodeToString('7b2261223a317d')") as? String, "{\"a\":1}")

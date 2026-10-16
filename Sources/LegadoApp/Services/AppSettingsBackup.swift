@@ -6,7 +6,7 @@ import LegadoCore
 /// WebDAV 备份里的应用内设置（zip 根目录下的 `settings.json`）。
 ///
 /// 只装「用户自己攒出来的东西」：阅读排版、替换净化规则、订阅源、多角色音色表。
-/// 不带任何凭据——百度语音的 appId / apiKey / secretKey 一律不写进去。
+/// 不含凭据：百度语音的 appId / apiKey / secretKey 一律不写入。
 /// 安卓版 Legado 读到不认识的条目会直接忽略，不影响它继续读 bookshelf.json / bookSource.json。
 public struct AppSettingsPayload: Codable {
     /// 结构版本，日后加字段时靠它决定怎么迁移

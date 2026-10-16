@@ -259,7 +259,12 @@ public struct SourceDetailView: View {
                     ForEach(group.items) { item in
                         if let _ = item.url, !item.url!.isEmpty {
                             Button {
-                                selectedCategoryForExplore = item
+                                // 动作类分类不跳页面：跳过去先出「暂无书籍」，登录页再叠上来
+                                if item.isAction {
+                                    runActionCategory(item)
+                                } else {
+                                    selectedCategoryForExplore = item
+                                }
                             } label: {
                                 categoryChip(title: item.title, isActionable: true)
                             }
@@ -280,6 +285,12 @@ public struct SourceDetailView: View {
             }
             .padding(.vertical, 4)
         }
+    }
+
+    /// 执行动作类分类，脚本里弹浏览器或弹提示。
+    private func runActionCategory(_ category: ExploreCategory) {
+        guard let url = category.url else { return }
+        Task { await BookExploreService.shared.runActionCategory(source: currentSource, categoryUrl: url) }
     }
 
     @ViewBuilder
@@ -341,9 +352,15 @@ public struct SourceDetailView: View {
 
     private func refreshCategories() {
         isRefreshingCategories = true
-        let parsed = BookExploreService.shared.parseExploreCategories(source: currentSource)
-        self.categories = parsed
-        self.isRefreshingCategories = false
+        // 分类由书源 JS 算出来（聚合源的 jsLib 三万字符），放后台线程跑，界面显示加载中
+        let source = currentSource
+        Task.detached(priority: .userInitiated) {
+            let parsed = BookExploreService.shared.parseExploreCategories(source: source)
+            await MainActor.run {
+                self.categories = parsed
+                self.isRefreshingCategories = false
+            }
+        }
     }
 
     private func openScopedSearch() {

@@ -100,7 +100,7 @@ public struct SourceManagerView: View {
         case .enabledFirst:
             list.sort { ($0.enabled ?? true ? 0 : 1) < ($1.enabled ?? true ? 0 : 1) }
         }
-        // 置顶的永远在最前（各排序模式下都生效）—— 否则用户看不出置顶起作用了
+        // 置顶项排在最前，各排序模式下都生效
         return list.enumerated()
             .sorted { lhs, rhs in
                 let lp = bookStore.isPinned(lhs.element), rp = bookStore.isPinned(rhs.element)
@@ -279,7 +279,7 @@ public struct SourceManagerView: View {
             .alert("删除这些书源？", isPresented: $showBatchDeleteAlert) {
                 Button("取消", role: .cancel) {}
                 Button("删除 \(filteredSources.count) 个", role: .destructive) {
-                    // 一次删完：逐条删等于每删一条就把整张表编码写盘一遍，批量删会卡
+                    // 一次删完，逐条删会每删一条就编码写盘一次
                     let targets = Set(filteredSources.map { $0.bookSourceUrl })
                     bookStore.deleteSources(sourceUrls: targets)
                     AppLog.write("[书源] 批量删除 \(targets.count) 条")
@@ -332,8 +332,7 @@ public struct SourceManagerView: View {
             }
             do {
                 let data = try Data(contentsOf: url)
-                // 中文书源文件常见 GBK/ANSI 存法，只按 UTF-8/UTF-16 读会读不出来，
-                // 表现就是「解析失败」。加一层 GB18030 兜底。
+                // 中文书源文件常见 GBK/ANSI 编码，UTF-8/UTF-16 读不出来，加 GB18030 兜底
                 let gb18030 = String.Encoding(rawValue: CFStringConvertEncodingToNSStringEncoding(
                     CFStringEncoding(CFStringEncodings.GB_18030_2000.rawValue)))
                 if let str = String(data: data, encoding: .utf8)
@@ -359,11 +358,10 @@ public struct SourceManagerView: View {
     }
 
 #if os(iOS)
-/// 直接弹系统文档选择器（UIKit），不走 SwiftUI 的 .fileImporter。
-///
-/// 原因：`.fileImporter` 从 sheet 里触发时，iOS 16 上「选完文件点打开」的回调
-/// 不触发（真机 iOS 16.1.1 复现，模拟器 iOS 26 正常）。UIKit 这条路没有这个问题。
-/// 用 `asCopy: true`：拿到的是沙盒里能直接读的副本，不受安全作用域限制。
+/// 系统文档选择器（UIKit）。
+/// `.fileImporter` 从 sheet 里触发时，iOS 16 上选完文件点「打开」的回调不触发
+/// （真机 iOS 16.1.1 复现，模拟器 iOS 26 正常）。
+/// `asCopy: true`，拿到沙盒里可直接读的副本。
 enum SourceDocumentPicker {
     private static var retained: Delegate?
 
@@ -477,7 +475,7 @@ enum SourceDocumentPicker {
         }
     }
 
-    /// 批量启用/停用：只翻转状态不一致的，避免把已经对的又翻回去。
+    /// 批量启用/停用，只翻转状态不一致的。
     private func setEnabled(_ enabled: Bool, in sources: [BookSource]) {
         var changed = 0
         for source in sources where (source.enabled ?? true) != enabled {
@@ -490,7 +488,7 @@ enum SourceDocumentPicker {
         showAlert = true
     }
 
-    /// 编辑书源的分类（分组）。可以手打，也可以点已有分类直接加。
+    /// 编辑书源分组，可手打或点已有分组。
     @ViewBuilder
     private func groupEditor(for target: BookSource) -> some View {
         NavigationView {
@@ -558,9 +556,8 @@ enum SourceDocumentPicker {
                 Section(header: Text("本地文件导入")) {
                     Button {
 #if os(iOS)
-                        // 直接用 UIKit 的文档选择器：SwiftUI 的 .fileImporter 在
-                        // 「从 sheet 里触发」这套组合下，iOS 16 上选完文件点「打开」
-                        // 回调不触发（真机 iOS 16.1.1 复现，模拟器上正常）。
+                        // 用 UIKit 文档选择器：SwiftUI 的 .fileImporter 从 sheet 里触发时，
+                        // iOS 16 上选完文件点「打开」的回调不触发（真机 16.1.1 复现）。
                         SourceDocumentPicker.present(contentTypes: [.json, .plainText]) { urls in
                             handlePickedSourceFiles(urls)
                         }
@@ -680,8 +677,8 @@ public struct SourceLoginSheet: View {
         let type: String
     }
 
-    /// `loginUi` 里的按钮项。安卓那边就是一排按钮，每个按钮带一段 action 脚本，
-    /// 宽度由 style 里的 `layout_flexBasisPercent` 定（0.4 = 一行两个，1 = 独占一行）。
+    /// `loginUi` 里的按钮项。每个按钮带一段 action 脚本，
+    /// 宽度由 style 的 `layout_flexBasisPercent` 定（0.4 = 一行两个，1 = 独占一行）。
     struct LoginButton: Identifiable {
         var id: String { "\(index)-\(name)" }
         let index: Int
@@ -813,7 +810,7 @@ public struct SourceLoginSheet: View {
                 }
 
                 Section {
-                    // loginUi 自带登录按钮时就不再塞一个「立即登录」，跟安卓一致
+                    // loginUi 自带登录按钮时不追加宿主的「立即登录」
                     if !hasLoginButton {
                     Button(action: performLogin) {
                         if isLoggingIn {
@@ -888,9 +885,8 @@ public struct SourceLoginSheet: View {
     }
 
     /// 取 style 里的 layout_flexBasisPercent。
-    ///
-    /// 注意安卓导出的是**单引号伪 JSON**：`{'layout_flexGrow': 1, 'layout_flexBasisPercent': 0.4}`，
-    /// 直接丢给 JSONSerialization 会解析失败，得先把单引号换成双引号。
+    /// 安卓导出的是单引号伪 JSON：`{'layout_flexGrow': 1, 'layout_flexBasisPercent': 0.4}`，
+    /// 需先换成双引号再交给 JSONSerialization。
     static func parseFlexWidth(_ style: Any?) -> Double {
         var text: String?
         if let s = style as? String { text = s }
@@ -906,8 +902,7 @@ public struct SourceLoginSheet: View {
         return 1
     }
 
-    /// 按宽度把按钮折成几行：一行里宽度加起来不超过 1.0。
-    /// 单行总宽不足 1 时按比例撑满（对齐安卓 flexGrow 的效果）。
+    /// 按宽度把按钮折行，一行内宽度和不超过 1.0；总宽不足 1 时按比例撑满。
     private var buttonRows: [[LoginButton]] {
         var rows: [[LoginButton]] = []
         var current: [LoginButton] = []
@@ -926,13 +921,12 @@ public struct SourceLoginSheet: View {
         return rows
     }
 
-    /// loginUi 里有没有自带「登录」按钮（有的话就不再用宿主那个「立即登录」）
+    /// loginUi 是否自带「登录」按钮
     private var hasLoginButton: Bool {
         loginButtons.contains { $0.action.lowercased().contains("login(") }
     }
 
-    /// 跑某个按钮自己的 action。安卓的登录面板就是靠这个把「注册 / 番茄登录 / 切换服务器」
-    /// 这些按钮跑起来的；之前 iOS 只认登录那一个 action，其余点了没反应。
+    /// 跑某个按钮的 action（注册 / 番茄登录 / 切换服务器等）。
     private func runLoginAction(_ button: LoginButton) {
         runningAction = button.action
         errorMessage = nil

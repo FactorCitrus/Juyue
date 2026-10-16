@@ -1616,7 +1616,7 @@ struct OPDSBrowserView: View {
 // MARK: - 诊断日志
 
 /// 极简应用日志：写在沙盒 Documents/AppLogs/app.log，最多保留 512KB。
-/// 顺手挂未捕获异常处理器——闪退时至少能留下一条线索，不用去翻系统分析数据。
+/// 挂未捕获异常处理器，崩溃时留下一条日志。
 enum AppLog {
     static let defaultMaxLines = 100
 
@@ -1667,7 +1667,7 @@ enum AppLog {
     ///
     /// 规矩：日志只记「操作类型 / 序数 / 耗时 / 状态码 / 字节数 / 错误类型」，
     /// 不记搜索词、书名作者、章节标题、正文、URL 的 path 与 query、任何凭据、
-    /// 设备名、绝对路径。调用方本来就该先抹干净，这里再兜一道——命中就整行不写。
+    /// 设备名、绝对路径的兜底过滤，命中就整行不写。
     static func sanitize(_ line: String) -> String {
         let banned = [
             "password", "passwd", "secret", "apikey", "api_key", "appid", "app_id",
