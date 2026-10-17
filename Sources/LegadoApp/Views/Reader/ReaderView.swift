@@ -544,7 +544,11 @@ private struct NativeCommentListSheet: View {
     @State private var comments: [ReviewComment] = []
     @State private var total = 0
     @State private var isLoading = true
+    @State private var isLoadingMore = false
     @State private var errorText: String?
+    @State private var cursor = ""
+    @State private var hasMore = false
+    @State private var sortHot = true
 
     var body: some View {
         NavigationView {
@@ -555,34 +559,57 @@ private struct NativeCommentListSheet: View {
                     VStack(spacing: 12) {
                         Text(errorText)
                             .foregroundColor(.secondary)
-                        Button("重试") { Task { await load() } }
+                        Button("重试") { Task { await load(reset: true) } }
                     }
                 } else if comments.isEmpty {
                     Text("暂无评论")
                         .foregroundColor(.secondary)
                 } else {
-                    List(comments) { comment in
-                        VStack(alignment: .leading, spacing: 6) {
-                            HStack(spacing: 6) {
-                                Text(comment.user?.user_name ?? "匿名")
-                                    .font(.caption.bold())
-                                    .foregroundColor(.secondary)
-                                Spacer()
-                                if let likes = comment.like_count, likes > 0 {
-                                    Label("\(likes)", systemImage: "heart")
-                                        .font(.caption2)
+                    List {
+                        ForEach(comments) { comment in
+                            VStack(alignment: .leading, spacing: 6) {
+                                HStack(spacing: 6) {
+                                    Text(comment.user?.user_name ?? "匿名")
+                                        .font(.caption.bold())
                                         .foregroundColor(.secondary)
+                                    Spacer()
+                                    if let likes = comment.like_count, likes > 0 {
+                                        Label("\(likes)", systemImage: "heart")
+                                            .font(.caption2)
+                                            .foregroundColor(.secondary)
+                                    }
+                                }
+                                Text(comment.content ?? "")
+                                    .font(.subheadline)
+                                HStack(spacing: 10) {
+                                    if let time = comment.create_time {
+                                        Text(time)
+                                    }
+                                    if let replies = comment.reply_count, replies > 0 {
+                                        Text("\(replies) 回复")
+                                    }
+                                }
+                                .font(.caption2)
+                                .foregroundColor(.secondary)
+                            }
+                            .padding(.vertical, 3)
+                        }
+                        if hasMore {
+                            Button {
+                                Task { await load(reset: false) }
+                            } label: {
+                                HStack {
+                                    Spacer()
+                                    if isLoadingMore {
+                                        ProgressView()
+                                    } else {
+                                        Text("加载更多")
+                                    }
+                                    Spacer()
                                 }
                             }
-                            Text(comment.content ?? "")
-                                .font(.subheadline)
-                            if let time = comment.create_time {
-                                Text(time)
-                                    .font(.caption2)
-                                    .foregroundColor(.secondary)
-                            }
+                            .disabled(isLoadingMore)
                         }
-                        .padding(.vertical, 3)
                     }
                     .listStyle(.plain)
                 }
@@ -595,45 +622,67 @@ private struct NativeCommentListSheet: View {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("关闭") { dismiss() }
                 }
+                ToolbarItem(placement: .primaryAction) {
+                    Button(sortHot ? "最热" : "最新") {
+                        sortHot.toggle()
+                        Task { await load(reset: true) }
+                    }
+                }
             }
         }
-        .task { await load() }
+        .task { await load(reset: true) }
     }
 
-    private func load() async {
-        isLoading = true
+    private func load(reset: Bool) async {
+        if reset {
+            isLoading = true
+            cursor = ""
+            comments = []
+        } else {
+            isLoadingMore = true
+        }
         errorText = nil
-        guard let api = reviewAPIURL(from: target.url) else {
+        guard let api = reviewAPIURL(from: target.url, cursor: cursor) else {
             errorText = "评论地址无法解析"
             isLoading = false
+            isLoadingMore = false
             return
         }
         do {
             let (data, _) = try await URLSession.shared.data(from: api)
             let envelope = try JSONDecoder().decode(ReviewEnvelope.self, from: data)
-            comments = envelope.data?.comments ?? []
+            let page = envelope.data?.comments ?? []
+            let existing = Set(comments.map(\.id))
+            comments += page.filter { !existing.contains($0.id) }
             total = envelope.data?.total ?? comments.count
+            cursor = envelope.data?.next_cursor ?? ""
+            hasMore = envelope.data?.has_more == true && cursor != ""
         } catch {
             errorText = "加载失败：\(error.localizedDescription)"
         }
         isLoading = false
+        isLoadingMore = false
     }
 
-    private func reviewAPIURL(from raw: String) -> URL? {
+    private func reviewAPIURL(from raw: String, cursor: String) -> URL? {
         guard var components = URLComponents(string: raw) else { return nil }
         let query = components.queryItems ?? []
         let originalMode = query.first(where: { $0.name == "mode" })?.value
         let para = query.first(where: { $0.name == "para" || $0.name == "paragraph_id" })?.value ?? "0"
         components.path = "/para_review"
-        components.queryItems = [
+        var items = [
             URLQueryItem(name: "book_id", value: query.first(where: { $0.name == "book_id" })?.value ?? ""),
             URLQueryItem(name: "item_id", value: query.first(where: { $0.name == "item_id" })?.value ?? ""),
             URLQueryItem(name: "item_version", value: query.first(where: { $0.name == "item_version" })?.value ?? ""),
             URLQueryItem(name: "para", value: para),
             URLQueryItem(name: "source", value: query.first(where: { $0.name == "source" })?.value ?? "番茄"),
             URLQueryItem(name: "mode", value: (originalMode == "paragraph" || target.title == "段评") ? "paragraph" : "chapter"),
-            URLQueryItem(name: "hot", value: "1")
+            URLQueryItem(name: "hot", value: sortHot ? "1" : "0")
         ]
+        if !cursor.isEmpty {
+            items.append(URLQueryItem(name: "cursor", value: cursor))
+        }
+        components.queryItems = items
         return components.url
     }
 }
@@ -646,12 +695,15 @@ private struct ReviewEnvelope: Decodable {
 private struct ReviewData: Decodable {
     let comments: [ReviewComment]?
     let total: Int?
+    let has_more: Bool?
+    let next_cursor: String?
 }
 
 private struct ReviewComment: Decodable, Identifiable {
     let comment_id: String
     let content: String?
     let like_count: Int?
+    let reply_count: Int?
     let create_time: String?
     let user: ReviewUser?
     var id: String { comment_id }
@@ -817,6 +869,7 @@ public struct ReaderView: View {
     @State private var tocReversed: Bool = false
     @State private var showBookmarks: Bool = false
     @State private var showComments: Bool = false
+    @State private var directCommentTarget: ReviewTarget?
     @State private var readingTickStart: Date? = nil
     @State private var newBookmarkNote: String = ""
     /// 书签列表的面板状态：搜索、排序、类型筛选、多选
@@ -932,7 +985,33 @@ public struct ReaderView: View {
     }
 
     private var chapterCommentURL: String? {
-        currentLoadedChapter?.blocks.first(where: { $0.commentCount < 0 })?.commentURL
+        currentLoadedChapter?.blocks.first(where: { $0.commentCount == -1 })?.commentURL
+    }
+
+    /// 分页模式的章末入口：最后一页右下角浮一个「本章说」。
+    @ViewBuilder
+    private var chapterCommentPill: some View {
+        let pages = currentLoadedChapter?.pages.count ?? 0
+        if readerConfig.pageMode != .scroll,
+           chapterCommentURL != nil,
+           pages > 0,
+           currentPageIndex >= pages - 1,
+           !showControls,
+           !showSettings {
+            Button {
+                showComments = true
+            } label: {
+                Label("本章说", systemImage: "text.bubble")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundColor(readerConfig.textColor)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 6)
+                    .background(.ultraThinMaterial, in: Capsule())
+            }
+            .buttonStyle(.plain)
+            .padding(.trailing, 14)
+            .padding(.bottom, 24)
+        }
     }
 
     public var body: some View {
@@ -1136,6 +1215,7 @@ public struct ReaderView: View {
         .background(pullBackgroundLayer)
         .overlay(alignment: .topTrailing) { bookmarkRibbonOverlay }
         .overlay(alignment: .top) { bookmarkHintOverlay }
+        .overlay(alignment: .bottomTrailing) { chapterCommentPill }
         #if os(iOS)
         .navigationBarHidden(true)
         .statusBar(hidden: !showControls)
@@ -1233,6 +1313,9 @@ public struct ReaderView: View {
                 items: chapterCommentItems,
                 chapterURL: chapterCommentURL
             )
+        }
+        .sheet(item: $directCommentTarget) { target in
+            NativeCommentListSheet(target: target)
         }
         .sheet(isPresented: $showSourceSwitch) {
             SourceSwitchSheet(
@@ -1559,6 +1642,26 @@ public struct ReaderView: View {
                                                         )
                                                 }
                                             )
+                                    } else if block.commentCount == -2 {
+                                        godReviewCard(block)
+                                            .padding(.leading, readerConfig.paddingLeft)
+                                            .padding(.trailing, readerConfig.paddingRight)
+                                            .padding(.bottom, readerConfig.paragraphSpacing)
+                                            .id("block_\(loadedCh.chapter.index)_\(block.id)")
+                                            .background(
+                                                GeometryReader { geo in
+                                                    Color.clear.preference(
+                                                        key: ReaderScrollPreferenceKey.self,
+                                                        value: [BlockFrameInfo(
+                                                            chapterIndex: loadedCh.chapter.index,
+                                                            blockId: block.id,
+                                                            minY: geo.frame(in: .named("readerScrollCoordinate")).minY,
+                                                            maxY: geo.frame(in: .named("readerScrollCoordinate")).maxY,
+                                                            rect: geo.frame(in: .global)
+                                                        )]
+                                                    )
+                                                }
+                                            )
                                     } else {
                                         bodyTextView(applyingKinsoku(block.text))
                                             .padding(.leading, readerConfig.paddingLeft)
@@ -1569,8 +1672,16 @@ public struct ReaderView: View {
                                                 selectScrollParagraph(block, chapterIndex: loadedCh.chapter.index)
                                             }
                                             .onTapGesture {
-                                                if block.commentCount < 0 {
+                                                if block.commentCount == -1 {
                                                     showComments = true
+                                                } else if block.commentCount == -2, let url = block.commentURL {
+                                                    directCommentTarget = ReviewTarget(url: url, title: "段评")
+                                                }
+                                            }
+                                            .overlay(alignment: .bottomTrailing) {
+                                                if block.commentCount > 0, let url = block.commentURL {
+                                                    paragraphCommentBadge(block, url: url)
+                                                        .offset(x: -2, y: 7)
                                                 }
                                             }
                                             .background(scrollAnnotationBackground(for: block, chapterIndex: loadedCh.chapter.index))
@@ -2749,7 +2860,7 @@ public struct ReaderView: View {
     }
 
     private var bottomActionRow: some View {
-        HStack(spacing: 0) {
+        return HStack(spacing: 0) {
             // Contents Table (目录)
             Button(action: { showTOC = true }) {
                 VStack(spacing: 4) {
@@ -3220,7 +3331,7 @@ public struct ReaderView: View {
                 let x = min(max(rect.midX - origin.x, bubbleWidth / 2 + 6), max(bubbleWidth / 2 + 6, geo.size.width - bubbleWidth / 2 - 6))
                 let above = rect.minY - origin.y - 44
                 let y = above < 64 ? rect.maxY - origin.y + 44 : above
-                paragraphBubble
+                paragraphBubble(width: bubbleWidth)
                     .frame(width: bubbleWidth)
                     .position(x: x, y: y)
                     .transition(.opacity)
@@ -3285,27 +3396,30 @@ public struct ReaderView: View {
     }
     #endif
 
-    private var paragraphBubble: some View {
-        HStack(spacing: 0) {
-            paragraphAction("复制", "doc.on.doc") { copySelectedParagraph() }
-            paragraphAction("搜索", "magnifyingglass") { searchSelectedParagraph() }
-            paragraphAction("书签", "bookmark") { addBookmarkForSelection() }
-            paragraphAction("下划线", "underline", tint: readerHexColor(underlineHex)) {
+    private func paragraphBubble(width: CGFloat) -> some View {
+        let actionCount = readerConfig.pageMode == .scroll ? 7 : 8
+        let actionWidth = max(34, (width - 9) / CGFloat(actionCount))
+        return HStack(spacing: 0) {
+            paragraphAction("复制", "doc.on.doc", width: actionWidth) { copySelectedParagraph() }
+            paragraphAction("搜索", "magnifyingglass", width: actionWidth) { searchSelectedParagraph() }
+            paragraphAction("书签", "bookmark", width: actionWidth) { addBookmarkForSelection() }
+            paragraphAction("下划线", "underline", width: actionWidth, tint: readerHexColor(underlineHex)) {
                 colorPickerKind = .underline
             }
-            paragraphAction("底色", "highlighter", tint: readerHexColor(highlightHex)) {
+            paragraphAction("底色", "highlighter", width: actionWidth, tint: readerHexColor(highlightHex)) {
                 colorPickerKind = .highlight
             }
-            paragraphAction("替换", "arrow.left.arrow.right") {
+            paragraphAction("替换", "arrow.left.arrow.right", width: actionWidth) {
                 replaceInput = ""
                 showReplaceInput = true
             }
             if readerConfig.pageMode != .scroll {
-                paragraphAction("整段", "text.alignleft") { resetToWholeParagraph() }
+                paragraphAction("整段", "text.alignleft", width: actionWidth) { resetToWholeParagraph() }
             }
             Divider().frame(height: 22)
-            paragraphAction("取消", "xmark") { cancelParagraphSelection() }
+            paragraphAction("取消", "xmark", width: actionWidth) { cancelParagraphSelection() }
         }
+        .frame(maxWidth: .infinity)
         .padding(.horizontal, 4)
         .padding(.vertical, 6)
         .background(.regularMaterial, in: Capsule())
@@ -3313,7 +3427,7 @@ public struct ReaderView: View {
         .shadow(color: Color.black.opacity(0.18), radius: 10, y: 4)
     }
 
-    private func paragraphAction(_ title: String, _ icon: String, tint: Color? = nil,
+    private func paragraphAction(_ title: String, _ icon: String, width: CGFloat, tint: Color? = nil,
                                  action: @escaping () -> Void) -> some View {
         Button {
             // 这一下也会落到页面那套「点一下开关工具栏」的手势上，先按住它，
@@ -3324,12 +3438,59 @@ public struct ReaderView: View {
             VStack(spacing: 2) {
                 Image(systemName: icon)
                     .font(.system(size: 16))
-                    .foregroundColor(tint)
+                    .foregroundColor(tint ?? .primary)
                 Text(title)
                     .font(.system(size: 10, weight: .medium))
+                    .foregroundColor(.primary)
             }
-            .foregroundColor(readerConfig.textColor)
-            .frame(maxWidth: .infinity)
+            .frame(width: width)
+        }
+        .buttonStyle(.plain)
+    }
+
+    /// 神评：源里的 SVG 卡片换成原生样式，点了直接开该段评论。
+    private func godReviewCard(_ block: ContentBlock) -> some View {
+        let text = block.text.replacingOccurrences(of: "神评 · ", with: "")
+        return Button {
+            if let url = block.commentURL {
+                directCommentTarget = ReviewTarget(url: url, title: "段评")
+            }
+        } label: {
+            HStack(alignment: .top, spacing: 9) {
+                Text("神评")
+                    .font(.system(size: 11, weight: .bold))
+                    .foregroundColor(.white)
+                    .padding(.horizontal, 7)
+                    .padding(.vertical, 4)
+                    .background(Color.orange, in: RoundedRectangle(cornerRadius: 6))
+                Text(text)
+                    .font(.subheadline)
+                    .foregroundColor(.primary)
+                    .multilineTextAlignment(.leading)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .padding(11)
+            .background(RoundedRectangle(cornerRadius: 10).fill(Color.orange.opacity(0.10)))
+            .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.orange.opacity(0.22), lineWidth: 0.5))
+        }
+        .buttonStyle(.plain)
+    }
+
+    /// 段评数量气泡，贴在段落右下角。
+    private func paragraphCommentBadge(_ block: ContentBlock, url: String) -> some View {
+        Button {
+            directCommentTarget = ReviewTarget(url: url, title: "段评")
+        } label: {
+            HStack(spacing: 2) {
+                Image(systemName: "bubble.left.fill")
+                    .font(.system(size: 9))
+                Text(block.commentCount >= 99 ? "99+" : "\(block.commentCount)")
+                    .font(.system(size: 10, weight: .medium))
+            }
+            .foregroundColor(.secondary)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 3)
+            .background(.ultraThinMaterial, in: Capsule())
         }
         .buttonStyle(.plain)
     }
@@ -5444,11 +5605,12 @@ public struct ReaderView: View {
 
     /// 从一行里拆出段评 / 本章说哨兵，剩下才是正文。
     private func extractReviewMarkers(from line: String)
-        -> (line: String, count: Int, url: String?, chapterURL: String?) {
+        -> (line: String, count: Int, url: String?, chapterURL: String?, godText: String?) {
         var text = line
         var count = 0
         var url: String?
         var chapterURL: String?
+        var godText: String?
 
         if let regex = try? NSRegularExpression(pattern: "\u{E000}C\u{1F}(\\d+)\u{1F}([^\u{E001}]*)\u{E001}") {
             let nsText = text as NSString
@@ -5465,11 +5627,22 @@ public struct ReaderView: View {
                 text = (text as NSString).replacingCharacters(in: match.range, with: "")
             }
         }
-        return (text, count, url, chapterURL)
+        if let regex = try? NSRegularExpression(pattern: "\u{E000}G\u{1F}([^\u{1F}]*)\u{1F}([^\u{E001}]*)\u{E001}") {
+            let nsText = text as NSString
+            if let match = regex.firstMatch(in: text, range: NSRange(location: 0, length: nsText.length)) {
+                let encoded = nsText.substring(with: match.range(at: 1))
+                if let data = Data(base64Encoded: encoded) {
+                    godText = String(data: data, encoding: .utf8)
+                }
+                url = nsText.substring(with: match.range(at: 2))
+                text = (text as NSString).replacingCharacters(in: match.range, with: "")
+            }
+        }
+        return (text, count, url, chapterURL, godText)
     }
 
     /// 段评挂在段落最后一块上；本章说单独生成一条入口。
-    private func attachReviewMarker(_ marker: (line: String, count: Int, url: String?, chapterURL: String?),
+    private func attachReviewMarker(_ marker: (line: String, count: Int, url: String?, chapterURL: String?, godText: String?),
                                     from firstBlockIndex: Int,
                                     blocks: inout [ContentBlock]) {
         if marker.count > 0, let url = marker.url,
@@ -5481,6 +5654,11 @@ public struct ReaderView: View {
             let id = (blocks.last?.id ?? 0) + 1
             blocks.append(ContentBlock(id: id, isImage: false, text: "本章说 · 查看全部评论", imageUrl: nil,
                                        commentCount: -1, commentURL: chapterURL))
+        }
+        if let godText = marker.godText, let url = marker.url {
+            let id = (blocks.last?.id ?? 0) + 1
+            blocks.append(ContentBlock(id: id, isImage: false, text: "神评 · \(godText)", imageUrl: nil,
+                                       commentCount: -2, commentURL: url))
         }
     }
 
