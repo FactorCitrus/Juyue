@@ -1154,10 +1154,12 @@ public struct ReaderView: View {
                     } label: {
                         Label("刷新目录", systemImage: "list.bullet.rectangle")
                     }
-                    Button {
-                        downloadCachedChapters()
-                    } label: {
-                        Label("下载缓存（\(readerConfig.cachedChapterCount) 章）", systemImage: "arrow.down.circle")
+                    if !AppEdition.isAppStoreClean {
+                        Button {
+                            downloadCachedChapters()
+                        } label: {
+                            Label("下载缓存（\(readerConfig.cachedChapterCount) 章）", systemImage: "arrow.down.circle")
+                        }
                     }
                     Button {
                         showReplaceRules = true
@@ -1169,18 +1171,20 @@ public struct ReaderView: View {
                     } label: {
                         Label("书签", systemImage: "bookmark")
                     }
-                    if !chapterCommentItems.isEmpty {
-                        Button {
-                            showComments = true
-                        } label: {
-                            Label("段评（\(chapterCommentItems.count)）", systemImage: "bubble.left.and.bubble.right")
+                    if !AppEdition.isAppStoreClean {
+                        if !chapterCommentItems.isEmpty {
+                            Button {
+                                showComments = true
+                            } label: {
+                                Label("段评（\(chapterCommentItems.count)）", systemImage: "bubble.left.and.bubble.right")
+                            }
                         }
-                    }
-                    if chapterCommentURL != nil {
-                        Button {
-                            showComments = true
-                        } label: {
-                            Label("本章说", systemImage: "text.bubble")
+                        if chapterCommentURL != nil {
+                            Button {
+                                showComments = true
+                            } label: {
+                                Label("本章说", systemImage: "text.bubble")
+                            }
                         }
                     }
                     Button {
@@ -2774,22 +2778,24 @@ public struct ReaderView: View {
                 .frame(maxWidth: .infinity)
             }
 
-            // 段评：书源提供了段评地址才亮，点开是本章所有热门段落
-            Button(action: {
-                if chapterCommentItems.isEmpty {
-                    showBookmarkHint("本章暂无段评")
-                } else {
-                    showComments = true
+            if !AppEdition.isAppStoreClean {
+                // 段评：书源提供了段评地址才亮，点开是本章所有热门段落
+                Button(action: {
+                    if chapterCommentItems.isEmpty {
+                        showBookmarkHint("本章暂无段评")
+                    } else {
+                        showComments = true
+                    }
+                }) {
+                    VStack(spacing: 4) {
+                        Image(systemName: "bubble.left.and.bubble.right")
+                            .font(.system(size: 20))
+                        Text(chapterCommentItems.isEmpty ? "段评" : "段评 \(chapterCommentItems.count)")
+                            .font(.system(size: 11, weight: .medium))
+                    }
+                    .foregroundColor(readerConfig.textColor.opacity(chapterCommentItems.isEmpty ? 0.45 : 1))
+                    .frame(maxWidth: .infinity)
                 }
-            }) {
-                VStack(spacing: 4) {
-                    Image(systemName: "bubble.left.and.bubble.right")
-                        .font(.system(size: 20))
-                    Text(chapterCommentItems.isEmpty ? "段评" : "段评 \(chapterCommentItems.count)")
-                        .font(.system(size: 11, weight: .medium))
-                }
-                .foregroundColor(readerConfig.textColor.opacity(chapterCommentItems.isEmpty ? 0.45 : 1))
-                .frame(maxWidth: .infinity)
             }
 
             // TTS (听书)
@@ -2822,16 +2828,18 @@ public struct ReaderView: View {
                 showTTSSettings = true
             }
 
-            // Switch Book Source (换源)
-            Button(action: { showSourceSwitch = true }) {
-                VStack(spacing: 4) {
-                    Image(systemName: "arrow.triangle.2.circlepath")
-                        .font(.system(size: 20))
-                    Text("换源")
-                        .font(.system(size: 11, weight: .medium))
+            if !AppEdition.isAppStoreClean {
+                // Switch Book Source (换源)
+                Button(action: { showSourceSwitch = true }) {
+                    VStack(spacing: 4) {
+                        Image(systemName: "arrow.triangle.2.circlepath")
+                            .font(.system(size: 20))
+                        Text("换源")
+                            .font(.system(size: 11, weight: .medium))
+                    }
+                    .foregroundColor(readerConfig.textColor)
+                    .frame(maxWidth: .infinity)
                 }
-                .foregroundColor(readerConfig.textColor)
-                .frame(maxWidth: .infinity)
             }
 
             // Interface Settings (界面设置)
@@ -3220,7 +3228,7 @@ public struct ReaderView: View {
                 let x = min(max(rect.midX - origin.x, bubbleWidth / 2 + 6), max(bubbleWidth / 2 + 6, geo.size.width - bubbleWidth / 2 - 6))
                 let above = rect.minY - origin.y - 44
                 let y = above < 64 ? rect.maxY - origin.y + 44 : above
-                paragraphBubble
+                paragraphBubble(width: bubbleWidth)
                     .frame(width: bubbleWidth)
                     .position(x: x, y: y)
                     .transition(.opacity)
@@ -3285,27 +3293,30 @@ public struct ReaderView: View {
     }
     #endif
 
-    private var paragraphBubble: some View {
-        HStack(spacing: 0) {
-            paragraphAction("复制", "doc.on.doc") { copySelectedParagraph() }
-            paragraphAction("搜索", "magnifyingglass") { searchSelectedParagraph() }
-            paragraphAction("书签", "bookmark") { addBookmarkForSelection() }
-            paragraphAction("下划线", "underline", tint: readerHexColor(underlineHex)) {
+    private func paragraphBubble(width: CGFloat) -> some View {
+        let actionCount = readerConfig.pageMode == .scroll ? 7 : 8
+        let actionWidth = max(34, (width - 9) / CGFloat(actionCount))
+        return HStack(spacing: 0) {
+            paragraphAction("复制", "doc.on.doc", width: actionWidth) { copySelectedParagraph() }
+            paragraphAction("搜索", "magnifyingglass", width: actionWidth) { searchSelectedParagraph() }
+            paragraphAction("书签", "bookmark", width: actionWidth) { addBookmarkForSelection() }
+            paragraphAction("下划线", "underline", width: actionWidth, tint: readerHexColor(underlineHex)) {
                 colorPickerKind = .underline
             }
-            paragraphAction("底色", "highlighter", tint: readerHexColor(highlightHex)) {
+            paragraphAction("底色", "highlighter", width: actionWidth, tint: readerHexColor(highlightHex)) {
                 colorPickerKind = .highlight
             }
-            paragraphAction("替换", "arrow.left.arrow.right") {
+            paragraphAction("替换", "arrow.left.arrow.right", width: actionWidth) {
                 replaceInput = ""
                 showReplaceInput = true
             }
             if readerConfig.pageMode != .scroll {
-                paragraphAction("整段", "text.alignleft") { resetToWholeParagraph() }
+                paragraphAction("整段", "text.alignleft", width: actionWidth) { resetToWholeParagraph() }
             }
             Divider().frame(height: 22)
-            paragraphAction("取消", "xmark") { cancelParagraphSelection() }
+            paragraphAction("取消", "xmark", width: actionWidth) { cancelParagraphSelection() }
         }
+        .frame(maxWidth: .infinity)
         .padding(.horizontal, 4)
         .padding(.vertical, 6)
         .background(.regularMaterial, in: Capsule())
@@ -3313,7 +3324,7 @@ public struct ReaderView: View {
         .shadow(color: Color.black.opacity(0.18), radius: 10, y: 4)
     }
 
-    private func paragraphAction(_ title: String, _ icon: String, tint: Color? = nil,
+    private func paragraphAction(_ title: String, _ icon: String, width: CGFloat, tint: Color? = nil,
                                  action: @escaping () -> Void) -> some View {
         Button {
             // 这一下也会落到页面那套「点一下开关工具栏」的手势上，先按住它，
@@ -3324,12 +3335,12 @@ public struct ReaderView: View {
             VStack(spacing: 2) {
                 Image(systemName: icon)
                     .font(.system(size: 16))
-                    .foregroundColor(tint)
+                    .foregroundColor(tint ?? .primary)
                 Text(title)
                     .font(.system(size: 10, weight: .medium))
+                    .foregroundColor(.primary)
             }
-            .foregroundColor(readerConfig.textColor)
-            .frame(maxWidth: .infinity)
+            .frame(width: width)
         }
         .buttonStyle(.plain)
     }
@@ -5472,6 +5483,7 @@ public struct ReaderView: View {
     private func attachReviewMarker(_ marker: (line: String, count: Int, url: String?, chapterURL: String?),
                                     from firstBlockIndex: Int,
                                     blocks: inout [ContentBlock]) {
+        guard !AppEdition.isAppStoreClean else { return }
         if marker.count > 0, let url = marker.url,
            let index = blocks.indices.last(where: { $0 >= firstBlockIndex && !blocks[$0].isImage }) {
             blocks[index].commentCount = marker.count

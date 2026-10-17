@@ -121,10 +121,12 @@ public struct BookDetailView: View {
             .toolbar {
                 ToolbarItem(placement: .primaryAction) {
                     Menu {
-                        Button {
-                            showSourceSwitch = true
-                        } label: {
-                            Label("换源", systemImage: "arrow.triangle.2.circlepath")
+                        if !AppEdition.isAppStoreClean {
+                            Button {
+                                showSourceSwitch = true
+                            } label: {
+                                Label("换源", systemImage: "arrow.triangle.2.circlepath")
+                            }
                         }
 
                         Button {
@@ -152,23 +154,25 @@ public struct BookDetailView: View {
                             Label("刷新目录与详情", systemImage: "arrow.clockwise")
                         }
 
-                        Button {
-                            let all = chapters.indices.map { $0 }
-                            ChapterDownloadManager.shared.start(book: currentBook, chapters: chapters, source: source ?? bookStore.findSource(for: currentBook), indices: all)
-                            actionAlertMessage = "已加入下载队列（全本 \(chapters.count) 章）"
-                            showActionAlert = true
-                        } label: {
-                            Label("缓存全本", systemImage: "arrow.down.circle")
-                        }
+                        if !AppEdition.isAppStoreClean {
+                            Button {
+                                let all = chapters.indices.map { $0 }
+                                ChapterDownloadManager.shared.start(book: currentBook, chapters: chapters, source: source ?? bookStore.findSource(for: currentBook), indices: all)
+                                actionAlertMessage = "已加入下载队列（全本 \(chapters.count) 章）"
+                                showActionAlert = true
+                            } label: {
+                                Label("缓存全本", systemImage: "arrow.down.circle")
+                            }
 
-                        Button {
-                            let start = min(currentBook.durChapterIndex, max(0, chapters.count - 1))
-                            let rest = (start..<chapters.count).map { $0 }
-                            ChapterDownloadManager.shared.start(book: currentBook, chapters: chapters, source: source ?? bookStore.findSource(for: currentBook), indices: rest)
-                            actionAlertMessage = "已加入下载队列（未读 \(rest.count) 章）"
-                            showActionAlert = true
-                        } label: {
-                            Label("缓存未读章节", systemImage: "arrow.down.to.line")
+                            Button {
+                                let start = min(currentBook.durChapterIndex, max(0, chapters.count - 1))
+                                let rest = (start..<chapters.count).map { $0 }
+                                ChapterDownloadManager.shared.start(book: currentBook, chapters: chapters, source: source ?? bookStore.findSource(for: currentBook), indices: rest)
+                                actionAlertMessage = "已加入下载队列（未读 \(rest.count) 章）"
+                                showActionAlert = true
+                            } label: {
+                                Label("缓存未读章节", systemImage: "arrow.down.to.line")
+                            }
                         }
 
                         Button {
