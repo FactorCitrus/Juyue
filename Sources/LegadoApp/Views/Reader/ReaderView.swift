@@ -384,6 +384,25 @@ struct ReaderPullDownCatcher: UIViewRepresentable {
 #endif
 
 /// 书签绶带：矩形 + 底部三角缺口，落在页顶当书签用
+/// 段评气泡：左侧尖角 + 圆角矩形，跟正文纸色融合。
+struct ReaderCommentBubbleShape: Shape {
+    func path(in rect: CGRect) -> Path {
+        let tailWidth: CGFloat = 7
+        let tailHeight: CGFloat = 13
+        let radius: CGFloat = 6
+        let body = CGRect(x: tailWidth, y: 0,
+                          width: max(1, rect.width - tailWidth),
+                          height: rect.height)
+        var path = Path(roundedRect: body, cornerRadius: radius)
+        let midY = rect.midY
+        path.move(to: CGPoint(x: tailWidth, y: midY - tailHeight / 2))
+        path.addLine(to: CGPoint(x: 0, y: midY))
+        path.addLine(to: CGPoint(x: tailWidth, y: midY + tailHeight / 2))
+        path.closeSubpath()
+        return path
+    }
+}
+
 struct BookmarkRibbonShape: Shape {
     func path(in rect: CGRect) -> Path {
         var path = Path()
@@ -3608,21 +3627,26 @@ public struct ReaderView: View {
 
     /// 段评数量气泡，贴在段落右下角。
     private func paragraphCommentBadge(_ block: ContentBlock, url: String) -> some View {
-        Button {
+        let label = block.commentCount >= 99 ? "99+" : "\(block.commentCount)"
+        let bodyWidth: CGFloat = label.count > 2 ? 32 : 22
+        let totalWidth = bodyWidth + 7
+        return Button {
             directCommentTarget = ReviewTarget(url: url, title: "段评")
         } label: {
-            HStack(spacing: 2) {
-                Image(systemName: "bubble.left.fill")
-                    .font(.system(size: 9))
-                Text(block.commentCount >= 99 ? "99+" : "\(block.commentCount)")
-                    .font(.system(size: 10, weight: .medium))
+            ZStack {
+                ReaderCommentBubbleShape()
+                    .fill(readerConfig.backgroundColor)
+                ReaderCommentBubbleShape()
+                    .stroke(readerConfig.textColor.opacity(0.45), lineWidth: 1.2)
+                Text(label)
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundColor(readerConfig.textColor)
+                    .padding(.leading, 7)
             }
-            .foregroundColor(.secondary)
-            .padding(.horizontal, 6)
-            .padding(.vertical, 3)
-            .background(.ultraThinMaterial, in: Capsule())
+            .frame(width: totalWidth, height: 27)
         }
         .buttonStyle(.plain)
+        .contentShape(Rectangle())
     }
 
     private func annotationPalette(for kind: BookBookmark.Kind) -> [String] {
