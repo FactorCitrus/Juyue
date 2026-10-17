@@ -70,6 +70,10 @@ public struct SearchBookView: View {
             .padding(.horizontal, 16)
             .padding(.top, 12)
 
+            if !viewModel.history.isEmpty && viewModel.searchQuery.isEmpty {
+                recentSearchChips
+            }
+
             // 范围与匹配：收起时也把当前口径写在标题上
             VStack(spacing: 8) {
                 Button {
@@ -344,6 +348,41 @@ public struct SearchBookView: View {
             }
             .padding(.vertical, 12)
         }
+    }
+
+    /// 搜索框下方的「最近」快捷词；点一下直接重搜。
+    private var recentSearchChips: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 8) {
+                Text("最近")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                ForEach(Array(viewModel.history.prefix(10)), id: \.self) { keyword in
+                    Button {
+                        viewModel.searchQuery = keyword
+                        viewModel.startSearch()
+                    } label: {
+                        Text(keyword)
+                            .font(.caption)
+                            .foregroundColor(.primary)
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 5)
+                            .background(Capsule().fill(Color.secondary.opacity(0.12)))
+                    }
+                    .buttonStyle(.plain)
+                }
+                Button {
+                    viewModel.clearHistory()
+                } label: {
+                    Image(systemName: "xmark.circle")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+                .buttonStyle(.plain)
+            }
+            .padding(.horizontal, 16)
+        }
+        .padding(.top, 8)
     }
 
     /// 搜索历史：点一条直接重搜

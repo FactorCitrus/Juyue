@@ -92,8 +92,11 @@ public struct CategoryExploreView: View {
             .toolbar {
                 ToolbarItem(placement: .primaryAction) {
                     if currentSource != nil && selectedCategory != nil {
-                        Button(action: { Task { await refresh() } }) {
-                            Image(systemName: "arrow.clockwise")
+                        // 分类页里刷新用处不大，换成搜索（直接搜书）
+                        NavigationLink {
+                            SearchBookView()
+                        } label: {
+                            Image(systemName: "magnifyingglass")
                         }
                     }
                 }

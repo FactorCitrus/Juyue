@@ -191,6 +191,43 @@ public enum ReaderFontFactory {
 }
 
 #if os(iOS)
+/// 下拉背景的几何只算一次：以整屏为画布，图片按短边填满画布后再乘缩放，
+/// 对齐只决定这张图往画布的顶 / 中 / 底靠。阅读页与外观预览共用，避免两边各算一套。
+struct PullBackgroundCanvas: View {
+    let image: UIImage
+    let zoom: Double
+    let offsetX: Double
+    let offsetY: Double
+    let alignment: Int
+
+    var body: some View {
+        GeometryReader { geo in
+            let canvas = geo.size
+            let imageSize = image.size
+            let fill = max(canvas.width / max(1, imageSize.width),
+                           canvas.height / max(1, imageSize.height))
+            let factor = fill * CGFloat(max(0.05, zoom))
+            let width = max(1, imageSize.width * factor)
+            let height = max(1, imageSize.height * factor)
+            let x = (canvas.width - width) / 2 + CGFloat(offsetX)
+            let y: CGFloat = {
+                switch alignment {
+                case 2: return canvas.height - height + CGFloat(offsetY)
+                case 1: return (canvas.height - height) / 2 + CGFloat(offsetY)
+                default: return CGFloat(offsetY)
+                }
+            }()
+
+            Image(uiImage: image)
+                .resizable()
+                .interpolation(.high)
+                .frame(width: width, height: height)
+                .position(x: x + width / 2, y: y + height / 2)
+        }
+        .clipped()
+    }
+}
+
 /// 下拉加书签的手势识别器（挂在宿主视图上，四种翻页模式都能用）。
 ///
 /// 为什么不用 SwiftUI 手势：分页那几套模式各自装了 UIPanGestureRecognizer，SwiftUI 层的
@@ -201,13 +238,26 @@ struct ReaderPullDownCatcher: UIViewRepresentable {
     var isAtTop: () -> Bool
     var onChanged: (CGFloat) -> Void
     var onEnded: (CGFloat, Bool) -> Void
+    /// 窗口坐标系里的长按（滚动模式用；分页模式走正文视图自己的识别器）
+    var onLongPress: (CGPoint) -> Void = { _ in }
+    /// 字选手柄：按下时命中哪个手柄（返回 true 表示这次拖拽归手柄）
+    var onCharHandleHit: ((CGPoint) -> Bool)? = nil
+    /// 字选手柄拖动中的窗口坐标
+    var onCharHandleDrag: ((CGPoint) -> Void)? = nil
 
     final class Coordinator: NSObject, UIGestureRecognizerDelegate {
         var isEnabled: () -> Bool = { true }
         var isAtTop: () -> Bool = { true }
         var onChanged: (CGFloat) -> Void = { _ in }
         var onEnded: (CGFloat, Bool) -> Void = { _, _ in }
+        var onLongPress: (CGPoint) -> Void = { _ in }
+        var onCharHandleHit: ((CGPoint) -> Bool)?
+        var onCharHandleDrag: ((CGPoint) -> Void)?
+        private var charDragging = false
         weak var recognizer: UIPanGestureRecognizer?
+        weak var longPress: UILongPressGestureRecognizer?
+        /// 这一次拖拽已经判定成「下拉」：判定一次就认到底，避免慢速下拉时逐帧反复翻转
+        private var startedAsPull = false
 
         func attach(to host: UIView) {
             guard recognizer == nil else { return }
@@ -218,31 +268,69 @@ struct ReaderPullDownCatcher: UIViewRepresentable {
             pan.maximumNumberOfTouches = 1
             host.addGestureRecognizer(pan)
             recognizer = pan
+
+            let press = UILongPressGestureRecognizer(target: self, action: #selector(handlePress(_:)))
+            press.delegate = self
+            press.minimumPressDuration = 0.35
+            // 长按期间手指多少会滑一点，放宽到 22pt 才判失败
+            press.allowableMovement = 22
+            press.cancelsTouchesInView = false
+            host.addGestureRecognizer(press)
+            longPress = press
+        }
+
+        @objc private func handlePress(_ gesture: UILongPressGestureRecognizer) {
+            guard gesture.state == .began else { return }
+            onLongPress(gesture.location(in: gesture.view))
         }
 
         @objc private func handle(_ gesture: UIPanGestureRecognizer) {
+            if charDragging {
+                let point = gesture.location(in: gesture.view)
+                switch gesture.state {
+                case .changed, .ended:
+                    onCharHandleDrag?(point)
+                case .cancelled, .failed:
+                    break
+                default:
+                    break
+                }
+                if gesture.state == .ended || gesture.state == .cancelled || gesture.state == .failed {
+                    charDragging = false
+                }
+                return
+            }
             let t = gesture.translation(in: gesture.view)
             let dy = t.y
-            // 起手放宽后在这里把「横向为主」的拖拽剔掉，不驱动下拉
-            let vertical = dy > 0 && dy > abs(t.x) * 1.2
             switch gesture.state {
+            case .began:
+                startedAsPull = true
             case .changed:
-                onChanged(vertical ? dy : 0)
+                onChanged(startedAsPull ? max(0, dy) : 0)
             case .ended, .cancelled, .failed:
-                onEnded(dy, vertical && dy >= 48)
+                let passed = startedAsPull && dy >= 40
+                startedAsPull = false
+                onEnded(dy, passed)
             default:
                 break
             }
         }
 
         func gestureRecognizerShouldBegin(_ gesture: UIGestureRecognizer) -> Bool {
-            guard let pan = gesture as? UIPanGestureRecognizer, let view = pan.view else { return false }
+            guard let pan = gesture as? UIPanGestureRecognizer else {
+                // 长按：只受「是否允许」控制（下拉那套起手方向判定不适用）
+                return isEnabled()
+            }
+            guard let view = pan.view else { return false }
+            if let onCharHandleHit, onCharHandleHit(pan.location(in: view)) {
+                charDragging = true
+                return true
+            }
             guard isEnabled(), isAtTop() else { return false }
             let t = pan.translation(in: view)
-            // 起手只看「向下」：鼠标/手指起手常带横向抖动，再叠「竖直为主」会把整次拖拽
-            // 直接判死（表现就是拉几次才成功一次）。方向是否竖直放到 handle 里逐帧判断。
-            let ok = t.y > 6
-            return ok
+            // 起手只看「向下」：鼠标/手指起手常带横向抖动。慢速下拉时 translation 还很小，
+            // 门槛压到 4pt；方向是否竖直只看这一次的起手方向，之后不再逐帧重判。
+            return t.y > 4 && t.y >= abs(t.x)
         }
 
         func gestureRecognizer(_ gesture: UIGestureRecognizer,
@@ -262,6 +350,9 @@ struct ReaderPullDownCatcher: UIViewRepresentable {
         coordinator.isAtTop = isAtTop
         coordinator.onChanged = onChanged
         coordinator.onEnded = onEnded
+        coordinator.onLongPress = onLongPress
+        coordinator.onCharHandleHit = onCharHandleHit
+        coordinator.onCharHandleDrag = onCharHandleDrag
         DispatchQueue.main.async { [weak view] in
             // 挂到 window 上：正文区（尤其仿真那套 UIKit 翻页）的触摸才会经过这里。
             // 挂在 SwiftUI 的内部小容器上时，正文区的拖拽根本不会送到这个识别器。
@@ -276,11 +367,17 @@ struct ReaderPullDownCatcher: UIViewRepresentable {
         context.coordinator.isAtTop = isAtTop
         context.coordinator.onChanged = onChanged
         context.coordinator.onEnded = onEnded
+        context.coordinator.onLongPress = onLongPress
+        context.coordinator.onCharHandleHit = onCharHandleHit
+        context.coordinator.onCharHandleDrag = onCharHandleDrag
     }
 
     static func dismantleUIView(_ uiView: UIView, coordinator: Coordinator) {
         if let recognizer = coordinator.recognizer {
             recognizer.view?.removeGestureRecognizer(recognizer)
+        }
+        if let press = coordinator.longPress {
+            press.view?.removeGestureRecognizer(press)
         }
     }
 }
@@ -303,11 +400,41 @@ struct BookmarkRibbonShape: Shape {
 /// 段落级阅读标注：下划线 / 底色。跨平台放顶层，iOS 与 macOS 的正文视图都用它。
 public struct ReaderBlockStyle: Equatable {
     public var underline: Bool
+    public var underlineHex: String?
     public var highlightHex: String?
 
-    public init(underline: Bool = false, highlightHex: String? = nil) {
+    public init(underline: Bool = false, underlineHex: String? = nil, highlightHex: String? = nil) {
         self.underline = underline
+        self.underlineHex = underlineHex
         self.highlightHex = highlightHex
+    }
+}
+
+/// 段内逐字选择：段落 id + 段内字符起点 + 字符数（UTF-16 偏移，跟 BookBookmark 一致）
+public struct ReaderCharSelection: Equatable {
+    public var paragraphId: Int
+    public var start: Int
+    public var length: Int
+
+    public init(paragraphId: Int, start: Int, length: Int) {
+        self.paragraphId = paragraphId
+        self.start = start
+        self.length = length
+    }
+}
+
+/// 段内逐字标注：只画选中的那几个字，不再铺满整行
+public struct ReaderCharAnnotation: Equatable {
+    public var paragraphId: Int
+    public var start: Int
+    public var length: Int
+    public var style: ReaderBlockStyle
+
+    public init(paragraphId: Int, start: Int, length: Int, style: ReaderBlockStyle) {
+        self.paragraphId = paragraphId
+        self.start = start
+        self.length = length
+        self.style = style
     }
 }
 
@@ -316,6 +443,14 @@ public struct ContentBlock: Identifiable {
     public let isImage: Bool
     public let text: String
     public let imageUrl: String?
+    /// 这一行属于哪个原始段落（章节 blocks 里的 id）
+    public var paragraphId: Int = 0
+    /// 这一行在所属段落里的字符起点（UTF-16）
+    public var charStart: Int = 0
+    /// 段评数量；-1 表示这一条是「本章说」入口
+    public var commentCount: Int = 0
+    /// 段评 / 本章说的源站地址
+    public var commentURL: String? = nil
 }
 
 public struct LoadedChapter: Identifiable {
@@ -326,17 +461,302 @@ public struct LoadedChapter: Identifiable {
     public var pages: [[ContentBlock]] = []
 }
 
+public struct ReaderCommentItem: Identifiable {
+    public let id: Int
+    public let excerpt: String
+    public let count: Int
+    public let url: String
+}
+
+struct ReaderCommentsSheet: View {
+    let chapterTitle: String
+    let items: [ReaderCommentItem]
+    let chapterURL: String?
+
+    @Environment(\.dismiss) private var dismiss
+    @State private var target: ReviewTarget?
+
+    var body: some View {
+        NavigationView {
+            List {
+                if let chapterURL {
+                    Section {
+                        Button {
+                            target = ReviewTarget(url: chapterURL, title: "本章说")
+                        } label: {
+                            Label("本章说 · 全部评论", systemImage: "text.bubble")
+                        }
+                    }
+                }
+
+                Section(header: Text("段评 · \(items.count) 段")) {
+                    if items.isEmpty {
+                        Text("本章暂无段评")
+                            .foregroundColor(.secondary)
+                    }
+                    ForEach(items) { item in
+                        Button {
+                            target = ReviewTarget(url: item.url, title: "段评")
+                        } label: {
+                            HStack(alignment: .top, spacing: 10) {
+                                Text(item.excerpt)
+                                    .font(.subheadline)
+                                    .foregroundColor(.primary)
+                                    .lineLimit(2)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                Text(item.count >= 99 ? "99+" : "\(item.count)")
+                                    .font(.caption.bold())
+                                    .foregroundColor(.white)
+                                    .padding(.horizontal, 7)
+                                    .padding(.vertical, 3)
+                                    .background(Color.accentColor, in: Capsule())
+                            }
+                        }
+                    }
+                }
+            }
+            .navigationTitle(chapterTitle.isEmpty ? "段评" : chapterTitle)
+            #if os(iOS)
+            .navigationBarTitleDisplayMode(.inline)
+            #endif
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("关闭") { dismiss() }
+                }
+            }
+        }
+        .sheet(item: $target) { target in
+            NativeCommentListSheet(target: target)
+        }
+    }
+}
+
+private struct ReviewTarget: Identifiable {
+    let id = UUID()
+    let url: String
+    let title: String
+}
+
+private struct NativeCommentListSheet: View {
+    let target: ReviewTarget
+
+    @Environment(\.dismiss) private var dismiss
+    @State private var comments: [ReviewComment] = []
+    @State private var total = 0
+    @State private var isLoading = true
+    @State private var errorText: String?
+
+    var body: some View {
+        NavigationView {
+            Group {
+                if isLoading {
+                    ProgressView("正在加载评论…")
+                } else if let errorText {
+                    VStack(spacing: 12) {
+                        Text(errorText)
+                            .foregroundColor(.secondary)
+                        Button("重试") { Task { await load() } }
+                    }
+                } else if comments.isEmpty {
+                    Text("暂无评论")
+                        .foregroundColor(.secondary)
+                } else {
+                    List(comments) { comment in
+                        VStack(alignment: .leading, spacing: 6) {
+                            HStack(spacing: 6) {
+                                Text(comment.user?.user_name ?? "匿名")
+                                    .font(.caption.bold())
+                                    .foregroundColor(.secondary)
+                                Spacer()
+                                if let likes = comment.like_count, likes > 0 {
+                                    Label("\(likes)", systemImage: "heart")
+                                        .font(.caption2)
+                                        .foregroundColor(.secondary)
+                                }
+                            }
+                            Text(comment.content ?? "")
+                                .font(.subheadline)
+                            if let time = comment.create_time {
+                                Text(time)
+                                    .font(.caption2)
+                                    .foregroundColor(.secondary)
+                            }
+                        }
+                        .padding(.vertical, 3)
+                    }
+                    .listStyle(.plain)
+                }
+            }
+            .navigationTitle(total > 0 ? "\(target.title) · \(total)" : target.title)
+            #if os(iOS)
+            .navigationBarTitleDisplayMode(.inline)
+            #endif
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("关闭") { dismiss() }
+                }
+            }
+        }
+        .task { await load() }
+    }
+
+    private func load() async {
+        isLoading = true
+        errorText = nil
+        guard let api = reviewAPIURL(from: target.url) else {
+            errorText = "评论地址无法解析"
+            isLoading = false
+            return
+        }
+        do {
+            let (data, _) = try await URLSession.shared.data(from: api)
+            let envelope = try JSONDecoder().decode(ReviewEnvelope.self, from: data)
+            comments = envelope.data?.comments ?? []
+            total = envelope.data?.total ?? comments.count
+        } catch {
+            errorText = "加载失败：\(error.localizedDescription)"
+        }
+        isLoading = false
+    }
+
+    private func reviewAPIURL(from raw: String) -> URL? {
+        guard var components = URLComponents(string: raw) else { return nil }
+        let query = components.queryItems ?? []
+        let originalMode = query.first(where: { $0.name == "mode" })?.value
+        let para = query.first(where: { $0.name == "para" || $0.name == "paragraph_id" })?.value ?? "0"
+        components.path = "/para_review"
+        components.queryItems = [
+            URLQueryItem(name: "book_id", value: query.first(where: { $0.name == "book_id" })?.value ?? ""),
+            URLQueryItem(name: "item_id", value: query.first(where: { $0.name == "item_id" })?.value ?? ""),
+            URLQueryItem(name: "item_version", value: query.first(where: { $0.name == "item_version" })?.value ?? ""),
+            URLQueryItem(name: "para", value: para),
+            URLQueryItem(name: "source", value: query.first(where: { $0.name == "source" })?.value ?? "番茄"),
+            URLQueryItem(name: "mode", value: (originalMode == "paragraph" || target.title == "段评") ? "paragraph" : "chapter"),
+            URLQueryItem(name: "hot", value: "1")
+        ]
+        return components.url
+    }
+}
+
+private struct ReviewEnvelope: Decodable {
+    let code: Int
+    let data: ReviewData?
+}
+
+private struct ReviewData: Decodable {
+    let comments: [ReviewComment]?
+    let total: Int?
+}
+
+private struct ReviewComment: Decodable, Identifiable {
+    let comment_id: String
+    let content: String?
+    let like_count: Int?
+    let create_time: String?
+    let user: ReviewUser?
+    var id: String { comment_id }
+}
+
+private struct ReviewUser: Decodable {
+    let user_name: String?
+}
+
 public struct BlockFrameInfo: Equatable {
     public let chapterIndex: Int
     public let blockId: Int
     public let minY: CGFloat
     public let maxY: CGFloat
+    /// 同一段在窗口坐标系里的矩形（长按命中用）
+    public let rect: CGRect
 }
 
 public struct ReaderScrollPreferenceKey: PreferenceKey {
     public static var defaultValue: [BlockFrameInfo] = []
     public static func reduce(value: inout [BlockFrameInfo], nextValue: () -> [BlockFrameInfo]) {
         value.append(contentsOf: nextValue())
+    }
+}
+
+/// 滚动模式的长按命中表。
+///
+/// 正文在滚动模式里是 `UILabel`（`isUserInteractionEnabled = false`），SwiftUI 的
+/// `onLongPressGesture` 挂在这种视图上命不中，所以长按统一交给窗口层的识别器，
+/// 再由这张表把触点换算成段落。表只存不发布，避免每次布局都触发整页刷新。
+final class ReaderScrollHitRegistry {
+    struct Entry {
+        let chapterIndex: Int
+        let blockId: Int
+        let rect: CGRect
+    }
+
+    private(set) var entries: [Entry] = []
+
+    func replace(with frames: [BlockFrameInfo]) {
+        entries = frames.map { Entry(chapterIndex: $0.chapterIndex, blockId: $0.blockId, rect: $0.rect) }
+    }
+
+    /// 点落在哪个段落；重叠时取面积最小的那个
+    func hitTest(_ point: CGPoint) -> Entry? {
+        entries
+            .filter { $0.rect.insetBy(dx: -6, dy: -4).contains(point) }
+            .min { $0.rect.width * $0.rect.height < $1.rect.width * $1.rect.height }
+    }
+
+    /// 某一段在窗口里的矩形（气泡定位用）
+    func rect(forBlockId blockId: Int, chapterIndex: Int) -> CGRect? {
+        entries.first { $0.blockId == blockId && $0.chapterIndex == chapterIndex }?.rect
+    }
+}
+
+/// 长按选中段落之后的一小段时间里，松手不再当点击处理。
+///
+/// 用引用类型：分页那套手势是「手指按下时」捕获闭包的，值类型状态那一刻的副本
+/// 读不到长按后面才写进去的抑制时间，松手仍会把工具栏又 toggle 一遍。
+final class ReaderTapSuppressor {
+    private var until: Date = .distantPast
+
+    var isActive: Bool { Date() < until }
+
+    func suppress(seconds: TimeInterval = 0.8) {
+        until = Date().addingTimeInterval(seconds)
+    }
+}
+
+/// 书签面板的排序方式
+enum BookmarkSortOrder: String, CaseIterable, Identifiable {
+    case newestFirst
+    case oldestFirst
+    case chapterAscending
+    case chapterDescending
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .newestFirst: return "按时间（新→旧）"
+        case .oldestFirst: return "按时间（旧→新）"
+        case .chapterAscending: return "按章节（前→后）"
+        case .chapterDescending: return "按章节（后→前）"
+        }
+    }
+}
+
+/// 书签面板的类型筛选
+enum BookmarkKindFilter: String, CaseIterable, Identifiable {
+    case all
+    case bookmark
+    case underline
+    case highlight
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .all: return "全部类型"
+        case .bookmark: return "只看书签"
+        case .underline: return "只看下划线"
+        case .highlight: return "只看底色"
+        }
     }
 }
 
@@ -376,6 +796,10 @@ public struct ReaderView: View {
     /// 手指拖动时整页（含页眉页脚）跟着走的位移，松手后归零
     @State private var dragOffset: CGFloat = 0
     @State private var currentReadingBlockId: Int = 0
+    /// 滚动模式的长按命中表（引用类型：更新不触发视图刷新）
+    @State private var scrollHitRegistry = ReaderScrollHitRegistry()
+    /// 长按选中段落之后这段时间里，松手不再当点击处理
+    @State private var tapSuppressor = ReaderTapSuppressor()
     @State private var chapterCache: [Int: LoadedChapter] = [:]
     @State private var readerContainerSize: CGSize = CGSize(width: 390, height: 700)
     /// 设备安全区实际数值：按页翻的时候整页是贴到屏幕物理边缘的，页眉页脚得自己把这段让出来
@@ -392,8 +816,15 @@ public struct ReaderView: View {
     @State private var showTOC: Bool = false
     @State private var tocReversed: Bool = false
     @State private var showBookmarks: Bool = false
+    @State private var showComments: Bool = false
     @State private var readingTickStart: Date? = nil
     @State private var newBookmarkNote: String = ""
+    /// 书签列表的面板状态：搜索、排序、类型筛选、多选
+    @State private var bookmarkSearchText: String = ""
+    @State private var bookmarkSort: BookmarkSortOrder = .newestFirst
+    @State private var bookmarkKindFilter: BookmarkKindFilter = .all
+    @State private var bookmarkMultiSelect: Bool = false
+    @State private var selectedBookmarkIDs: Set<UUID> = []
     @State private var showSettings: Bool = false
     @State private var showSearch: Bool = false
     @State private var showTTSSettings: Bool = false
@@ -418,7 +849,48 @@ public struct ReaderView: View {
     /// 书签位置与尺寸（在「书签 / 笔记」面板里调；跨平台放外面，macOS 版也要能编）
     @AppStorage("reader_bookmark_width") private var bookmarkWidth: Double = 34
     @AppStorage("reader_bookmark_x") private var bookmarkX: Double = 1
+    /// 书签的高宽比；0 = 自动（自定义图按图片自身比例，默认绶带 1.73）
+    @AppStorage("reader_bookmark_aspect") private var bookmarkAspect: Double = 0
+    /// 书签挂下来多少（0 = 贴着屏幕最上沿），跟外观面板共用
+    @AppStorage("reader_bookmark_y") private var bookmarkY: Double = 0
+    /// 正文背景图：缩放与位置（跟下拉背景一样可以调）
+    @AppStorage("reader_bg_image_scale") private var backgroundImageScale: Double = 1
+    @AppStorage("reader_bg_image_offset_x") private var backgroundImageOffsetX: Double = 0
+    @AppStorage("reader_bg_image_offset_y") private var backgroundImageOffsetY: Double = 0
+    /// 下拉背景图的位置微调（pt），跟外观面板共用
+    @AppStorage("reader_pull_background_offset_x") private var pullBackgroundOffsetX: Double = 0
+    @AppStorage("reader_pull_background_offset_y") private var pullBackgroundOffsetY: Double = 0
+    /// 下拉背景图的缩放与对齐（0 顶 / 1 中 / 2 底）
+    @AppStorage("reader_pull_background_scale") private var pullBackgroundScale: Double = 1
+    @AppStorage("reader_pull_background_align") private var pullBackgroundAlign: Int = 0
+    /// 段落级长按：选中区间 + 文字、替换输入、聚合搜索面板
+    @State private var selectedBlockRange: (start: Int, count: Int)? = nil
+    @State private var selectedParagraphText = ""
+    /// 选段落对应的原始段落 id / 段内起点 / 原文（逐字选择用，保留段首缩进）
+    @State private var selectedParagraphId = 0
+    @State private var selectedParagraphCharStart = 0
+    @State private var selectedParagraphRawText = ""
+    /// 段内逐字选择；非 nil 就是字选模式
+    @State private var charSelection: ReaderCharSelection?
+    /// 这次拖拽抓的是起点手柄还是终点手柄
+    @State private var isDraggingCharStart = false
+    /// 正在选颜色的标注类型（下划线 / 底色）
+    @State private var colorPickerKind: BookBookmark.Kind?
+    /// 上次用过的颜色，点「下划线 / 底色」时先记住，调色板里高亮
+    @AppStorage("reader_underline_hex") private var underlineHex = "#2F7BF6"
+    @AppStorage("reader_highlight_hex") private var highlightHex = "#FFF59D"
+    /// 选中段落在窗口里的位置（操作气泡贴在这儿）
+    @State private var selectionRect: CGRect?
+    /// 选中那一刻这一章的标注快照：按「取消」就还原成它
+    @State private var annotationSnapshot: [BookBookmark]?
+    @State private var showReplaceInput = false
+    @State private var replaceInput = ""
+    @State private var showAggregateSearch = false
     @State private var showBackgroundImagePicker: Bool = false
+    #if os(iOS)
+    /// 正文背景图：iOS 16 起从相册选（用 Any 存，避开 PhotosPickerItem 的可用性限制）
+    @State private var backgroundPhotoItem: Any?
+    #endif
     /// 本次阅读会话起点，「阅读时长」「剩余时间」用它算
     @State private var readerSessionStart: Date = Date()
     @State private var settingsPanel: ReaderQuickPanel = .quick
@@ -449,14 +921,29 @@ public struct ReaderView: View {
         currentLoadedChapter?.content ?? ""
     }
 
+    private var chapterCommentItems: [ReaderCommentItem] {
+        guard let loaded = currentLoadedChapter else { return [] }
+        return loaded.blocks.compactMap { block in
+            guard block.commentCount > 0, let url = block.commentURL else { return nil }
+            let text = block.text.trimmingCharacters(in: .whitespacesAndNewlines)
+            let excerpt = String(text.prefix(64))
+            return ReaderCommentItem(id: block.id, excerpt: excerpt, count: block.commentCount, url: url)
+        }
+    }
+
+    private var chapterCommentURL: String? {
+        currentLoadedChapter?.blocks.first(where: { $0.commentCount < 0 })?.commentURL
+    }
+
     public var body: some View {
         GeometryReader { outerGeo in
             ZStack {
-                readerBackground
-                    .ignoresSafeArea()
+                ZStack {
+                    readerBackground
+                        .ignoresSafeArea()
 
-                // 1. Reading Canvas with Permanent Fixed Bottom Info Bar
-                VStack(spacing: 0) {
+                    // 1. Reading Canvas with Permanent Fixed Bottom Info Bar
+                    VStack(spacing: 0) {
                     // 按页翻的模式（左右/覆盖/滑动/仿真）页眉页脚画在每页里，跟着一起翻
                     // 整页下拉（加书签手势）时这一层整体位移，松手弹回
                     if readerConfig.headerEnabled, readerConfig.pageMode == .scroll {
@@ -607,40 +1094,46 @@ public struct ReaderView: View {
                         insertion: .move(edge: .bottom).combined(with: .opacity),
                         removal: .move(edge: .bottom).combined(with: .opacity)
                     ))
+                    }
                 }
-            }
-            // 整页下拉（加书签手势）时整个阅读层跟着下来，松手弹回
-            .offset(y: pagePullOffset)
-            // 下拉时正文页往下走，露出来的就是这张自定义背景；挂在 background 上，
-            // 不参与命中测试也不影响布局（放 ZStack 里会抢点击，点中间就呼不出菜单了）
-            .background(pullBackgroundLayer)
-            // 下拉识别器也挂在 background：它只旁听手势，不吃触摸
-            .background(pullDownCatcherLayer)
-            .overlay(alignment: .top) {
-                if let downloadHint {
-                    Text(downloadHint)
-                        .font(.system(size: 13))
-                        .foregroundColor(readerConfig.textColor)
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 8)
-                        .background(.ultraThinMaterial, in: Capsule())
-                        .padding(.top, 56)
-                        .transition(.opacity)
+                // 整页下拉（加书签手势）时整个阅读层跟着下来，松手弹回
+                .offset(y: pagePullOffset)
+                // 下拉识别器也挂在 background：它只旁听手势，不吃触摸
+                .background(pullDownCatcherLayer)
+                // 长按选中段落后的操作栏
+                .overlay { paragraphActionBar }
+                // 字选的两个圆形手柄
+                .overlay { charSelectionHandles }
+                .overlay(alignment: .top) {
+                    if let downloadHint {
+                        Text(downloadHint)
+                            .font(.system(size: 13))
+                            .foregroundColor(readerConfig.textColor)
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 8)
+                            .background(.ultraThinMaterial, in: Capsule())
+                            .padding(.top, 56)
+                            .transition(.opacity)
+                    }
                 }
-            }
-            .onAppear {
-                // 按页翻的时候整页是贴到屏幕物理边缘的，页眉页脚得自己把安全区让出来
-                let fromWindow = ReaderView.windowSafeInsets()
-                safeInsets = fromWindow.top > 0 || fromWindow.bottom > 0 ? fromWindow : outerGeo.safeAreaInsets
-                updateContainerSizeIfNeeded(paginationContainerSize(for: outerGeo.size))
-            }
-            .onChange(of: outerGeo.size) { newSize in
-                updateContainerSizeIfNeeded(paginationContainerSize(for: newSize))
-            }
-            .onChange(of: outerGeo.safeAreaInsets) { newValue in
-                safeInsets = newValue
+                .onAppear {
+                    // 按页翻的时候整页是贴到屏幕物理边缘的，页眉页脚得自己把安全区让出来
+                    let fromWindow = ReaderView.windowSafeInsets()
+                    safeInsets = fromWindow.top > 0 || fromWindow.bottom > 0 ? fromWindow : outerGeo.safeAreaInsets
+                    updateContainerSizeIfNeeded(paginationContainerSize(for: outerGeo.size))
+                }
+                .onChange(of: outerGeo.size) { newSize in
+                    updateContainerSizeIfNeeded(paginationContainerSize(for: newSize))
+                }
+                .onChange(of: outerGeo.safeAreaInsets) { newValue in
+                    // 下拉时页面位移会让安全区读数抖动，跟着改会触发重新分页，文字当场变形。
+                    guard !isPullActive, pagePullOffset == 0 else { return }
+                    safeInsets = newValue
+                }
             }
         }
+        // 下拉背景挂在布局外：正文往下走时它不动，也不会改变正文的尺寸与安全区口径。
+        .background(pullBackgroundLayer)
         .overlay(alignment: .topTrailing) { bookmarkRibbonOverlay }
         .overlay(alignment: .top) { bookmarkHintOverlay }
         #if os(iOS)
@@ -676,10 +1169,37 @@ public struct ReaderView: View {
                     } label: {
                         Label("书签", systemImage: "bookmark")
                     }
+                    if !chapterCommentItems.isEmpty {
+                        Button {
+                            showComments = true
+                        } label: {
+                            Label("段评（\(chapterCommentItems.count)）", systemImage: "bubble.left.and.bubble.right")
+                        }
+                    }
+                    if chapterCommentURL != nil {
+                        Button {
+                            showComments = true
+                        } label: {
+                            Label("本章说", systemImage: "text.bubble")
+                        }
+                    }
                     Button {
                         showTTSSettings = true
                     } label: {
                         Label("听书设置", systemImage: "headphones")
+                    }
+                    // 本章原文网址：聚合源这类把请求包在 data: 里的没有可打开的网页，直接不显示
+                    if let chapterUrl = currentLoadedChapter?.chapter.url,
+                       let url = URL(string: chapterUrl),
+                       let scheme = url.scheme?.lowercased(),
+                       scheme == "http" || scheme == "https" {
+                        Button {
+                            #if os(iOS)
+                            UIApplication.shared.open(url)
+                            #endif
+                        } label: {
+                            Label("在浏览器打开本章", systemImage: "safari")
+                        }
                     }
                 } label: {
                     Image(systemName: "ellipsis.circle")
@@ -707,6 +1227,13 @@ public struct ReaderView: View {
         .sheet(isPresented: $showBookmarks) {
             bookmarksSheet
         }
+        .sheet(isPresented: $showComments) {
+            ReaderCommentsSheet(
+                chapterTitle: currentLoadedChapter?.chapter.title ?? "",
+                items: chapterCommentItems,
+                chapterURL: chapterCommentURL
+            )
+        }
         .sheet(isPresented: $showSourceSwitch) {
             SourceSwitchSheet(
                 book: activeBook,
@@ -725,6 +1252,18 @@ public struct ReaderView: View {
         }
         .sheet(isPresented: $showReplaceRules) {
             ReplaceRulesView(bookUrl: activeBook.bookUrl, bookName: activeBook.name)
+        }
+        .sheet(isPresented: $showAggregateSearch) {
+            NavigationView {
+                SearchBookView()
+            }
+        }
+        .alert("替换这一段", isPresented: $showReplaceInput) {
+            TextField("替换成（留空 = 删除）", text: $replaceInput)
+            Button("替换") { applyParagraphReplace() }
+            Button("取消", role: .cancel) { }
+        } message: {
+            Text(String(selectedParagraphText.prefix(40)))
         }
         .task {
             readerConfig.loadLayout(for: activeBook.bookUrl)
@@ -803,14 +1342,24 @@ public struct ReaderView: View {
             if readerConfig.backgroundImageEnabled,
                !readerConfig.backgroundImagePath.isEmpty,
                let image = platformImage(atPath: readerConfig.backgroundImagePath) {
-                image
-                    .resizable()
-                    .aspectRatio(contentMode: .fill)
+                // 必须钉死在容器尺寸上再裁：不限制的话大图会把自己的原始尺寸撑进布局，
+                // 整个阅读页跟着变大（横图甚至会触发转屏），上下还会露出主题色
+                GeometryReader { geo in
+                    image
+                        .resizable()
+                        .scaledToFill()
+                        .scaleEffect(CGFloat(backgroundImageScale))
+                        .offset(x: CGFloat(backgroundImageOffsetX), y: CGFloat(backgroundImageOffsetY))
+                        .frame(width: geo.size.width, height: geo.size.height)
+                        .clipped()
+                }
             }
         }
     }
 
     private func platformImage(atPath path: String) -> Image? {
+        // 沙盒绝对路径在 App 升级后会失效（容器 UUID 变了），读之前先解析一次
+        let path = ReaderBackgroundStorage.resolve(path)
         if let cached = ReaderBackgroundImageCache.shared.image(for: path) { return cached }
         guard let data = try? Data(contentsOf: URL(fileURLWithPath: path)),
               let image = Self.decodeImage(data) else { return nil }
@@ -1004,7 +1553,8 @@ public struct ReaderView: View {
                                                                 chapterIndex: loadedCh.chapter.index,
                                                                 blockId: block.id,
                                                                 minY: geo.frame(in: .named("readerScrollCoordinate")).minY,
-                                                                maxY: geo.frame(in: .named("readerScrollCoordinate")).maxY
+                                                                maxY: geo.frame(in: .named("readerScrollCoordinate")).maxY,
+                                                                rect: geo.frame(in: .global)
                                                             )]
                                                         )
                                                 }
@@ -1014,6 +1564,19 @@ public struct ReaderView: View {
                                             .padding(.leading, readerConfig.paddingLeft)
                                             .padding(.trailing, readerConfig.paddingRight)
                                             .padding(.bottom, readerConfig.paragraphSpacing)
+                                            // 段落级长按：连续滚动里一个 block 就是一段
+                                            .onLongPressGesture {
+                                                selectScrollParagraph(block, chapterIndex: loadedCh.chapter.index)
+                                            }
+                                            .onTapGesture {
+                                                if block.commentCount < 0 {
+                                                    showComments = true
+                                                }
+                                            }
+                                            .background(scrollAnnotationBackground(for: block, chapterIndex: loadedCh.chapter.index))
+                                            .overlay(alignment: .bottom) {
+                                                scrollAnnotationUnderline(for: block, chapterIndex: loadedCh.chapter.index)
+                                            }
                                             .id("block_\(loadedCh.chapter.index)_\(block.id)")
                                             .background(
                                                 GeometryReader { geo in
@@ -1024,7 +1587,8 @@ public struct ReaderView: View {
                                                                 chapterIndex: loadedCh.chapter.index,
                                                                 blockId: block.id,
                                                                 minY: geo.frame(in: .named("readerScrollCoordinate")).minY,
-                                                                maxY: geo.frame(in: .named("readerScrollCoordinate")).maxY
+                                                                maxY: geo.frame(in: .named("readerScrollCoordinate")).maxY,
+                                                                rect: geo.frame(in: .global)
                                                             )]
                                                         )
                                                 }
@@ -1085,6 +1649,11 @@ public struct ReaderView: View {
             }
             .contentShape(Rectangle())
             .onTapGesture {
+                // 选段中点别处：退出选段、保留这次的更改
+                if selectedBlockRange != nil {
+                    clearParagraphSelection()
+                    return
+                }
                 withAnimation(.easeInOut(duration: 0.2)) {
                     showControls.toggle()
                 }
@@ -1118,6 +1687,8 @@ public struct ReaderView: View {
 
     private func handleBlockFramesChanged(_ frames: [BlockFrameInfo]) {
         guard !frames.isEmpty else { return }
+        // 长按命中表每轮重铺：布局变了几何就跟着变，离屏段落顺手清掉
+        scrollHitRegistry.replace(with: frames)
         if let active = frames.first(where: { $0.minY <= 140 && $0.maxY >= 20 }) ??
                         frames.min(by: { abs($0.minY - 50) < abs($1.minY - 50) }) {
             if self.currentChapterIndex != active.chapterIndex {
@@ -1216,6 +1787,13 @@ public struct ReaderView: View {
                     : nil,
                 chapterTitleScale: readerConfig.chapterTitleScale,
                 shortTitleLength: readerConfig.shortTitleLength,
+                onSelectParagraph: { page, line, offset in
+                    selectCharacters(atLine: line, charOffset: offset, in: page)
+                },
+                selectedRange: selectedBlockRange,
+                charSelection: charSelection,
+                charAnnotations: charAnnotationRangesForCurrentChapter,
+                annotationRanges: annotationRangesForCurrentChapter,
                 customDatePattern: readerConfig.customDatePattern,
                 customBarText: readerConfig.customBarText,
                 titleHTMLTemplate: readerConfig.chapterTitleHTMLTemplate,
@@ -1365,8 +1943,18 @@ public struct ReaderView: View {
                                 underlineEnabled: readerConfig.underlineEnabled,
                                 underlineColor: readerConfig.underlineColor,
                                 paragraphSeparatorLines: readerConfig.paragraphSeparatorLines,
-                                paragraphSeparatorColor: readerConfig.paragraphSeparatorColor
-                            )
+                               paragraphSeparatorColor: readerConfig.paragraphSeparatorColor,
+                               lineBlockIds: pageBlocks.map(\.id),
+                               lineParagraphIds: pageBlocks.map(\.paragraphId),
+                               lineCharStarts: pageBlocks.map(\.charStart),
+                               selectedRange: selectedBlockRange,
+                               charSelection: charSelection,
+                               charAnnotations: charAnnotationRangesForCurrentChapter,
+                               annotationRanges: annotationRangesForCurrentChapter,
+                               onLongPressLine: { line, charOffset in
+                                   selectCharacters(atLine: line, charOffset: charOffset, in: pageBlocks)
+                               }
+                           )
                             .frame(width: usableWidth, height: pageContentHeight, alignment: .topLeading)
                         }
 
@@ -1417,6 +2005,8 @@ public struct ReaderView: View {
                 // minimumDistance 0：同一个手势同时管点击和滑动，位移小就是点击
                 DragGesture(minimumDistance: 0)
                     .onChanged { value in
+                        // 字选模式只让手柄动，整页不再跟手翻页
+                        guard charSelection == nil else { return }
                         // 横着拖才跟手，竖着划过名单不算翻页
                         guard abs(value.translation.width) > abs(value.translation.height) else { return }
                         guard hypot(value.translation.width, value.translation.height) > 8 else { return }
@@ -1438,8 +2028,22 @@ public struct ReaderView: View {
                             return
                         }
                         let moved = hypot(value.translation.width, value.translation.height)
+                        // 字选模式：点一下别处退出，拖动不翻页
+                        if charSelection != nil {
+                            if moved < 8, !tapSuppressor.isActive {
+                                clearParagraphSelection()
+                            }
+                            return
+                        }
                         // 位移很小 = 点击：左 30% 上一页，右 30% 下一页，中间开关工具栏
                         if moved < 8 {
+                            // 刚长按选中过段落：松手这一次不能再当点击使唤，否则操作栏会被菜单盖掉
+                            guard !tapSuppressor.isActive else { return }
+                            // 选段中点别处：退出选段、保留这次的更改
+                            if selectedBlockRange != nil {
+                                clearParagraphSelection()
+                                return
+                            }
                             let x = value.startLocation.x
                             if x < width * 0.3 {
                                 turnPage(forward: false)
@@ -1485,6 +2089,8 @@ public struct ReaderView: View {
     }
 
     private func updateContainerSizeIfNeeded(_ size: CGSize) {
+        // 下拉期间整页在位移，几何读数不可信；这时重排会让字号/行距当场变样。
+        guard !isPullActive, pagePullOffset == 0 else { return }
         guard size.width > 100 && size.height > 100 else { return }
         if abs(size.width - readerContainerSize.width) > 6 || abs(size.height - readerContainerSize.height) > 6 {
             DispatchQueue.main.async {
@@ -1809,7 +2415,10 @@ public struct ReaderView: View {
         .frame(height: 19 + topSpacer + bottomSpacer)
         .background(
             Group {
-                if let edge = extendEdge {
+                // 有背景图时这两条不能再刷主题色，否则上下各留一条绿边，看着像图没铺满
+                if readerConfig.backgroundImageEnabled, !readerConfig.backgroundImagePath.isEmpty {
+                    Color.clear
+                } else if let edge = extendEdge {
                     readerConfig.backgroundColor.ignoresSafeArea(edges: edge)
                 } else {
                     readerConfig.backgroundColor
@@ -2165,6 +2774,24 @@ public struct ReaderView: View {
                 .frame(maxWidth: .infinity)
             }
 
+            // 段评：书源提供了段评地址才亮，点开是本章所有热门段落
+            Button(action: {
+                if chapterCommentItems.isEmpty {
+                    showBookmarkHint("本章暂无段评")
+                } else {
+                    showComments = true
+                }
+            }) {
+                VStack(spacing: 4) {
+                    Image(systemName: "bubble.left.and.bubble.right")
+                        .font(.system(size: 20))
+                    Text(chapterCommentItems.isEmpty ? "段评" : "段评 \(chapterCommentItems.count)")
+                        .font(.system(size: 11, weight: .medium))
+                }
+                .foregroundColor(readerConfig.textColor.opacity(chapterCommentItems.isEmpty ? 0.45 : 1))
+                .frame(maxWidth: .infinity)
+            }
+
             // TTS (听书)
             Button(action: {
                 if TTSCastStore.shared.enabled {
@@ -2352,51 +2979,100 @@ public struct ReaderView: View {
                     #endif
                 }
 
-                let list = bookmarkStore.bookmarks(for: activeBook.bookUrl)
-                Section(header: Text("本书书签与笔记 (\(list.count))")) {
+                let list = visibleBookmarks
+                if bookmarkMultiSelect {
+                    Section {
+                        HStack {
+                            Button(allVisibleSelected ? "取消全选" : "全选") {
+                                toggleSelectAllVisible()
+                            }
+                            Spacer()
+                            Text("已选 \(selectedBookmarkIDs.count)")
+                                .font(.footnote)
+                                .foregroundColor(.secondary)
+                            Spacer()
+                            Button(role: .destructive) {
+                                deleteSelectedBookmarks()
+                            } label: {
+                                Text("删除")
+                            }
+                            .disabled(selectedBookmarkIDs.isEmpty)
+                        }
+                    }
+                }
+
+                Section(header: Text(bookmarkSectionTitle(list.count))) {
                     if list.isEmpty {
-                        Text("还没有书签。")
+                        Text(bookmarkSearchText.isEmpty && bookmarkKindFilter == .all
+                             ? "还没有书签。"
+                             : "没有匹配的书签。")
                             .font(.footnote)
                             .foregroundColor(.secondary)
                     }
                     ForEach(list) { bm in
-                        VStack(alignment: .leading, spacing: 3) {
-                            Text(bm.chapterTitle)
-                                .font(.system(size: 14, weight: .medium))
-                            if !bm.snippet.isEmpty {
-                                Text(bm.snippet)
-                                    .font(.system(size: 11))
+                        HStack(alignment: .top, spacing: 8) {
+                            if bookmarkMultiSelect {
+                                Image(systemName: selectedBookmarkIDs.contains(bm.id)
+                                      ? "checkmark.circle.fill" : "circle")
+                                    .foregroundColor(selectedBookmarkIDs.contains(bm.id)
+                                                     ? .accentColor : .secondary)
+                                    .font(.system(size: 17))
+                            }
+                            VStack(alignment: .leading, spacing: 3) {
+                                HStack(spacing: 6) {
+                                    Text(bm.chapterTitle)
+                                        .font(.system(size: 14, weight: .medium))
+                                    bookmarkKindTag(bm)
+                                }
+                                if !bm.snippet.isEmpty {
+                                    Text(bm.snippet)
+                                        .font(.system(size: 11))
+                                        .foregroundColor(.secondary)
+                                        .lineLimit(2)
+                                }
+                                if !bm.note.isEmpty {
+                                    Text("备注：" + bm.note)
+                                        .font(.system(size: 11))
+                                        .foregroundColor(.accentColor)
+                                }
+                                Text(bm.createdAt.formatted(date: .numeric, time: .shortened))
+                                    .font(.system(size: 10))
                                     .foregroundColor(.secondary)
-                                    .lineLimit(2)
                             }
-                            if !bm.note.isEmpty {
-                                Text("备注：" + bm.note)
-                                    .font(.system(size: 11))
-                                    .foregroundColor(.accentColor)
-                            }
-                            Text(bm.createdAt.formatted(date: .numeric, time: .shortened))
-                                .font(.system(size: 10))
-                                .foregroundColor(.secondary)
                         }
                         .contentShape(Rectangle())
                         .onTapGesture {
-                            showBookmarks = false
-                            jumpToChapter(bm.chapterIndex)
+                            if bookmarkMultiSelect {
+                                toggleBookmarkSelection(bm)
+                            } else {
+                                showBookmarks = false
+                                jumpToChapter(bm.chapterIndex)
+                            }
                         }
                     }
                     .onDelete { indexSet in
-                        let current = bookmarkStore.bookmarks(for: activeBook.bookUrl)
-                        for i in indexSet where i < current.count {
-                            bookmarkStore.removeBookmark(current[i])
+                        for i in indexSet where i < list.count {
+                            bookmarkStore.removeBookmark(list[i])
                         }
                     }
                 }
             }
+            .searchable(text: $bookmarkSearchText, prompt: "搜章节名、摘要、备注")
             .navigationTitle("书签 / 笔记")
             #if os(iOS)
             .navigationBarTitleDisplayMode(.inline)
             #endif
             .toolbar {
+                // 排序 / 类型菜单：iOS 放左上，macOS 只有默认位置可用
+                ToolbarItem(placement: Self.bookmarkMenuPlacement) {
+                    bookmarkFilterMenu
+                }
+                ToolbarItem(placement: Self.bookmarkSelectPlacement) {
+                    Button(bookmarkMultiSelect ? "完成" : "选择") {
+                        bookmarkMultiSelect.toggle()
+                        if !bookmarkMultiSelect { selectedBookmarkIDs.removeAll() }
+                    }
+                }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("关闭") { showBookmarks = false }
                 }
@@ -2404,20 +3080,697 @@ public struct ReaderView: View {
         }
     }
 
+    /// 排序 / 类型菜单
+    private var bookmarkFilterMenu: some View {
+        Menu {
+            Picker("排序", selection: $bookmarkSort) {
+                ForEach(BookmarkSortOrder.allCases) { order in
+                    Text(order.title).tag(order)
+                }
+            }
+            Picker("类型", selection: $bookmarkKindFilter) {
+                ForEach(BookmarkKindFilter.allCases) { filter in
+                    Text(filter.title).tag(filter)
+                }
+            }
+        } label: {
+            Image(systemName: "line.3.horizontal.decrease.circle")
+        }
+    }
+
+    private static var bookmarkMenuPlacement: ToolbarItemPlacement {
+        #if os(iOS)
+        return .navigationBarLeading
+        #else
+        return .automatic
+        #endif
+    }
+
+    private static var bookmarkSelectPlacement: ToolbarItemPlacement {
+        #if os(iOS)
+        return .navigationBarTrailing
+        #else
+        return .automatic
+        #endif
+    }
+
+    /// 面板上真正显示的书签：先按类型与关键字过滤，再按选定的顺序排
+    private var visibleBookmarks: [BookBookmark] {
+        let all = bookmarkStore.bookmarks(for: activeBook.bookUrl)
+        let byKind: [BookBookmark]
+        switch bookmarkKindFilter {
+        case .all: byKind = all
+        case .bookmark: byKind = all.filter { $0.kind == .bookmark }
+        case .underline: byKind = all.filter { $0.kind == .underline }
+        case .highlight: byKind = all.filter { $0.kind == .highlight }
+        }
+        let keyword = bookmarkSearchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        let filtered = keyword.isEmpty ? byKind : byKind.filter {
+            $0.chapterTitle.localizedCaseInsensitiveContains(keyword)
+                || $0.snippet.localizedCaseInsensitiveContains(keyword)
+                || $0.note.localizedCaseInsensitiveContains(keyword)
+        }
+        switch bookmarkSort {
+        case .newestFirst:
+            return filtered.sorted { $0.createdAt > $1.createdAt }
+        case .oldestFirst:
+            return filtered.sorted { $0.createdAt < $1.createdAt }
+        case .chapterAscending:
+            return filtered.sorted {
+                ($0.chapterIndex, $0.createdAt) < ($1.chapterIndex, $1.createdAt)
+            }
+        case .chapterDescending:
+            return filtered.sorted {
+                ($0.chapterIndex, $0.createdAt) > ($1.chapterIndex, $1.createdAt)
+            }
+        }
+    }
+
+    private func bookmarkSectionTitle(_ count: Int) -> String {
+        var parts = ["本书书签与笔记 (\(count))"]
+        parts.append(bookmarkSort.title)
+        if bookmarkKindFilter != .all { parts.append(bookmarkKindFilter.title) }
+        return parts.joined(separator: " · ")
+    }
+
+    @ViewBuilder
+    private func bookmarkKindTag(_ bookmark: BookBookmark) -> some View {
+        switch bookmark.kind {
+        case .bookmark:
+            EmptyView()
+        case .underline:
+            bookmarkTag("下划线")
+        case .highlight:
+            bookmarkTag("底色")
+        }
+    }
+
+    private func bookmarkTag(_ text: String) -> some View {
+        Text(text)
+            .font(.system(size: 9, weight: .medium))
+            .padding(.horizontal, 5)
+            .padding(.vertical, 1)
+            .background(Color.secondary.opacity(0.15), in: Capsule())
+            .foregroundColor(.secondary)
+    }
+
+    private var allVisibleSelected: Bool {
+        let list = visibleBookmarks
+        return !list.isEmpty && list.allSatisfy { selectedBookmarkIDs.contains($0.id) }
+    }
+
+    private func toggleSelectAllVisible() {
+        let list = visibleBookmarks
+        if allVisibleSelected {
+            for item in list { selectedBookmarkIDs.remove(item.id) }
+        } else {
+            for item in list { selectedBookmarkIDs.insert(item.id) }
+        }
+    }
+
+    private func toggleBookmarkSelection(_ bookmark: BookBookmark) {
+        if selectedBookmarkIDs.contains(bookmark.id) {
+            selectedBookmarkIDs.remove(bookmark.id)
+        } else {
+            selectedBookmarkIDs.insert(bookmark.id)
+        }
+    }
+
+    private func deleteSelectedBookmarks() {
+        let doomed = bookmarkStore.bookmarks(for: activeBook.bookUrl)
+            .filter { selectedBookmarkIDs.contains($0.id) }
+        for item in doomed { bookmarkStore.removeBookmark(item) }
+        selectedBookmarkIDs.removeAll()
+        showBookmarkHint("已删除 \(doomed.count) 条")
+    }
+
     // MARK: - 下拉加书签
+
+    // MARK: - 段落级长按：选择与操作
+
+    /// 长按选中段落后的操作栏（复制 / 搜索 / 书签 / 下划线 / 底色 / 替换）
+    private var paragraphActionBar: some View {
+        // 悬浮气泡：贴在选中段落的上方（上面放不下就挪到下面）
+        GeometryReader { geo in
+            if selectedBlockRange != nil {
+                let rect = selectionRect ?? CGRect(x: geo.size.width / 2 - 60, y: geo.size.height * 0.45,
+                                                   width: 120, height: 24)
+                let origin = geo.frame(in: .global).origin
+                let bubbleWidth = min(392, max(300, geo.size.width - 12))
+                let x = min(max(rect.midX - origin.x, bubbleWidth / 2 + 6), max(bubbleWidth / 2 + 6, geo.size.width - bubbleWidth / 2 - 6))
+                let above = rect.minY - origin.y - 44
+                let y = above < 64 ? rect.maxY - origin.y + 44 : above
+                paragraphBubble
+                    .frame(width: bubbleWidth)
+                    .position(x: x, y: y)
+                    .transition(.opacity)
+                if let kind = colorPickerKind {
+                    // 调色板放到气泡上方，别盖住刚选中的那段文字
+                    let paletteY = y - 52 < 70 ? y + 54 : y - 52
+                    annotationColorRow(kind: kind)
+                        .frame(width: bubbleWidth)
+                        .position(x: x, y: min(geo.size.height - 28, paletteY))
+                        .transition(.opacity.combined(with: .move(edge: .top)))
+                }
+            }
+        }
+        .allowsHitTesting(selectedBlockRange != nil)
+    }
+
+    /// 字选模式的两个圆形手柄：拖它们逐字伸缩
+    @ViewBuilder
+    private var charSelectionHandles: some View {
+        #if os(iOS)
+        GeometryReader { geo in
+            if let sel = charSelection,
+               let startPoint = CoreTextUIView.boundaryPoint(paragraphId: sel.paragraphId, offset: sel.start),
+               let endPoint = CoreTextUIView.boundaryPoint(paragraphId: sel.paragraphId,
+                                                           offset: sel.start + sel.length) {
+                let origin = geo.frame(in: .global).origin
+                charHandle(at: CGPoint(x: startPoint.x - origin.x, y: startPoint.y - origin.y), isStart: true)
+                charHandle(at: CGPoint(x: endPoint.x - origin.x, y: endPoint.y - origin.y), isStart: false)
+            }
+        }
+        .allowsHitTesting(charSelection != nil)
+        #else
+        EmptyView()
+        #endif
+    }
+
+    #if os(iOS)
+    private func charHandle(at point: CGPoint, isStart: Bool) -> some View {
+        ZStack {
+            Circle()
+                .fill(Color.accentColor)
+                .frame(width: 16, height: 16)
+                .overlay(Circle().stroke(Color.white, lineWidth: 2))
+                .shadow(color: .black.opacity(0.25), radius: 3, y: 1)
+            // 触摸区比看得见的圆大一圈，手指才好按住
+            Color.clear
+                .frame(width: 36, height: 36)
+                .contentShape(Circle())
+        }
+        .position(x: point.x, y: point.y)
+        .highPriorityGesture(
+            DragGesture(minimumDistance: 0, coordinateSpace: .global)
+                .onChanged { value in
+                    tapSuppressor.suppress()
+                    updateCharSelection(isStart: isStart, at: value.location)
+                }
+                .onEnded { value in
+                    tapSuppressor.suppress()
+                    updateCharSelection(isStart: isStart, at: value.location)
+                }
+        )
+    }
+    #endif
+
+    private var paragraphBubble: some View {
+        HStack(spacing: 0) {
+            paragraphAction("复制", "doc.on.doc") { copySelectedParagraph() }
+            paragraphAction("搜索", "magnifyingglass") { searchSelectedParagraph() }
+            paragraphAction("书签", "bookmark") { addBookmarkForSelection() }
+            paragraphAction("下划线", "underline", tint: readerHexColor(underlineHex)) {
+                colorPickerKind = .underline
+            }
+            paragraphAction("底色", "highlighter", tint: readerHexColor(highlightHex)) {
+                colorPickerKind = .highlight
+            }
+            paragraphAction("替换", "arrow.left.arrow.right") {
+                replaceInput = ""
+                showReplaceInput = true
+            }
+            if readerConfig.pageMode != .scroll {
+                paragraphAction("整段", "text.alignleft") { resetToWholeParagraph() }
+            }
+            Divider().frame(height: 22)
+            paragraphAction("取消", "xmark") { cancelParagraphSelection() }
+        }
+        .padding(.horizontal, 4)
+        .padding(.vertical, 6)
+        .background(.regularMaterial, in: Capsule())
+        .overlay(Capsule().stroke(Color.secondary.opacity(0.18), lineWidth: 0.5))
+        .shadow(color: Color.black.opacity(0.18), radius: 10, y: 4)
+    }
+
+    private func paragraphAction(_ title: String, _ icon: String, tint: Color? = nil,
+                                 action: @escaping () -> Void) -> some View {
+        Button {
+            // 这一下也会落到页面那套「点一下开关工具栏」的手势上，先按住它，
+            // 否则操作栏刚点完就被顶出来的工具栏盖住
+            tapSuppressor.suppress()
+            action()
+        } label: {
+            VStack(spacing: 2) {
+                Image(systemName: icon)
+                    .font(.system(size: 16))
+                    .foregroundColor(tint)
+                Text(title)
+                    .font(.system(size: 10, weight: .medium))
+            }
+            .foregroundColor(readerConfig.textColor)
+            .frame(maxWidth: .infinity)
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func annotationPalette(for kind: BookBookmark.Kind) -> [String] {
+        switch kind {
+        case .underline:
+            return ["#2F7BF6", "#E5484D", "#2FA84F", "#F08C00", "#8B5CF6", "#8E8E93"]
+        default:
+            return ["#FFF59D", "#C8E6C9", "#BBDEFB", "#F8BBD0", "#FFE0B2", "#E1BEE7"]
+        }
+    }
+
+    private func annotationColorRow(kind: BookBookmark.Kind) -> some View {
+        let selected = kind == .underline ? underlineHex : highlightHex
+        return HStack(spacing: 9) {
+            ForEach(annotationPalette(for: kind), id: \.self) { hex in
+                Button {
+                    applyAnnotation(kind: kind, color: hex)
+                } label: {
+                    Circle()
+                        .fill(readerHexColor(hex))
+                        .frame(width: 22, height: 22)
+                        .overlay(Circle().stroke(Color.secondary.opacity(0.35), lineWidth: 0.5))
+                        .overlay(
+                            Circle()
+                                .stroke(readerConfig.textColor, lineWidth: selected == hex ? 2 : 0)
+                                .padding(-2)
+                        )
+                }
+                .buttonStyle(.plain)
+            }
+            Divider().frame(height: 20)
+            Button {
+                colorPickerKind = nil
+            } label: {
+                Image(systemName: "xmark")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundColor(readerConfig.textColor.opacity(0.7))
+                    .frame(width: 22, height: 22)
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 7)
+        .background(.regularMaterial, in: Capsule())
+        .overlay(Capsule().stroke(Color.secondary.opacity(0.18), lineWidth: 0.5))
+        .shadow(color: Color.black.opacity(0.15), radius: 8, y: 3)
+    }
+
+    private var annotationRangesForCurrentChapter: [(start: Int, count: Int, style: ReaderBlockStyle)] {
+        bookmarkStore.annotations(bookUrl: activeBook.bookUrl, chapterIndex: currentChapterIndex)
+            .map { blockId, item in
+                let style = ReaderBlockStyle(
+                    underline: item.kind == .underline,
+                    underlineHex: item.kind == .underline ? (item.color ?? "#2F7BF6") : nil,
+                    highlightHex: item.kind == .highlight ? (item.color ?? "#FFF59D") : nil
+                )
+                return (start: blockId, count: max(1, item.length ?? 1), style: style)
+            }
+    }
+
+    /// 这一章的逐字标注（下划线 / 底色），只画选中那几个字
+    private var charAnnotationRangesForCurrentChapter: [ReaderCharAnnotation] {
+        bookmarkStore.userAnnotations(bookUrl: activeBook.bookUrl, chapterIndex: currentChapterIndex)
+            .filter { $0.rangeUnitRaw == "char" }
+            .compactMap { item in
+                guard let blockId = item.blockId, let length = item.length else { return nil }
+                let style = ReaderBlockStyle(
+                    underline: item.kind == .underline,
+                    underlineHex: item.kind == .underline ? (item.color ?? "#2F7BF6") : nil,
+                    highlightHex: item.kind == .highlight ? (item.color ?? "#FFF59D") : nil
+                )
+                return ReaderCharAnnotation(paragraphId: blockId,
+                                            start: item.charOffset,
+                                            length: max(1, length),
+                                            style: style)
+            }
+    }
+
+    /// 长按直接选词：按触点找到字符，选中它所在的词/单字，再弹操作栏。
+    /// 段落范围只用于「整段」扩选与动作锚点，不再默认整段高亮。
+    private func selectCharacters(atLine line: Int, charOffset: Int, in pageBlocks: [ContentBlock]) {
+        guard line >= 0, line < pageBlocks.count else { return }
+        var start = line
+        while start > 0, pageBlocks[start - 1].imageUrl != "p_end" { start -= 1 }
+        var end = line
+        while end < pageBlocks.count - 1, pageBlocks[end].imageUrl != "p_end" { end += 1 }
+        let rawText = pageBlocks[start...end].map(\.text).joined()
+        let text = rawText
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        selectedBlockRange = (start: pageBlocks[start].id, count: end - start + 1)
+        selectedParagraphText = text
+        selectedParagraphRawText = rawText
+        selectedParagraphId = pageBlocks[start].paragraphId
+        selectedParagraphCharStart = pageBlocks[start].charStart
+        colorPickerKind = nil
+        // 触点换算成段内字符偏移，再取这个词的范围
+        let lineLength = (pageBlocks[line].text as NSString).length
+        let relativeInParagraph = pageBlocks[line].charStart
+            + min(max(0, charOffset), max(0, lineLength - 1))
+            - selectedParagraphCharStart
+        let word = selectedWordRange(in: rawText, around: relativeInParagraph)
+        charSelection = ReaderCharSelection(paragraphId: selectedParagraphId,
+                                            start: selectedParagraphCharStart + word.location,
+                                            length: max(1, word.length))
+        #if os(iOS)
+        selectionRect = nil
+        refreshCharSelectionRect()
+        selectionRect = selectionRect ?? CoreTextUIView.lastSelectionWindowRect
+        #endif
+        // 只在「从没选中」切进选中时拍快照，取消才有明确的还原目标
+        if annotationSnapshot == nil { annotationSnapshot = currentChapterAnnotations() }
+        tapSuppressor.suppress()
+        withAnimation(.easeInOut(duration: 0.15)) { showControls = false }
+    }
+
+    /// 用系统分词找长按点所在的词；中文按词，找不到就退到单个字符
+    private func selectedWordRange(in rawText: String, around offset: Int) -> (location: Int, length: Int) {
+        let ns = rawText as NSString
+        guard ns.length > 0 else { return (0, 0) }
+        let clamped = max(0, min(offset, ns.length - 1))
+        if let tokenizer = CFStringTokenizerCreate(
+            nil,
+            rawText as CFString,
+            CFRange(location: 0, length: ns.length),
+            kCFStringTokenizerUnitWordBoundary,
+            Locale(identifier: "zh_CN") as CFLocale
+        ) {
+            _ = CFStringTokenizerGoToTokenAtIndex(tokenizer, clamped)
+            let token = CFStringTokenizerGetCurrentTokenRange(tokenizer)
+            if token.location != kCFNotFound, token.length > 0 {
+                let location = max(0, min(token.location, ns.length - 1))
+                let length = min(token.length, ns.length - location)
+                if length > 0 { return (location, length) }
+            }
+        }
+        let range = ns.rangeOfComposedCharacterSequence(at: clamped)
+        return (range.location, max(1, range.length))
+    }
+
+    /// 退出选段：保留这次做的更改（点别处 / 再长按都走这条）
+    private func clearParagraphSelection() {
+        selectedBlockRange = nil
+        selectedParagraphText = ""
+        selectedParagraphRawText = ""
+        selectedParagraphId = 0
+        selectedParagraphCharStart = 0
+        charSelection = nil
+        colorPickerKind = nil
+        selectionRect = nil
+        annotationSnapshot = nil
+    }
+
+    // MARK: - 字选模式
+
+    /// 手柄拖回整段
+    private func resetToWholeParagraph() {
+        guard charSelection != nil else { return }
+        let length = (selectedParagraphRawText as NSString).length
+        charSelection = ReaderCharSelection(paragraphId: selectedParagraphId,
+                                            start: selectedParagraphCharStart,
+                                            length: length)
+        refreshCharSelectionRect()
+        tapSuppressor.suppress()
+    }
+
+    /// 当前选中的文字：字选模式取字符区间，否则整段
+    private var currentSelectionText: String {
+        guard let sel = charSelection else { return selectedParagraphText }
+        let ns = selectedParagraphRawText as NSString
+        let relative = sel.start - selectedParagraphCharStart
+        guard relative >= 0, relative + sel.length <= ns.length else { return selectedParagraphText }
+        return ns.substring(with: NSRange(location: relative, length: sel.length))
+    }
+
+    private func refreshCharSelectionRect() {
+        #if os(iOS)
+        guard let sel = charSelection else { return }
+        if let rect = CoreTextUIView.windowRect(paragraphId: sel.paragraphId,
+                                                from: sel.start,
+                                                to: sel.start + sel.length) {
+            selectionRect = rect
+        }
+        #endif
+    }
+
+    /// 按下的位置离哪个手柄近：近就接管这次拖拽
+    private func beginCharHandleDrag(at point: CGPoint) -> Bool {
+        #if os(iOS)
+        guard let sel = charSelection,
+              let start = CoreTextUIView.boundaryPoint(paragraphId: sel.paragraphId, offset: sel.start),
+              let end = CoreTextUIView.boundaryPoint(paragraphId: sel.paragraphId,
+                                                     offset: sel.start + sel.length) else { return false }
+        let startDistance = hypot(point.x - start.x, point.y - start.y)
+        let endDistance = hypot(point.x - end.x, point.y - end.y)
+        guard min(startDistance, endDistance) <= 32 else { return false }
+        isDraggingCharStart = startDistance <= endDistance
+        tapSuppressor.suppress()
+        return true
+        #else
+        return false
+        #endif
+    }
+
+    /// 拖圆形手柄：按落点找最近的字符边界，夹在段内可见范围里
+    private func updateCharSelection(isStart: Bool, at point: CGPoint) {
+        #if os(iOS)
+        guard var sel = charSelection else { return }
+        guard let boundary = CoreTextUIView.boundaryIndex(paragraphId: sel.paragraphId,
+                                                          nearWindowPoint: point) else { return }
+        let lower = selectedParagraphCharStart
+        let upper = selectedParagraphCharStart + (selectedParagraphRawText as NSString).length
+        let clamped = min(max(boundary, lower), upper)
+        if isStart {
+            let end = sel.start + sel.length
+            let newStart = min(clamped, end - 1)
+            sel.start = newStart
+            sel.length = max(1, end - newStart)
+        } else {
+            let newEnd = max(clamped, sel.start + 1)
+            sel.length = max(1, newEnd - sel.start)
+        }
+        charSelection = sel
+        refreshCharSelectionRect()
+        #endif
+    }
+
+    /// 按「取消」：把这一章的标注还原成选中那一刻的样子
+    private func cancelParagraphSelection() {
+        if let snapshot = annotationSnapshot {
+            bookmarkStore.replaceAnnotations(snapshot,
+                                             bookUrl: activeBook.bookUrl,
+                                             chapterIndex: currentChapterIndex)
+        }
+        clearParagraphSelection()
+        showBookmarkHint("已还原")
+    }
+
+    private func currentChapterAnnotations() -> [BookBookmark] {
+        bookmarkStore.bookmarks(for: activeBook.bookUrl)
+            .filter { $0.chapterIndex == currentChapterIndex && $0.kind != .bookmark }
+    }
+
+    /// 连续滚动模式：一个 block 就是一段，直接选中它
+    private func selectScrollParagraph(_ block: ContentBlock, chapterIndex: Int) {
+        if currentChapterIndex != chapterIndex { currentChapterIndex = chapterIndex }
+        selectedBlockRange = (start: block.id, count: 1)
+        selectedParagraphText = block.text.trimmingCharacters(in: .whitespacesAndNewlines)
+        selectedParagraphRawText = block.text
+        selectedParagraphId = block.id
+        selectedParagraphCharStart = 0
+        charSelection = nil
+        if let rect = scrollHitRegistry.rect(forBlockId: block.id, chapterIndex: chapterIndex) {
+            selectionRect = rect
+        } else {
+            selectionRect = nil
+        }
+        if annotationSnapshot == nil { annotationSnapshot = currentChapterAnnotations() }
+        tapSuppressor.suppress()
+        withAnimation(.easeInOut(duration: 0.15)) { showControls = false }
+    }
+
+    /// 窗口层长按落在滚动模式正文上：换算成段落再走同一条选择逻辑
+    private func handleLongPressAtWindowPoint(_ point: CGPoint) {
+        #if os(iOS)
+        guard !showControls else { return }
+
+        // 分页 / 仿真：交给触点所在那一页自己判行
+        if readerConfig.pageMode != .scroll {
+            if CoreTextUIView.triggerLongPress(atWindowPoint: point) { return }
+            AppLog.write("[长按] 分页模式没找到正文页 · \(Int(point.x)),\(Int(point.y))")
+            return
+        }
+
+        guard let hit = scrollHitRegistry.hitTest(point) else {
+            AppLog.write("[长按] 滚动模式未命中段落 · \(Int(point.x)),\(Int(point.y))")
+            return
+        }
+        guard let loaded = loadedChapters.first(where: { $0.chapter.index == hit.chapterIndex }),
+              let block = loaded.blocks.first(where: { $0.id == hit.blockId }),
+              !block.isImage else { return }
+        AppLog.write("[长按] 滚动模式命中第 \(hit.chapterIndex + 1) 章 · block \(hit.blockId)")
+        selectScrollParagraph(block, chapterIndex: hit.chapterIndex)
+        #endif
+    }
+
+    /// 连续滚动模式下，段落的底色标注画在段落的背景上
+    @ViewBuilder
+    private func scrollAnnotationBackground(for block: ContentBlock, chapterIndex: Int) -> some View {
+        // 选中的段落先铺一层淡蓝，长按下去能看出选的是哪一段
+        if let range = selectedBlockRange, block.id >= range.start,
+           block.id < range.start + max(1, range.count) {
+            Color.accentColor.opacity(0.18)
+        } else if let hit = bookmarkStore
+            .annotations(bookUrl: activeBook.bookUrl, chapterIndex: chapterIndex)[block.id],
+                  hit.kind == .highlight {
+            readerHexColor(hit.color ?? "#FFF59D").opacity(0.55)
+        } else {
+            Color.clear
+        }
+    }
+
+    /// "#RRGGBB" → Color（标注底色）
+    private func readerHexColor(_ hex: String) -> Color {
+        let parsed = readerHexComponents(hex)
+        return Color(red: parsed.r, green: parsed.g, blue: parsed.b, opacity: parsed.a)
+    }
+
+    /// 连续滚动模式下已加下划线的段落：在段落下沿画一条
+    @ViewBuilder
+    private func scrollAnnotationUnderline(for block: ContentBlock, chapterIndex: Int) -> some View {
+        let hit = bookmarkStore
+            .annotations(bookUrl: activeBook.bookUrl, chapterIndex: chapterIndex)[block.id]
+        if let hit, hit.kind == .underline {
+            Rectangle()
+                .fill(readerHexColor(hit.color ?? "#2F7BF6").opacity(0.85))
+                .frame(height: 1.5)
+                .padding(.horizontal, readerConfig.paddingLeft)
+        }
+    }
+
+    private func readerHexComponents(_ hex: String) -> (r: Double, g: Double, b: Double, a: Double) {
+        var text = hex.trimmingCharacters(in: .whitespacesAndNewlines)
+        if text.hasPrefix("#") { text.removeFirst() }
+        guard text.count == 6 || text.count == 8, let value = UInt64(text, radix: 16) else {
+            return (1, 0.92, 0.4, 1)
+        }
+        let hasAlpha = text.count == 8
+        let r = Double((value >> (hasAlpha ? 24 : 16)) & 0xFF) / 255
+        let g = Double((value >> (hasAlpha ? 16 : 8)) & 0xFF) / 255
+        let b = Double((value >> (hasAlpha ? 8 : 0)) & 0xFF) / 255
+        let a = hasAlpha ? Double(value & 0xFF) / 255 : 1
+        return (r, g, b, a)
+    }
+
+    /// 复制选中段落
+    private func copySelectedParagraph() {
+        #if os(iOS)
+        UIPasteboard.general.string = currentSelectionText
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        #endif
+        showBookmarkHint("已复制")
+    }
+
+    /// 拿选中段落去聚合搜索
+    private func searchSelectedParagraph() {
+        let text = currentSelectionText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { return }
+        SearchViewModel.shared.searchQuery = String(text.prefix(60))
+        showAggregateSearch = true
+    }
+
+    private func addBookmarkForSelection() {
+        addBookmarkHere()
+        showBookmarkHint("已加书签 · 第 \(currentChapterIndex + 1) 章")
+    }
+
+    /// 下划线 / 底色：调色板选一个颜色就应用；同区间再点同色就取消
+    private func applyAnnotation(kind: BookBookmark.Kind, color: String) {
+        guard let range = selectedBlockRange, let cur = currentLoadedChapter else { return }
+        if kind == .underline {
+            underlineHex = color
+        } else {
+            highlightHex = color
+        }
+        tapSuppressor.suppress()
+        let name = kind == .underline ? "下划线" : "底色"
+        let added: Bool
+        if let sel = charSelection {
+            added = bookmarkStore.toggleAnnotation(
+                bookUrl: activeBook.bookUrl,
+                chapterIndex: currentChapterIndex,
+                chapterTitle: cur.chapter.title,
+                blockId: sel.paragraphId,
+                charOffset: sel.start,
+                length: sel.length,
+                kind: kind,
+                color: color,
+                snippet: currentSelectionText.trimmingCharacters(in: .whitespacesAndNewlines),
+                charScoped: true
+            )
+        } else {
+            added = bookmarkStore.toggleAnnotation(
+                bookUrl: activeBook.bookUrl,
+                chapterIndex: currentChapterIndex,
+                chapterTitle: cur.chapter.title,
+                blockId: range.start,
+                length: range.count,
+                kind: kind,
+                color: color,
+                snippet: selectedParagraphText
+            )
+        }
+        colorPickerKind = nil
+        showBookmarkHint(added ? "已加\(name)" : "已取消\(name)")
+    }
+
+    /// 替换：把选中段落整段换成输入的词，规则按书存，加载正文时套用
+    private func applyParagraphReplace() {
+        guard let cur = currentLoadedChapter else { return }
+        var from = currentSelectionText.trimmingCharacters(in: .whitespacesAndNewlines)
+        var to = replaceInput
+        // 字选：只改选中那几个字，保留同一段其余内容。用整段做锚点，
+        // 免得「替换」把本章里所有相同短词一起换掉。
+        if let sel = charSelection {
+            let ns = selectedParagraphRawText as NSString
+            let relative = sel.start - selectedParagraphCharStart
+            if relative >= 0, relative + sel.length <= ns.length {
+                from = selectedParagraphRawText.trimmingCharacters(in: .whitespacesAndNewlines)
+                to = ns.replacingCharacters(in: NSRange(location: relative, length: sel.length),
+                                             with: replaceInput)
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+            }
+        }
+        guard !from.isEmpty else { return }
+        bookmarkStore.addTextReplaceRule(bookUrl: activeBook.bookUrl, from: from, to: to)
+        showReplaceInput = false
+        clearParagraphSelection()
+        _ = cur
+        refreshCurrentChapter()
+        showBookmarkHint("已替换")
+    }
+
+    /// 正文加载时套用这本书的替换规则
+    private func applyingBookReplaceRules(_ content: String) -> String {
+        TextReplaceRules.apply(content, rules: bookmarkStore.textReplaceRules(bookUrl: activeBook.bookUrl))
+    }
 
     /// 下拉识别器：四种翻页模式都走这一条路（见 ReaderPullDownCatcher 的说明）
     @ViewBuilder
     private var pullDownCatcherLayer: some View {
         #if os(iOS)
         ReaderPullDownCatcher(
-            isEnabled: { !showControls },
+            isEnabled: { !showControls && !readerOverlayPresented },
             isAtTop: { isAtChapterTop },
             onChanged: { dy in
-                // 整页跟着手指下来（带阻尼，最多 90pt）
+                // 整页跟着手指下来，橡皮筋阻尼：起手跟手，越拉越沉，最多能拉到半屏多
                 if dy > 4 { isPullActive = true }
                 bookmarkPullProgress = min(1, dy / 70)
-                pagePullOffset = min(120, dy * 0.85)
+                pagePullOffset = pullOffset(for: dy)
             },
             onEnded: { _, passed in
                 bookmarkPullProgress = 0
@@ -2425,11 +3778,21 @@ public struct ReaderView: View {
                     finishBookmarkPull()
                 } else {
                     isPullActive = false
-                    withAnimation(.interpolatingSpring(stiffness: 380, damping: 26)) {
+                    // 阻尼给得低一点：回弹带一点过冲，才有 Q 弹的手感
+                    withAnimation(.interpolatingSpring(stiffness: 220, damping: 15)) {
                         pagePullOffset = 0
                     }
                     if !bookmarkRibbonSettled { bookmarkRibbonVisible = false }
                 }
+            },
+            onLongPress: { point in
+                handleLongPressAtWindowPoint(point)
+            },
+            onCharHandleHit: { point in
+                beginCharHandleDrag(at: point)
+            },
+            onCharHandleDrag: { point in
+                updateCharSelection(isStart: isDraggingCharStart, at: point)
             }
         )
         #endif
@@ -2439,12 +3802,12 @@ public struct ReaderView: View {
     private func finishBookmarkPull() {
         bookmarkPullProgress = 0
         withAnimation(.easeOut(duration: 0.2)) {
-            pagePullOffset = min(120, max(pagePullOffset, 64))
+            pagePullOffset = min(pullMaxOffset(), max(pagePullOffset, 96))
         }
         toggleBookmarkByPull()
         Task { @MainActor in
             try? await Task.sleep(nanoseconds: 600_000_000)
-            withAnimation(.interpolatingSpring(stiffness: 380, damping: 26)) {
+            withAnimation(.interpolatingSpring(stiffness: 220, damping: 15)) {
                 pagePullOffset = 0
             }
             // 等页面回到原位再放开探针，免得回弹过程被当成滚动
@@ -2457,6 +3820,30 @@ public struct ReaderView: View {
     private var isAtChapterTop: Bool {
         guard readerConfig.pageMode == .scroll else { return true }
         return scrollOffsetY <= 2
+    }
+
+    /// 有面板挡在前面时，下拉与长按都不该再响应
+    /// （不然在弹层里往下拖，会把底下的正文一起拉走，甚至顺手切了书签）
+    private var readerOverlayPresented: Bool {
+        showBookmarks || showTOC || showSearch || showTTSSettings || showBookInfo
+            || showSourceSwitch || showTitleDesigner || showReplaceRules
+            || showAggregateSearch || showBackgroundImagePicker || showReplaceInput
+    }
+
+    /// 下拉最多能拉多低：屏幕的一半多一点，屏幕高就多给一点
+    private func pullMaxOffset() -> CGFloat {
+        let screenHeight = max(320, readerContainerSize.height)
+        return min(560, max(260, screenHeight * 0.62))
+    }
+
+    /// 下拉位移的阻尼曲线：`(1 - 1/(dy/max + 1))·max`
+    ///
+    /// 起手斜率约等于 1（跟着手指走，不粘不飘），越接近上限越沉，永远拉不到死板的上限，
+    /// 这就是 iOS 那套橡皮筋手感。
+    private func pullOffset(for dy: CGFloat) -> CGFloat {
+        guard dy > 0 else { return 0 }
+        let maxOffset = pullMaxOffset()
+        return (1 - 1 / (dy / maxOffset + 1)) * maxOffset
     }
 
     /// 下拉是开关：这一章没书签就加，有就取消
@@ -2523,10 +3910,13 @@ public struct ReaderView: View {
     @ViewBuilder
     private var pullBackgroundLayer: some View {
         #if os(iOS)
-        if let pullBackgroundImage {
-            Image(uiImage: pullBackgroundImage)
-                .resizable()
-                .scaledToFill()
+        // 不拉的时候不画：正文层从安全区顶部开始，背景图若一直铺着，状态栏那一条也会露出图。
+        if let pullBackgroundImage, pagePullOffset > 0 {
+            PullBackgroundCanvas(image: pullBackgroundImage,
+                                 zoom: pullBackgroundScale,
+                                 offsetX: pullBackgroundOffsetX,
+                                 offsetY: pullBackgroundOffsetY,
+                                 alignment: pullBackgroundAlign)
                 .ignoresSafeArea()
                 .allowsHitTesting(false)
         }
@@ -2547,26 +3937,32 @@ public struct ReaderView: View {
     @ViewBuilder
     private func bookmarkRibbonView(width: CGFloat) -> some View {
         #if os(iOS)
+        let boxHeight = BookmarkBoxMetrics.height(width: width,
+                                                   aspect: bookmarkAspect,
+                                                   imageSize: bookmarkImage?.size)
         if let image = bookmarkImage {
             Image(uiImage: image)
                 .resizable()
-                .scaledToFit()
-                .frame(width: width)
+                // 填满「宽 × 高」这个盒子再裁掉多的：想调成别的比例不会把图压变形
+                .scaledToFill()
+                .frame(width: width, height: boxHeight, alignment: .top)
+                .clipped()
                 .shadow(color: Color.black.opacity(0.18),
                         radius: bookmarkRibbonSettled ? 2 : 9,
                         y: bookmarkRibbonSettled ? 1 : 6)
         } else {
-            defaultRibbon(width: width)
+            defaultRibbon(width: width, height: boxHeight)
         }
         #else
-        defaultRibbon(width: width)
+        defaultRibbon(width: width,
+                      height: BookmarkBoxMetrics.height(width: width, aspect: bookmarkAspect, imageSize: nil))
         #endif
     }
 
-    private func defaultRibbon(width: CGFloat) -> some View {
+    private func defaultRibbon(width: CGFloat, height: CGFloat) -> some View {
         BookmarkRibbonShape()
             .fill(Color.accentColor.opacity(0.95))
-            .frame(width: width, height: width * 1.73)
+            .frame(width: width, height: height)
             .shadow(color: Color.black.opacity(0.18),
                     radius: bookmarkRibbonSettled ? 3 : 9,
                     y: bookmarkRibbonSettled ? 2 : 6)
@@ -2581,7 +3977,7 @@ public struct ReaderView: View {
                 if bookmarkRibbonVisible || bookmarkPullProgress > 0 {
                     bookmarkRibbonView(width: ribbonWidth)
                         // 贴屏幕最顶：y 从上沿算，-safeTop 把状态栏那条也算进来
-                        .offset(x: x, y: ribbonOffsetY - safeInsets.top + 2)
+                        .offset(x: x, y: ribbonOffsetY - safeInsets.top + 2 + CGFloat(bookmarkY))
                 }
             }
         }
@@ -2668,6 +4064,7 @@ public struct ReaderView: View {
             for i in 0..<fetched.count { fetched[i].index = i }
             await MainActor.run {
                 self.chapters = fetched
+                BookStore.shared.saveChapters(fetched, for: tocCacheKey(source: source))
                 if let title, let idx = fetched.firstIndex(where: { $0.title == title }) {
                     currentChapterIndex = idx
                 } else if currentChapterIndex >= fetched.count {
@@ -3172,10 +4569,41 @@ public struct ReaderView: View {
 
             if readerConfig.backgroundImageEnabled {
                 HStack(spacing: 10) {
+                    #if os(iOS)
+                    if #available(iOS 16.0, *) {
+                        // 从相册选，别开文件管理器
+                        PhotosPicker(selection: Binding(
+                            get: { backgroundPhotoItem as? PhotosPickerItem },
+                            set: { newValue in
+                                backgroundPhotoItem = newValue
+                                guard let item = newValue else { return }
+                                Task {
+                                    if let data = try? await item.loadTransferable(type: Data.self),
+                                       let path = ReaderBackgroundStorage.save(data) {
+                                        await MainActor.run {
+                                            readerConfig.backgroundImagePath = path
+                                            readerConfig.backgroundImageEnabled = true
+                                        }
+                                    }
+                                }
+                            }
+                        ), matching: .images) {
+                            Text(readerConfig.backgroundImagePath.isEmpty ? "从相册选图" : "换一张")
+                                .font(.system(size: 12))
+                                .foregroundColor(readerConfig.textColor.opacity(0.8))
+                        }
+                    } else {
+                        Button("选择图片…") { showBackgroundImagePicker = true }
+                            .font(.system(size: 12))
+                            .buttonStyle(.plain)
+                            .foregroundColor(readerConfig.textColor.opacity(0.8))
+                    }
+                    #else
                     Button("选择图片…") { showBackgroundImagePicker = true }
                         .font(.system(size: 12))
                         .buttonStyle(.plain)
                         .foregroundColor(readerConfig.textColor.opacity(0.8))
+                    #endif
                     Spacer()
                     if !readerConfig.backgroundImagePath.isEmpty {
                         Button("清除") { readerConfig.backgroundImagePath = "" }
@@ -3190,7 +4618,31 @@ public struct ReaderView: View {
                     .font(.system(size: 11))
                     .foregroundColor(readerConfig.textColor.opacity(0.5))
                     .lineLimit(1)
+
+                if !readerConfig.backgroundImagePath.isEmpty {
+                    // 跟下拉背景、书签图一样：缩放 + 位置都能调
+                    backgroundImageSlider("缩放", value: $backgroundImageScale, range: 0.2...4)
+                    backgroundImageSlider("左右位置", value: $backgroundImageOffsetX, range: -400...400)
+                    backgroundImageSlider("上下位置", value: $backgroundImageOffsetY, range: -400...400)
+                }
             }
+        }
+    }
+
+    private func backgroundImageSlider(_ title: String, value: Binding<Double>, range: ClosedRange<Double>) -> some View {
+        HStack(spacing: 8) {
+            Text(title)
+                .font(.system(size: 11))
+                .foregroundColor(readerConfig.textColor.opacity(0.6))
+                .frame(width: 56, alignment: .leading)
+            Slider(value: Binding(
+                get: { min(max(value.wrappedValue, range.lowerBound), range.upperBound) },
+                set: { value.wrappedValue = $0 }
+            ), in: range)
+            Text(String(format: "%.2f", value.wrappedValue))
+                .font(.system(size: 11, design: .rounded))
+                .foregroundColor(readerConfig.textColor.opacity(0.5))
+                .frame(width: 44, alignment: .trailing)
         }
     }
 
@@ -3559,6 +5011,23 @@ public struct ReaderView: View {
             return
         }
 
+        // 目录在手就先用：网络书的目录以前每次进都要重抓，进书就要等一轮加载。
+        // 缓存按「书 + 书源」分开存（换源后的目录是另一份），打开时先用它，
+        // 再在后台静默刷新一次，有新章节就更新，不打断阅读。
+        let cachedChapters = BookStore.shared.getChapters(for: tocCacheKey(source: source))
+        if !cachedChapters.isEmpty {
+            var list = cachedChapters
+            for i in 0..<list.count { list[i].index = i }
+            self.chapters = list
+            AppLog.write("[阅读] 复用缓存目录，共 \(list.count) 章")
+            if currentChapterIndex >= list.count {
+                currentChapterIndex = max(0, list.count - 1)
+            }
+            loadInitialChapter(at: currentChapterIndex)
+            Task { await refreshTOCInBackground(source: source) }
+            return
+        }
+
         do {
             self.loadingNote = "正在加载目录..."
             var fetchedChapters = try await BookContentService.shared.fetchChapterList(
@@ -3574,6 +5043,7 @@ public struct ReaderView: View {
                 fetchedChapters[i].index = i
             }
             self.chapters = fetchedChapters
+            BookStore.shared.saveChapters(fetchedChapters, for: tocCacheKey(source: source))
             AppLog.write("[阅读] 打开网络书籍，共 \(fetchedChapters.count) 章")
             guard !fetchedChapters.isEmpty else {
                 // 换源之后目录空，说明这个源用不了，直接退回原来的源
@@ -3599,6 +5069,32 @@ public struct ReaderView: View {
         }
     }
 
+    /// 目录缓存键：换源之后目录是另一份，得跟着书源分开存
+    private func tocCacheKey(source: BookSource?) -> String {
+        let sourceKey = source?.bookSourceUrl ?? ""
+        return "\(activeBook.bookUrl)#\(sourceKey)"
+    }
+
+    /// 后台静默刷新目录：有新增章节就更新列表并落盘；章数没变就不打扰阅读
+    private func refreshTOCInBackground(source: BookSource) async {
+        guard let fetched = try? await BookContentService.shared.fetchChapterList(book: activeBook, source: source),
+              !fetched.isEmpty else { return }
+        var list = fetched
+        for i in 0..<list.count { list[i].index = i }
+        await MainActor.run {
+            BookStore.shared.saveChapters(list, for: tocCacheKey(source: source))
+            guard list.count != chapters.count else { return }
+            let title = currentLoadedChapter?.chapter.title
+            chapters = list
+            if let title, let idx = list.firstIndex(where: { $0.title == title }) {
+                currentChapterIndex = idx
+            } else if currentChapterIndex >= list.count {
+                currentChapterIndex = max(0, list.count - 1)
+            }
+            AppLog.write("[阅读] 后台刷新目录：\(list.count) 章")
+        }
+    }
+
     @MainActor
     private func getOrFetchChapter(at index: Int) async -> LoadedChapter? {
         guard index >= 0 && index < chapters.count else { return nil }
@@ -3607,7 +5103,7 @@ public struct ReaderView: View {
         }
         let targetChapter = chapters[index]
         do {
-            let content = try await BookContentService.shared.fetchChapterContent(chapter: targetChapter, source: effectiveSource, book: activeBook)
+            let content = applyingBookReplaceRules(try await BookContentService.shared.fetchChapterContent(chapter: targetChapter, source: effectiveSource, book: activeBook))
             let blocks = parseContentBlocks(from: content)
             let pages = paginate(blocks: blocks, title: targetChapter.title)
             let loaded = LoadedChapter(chapter: targetChapter, content: content, blocks: blocks, pages: pages)
@@ -3664,7 +5160,7 @@ public struct ReaderView: View {
                 if let cached = self.chapterCache[index] {
                     loaded = cached
                 } else {
-                    let content = try await BookContentService.shared.fetchChapterContent(chapter: currentChapter, source: source, book: activeBook)
+                    let content = applyingBookReplaceRules(try await BookContentService.shared.fetchChapterContent(chapter: currentChapter, source: source, book: activeBook))
                     let blocks = parseContentBlocks(from: content)
                     let pages = paginate(blocks: blocks, title: currentChapter.title)
                     loaded = LoadedChapter(chapter: currentChapter, content: content, blocks: blocks, pages: pages)
@@ -3771,7 +5267,7 @@ public struct ReaderView: View {
 
         Task { @MainActor in
             do {
-                let content = try await BookContentService.shared.fetchChapterContent(chapter: nextChapter, source: source, book: activeBook)
+                let content = applyingBookReplaceRules(try await BookContentService.shared.fetchChapterContent(chapter: nextChapter, source: source, book: activeBook))
                 let blocks = parseContentBlocks(from: content)
                 let pages = paginate(blocks: blocks, title: nextChapter.title)
                 let loaded = LoadedChapter(chapter: nextChapter, content: content, blocks: blocks, pages: pages)
@@ -3893,8 +5389,13 @@ public struct ReaderView: View {
         let lines = text.components(separatedBy: "\n")
 
         for line in lines {
-            let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
-            if trimmed.isEmpty { continue }
+            let marked = extractReviewMarkers(from: line)
+            let trimmed = marked.line.trimmingCharacters(in: .whitespacesAndNewlines)
+            if trimmed.isEmpty {
+                attachReviewMarker(marked, from: blocks.count, blocks: &blocks)
+                continue
+            }
+            let firstBlockIndex = blocks.count
 
             if let regex = regex {
                 let nsLine = trimmed as NSString
@@ -3925,6 +5426,7 @@ public struct ReaderView: View {
                             currentId += 1
                         }
                     }
+                    attachReviewMarker(marked, from: firstBlockIndex, blocks: &blocks)
                     continue
                 }
             }
@@ -3935,8 +5437,51 @@ public struct ReaderView: View {
                 blocks.append(ContentBlock(id: currentId, isImage: false, text: indent + paragraph, imageUrl: nil))
                 currentId += 1
             }
+            attachReviewMarker(marked, from: firstBlockIndex, blocks: &blocks)
         }
         return blocks
+    }
+
+    /// 从一行里拆出段评 / 本章说哨兵，剩下才是正文。
+    private func extractReviewMarkers(from line: String)
+        -> (line: String, count: Int, url: String?, chapterURL: String?) {
+        var text = line
+        var count = 0
+        var url: String?
+        var chapterURL: String?
+
+        if let regex = try? NSRegularExpression(pattern: "\u{E000}C\u{1F}(\\d+)\u{1F}([^\u{E001}]*)\u{E001}") {
+            let nsText = text as NSString
+            if let match = regex.firstMatch(in: text, range: NSRange(location: 0, length: nsText.length)) {
+                count = Int(nsText.substring(with: match.range(at: 1))) ?? 0
+                url = nsText.substring(with: match.range(at: 2))
+                text = (text as NSString).replacingCharacters(in: match.range, with: "")
+            }
+        }
+        if let regex = try? NSRegularExpression(pattern: "\u{E000}H\u{1F}([^\u{E001}]*)\u{E001}") {
+            let nsText = text as NSString
+            if let match = regex.firstMatch(in: text, range: NSRange(location: 0, length: nsText.length)) {
+                chapterURL = nsText.substring(with: match.range(at: 1))
+                text = (text as NSString).replacingCharacters(in: match.range, with: "")
+            }
+        }
+        return (text, count, url, chapterURL)
+    }
+
+    /// 段评挂在段落最后一块上；本章说单独生成一条入口。
+    private func attachReviewMarker(_ marker: (line: String, count: Int, url: String?, chapterURL: String?),
+                                    from firstBlockIndex: Int,
+                                    blocks: inout [ContentBlock]) {
+        if marker.count > 0, let url = marker.url,
+           let index = blocks.indices.last(where: { $0 >= firstBlockIndex && !blocks[$0].isImage }) {
+            blocks[index].commentCount = marker.count
+            blocks[index].commentURL = url
+        }
+        if let chapterURL = marker.chapterURL {
+            let id = (blocks.last?.id ?? 0) + 1
+            blocks.append(ContentBlock(id: id, isImage: false, text: "本章说 · 查看全部评论", imageUrl: nil,
+                                       commentCount: -1, commentURL: chapterURL))
+        }
     }
 
     private func currentChapterCharOffset() -> Int {
@@ -4010,7 +5555,7 @@ public struct ReaderView: View {
     ///
     /// 这里必须跟 `CoreTextPageView` 用同一套字体和字距：换字体或把字距调大后，
     /// 按默认苹方、不带字距切出来的行，画的时候会宽于量出来的宽度，整页就溢出/错位。
-    private func splitParagraphIntoLines(text: String, width: Double) -> [(text: String, isParagraphEnd: Bool)] {
+    private func splitParagraphIntoLines(text: String, width: Double) -> [(text: String, isParagraphEnd: Bool, charStart: Int)] {
         let font = ReaderFontFactory.ctFont(
             postScriptName: readerConfig.font.postScriptName,
             boldPostScriptName: readerConfig.font.boldPostScriptName,
@@ -4022,12 +5567,12 @@ public struct ReaderView: View {
             kCTKernAttributeName: readerConfig.letterSpacing
         ]
         guard let attrString = CFAttributedStringCreate(nil, text as CFString, attributes as CFDictionary) else {
-            return [(text, true)]
+            return [(text, true, 0)]
         }
         let typesetter = CTTypesetterCreateWithAttributedString(attrString)
         var start = 0
         let textLen = CFStringGetLength(text as CFString)
-        var result: [(text: String, isParagraphEnd: Bool)] = []
+        var result: [(text: String, isParagraphEnd: Bool, charStart: Int)] = []
         let nsStr = text as NSString
         // 段首会补全角缩进，第一行要按缩进后的宽度切，否则首行一定超宽
         let indentWidth = Double(readerConfig.firstLineIndent.rounded()) * Double(readerConfig.fontSize)
@@ -4042,7 +5587,7 @@ public struct ReaderView: View {
             }
             let sub = nsStr.substring(with: NSRange(location: start, length: count))
             let isEnd = (start + count >= textLen)
-            result.append((sub, isEnd))
+            result.append((sub, isEnd, start))
             start += count
             isFirstLine = false
         }
@@ -4118,14 +5663,17 @@ public struct ReaderView: View {
         return max(1, adjusted)
     }
 
-    private func buildPageBlocks(from lines: [(text: String, isParagraphEnd: Bool)], startingId: inout Int) -> [ContentBlock] {
+    private func buildPageBlocks(from lines: [(text: String, isParagraphEnd: Bool, charStart: Int, paragraphId: Int)],
+                                 startingId: inout Int) -> [ContentBlock] {
         var blocks: [ContentBlock] = []
         for line in lines {
             blocks.append(ContentBlock(
                 id: startingId,
                 isImage: false,
                 text: line.text,
-                imageUrl: line.isParagraphEnd ? "p_end" : nil
+                imageUrl: line.isParagraphEnd ? "p_end" : nil,
+                paragraphId: line.paragraphId,
+                charStart: line.charStart
             ))
             startingId += 1
         }
@@ -4141,7 +5689,7 @@ public struct ReaderView: View {
         let usableWidth = Double(max(200, readerContainerSize.width - readerConfig.paddingLeft - readerConfig.paddingRight))
 
         var pages: [[ContentBlock]] = []
-        var currentPageLines: [(text: String, isParagraphEnd: Bool)] = []
+        var currentPageLines: [(text: String, isParagraphEnd: Bool, charStart: Int, paragraphId: Int)] = []
         var currentPageHeight: CGFloat = 0
         var maxHeightForCurrentPage = firstPageHeight
         var blockIdCounter = 10000
@@ -4173,7 +5721,7 @@ public struct ReaderView: View {
                         currentPageHeight = 0
                         maxHeightForCurrentPage = normalHeight
                     }
-                    currentPageLines.append(lineInfo)
+                    currentPageLines.append((lineInfo.text, lineInfo.isParagraphEnd, lineInfo.charStart, block.id))
                     currentPageHeight += lineHeightWithSpacing
                 }
             }
@@ -4484,6 +6032,18 @@ public struct CoreTextPageView: NSViewRepresentable {
     public var underlineColor: Color? = nil
     public var paragraphSeparatorLines: Int = 0
     public var paragraphSeparatorColor: Color? = nil
+    /// 每行属于哪一段（段落级长按选择用），与 lines 一一对应
+    public var lineBlockIds: [Int] = []
+    public var lineParagraphIds: [Int] = []
+    public var lineCharStarts: [Int] = []
+    /// 选中的段落（起始块 id + 覆盖块数）
+    public var selectedRange: (start: Int, count: Int)? = nil
+    public var charSelection: ReaderCharSelection? = nil
+    public var charAnnotations: [ReaderCharAnnotation] = []
+    /// 已加标注的段落：下划线 / 底色
+    public var annotationRanges: [(start: Int, count: Int, style: ReaderBlockStyle)] = []
+    /// 长按回调：页内行号 + 该行内的字符偏移（UTF-16）
+    public var onLongPressLine: ((Int, Int) -> Void)?
 
     public func makeNSView(context: Context) -> CoreTextNSView {
         let view = CoreTextNSView()
@@ -4617,6 +6177,7 @@ public class CoreTextNSView: NSView {
 
             let baselineY = CGFloat(index) * effectiveLineHeight + ascent + paragraphOffset
 
+            // macOS 版不做段落级标注（标注绘制在 iOS 的 CoreTextUIView 里）
             ctx.saveGState()
             ctx.textMatrix = .identity
             ctx.translateBy(x: penOffset, y: baselineY)
@@ -4855,6 +6416,21 @@ public struct CoreTextPageView: UIViewRepresentable {
     public var paragraphSeparatorLines: Int = 0
     public var paragraphSeparatorColor: Color? = nil
 
+    /// 每行属于哪一段（段落级长按选择用），与 lines 一一对应
+    public var lineBlockIds: [Int] = []
+    /// 每行所属原始段落的 id 与段内字符起点（逐字选择用）
+    public var lineParagraphIds: [Int] = []
+    public var lineCharStarts: [Int] = []
+    /// 选中的段落（起始块 id + 覆盖块数）
+    public var selectedRange: (start: Int, count: Int)? = nil
+    /// 段内逐字选择
+    public var charSelection: ReaderCharSelection? = nil
+    /// 段内逐字标注
+    public var charAnnotations: [ReaderCharAnnotation] = []
+    /// 已加标注的段落：下划线 / 底色
+    public var annotationRanges: [(start: Int, count: Int, style: ReaderBlockStyle)] = []
+    public var onLongPressLine: ((Int, Int) -> Void)?
+
     public func makeUIView(context: Context) -> CoreTextUIView {
         let view = CoreTextUIView()
         updateUIView(view, context: context)
@@ -4878,6 +6454,14 @@ public struct CoreTextPageView: UIViewRepresentable {
         uiView.underlineColor = underlineColor.map { UIColor($0) }
         uiView.paragraphSeparatorLines = paragraphSeparatorLines
         uiView.paragraphSeparatorColor = paragraphSeparatorColor.map { UIColor($0) }
+        uiView.lineBlockIds = lineBlockIds
+        uiView.lineParagraphIds = lineParagraphIds
+        uiView.lineCharStarts = lineCharStarts
+        uiView.selectedRange = selectedRange
+        uiView.charSelection = charSelection
+        uiView.charAnnotations = charAnnotations
+        uiView.annotationRanges = annotationRanges
+        uiView.onLongPressLine = onLongPressLine
         uiView.textColor = UIColor(textColor)
         uiView.containerWidth = width
         uiView.containerHeight = height
@@ -4888,18 +6472,35 @@ public struct CoreTextPageView: UIViewRepresentable {
 }
 
 public class CoreTextUIView: UIView {
+    /// 一次绘制缓存下来的逐字排版：手柄位置和逐字高亮都从这里查
+    struct LineLayout {
+        var rect: CGRect
+        var boundaries: [CGFloat]
+        var paragraphId: Int
+        var charStart: Int
+    }
+
     public var lines: [String] = []
     public var isParagraphEnd: [Bool] = []
     /// 每一行属于哪一段（ContentBlock.id）。跟 lines 一一对应，段落级选择靠它命中。
     public var lineBlockIds: [Int] = []
+    /// 每行所属原始段落 id 与段内字符起点，逐字选择/标注靠它们定位
+    public var lineParagraphIds: [Int] = []
+    public var lineCharStarts: [Int] = []
     /// 选中高亮的段落
-    public var highlightedBlockId: Int?
+    public var selectedRange: (start: Int, count: Int)?
+    /// 段内逐字选择
+    public var charSelection: ReaderCharSelection?
+    /// 段内逐字标注
+    public var charAnnotations: [ReaderCharAnnotation] = []
     /// 已加标注的段落：下划线 / 底色
-    public var blockStyles: [Int: ReaderBlockStyle] = [:]
+    public var annotationRanges: [(start: Int, count: Int, style: ReaderBlockStyle)] = []
     /// 长按命中某一行时回调（页内行号）
-    public var onLongPressLine: ((Int) -> Void)?
+    public var onLongPressLine: ((Int, Int) -> Void)?
     /// 上一次绘制时记下的行矩形，命中测试用
     private var lineRects: [CGRect] = []
+    /// 上一次绘制时记下的逐字边界
+    private var lineLayouts: [LineLayout?] = []
     public var fontSize: CGFloat = 18
     public var lineSpacing: CGFloat = 6
     public var letterSpacing: CGFloat = 0
@@ -4921,14 +6522,16 @@ public class CoreTextUIView: UIView {
     public override init(frame: CGRect) {
         super.init(frame: frame)
         let press = UILongPressGestureRecognizer(target: self, action: #selector(handleLongPress(_:)))
-        press.minimumPressDuration = 0.35
+        press.minimumPressDuration = 0.3
+        press.allowableMovement = 22
         addGestureRecognizer(press)
     }
 
     public required init?(coder: NSCoder) {
         super.init(coder: coder)
         let press = UILongPressGestureRecognizer(target: self, action: #selector(handleLongPress(_:)))
-        press.minimumPressDuration = 0.35
+        press.minimumPressDuration = 0.3
+        press.allowableMovement = 22
         addGestureRecognizer(press)
     }
 
@@ -4936,8 +6539,58 @@ public class CoreTextUIView: UIView {
     @objc private func handleLongPress(_ recognizer: UILongPressGestureRecognizer) {
         guard recognizer.state == .began else { return }
         let point = recognizer.location(in: self)
-        guard let index = lineRects.firstIndex(where: { $0.insetBy(dx: -12, dy: -3).contains(point) }) else { return }
-        onLongPressLine?(index)
+        guard let index = lineIndex(at: point) else {
+            AppLog.write("[长按] 分页模式未命中行 · \(Int(point.x)),\(Int(point.y)) · 行数 \(lines.count)/\(lineRects.count)")
+            return
+        }
+        AppLog.write("[长按] 分页模式命中行 \(index) · block \(index < lineBlockIds.count ? lineBlockIds[index] : -1)")
+        onLongPressLine?(index, charOffset(at: point, lineIndex: index))
+    }
+
+    /// 命中测试：先找整行矩形，没中再退到最近一行（长按常落在行间空白、行尾或段末）
+    private func lineIndex(at point: CGPoint) -> Int? {
+        if let exact = lineRects.firstIndex(where: { !$0.isNull && $0.insetBy(dx: -12, dy: -4).contains(point) }) {
+            return exact
+        }
+        let tolerance = (fontSize * 1.25 + lineSpacing) * 1.2
+        var best: (index: Int, distance: CGFloat)?
+        for (index, rect) in lineRects.enumerated() where !rect.isNull {
+            let distance = abs(point.y - rect.midY)
+            if best == nil || distance < best!.distance { best = (index, distance) }
+        }
+        if let best, best.distance <= tolerance { return best.index }
+        return nil
+    }
+
+    /// 触点在一行里最接近的字符边界（0...行长度）
+    private func charOffset(at point: CGPoint, lineIndex: Int) -> Int {
+        guard lineIndex >= 0, lineIndex < lineLayouts.count,
+              let layout = lineLayouts[lineIndex], !layout.boundaries.isEmpty else { return 0 }
+        var bestOffset = 0
+        var bestDistance = CGFloat.greatestFiniteMagnitude
+        for (index, x) in layout.boundaries.enumerated() {
+            let distance = abs(point.x - x)
+            if distance < bestDistance {
+                bestDistance = distance
+                bestOffset = index
+            }
+        }
+        return bestOffset
+    }
+
+    /// 某一行所在整段的矩形（窗口坐标），给操作气泡定位用
+    func paragraphWindowRect(atLine line: Int) -> CGRect? {
+        guard !lineRects.isEmpty else { return nil }
+        var start = min(line, lineRects.count - 1)
+        while start > 0, start - 1 < isParagraphEnd.count, !isParagraphEnd[start - 1] { start -= 1 }
+        var end = min(line, lineRects.count - 1)
+        while end < lineRects.count - 1, end < isParagraphEnd.count, !isParagraphEnd[end] { end += 1 }
+        let rects = lineRects[start...end].filter { !$0.isNull }
+        guard let first = rects.first, let last = rects.last else { return nil }
+        let union = CGRect(x: first.minX, y: first.minY,
+                           width: first.width, height: last.maxY - first.minY)
+        // to: nil 就是窗口坐标，气泡那层也是整屏铺开的，两边对得上
+        return convert(union, to: nil)
     }
 
     /// 内容指纹：跟上次一样就不重绘
@@ -4945,6 +6598,66 @@ public class CoreTextUIView: UIView {
         didSet {
             if oldValue != renderSignature { setNeedsDisplay() }
         }
+    }
+
+    // MARK: - 页内长按的外部入口
+    //
+    // 分页那几套模式整页盖着一层 `DragGesture(minimumDistance: 0)` + 透明的点击层，
+    // 触摸根本到不了 UIKit 这个视图，自己挂的识别器收不到。所以长按统一由窗口层
+    // 识别器派发进来：先在一张「活动视图表」里找出触点落在哪一页，再走同一套行命中。
+
+    private struct WeakPage {
+        weak var view: CoreTextUIView?
+    }
+
+    /// 主线程访问（视图注册/注销与长按派发都在主线程）
+    @MainActor private static var activePages: [WeakPage] = []
+
+    /// 最近一次长按选中段落的窗口矩形：操作栏要浮在文字旁边，得知道选中的位置
+    @MainActor public static var lastSelectionWindowRect: CGRect?
+
+    public override func didMoveToWindow() {
+        super.didMoveToWindow()
+        MainActor.assumeIsolated {
+            CoreTextUIView.activePages.removeAll { $0.view == nil }
+            if let index = CoreTextUIView.activePages.firstIndex(where: { $0.view === self }) {
+                CoreTextUIView.activePages.remove(at: index)
+            }
+            if window != nil {
+                CoreTextUIView.activePages.append(WeakPage(view: self))
+            }
+        }
+    }
+
+    /// 把窗口坐标交给落在该点的那一页；返回是否有人接手
+    @discardableResult
+    public static func triggerLongPress(atWindowPoint point: CGPoint) -> Bool {
+        guard let index = activePageIndex(atWindowPoint: point),
+              let view = activePages[index].view else { return false }
+        let local = view.convert(point, from: nil)
+        guard let line = view.lineIndex(at: local) else {
+            AppLog.write("[长按] 分页模式落在页内但没命中行 · 行数 \(view.lines.count)/\(view.lineRects.count)")
+            return false
+        }
+        let blockId = line < view.lineBlockIds.count ? view.lineBlockIds[line] : -1
+        AppLog.write("[长按] 分页模式命中行 \(line) · block \(blockId)")
+        // 段落矩形：同一段的首行到末行并起来，再换算到窗口坐标
+        CoreTextUIView.lastSelectionWindowRect = view.paragraphWindowRect(atLine: line)
+        view.onLongPressLine?(line, view.charOffset(at: local, lineIndex: line))
+        return true
+    }
+
+    /// 触点落在哪一页：可见、且局部坐标在页内；多页重叠时取面积最小的
+    private static func activePageIndex(atWindowPoint point: CGPoint) -> Int? {
+        var best: (index: Int, area: CGFloat)?
+        for (index, box) in activePages.enumerated() {
+            guard let view = box.view, view.window != nil, !view.isHidden, view.alpha > 0.01 else { continue }
+            let local = view.convert(point, from: nil)
+            guard view.bounds.contains(local) else { continue }
+            let area = view.bounds.width * view.bounds.height
+            if best == nil || area < best!.area { best = (index, area) }
+        }
+        return best?.index
     }
 
     public func currentSignature() -> String {
@@ -4959,15 +6672,27 @@ public class CoreTextUIView: UIView {
         parts.append(contentsOf: lines)
         parts.append(isParagraphEnd.map { $0 ? "1" : "0" }.joined())
         parts.append(lineBlockIds.map(String.init).joined(separator: ","))
-        parts.append(highlightedBlockId.map(String.init) ?? "")
-        parts.append(blockStyles.keys.sorted().map {
-            "\($0):\(blockStyles[$0]?.underline == true ? "u" : "")\(blockStyles[$0]?.highlightHex ?? "")"
+        parts.append(lineParagraphIds.map(String.init).joined(separator: ","))
+        parts.append(lineCharStarts.map(String.init).joined(separator: ","))
+        parts.append(selectedRange.map { "\($0.start)-\($0.count)" } ?? "")
+        parts.append(charSelection.map { "c\($0.paragraphId):\($0.start)+\($0.length)" } ?? "")
+        parts.append(charAnnotations.map {
+            "\($0.paragraphId):\($0.start)+\($0.length):\($0.style.underline ? "u\($0.style.underlineHex ?? "")" : "")\($0.style.highlightHex ?? "")"
+        }.joined(separator: ","))
+        parts.append(annotationRanges.map {
+            "\($0.start)+\($0.count):\($0.style.underline ? "u\($0.style.underlineHex ?? "")" : "")\($0.style.highlightHex ?? "")"
         }.joined(separator: ","))
         return parts.joined(separator: "\u{1}")
     }
 
     public override func draw(_ rect: CGRect) {
         guard let ctx = UIGraphicsGetCurrentContext(), !lines.isEmpty else { return }
+
+        // 行矩形是长按命中的唯一依据，每画一次就重记一次
+        var rects = [CGRect](repeating: .null, count: lines.count)
+        defer { lineRects = rects }
+        var layouts = [LineLayout?](repeating: nil, count: lines.count)
+        defer { lineLayouts = layouts }
 
         let ctFont = ReaderFontFactory.ctFont(
             postScriptName: fontPostScriptName,
@@ -5022,6 +6747,84 @@ public class CoreTextUIView: UIView {
 
             let baselineY = CGFloat(index) * effectiveLineHeight + ascent + paragraphOffset
 
+            // 标注与选中：段落级底色 / 下划线，选中时再叠一层淡蓝
+            let blockId = index < lineBlockIds.count ? lineBlockIds[index] : -1
+            let lineRect = CGRect(x: 0, y: baselineY - ascent, width: CGFloat(targetWidth), height: ascent + descent)
+            rects[index] = lineRect
+
+            // 逐字边界：CTLine 的字符偏移加上行本身的对齐位移
+            let lineUnits = (lineText as NSString).length
+            let convUnits = (convertedText as NSString).length
+            let indentUnits = (renderedText as NSString).length - convUnits
+            var boundaries: [CGFloat] = []
+            boundaries.reserveCapacity(lineUnits + 1)
+            for unit in 0...lineUnits {
+                let mapped = lineUnits > 0
+                    ? Int((Double(unit) * Double(convUnits) / Double(lineUnits)).rounded())
+                    : 0
+                let renderedIndex = min(convUnits, max(0, mapped)) + indentUnits
+                let x = CGFloat(CTLineGetOffsetForStringIndex(finalLine, renderedIndex, nil))
+                boundaries.append(x + penOffset)
+            }
+            let paragraphId = index < lineParagraphIds.count ? lineParagraphIds[index] : -1
+            let charStart = index < lineCharStarts.count ? lineCharStarts[index] : 0
+            let layout = LineLayout(rect: lineRect,
+                                    boundaries: boundaries,
+                                    paragraphId: paragraphId,
+                                    charStart: charStart)
+            layouts[index] = layout
+
+            let style = annotationRanges.first { blockId >= $0.start && blockId < $0.start + max(1, $0.count) }?.style
+            if blockId >= 0, let style {
+                if let hex = style.highlightHex, let color = UIColor(readerHex: hex) {
+                    ctx.saveGState()
+                    ctx.setFillColor(color.cgColor)
+                    ctx.fill(lineRect)
+                    ctx.restoreGState()
+                }
+                if style.underline {
+                    ctx.saveGState()
+                    let lineColor = UIColor(readerHex: style.underlineHex ?? "#2F7BF6")
+                        ?? UIColor.systemBlue
+                    ctx.setStrokeColor(lineColor.withAlphaComponent(0.9).cgColor)
+                    ctx.setLineWidth(1.5)
+                    let underlineY = baselineY + descent + 1
+                    ctx.move(to: CGPoint(x: 0, y: underlineY))
+                    ctx.addLine(to: CGPoint(x: lineRect.width, y: underlineY))
+                    ctx.strokePath()
+                    ctx.restoreGState()
+                }
+            }
+            if charSelection == nil,
+               let range = selectedRange, blockId >= range.start, blockId < range.start + max(1, range.count) {
+                ctx.saveGState()
+                ctx.setFillColor(UIColor.systemBlue.withAlphaComponent(0.18).cgColor)
+                ctx.fill(lineRect)
+                ctx.restoreGState()
+            }
+
+            // 段内逐字标注：只铺选中的那几个字
+            if paragraphId >= 0 {
+                for item in charAnnotations where item.paragraphId == paragraphId {
+                    let rangeStart = item.start
+                    let rangeEnd = item.start + max(1, item.length)
+                    if let hex = item.style.highlightHex, let color = UIColor(readerHex: hex) {
+                        fillCharRange(ctx, layout: layout, start: rangeStart, end: rangeEnd, color: color)
+                    }
+                    if item.style.underline {
+                        underlineCharRange(ctx, layout: layout, start: rangeStart, end: rangeEnd,
+                                           hex: item.style.underlineHex)
+                    }
+                }
+                if let sel = charSelection, sel.paragraphId == paragraphId {
+                    fillCharRange(ctx,
+                                  layout: layout,
+                                  start: sel.start,
+                                  end: sel.start + max(1, sel.length),
+                                  color: UIColor.systemBlue.withAlphaComponent(0.22))
+                }
+            }
+
             ctx.saveGState()
             ctx.textMatrix = .identity
             ctx.translateBy(x: penOffset, y: baselineY)
@@ -5049,10 +6852,192 @@ public class CoreTextUIView: UIView {
             }
         }
     }
+
+    // MARK: - 段内逐字：绘制
+
+    /// 某一行里 [start, end) 这段字对应的 x 范围；跟本行不相交就返回 nil
+    private func charXRange(layout: LineLayout, start: Int, end: Int) -> (CGFloat, CGFloat)? {
+        let lineLength = max(0, layout.boundaries.count - 1)
+        let lineStart = layout.charStart
+        let lineEnd = lineStart + lineLength
+        let from = max(start, lineStart)
+        let to = min(end, lineEnd)
+        guard to > from else { return nil }
+        let first = min(lineLength, max(0, from - lineStart))
+        let last = min(lineLength, max(0, to - lineStart))
+        guard first < layout.boundaries.count, last < layout.boundaries.count else { return nil }
+        let x1 = layout.boundaries[first]
+        let x2 = layout.boundaries[last]
+        guard x2 > x1 else { return nil }
+        return (x1, x2)
+    }
+
+    private func fillCharRange(_ ctx: CGContext, layout: LineLayout, start: Int, end: Int, color: UIColor) {
+        guard let (x1, x2) = charXRange(layout: layout, start: start, end: end) else { return }
+        ctx.saveGState()
+        ctx.setFillColor(color.cgColor)
+        ctx.fill(CGRect(x: x1, y: layout.rect.minY, width: x2 - x1, height: layout.rect.height))
+        ctx.restoreGState()
+    }
+
+    private func underlineCharRange(_ ctx: CGContext, layout: LineLayout, start: Int, end: Int, hex: String?) {
+        guard let (x1, x2) = charXRange(layout: layout, start: start, end: end) else { return }
+        ctx.saveGState()
+        let color = UIColor(readerHex: hex ?? "#2F7BF6") ?? UIColor.systemBlue
+        ctx.setStrokeColor(color.withAlphaComponent(0.9).cgColor)
+        ctx.setLineWidth(1.5)
+        let y = layout.rect.maxY + 1
+        ctx.move(to: CGPoint(x: x1, y: y))
+        ctx.addLine(to: CGPoint(x: x2, y: y))
+        ctx.strokePath()
+        ctx.restoreGState()
+    }
+
+    /// 段内某个字符偏移落在哪一行
+    private func lineLayout(paragraphId: Int, offset: Int) -> LineLayout? {
+        for item in lineLayouts {
+            guard let layout = item, layout.paragraphId == paragraphId else { continue }
+            let lineLength = max(0, layout.boundaries.count - 1)
+            if offset >= layout.charStart, offset <= layout.charStart + lineLength {
+                return layout
+            }
+        }
+        return nil
+    }
+
+    /// 段内字符边界（第 offset 个字之前）的窗口坐标：字选手柄贴在这儿
+    public static func boundaryPoint(paragraphId: Int, offset: Int) -> CGPoint? {
+        for box in activePages {
+            guard let view = box.view,
+                  let layout = view.lineLayout(paragraphId: paragraphId, offset: offset) else { continue }
+            let index = max(0, min(layout.boundaries.count - 1, offset - layout.charStart))
+            let point = CGPoint(x: layout.boundaries[index], y: layout.rect.midY)
+            return view.convert(point, to: nil)
+        }
+        return nil
+    }
+
+    /// 段内字符区间的窗口矩形：操作气泡贴着选中文字
+    public static func windowRect(paragraphId: Int, from: Int, to: Int) -> CGRect? {
+        for box in activePages {
+            guard let view = box.view else { continue }
+            var union: CGRect?
+            for item in view.lineLayouts {
+                guard let layout = item, layout.paragraphId == paragraphId,
+                      let (x1, x2) = view.charXRange(layout: layout, start: from, end: to) else { continue }
+                let boxRect = CGRect(x: x1, y: layout.rect.minY - 4,
+                                     width: x2 - x1, height: layout.rect.height + 8)
+                union = union.map { $0.union(boxRect) } ?? boxRect
+            }
+            if let union {
+                return view.convert(union, to: nil)
+            }
+        }
+        return nil
+    }
+
+    /// 拖手柄时：离触点最近的字符边界（绝对段内偏移）
+    public static func boundaryIndex(paragraphId: Int, nearWindowPoint point: CGPoint) -> Int? {
+        var best: (view: CoreTextUIView, distance: CGFloat, layouts: [LineLayout])?
+        for box in activePages {
+            guard let view = box.view else { continue }
+            let layouts = view.lineLayouts.compactMap { item -> LineLayout? in
+                guard let item, item.paragraphId == paragraphId else { return nil }
+                return item
+            }
+            guard !layouts.isEmpty else { continue }
+            let local = view.convert(point, from: nil)
+            let distance = layouts.map { layout -> CGFloat in
+                if local.y < layout.rect.minY { return layout.rect.minY - local.y }
+                if local.y > layout.rect.maxY { return local.y - layout.rect.maxY }
+                return 0
+            }.min() ?? .greatestFiniteMagnitude
+            if best == nil || distance < best!.distance {
+                best = (view, distance, layouts)
+            }
+        }
+        guard let best else { return nil }
+        let local = best.view.convert(point, from: nil)
+        let ordered = best.layouts.sorted { $0.charStart < $1.charStart }
+        guard let first = ordered.first, let last = ordered.last else { return nil }
+        if local.y < first.rect.minY { return first.charStart }
+        let lastLength = max(0, last.boundaries.count - 1)
+        if local.y > last.rect.maxY { return last.charStart + lastLength }
+        let layout = ordered.min {
+            abs(local.y - $0.rect.midY) < abs(local.y - $1.rect.midY)
+        } ?? first
+        var bestOffset = layout.charStart
+        var bestDistance = CGFloat.greatestFiniteMagnitude
+        for (index, x) in layout.boundaries.enumerated() {
+            let distance = abs(local.x - x)
+            if distance < bestDistance {
+                bestDistance = distance
+                bestOffset = layout.charStart + index
+            }
+        }
+        return bestOffset
+    }
 }
 #endif
 
 // MARK: - 阅读页自定义图片（下拉露出的背景 / 书签图）
+
+/// 正文背景图（界面里「用图片做阅读背景」）：存 Documents/ReaderBackground/background.jpg。
+/// ReaderConfig 里记的是绝对路径，App 升级后容器 UUID 会变，读的时候按文件名回落一次。
+enum ReaderBackgroundStorage {
+    static func directory() -> URL {
+        let base = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+        return base.appendingPathComponent("ReaderBackground", isDirectory: true)
+    }
+
+    static func resolve(_ path: String) -> String {
+        guard !path.isEmpty else { return path }
+        if FileManager.default.fileExists(atPath: path) { return path }
+        let name = (path as NSString).lastPathComponent
+        let candidate = directory().appendingPathComponent(name).path
+        return FileManager.default.fileExists(atPath: candidate) ? candidate : path
+    }
+
+    #if os(iOS)
+    /// 相册选的图：长边压到 2400 再落盘，返回绝对路径
+    static func save(_ data: Data) -> String? {
+        let dir = directory()
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let payload = ReaderAssetStorage.downscaledJPEG(from: data) ?? data
+        let url = dir.appendingPathComponent("background.jpg")
+        do {
+            try payload.write(to: url, options: .atomic)
+            ReaderBackgroundImageCache.shared.removeAll()
+            return url.path
+        } catch {
+            return nil
+        }
+    }
+    #endif
+}
+
+/// 书签的绘制盒子：宽固定，高按「高宽比」算。
+/// 0 = 自动：自定义图按图片自身比例，默认绶带按 1.73。
+/// 阅读页与外观面板的预览都走这一份算法，两边才不会对不上。
+enum BookmarkBoxMetrics {
+    static let defaultRibbonAspect: CGFloat = 1.73
+
+    static func height(width: CGFloat, aspect: Double, imageSize: CGSize?) -> CGFloat {
+        if aspect > 0 { return width * CGFloat(aspect) }
+        if let imageSize, imageSize.width > 0, imageSize.height > 0 {
+            return width * (imageSize.height / imageSize.width)
+        }
+        return width * defaultRibbonAspect
+    }
+
+    /// 自动比例的值（面板里显示「自动」用）
+    static func autoAspect(imageSize: CGSize?) -> Double {
+        if let imageSize, imageSize.width > 0, imageSize.height > 0 {
+            return Double(imageSize.height / imageSize.width)
+        }
+        return Double(defaultRibbonAspect)
+    }
+}
 
 /// 两张图存沙盒 Documents/ReaderAssets，路径记在 UserDefaults 里。
 enum ReaderAssetStorage {
@@ -5068,17 +7053,63 @@ enum ReaderAssetStorage {
         let dir = directory()
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         let url = dir.appendingPathComponent("\(name).jpg")
+        // 存之前先缩到长边 2400 以内：相册原图动辄 4000+ 像素，解码一次几十 MB，
+        // 面板里每拖动一下就要重绘一遍，主线程直接被拖死（表现就是「页面点不动」）
+        #if os(iOS)
+        let payload = downscaledJPEG(from: data) ?? data
+        #else
+        let payload = data
+        #endif
         do {
-            try data.write(to: url, options: .atomic)
-            return url.absoluteString
+            try payload.write(to: url, options: .atomic)
+            // 只存文件名：沙盒绝对路径里的容器 UUID 每次升级/重装都会变，
+            // 存绝对路径的话升级完这两张图就找不到了
+            return url.lastPathComponent
         } catch {
             return nil
         }
     }
 
-    static func path(for key: String) -> String? {
+    #if os(iOS)
+    /// 长边超过 maxDimension 就先缩再压，够当背景用，也不会把内存吃光
+    static func downscaledJPEG(from data: Data, maxDimension: CGFloat = 2400) -> Data? {
+        guard let image = UIImage(data: data) else { return nil }
+        return downscaled(image, maxDimension: maxDimension).jpegData(compressionQuality: 0.9)
+    }
+
+    /// 长边超过 maxDimension 就按比例缩下来
+    static func downscaled(_ image: UIImage, maxDimension: CGFloat = 2400) -> UIImage {
+        let longSide = max(image.size.width, image.size.height)
+        guard longSide > maxDimension else { return image }
+        let scale = maxDimension / longSide
+        let target = CGSize(width: (image.size.width * scale).rounded(),
+                            height: (image.size.height * scale).rounded())
+        let format = UIGraphicsImageRendererFormat.default()
+        format.scale = 1
+        return UIGraphicsImageRenderer(size: target, format: format).image { _ in
+            image.draw(in: CGRect(origin: .zero, size: target))
+        }
+    }
+    #endif
+
+    /// 存的是文件名；老的版本存过整条 file:// 绝对路径，取最后一段照样能用
+    static func storedName(for key: String) -> String? {
         guard let value = UserDefaults.standard.string(forKey: key), !value.isEmpty else { return nil }
+        if value.contains("/") {
+            if let url = URL(string: value) { return url.lastPathComponent }
+            return (value as NSString).lastPathComponent
+        }
         return value
+    }
+
+    /// 当前沙盒里的实际位置
+    static func fileURL(for key: String) -> URL? {
+        guard let name = storedName(for: key) else { return nil }
+        return directory().appendingPathComponent(name)
+    }
+
+    static func path(for key: String) -> String? {
+        fileURL(for: key)?.path
     }
 
     static func setPath(_ value: String?, for key: String) {
@@ -5090,21 +7121,155 @@ enum ReaderAssetStorage {
     }
 
     static func clear(_ key: String) {
-        if let path = path(for: key), let url = URL(string: path) {
+        if let url = fileURL(for: key) {
             try? FileManager.default.removeItem(at: url)
         }
+        #if os(iOS)
+        forgetCachedImage(for: key)
+        #endif
         setPath(nil, for: key)
     }
 
     #if os(iOS)
+    /// 解码过的图缓一份：面板每次重绘都会读它，直接 `UIImage(contentsOfFile:)`
+    /// 等于每帧都从磁盘解码一张大图
+    private static let decodedCache = NSCache<NSString, UIImage>()
+
     static func image(for key: String) -> UIImage? {
-        guard let path = path(for: key), let url = URL(string: path) else { return nil }
-        return UIImage(contentsOfFile: url.path)
+        guard let url = fileURL(for: key) else { return nil }
+        let cacheKey = url.path as NSString
+        if let cached = decodedCache.object(forKey: cacheKey) { return cached }
+        guard let loaded = UIImage(contentsOfFile: url.path) else { return nil }
+        // 老版本存进来的可能是没缩过的原图，读的时候顺手缩一次
+        let image = downscaled(loaded)
+        decodedCache.setObject(image, forKey: cacheKey)
+        return image
+    }
+
+    /// 换了图 / 清了图就把缓存丢掉
+    static func forgetCachedImage(for key: String) {
+        guard let url = fileURL(for: key) else { return }
+        decodedCache.removeObject(forKey: url.path as NSString)
     }
     #endif
 }
 
 #if os(iOS)
+/// 导航栏透明：背景图预览的最上一条不会被导航栏盖住（iOS 16 以下忽略）
+struct TransparentNavBar: ViewModifier {
+    func body(content: Content) -> some View {
+        content
+        #if os(iOS)
+        if #available(iOS 16.0, *) {
+            content.toolbarBackground(.hidden, for: .navigationBar)
+        } else {
+            content
+        }
+        #else
+        content
+        #endif
+    }
+}
+
+/// 设置页入口：正文背景图（跟阅读页「界面」面板同一批键）
+struct ReaderBackgroundSettingsView: View {
+    @ObservedObject private var config = ReaderConfig.shared
+    @State private var pickedItem: Any?
+    @State private var previewImage: UIImage?
+    @AppStorage("reader_bg_image_scale") private var scale: Double = 1
+    @AppStorage("reader_bg_image_offset_x") private var offsetX: Double = 0
+    @AppStorage("reader_bg_image_offset_y") private var offsetY: Double = 0
+
+    var body: some View {
+        List {
+            Section {
+                if let bg = previewImage {
+                    Image(uiImage: bg)
+                        .resizable()
+                        .scaledToFill()
+                        .scaleEffect(CGFloat(scale))
+                        .offset(x: CGFloat(offsetX), y: CGFloat(offsetY))
+                        .frame(height: 220)
+                        .frame(maxWidth: .infinity)
+                        .clipped()
+                        .clipShape(RoundedRectangle(cornerRadius: 10))
+                        .listRowInsets(EdgeInsets(top: 8, leading: 12, bottom: 8, trailing: 12))
+                } else {
+                    Text(config.backgroundImagePath.isEmpty ? "还没有选图" : "图片读不出来")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+            } header: {
+                Text("预览")
+            }
+
+            Section {
+                Toggle("用图片做阅读背景", isOn: $config.backgroundImageEnabled)
+                if #available(iOS 16.0, *) {
+                    PhotosPicker(selection: Binding(
+                        get: { pickedItem as? PhotosPickerItem },
+                        set: { newValue in
+                            pickedItem = newValue
+                            guard let item = newValue else { return }
+                            Task {
+                                if let data = try? await item.loadTransferable(type: Data.self),
+                                   let path = ReaderBackgroundStorage.save(data) {
+                                    await MainActor.run {
+                                        config.backgroundImagePath = path
+                                        config.backgroundImageEnabled = true
+                                        previewImage = UIImage(contentsOfFile: path)
+                                    }
+                                }
+                            }
+                        }
+                    ), matching: .images) {
+                        Text(config.backgroundImagePath.isEmpty ? "从相册选图" : "换一张")
+                    }
+                }
+                if !config.backgroundImagePath.isEmpty {
+                    Button("清除", role: .destructive) {
+                        config.backgroundImagePath = ""
+                        previewImage = nil
+                    }
+                }
+            }
+
+            if !config.backgroundImagePath.isEmpty {
+                Section {
+                    row("缩放", value: $scale, range: 0.2...4, digits: 2)
+                    row("左右位置", value: $offsetX, range: -400...400)
+                    row("上下位置", value: $offsetY, range: -400...400)
+                }
+            }
+        }
+        .navigationTitle("正文背景图")
+        #if os(iOS)
+        .navigationBarTitleDisplayMode(.inline)
+        #endif
+        .onAppear { loadPreview() }
+        .onChange(of: config.backgroundImagePath) { _ in loadPreview() }
+    }
+
+    private func loadPreview() {
+        let path = ReaderBackgroundStorage.resolve(config.backgroundImagePath)
+        previewImage = path.isEmpty ? nil : UIImage(contentsOfFile: path)
+    }
+
+    private func row(_ title: String, value: Binding<Double>, range: ClosedRange<Double>, digits: Int = 0) -> some View {
+        HStack(spacing: 10) {
+            Text(title).frame(width: 64, alignment: .leading)
+            Slider(value: Binding(
+                get: { min(max(value.wrappedValue, range.lowerBound), range.upperBound) },
+                set: { value.wrappedValue = $0 }
+            ), in: range)
+            Text(String(format: "%.\(digits)f", value.wrappedValue))
+                .font(.system(size: 12, design: .rounded))
+                .foregroundColor(.secondary)
+                .frame(width: 48, alignment: .trailing)
+        }
+    }
+}
+
 /// 下拉背景图 / 书签图的选择面板，从阅读页右上角「…」进
 struct ReaderAssetsSheet: View {
     /// 选完图让阅读页重新读一遍
@@ -5113,9 +7278,30 @@ struct ReaderAssetsSheet: View {
     @State private var pickedBackground: Any?
     @State private var pickedBookmark: Any?
     @State private var reloadToken = 0
+    /// 预览用：把两张图读进来
+    @State private var previewBackground: UIImage?
+    @State private var previewBookmark: UIImage?
     /// 书签位置与尺寸（跟阅读页共用同一份偏好）
     @AppStorage("reader_bookmark_width") private var bookmarkWidth: Double = 34
     @AppStorage("reader_bookmark_x") private var bookmarkX: Double = 1
+    /// 书签高宽比，0 = 自动
+    @AppStorage("reader_bookmark_aspect") private var bookmarkAspect: Double = 0
+    /// 挂下来多少：0 = 贴着屏幕最上沿
+    @AppStorage("reader_bookmark_y") private var bookmarkY: Double = 0
+    /// 下拉背景图的缩放与对齐（0 顶 / 1 中 / 2 底）
+    @AppStorage("reader_pull_background_scale") private var pullBackgroundScale: Double = 1
+    @AppStorage("reader_pull_background_align") private var pullBackgroundAlign: Int = 0
+    /// 下拉背景图的位置微调（pt，正数往右 / 往下）
+    @AppStorage("reader_pull_background_offset_x") private var pullBackgroundOffsetX: Double = 0
+    @AppStorage("reader_pull_background_offset_y") private var pullBackgroundOffsetY: Double = 0
+    /// 预览是「只露出下拉那一条」还是「整张背景铺开看」
+    @State private var previewShowsWholeBackground = false
+    /// 预览里模拟的下拉深度（pt，跟真机的 pagePullOffset 一个口径）
+    @State private var previewPullDepth: Double = 120
+    /// 预览里直接拖 / 捏时的起始快照
+    @State private var backgroundDragStart: CGPoint?
+    @State private var backgroundPinchStart: Double?
+    @State private var bookmarkDragStart: CGPoint?
 
     var body: some View {
         // 这里不再自带 NavigationView：它是从「书签 / 笔记」面板里导航推入的，
@@ -5123,13 +7309,43 @@ struct ReaderAssetsSheet: View {
         Form {
                 if #available(iOS 16.0, *) {
                     Section(header: Text("下拉背景图"),
-                            footer: Text("下拉加书签时，正文页下面露出来的就是这张图。")) {
+                            footer: Text("下拉加书签时，正文页下面露出来的就是这张图。缩放滑块前 70% 覆盖 0.05–1，后 30% 覆盖 1–12，便于细调。")) {
                         assetPicker(
                             key: ReaderAssetStorage.pullBackgroundKey,
                             picked: $pickedBackground,
                             name: "pullBackground",
                             height: 120
                         )
+                        scaleAdjustRow
+                        HStack {
+                            Text("缩放微调")
+                                .frame(width: 64, alignment: .leading)
+                            Spacer()
+                            nudgeButton("minus") {
+                                pullBackgroundScale = max(0.05, ((pullBackgroundScale - 0.05) * 100).rounded() / 100)
+                            }
+                            nudgeButton("plus") {
+                                pullBackgroundScale = min(12, ((pullBackgroundScale + 0.05) * 100).rounded() / 100)
+                            }
+                        }
+                        Picker("对齐", selection: $pullBackgroundAlign) {
+                            Text("顶").tag(0)
+                            Text("中").tag(1)
+                            Text("底").tag(2)
+                        }
+                        .pickerStyle(.segmented)
+                        adjustableRow(title: "左右位置",
+                                      value: $pullBackgroundOffsetX,
+                                      sliderRange: -400...400,
+                                      limit: -4000...4000)
+                        adjustableRow(title: "上下位置",
+                                      value: $pullBackgroundOffsetY,
+                                      sliderRange: -400...400,
+                                      limit: -4000...4000)
+                        nudgeRow(title: "位置微调",
+                                 step: 10,
+                                 left: $pullBackgroundOffsetX,
+                                 up: $pullBackgroundOffsetY)
                     }
 
                     Section(header: Text("书签图"),
@@ -5149,38 +7365,412 @@ struct ReaderAssetsSheet: View {
                     }
                 }
 
-                Section(header: Text("书签位置与尺寸"),
-                        footer: Text("尺寸按宽度算，高度跟着比例走。位置 0 = 最左，1 = 最右。")) {
+                Section(header: Text("书签位置与尺寸")) {
                     HStack {
                         Text("尺寸")
                             .frame(width: 64, alignment: .leading)
-                        Slider(value: $bookmarkWidth, in: 16...90, step: 1)
-                        Text("\(Int(bookmarkWidth))")
-                            .font(.caption)
-                            .foregroundColor(.secondary)
-                            .frame(width: 32, alignment: .trailing)
+                        Slider(value: $bookmarkWidth, in: 8...200, step: 1)
+                        numberField($bookmarkWidth, limit: 2...2000)
                     }
-                    HStack {
-                        Text("左右位置")
-                            .frame(width: 64, alignment: .leading)
-                        Slider(value: $bookmarkX, in: 0...1)
-                        Text(bookmarkX < 0.34 ? "左" : (bookmarkX > 0.66 ? "右" : "中"))
-                            .font(.caption)
-                            .foregroundColor(.secondary)
-                            .frame(width: 32, alignment: .trailing)
-                    }
+                    adjustableRow(title: "高宽比",
+                                  value: $bookmarkAspect,
+                                  sliderRange: 0...4,
+                                  limit: 0...40,
+                                  fractionDigits: 2,
+                                  zeroLabel: "自动")
+                    adjustableRow(title: "左右位置",
+                                  value: $bookmarkX,
+                                  sliderRange: 0...1,
+                                  limit: -2...3,
+                                  fractionDigits: 3)
+                    adjustableRow(title: "上下位置",
+                                  value: $bookmarkY,
+                                  sliderRange: -40...200,
+                                  limit: -2000...2000)
+                    nudgeRow(title: "位置微调",
+                             step: 0.02,
+                             left: $bookmarkX,
+                             up: $bookmarkY,
+                             upStep: 10)
                 }
+        }
+        // 预览钉在顶上：滑到下面的滑块时也看得见调完什么效果
+        .safeAreaInset(edge: .top) {
+            VStack(spacing: 8) {
+                placementPreview
+                    .frame(height: 210)
+                // 这里不用分段 Picker：钉在顶上的这块里，分段控件的点击落不到选中态上
+                // （按钮是好的，实测两次点击都到位），所以自己拼一对按钮
+                HStack(spacing: 0) {
+                    previewModeButton("下拉露出", whole: false)
+                    previewModeButton("整张背景", whole: true)
+                }
+                .padding(2)
+                .background(Color.secondary.opacity(0.12), in: Capsule())
+                HStack(spacing: 8) {
+                    Text("露出深度")
+                        .font(.system(size: 12))
+                        .foregroundColor(.secondary)
+                    Slider(value: $previewPullDepth, in: 40...520, step: 10)
+                    Text("\(Int(previewPullDepth))")
+                        .font(.system(size: 12, design: .rounded))
+                        .foregroundColor(.secondary)
+                        .frame(width: 40, alignment: .trailing)
+                }
+                Text(previewShowsWholeBackground
+                     ? "整图预览只看构图；调位置、缩放请切回「下拉露出」。"
+                     : "在预览上直接拖可以移位置，双指捏可以改缩放；拖书签能改书签位置。")
+                    .font(.system(size: 11))
+                    .foregroundColor(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .padding(.horizontal, 16)
+            .padding(.top, 8)
+            .padding(.bottom, 10)
+            .background(.bar)
         }
         .navigationTitle("下拉与书签外观")
         .navigationBarTitleDisplayMode(.inline)
+        .onAppear { loadPreviewImages() }
         .id(reloadToken)
+    }
+
+    /// 放置预览：跟阅读页同一套画法 —— 背景图整幅铺满再按对齐裁切，正文页不透明地盖住
+    /// 下半部分，露出来的那条就是下拉时看到的背景，书签挂在最顶上。
+    ///
+    /// 之前预览是把背景图直接裁进那条窄带里，跟真机（先铺满整屏、再被正文页盖住）不是一个
+    /// 构图，尺寸一对就露馅。
+    private var placementPreview: some View {
+        GeometryReader { geo in
+            if previewShowsWholeBackground {
+                wholeBackgroundPreview(in: geo.size)
+            } else {
+                pulledBackgroundPreview(in: geo.size)
+            }
+        }
+    }
+
+    /// 整张背景：把整张图等比放进预览框，先看清构图再回「下拉露出」细调。
+    /// 之前按整屏比例缩进 210pt 高的框里，宽只剩不到 100pt，什么都看不清。
+    private func wholeBackgroundPreview(in size: CGSize) -> some View {
+        ZStack {
+            if let bg = previewBackground {
+                Image(uiImage: bg)
+                    .resizable()
+                    .scaledToFit()
+                    .padding(6)
+            } else {
+                Color.secondary.opacity(0.10)
+            }
+
+            previewLabel("整张背景 · 整图")
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                .padding(.leading, 6)
+                .padding(.top, 4)
+        }
+        .frame(width: size.width, height: size.height)
+        .background(Color.black.opacity(0.35))
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+        .overlay(
+            RoundedRectangle(cornerRadius: 8)
+                .stroke(Color.secondary.opacity(0.25), lineWidth: 0.5)
+        )
+    }
+
+    /// 下拉露出：按真机屏幕比例铺满，再只露出顶部那一段（深度跟真机一个口径）
+    private func pulledBackgroundPreview(in size: CGSize) -> some View {
+        let screen = previewScreenSize
+        let factor = size.width / max(1, screen.width)
+        let canvasSize = CGSize(width: screen.width * factor, height: screen.height * factor)
+        let visibleSize = size
+        let pageTop = min(visibleSize.height, CGFloat(previewPullDepth) * factor)
+        return ZStack(alignment: .topLeading) {
+            if let bg = previewBackground {
+                PullBackgroundCanvas(image: bg,
+                                     zoom: pullBackgroundScale,
+                                     offsetX: pullBackgroundOffsetX,
+                                     offsetY: pullBackgroundOffsetY,
+                                     alignment: pullBackgroundAlign)
+                    .frame(width: canvasSize.width, height: canvasSize.height)
+                    .clipped()
+                    .frame(width: visibleSize.width, height: visibleSize.height, alignment: .top)
+                    .clipped()
+            } else {
+                LinearGradient(colors: [Color.secondary.opacity(0.22), Color.secondary.opacity(0.10)],
+                               startPoint: .top, endPoint: .bottom)
+                    .frame(width: visibleSize.width, height: visibleSize.height)
+            }
+
+            VStack(spacing: 0) {
+                Color.clear.frame(height: pageTop)
+                ZStack(alignment: .topLeading) {
+                    ReaderConfig.shared.backgroundColor
+                    VStack(alignment: .leading, spacing: 7) {
+                        ForEach(0..<4, id: \.self) { _ in
+                            RoundedRectangle(cornerRadius: 2)
+                                .fill(ReaderConfig.shared.textColor.opacity(0.22))
+                                .frame(height: 6)
+                        }
+                    }
+                    .padding(14)
+                }
+            }
+            .frame(width: visibleSize.width, height: visibleSize.height, alignment: .top)
+            .allowsHitTesting(false)
+
+            bookmarkPreviewView
+                .offset(x: previewBookmarkX(in: visibleSize.width), y: CGFloat(bookmarkY) * factor + 2)
+                .gesture(bookmarkDragGesture(factor: factor, screen: screen))
+
+            previewLabel("下拉露出的背景 · \(Int(previewPullDepth))pt")
+                .padding(.leading, 6)
+                .padding(.top, 4)
+        }
+        .frame(width: visibleSize.width, height: visibleSize.height, alignment: .topLeading)
+        .frame(width: size.width, height: size.height, alignment: .top)
+        .contentShape(Rectangle())
+        .highPriorityGesture(backgroundDragGesture(factor: factor))
+        .simultaneousGesture(backgroundMagnifyGesture())
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+        .overlay(
+            RoundedRectangle(cornerRadius: 8)
+                .stroke(Color.secondary.opacity(0.25), lineWidth: 0.5)
+        )
+    }
+
+    private func previewModeButton(_ title: String, whole: Bool) -> some View {
+        let active = previewShowsWholeBackground == whole
+        return Button {
+            previewShowsWholeBackground = whole
+        } label: {
+            Text(title)
+                .font(.system(size: 13, weight: active ? .semibold : .regular))
+                .foregroundColor(active ? .primary : .secondary)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 5)
+                .background(active ? Color(.secondarySystemBackground) : Color.clear, in: Capsule())
+        }
+        .buttonStyle(.plain)
+    }
+
+    // MARK: - 预览上直接改
+
+    /// 拖背景 = 改左右 / 上下位置
+    private func backgroundDragGesture(factor: CGFloat) -> some Gesture {
+        DragGesture(minimumDistance: 1)
+            .onChanged { value in
+                if backgroundDragStart == nil {
+                    backgroundDragStart = CGPoint(x: pullBackgroundOffsetX, y: pullBackgroundOffsetY)
+                }
+                guard let start = backgroundDragStart else { return }
+                let step = max(0.05, factor)
+                pullBackgroundOffsetX = (start.x + value.translation.width / step).rounded()
+                pullBackgroundOffsetY = (start.y + value.translation.height / step).rounded()
+            }
+            .onEnded { _ in backgroundDragStart = nil }
+    }
+
+    /// 双指捏 = 改缩放
+    private func backgroundMagnifyGesture() -> some Gesture {
+        MagnificationGesture()
+            .onChanged { scale in
+                if backgroundPinchStart == nil { backgroundPinchStart = pullBackgroundScale }
+                guard let start = backgroundPinchStart else { return }
+                pullBackgroundScale = min(max(start * Double(scale), 0.05), 12)
+            }
+            .onEnded { _ in backgroundPinchStart = nil }
+    }
+
+    /// 拖书签 = 改左右 / 上下位置
+    private func bookmarkDragGesture(factor: CGFloat, screen: CGSize) -> some Gesture {
+        DragGesture(minimumDistance: 1)
+            .onChanged { value in
+                if bookmarkDragStart == nil {
+                    bookmarkDragStart = CGPoint(x: bookmarkX, y: bookmarkY)
+                }
+                guard let start = bookmarkDragStart else { return }
+                let step = max(0.05, factor)
+                bookmarkX = min(max(start.x + Double(value.translation.width / step / max(1, screen.width)), -2), 3)
+                bookmarkY = min(max(start.y + Double(value.translation.height / step), -2000), 2000)
+            }
+            .onEnded { _ in bookmarkDragStart = nil }
+    }
+
+    private func previewLabel(_ text: String) -> some View {
+        Text(text)
+            .font(.system(size: 10, weight: .medium))
+            .foregroundColor(.secondary)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 2)
+            .background(.thinMaterial, in: Capsule())
+    }
+
+    /// 缩放滑块：前半程拉长 0.05–1 这一段，后半程再覆盖 1–12。
+    private var scaleAdjustRow: some View {
+        HStack {
+            Text("缩放")
+                .frame(width: 64, alignment: .leading)
+            Slider(value: Binding(
+                get: { scaleSliderPosition(pullBackgroundScale) },
+                set: { pullBackgroundScale = scaleForSlider($0) }
+            ), in: 0...1)
+            numberField($pullBackgroundScale, limit: 0.05...12, fractionDigits: 2)
+        }
+    }
+
+    private func scaleSliderPosition(_ scale: Double) -> Double {
+        let value = min(max(scale, 0.05), 12)
+        if value <= 1 {
+            return (value - 0.05) / 0.95 * 0.7
+        }
+        return 0.7 + log(value) / log(12) * 0.3
+    }
+
+    private func scaleForSlider(_ position: Double) -> Double {
+        let value = min(max(position, 0), 1)
+        let scale: Double
+        if value <= 0.7 {
+            scale = 0.05 + (value / 0.7) * 0.95
+        } else {
+            scale = pow(12, (value - 0.7) / 0.3)
+        }
+        return (scale * 100).rounded() / 100
+    }
+
+    /// 一行可调项：滑块给手感，右边数字框给精确值，也能填滑块范围之外的极端值
+    @ViewBuilder
+    private func adjustableRow(
+        title: String,
+        value: Binding<Double>,
+        sliderRange: ClosedRange<Double>,
+        limit: ClosedRange<Double>,
+        fractionDigits: Int = 0,
+        zeroLabel: String? = nil
+    ) -> some View {
+        HStack {
+            Text(title)
+                .frame(width: 64, alignment: .leading)
+            Slider(value: Binding(
+                // 存的可能是滑块范围外的极端值，喂给 Slider 之前先夹一次，否则会 trap
+                get: { min(max(value.wrappedValue, sliderRange.lowerBound), sliderRange.upperBound) },
+                set: { value.wrappedValue = $0.rounded() }
+            ), in: sliderRange, step: fractionDigits > 0 ? 0.01 : 1)
+            if let zeroLabel, value.wrappedValue <= 0 {
+                Text(zeroLabel)
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                    .frame(width: 58, alignment: .trailing)
+            } else {
+                numberField(value, limit: limit, fractionDigits: fractionDigits)
+            }
+        }
+    }
+
+    /// 数字框：键盘直接敲，接受滑块范围之外的数值
+    @ViewBuilder
+    private func numberField(_ value: Binding<Double>, limit: ClosedRange<Double>, fractionDigits: Int = 0) -> some View {
+        TextField("", value: Binding(
+            get: { value.wrappedValue },
+            set: { value.wrappedValue = min(max($0, limit.lowerBound), limit.upperBound) }
+        ), format: .number.precision(.fractionLength(fractionDigits)))
+            .keyboardType(.numbersAndPunctuation)
+            .multilineTextAlignment(.trailing)
+            .font(.system(size: 12, design: .rounded))
+            .frame(width: 58)
+            .textFieldStyle(.roundedBorder)
+    }
+
+    /// 一排微调按钮：拖拽在表单里容易被滚动抢走，方向键永远点得动
+    @ViewBuilder
+    private func nudgeRow(
+        title: String,
+        step: Double,
+        left: Binding<Double>,
+        up: Binding<Double>,
+        upStep: Double? = nil
+    ) -> some View {
+        HStack {
+            Text(title)
+                .frame(width: 64, alignment: .leading)
+            Spacer()
+            nudgeButton("arrow.left") { left.wrappedValue -= step }
+            nudgeButton("arrow.right") { left.wrappedValue += step }
+            nudgeButton("arrow.up") { up.wrappedValue -= (upStep ?? step) }
+            nudgeButton("arrow.down") { up.wrappedValue += (upStep ?? step) }
+        }
+    }
+
+    private func nudgeButton(_ systemName: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: systemName)
+                .font(.system(size: 15, weight: .semibold))
+                .frame(width: 44, height: 32)
+                .background(Color.secondary.opacity(0.12), in: RoundedRectangle(cornerRadius: 7))
+        }
+        .buttonStyle(.plain)
+        .padding(.leading, 6)
+    }
+
+    /// 真机屏幕尺寸：预览的画布按它来，缩放/裁切才跟阅读页一致
+    private var previewScreenSize: CGSize {
+        #if os(iOS)
+        let scenes = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
+        let bounds = scenes.first(where: { $0.activationState == .foregroundActive })?.screen.bounds
+            ?? scenes.first?.screen.bounds
+        if let bounds, bounds.width > 1 { return bounds.size }
+        #endif
+        return CGSize(width: 393, height: 852)
+    }
+
+    private func previewBookmarkX(in totalWidth: CGFloat) -> CGFloat {
+        let width = CGFloat(bookmarkWidth)
+        // 跟阅读页一致：右边最多留 6pt
+        return min(max(0, totalWidth - width - 6), max(0, totalWidth * CGFloat(bookmarkX) - width / 2))
+    }
+
+    @ViewBuilder
+    private var bookmarkPreviewView: some View {
+        if let previewBookmark {
+            Image(uiImage: previewBookmark)
+                .resizable()
+                .scaledToFill()
+                .frame(width: CGFloat(bookmarkWidth), height: previewBookmarkHeight)
+                .clipped()
+                .shadow(color: Color.black.opacity(0.18), radius: 3, y: 2)
+        } else {
+            BookmarkRibbonShape()
+                .fill(Color.accentColor.opacity(0.95))
+                .frame(width: CGFloat(bookmarkWidth), height: previewBookmarkHeight)
+                .shadow(color: Color.black.opacity(0.18), radius: 3, y: 2)
+        }
+    }
+
+    /// 跟阅读页同一份算法：0 = 自动（图片自身比例 / 默认绶带 1.73）
+    private var previewBookmarkHeight: CGFloat {
+        BookmarkBoxMetrics.height(width: CGFloat(bookmarkWidth),
+                                  aspect: bookmarkAspect,
+                                  imageSize: previewBookmark?.size)
+    }
+
+    private func loadPreviewImages() {
+        #if os(iOS)
+        // 解码放后台：原图大的时候，这一步放在主线程会让面板开着像卡死
+        Task.detached(priority: .userInitiated) {
+            let background = ReaderAssetStorage.image(for: ReaderAssetStorage.pullBackgroundKey)
+            let bookmark = ReaderAssetStorage.image(for: ReaderAssetStorage.bookmarkImageKey)
+            await MainActor.run {
+                previewBackground = background
+                previewBookmark = bookmark
+            }
+        }
+        #endif
     }
 
     @ViewBuilder
     @available(iOS 16.0, *)
     private func assetPicker(key: String, picked: Binding<Any?>, name: String, height: CGFloat) -> some View {
-        if let path = ReaderAssetStorage.path(for: key), let url = URL(string: path),
-           let image = UIImage(contentsOfFile: url.path) {
+        // 走缓存，别在 body 里读磁盘解码
+        if let image = ReaderAssetStorage.image(for: key) {
             HStack {
                 Spacer()
                 Image(uiImage: image)
@@ -5203,6 +7793,8 @@ struct ReaderAssetsSheet: View {
                            let stored = ReaderAssetStorage.save(data, name: name) {
                             await MainActor.run {
                                 ReaderAssetStorage.setPath(stored, for: key)
+                                // 文件名固定，换图是覆盖同一个文件，缓存不清就还是旧图
+                                ReaderAssetStorage.forgetCachedImage(for: key)
                                 reloadToken += 1
                                 onChanged()
                             }

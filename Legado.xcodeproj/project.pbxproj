@@ -10,6 +10,24 @@
 	<string>54</string>
 	<key>objects</key>
 	<dict>
+		<key>C0EAEEF5B1D649AD9FADFD30</key>
+		<dict>
+			<key>fileRef</key>
+			<string>F87E0EE21A4B437D866AEC44</string>
+			<key>isa</key>
+			<string>PBXBuildFile</string>
+		</dict>
+		<key>F87E0EE21A4B437D866AEC44</key>
+		<dict>
+			<key>isa</key>
+			<string>PBXFileReference</string>
+			<key>lastKnownFileType</key>
+			<string>sourcecode.swift</string>
+			<key>path</key>
+			<string>Sources/LegadoApp/Views/SourceCheckView.swift</string>
+			<key>sourceTree</key>
+			<string>&lt;group&gt;</string>
+		</dict>
 		<key>BB01AA0000000000000001A1</key>
 		<dict>
 			<key>isa</key>
@@ -404,7 +422,7 @@
 				<key>CODE_SIGN_STYLE</key>
 				<string>Automatic</string>
 				<key>CURRENT_PROJECT_VERSION</key>
-				<string>4.7.6.3</string>
+				<string>4.7.7.7</string>
 				<key>DEVELOPMENT_TEAM</key>
 				<string></string>
 				<key>ENABLE_PREVIEWS</key>
@@ -426,7 +444,7 @@
 				<key>LD_RUNPATH_SEARCH_PATHS</key>
 				<string>$(inherited) @executable_path/Frameworks</string>
 				<key>MARKETING_VERSION</key>
-				<string>4.7.6.3</string>
+				<string>4.7.7.7</string>
 				<key>PRODUCT_BUNDLE_IDENTIFIER</key>
 				<string>com.factorcitrus.juyue</string>
 				<key>PRODUCT_NAME</key>
@@ -676,6 +694,7 @@
 				<string>B62AE05AC644681D68E0690F</string>
 				<string>A475C73C0B3F38EC44FB86E3</string>
 				<string>321266029D1E0072CC6A8652</string>
+				<string>F87E0EE21A4B437D866AEC44</string>
 				<string>21249808583C1D4A47BFB15C</string>
 				<string>913C796CDE416D2C894DD5E3</string>
 				<string>F97F8A5A96EDBC8F8194A9C4</string>
@@ -858,6 +877,7 @@
 				<string>25DFDF57F819E3607C9573B9</string>
 				<string>80A3F1EF9D28186077378CDA</string>
 				<string>B40C9798457DF5AC871DEAC9</string>
+				<string>C0EAEEF5B1D649AD9FADFD30</string>
 				<string>00A53D3303BC693F605060C5</string>
 				<string>40889BD1C636DBE44D05E1D0</string>
 				<string>4033E6695861F37D8F5CFE04</string>
@@ -1216,7 +1236,7 @@
 				<key>CODE_SIGN_STYLE</key>
 				<string>Automatic</string>
 				<key>CURRENT_PROJECT_VERSION</key>
-				<string>4.7.6.3</string>
+				<string>4.7.7.7</string>
 				<key>DEVELOPMENT_TEAM</key>
 				<string></string>
 				<key>ENABLE_PREVIEWS</key>
@@ -1238,7 +1258,7 @@
 				<key>LD_RUNPATH_SEARCH_PATHS</key>
 				<string>$(inherited) @executable_path/Frameworks</string>
 				<key>MARKETING_VERSION</key>
-				<string>4.7.6.3</string>
+				<string>4.7.7.7</string>
 				<key>PRODUCT_BUNDLE_IDENTIFIER</key>
 				<string>com.factorcitrus.juyue</string>
 				<key>PRODUCT_NAME</key>

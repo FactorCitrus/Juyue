@@ -45,6 +45,16 @@ public struct PageCurlPager: UIViewControllerRepresentable {
     /// 章节标题字号系数，跟滚动模式同一口径
     public let chapterTitleScale: CGFloat
     public let shortTitleLength: Int
+    /// 长按选中段落：把这一页的块和页内行号交回阅读页
+    public var onSelectParagraph: (([ContentBlock], Int, Int) -> Void)? = nil
+    /// 选中的段落（起始块 id + 覆盖块数）
+    public var selectedRange: (start: Int, count: Int)? = nil
+    /// 段内逐字选择
+    public var charSelection: ReaderCharSelection? = nil
+    /// 段内逐字标注
+    public var charAnnotations: [ReaderCharAnnotation] = []
+    /// 已加标注的段落：下划线 / 底色
+    public var annotationRanges: [(start: Int, count: Int, style: ReaderBlockStyle)] = []
     public let customDatePattern: String
     public let customBarText: String
     public let titleHTMLTemplate: String
@@ -98,6 +108,11 @@ public struct PageCurlPager: UIViewControllerRepresentable {
         backgroundImage: Image?,
         chapterTitleScale: CGFloat,
         shortTitleLength: Int,
+        onSelectParagraph: (([ContentBlock], Int, Int) -> Void)? = nil,
+        selectedRange: (start: Int, count: Int)? = nil,
+        charSelection: ReaderCharSelection? = nil,
+        charAnnotations: [ReaderCharAnnotation] = [],
+        annotationRanges: [(start: Int, count: Int, style: ReaderBlockStyle)] = [],
         customDatePattern: String,
         customBarText: String,
         titleHTMLTemplate: String,
@@ -148,6 +163,11 @@ public struct PageCurlPager: UIViewControllerRepresentable {
         self.backgroundImage = backgroundImage
         self.chapterTitleScale = chapterTitleScale
         self.shortTitleLength = shortTitleLength
+        self.onSelectParagraph = onSelectParagraph
+        self.selectedRange = selectedRange
+        self.charSelection = charSelection
+        self.charAnnotations = charAnnotations
+        self.annotationRanges = annotationRanges
         self.customDatePattern = customDatePattern
         self.customBarText = customBarText
         self.titleHTMLTemplate = titleHTMLTemplate
@@ -320,6 +340,16 @@ public struct PageCurlPager: UIViewControllerRepresentable {
         parts.append(chapterTitleText)
         parts.append(bookName)
         parts.append("\(chapterIndex)/\(chapterCount)")
+        // 选中与标注也要进指纹：每页是托管缓存着的，不进指纹的话长按选中只改了状态，
+        // 屏幕上那一页还是旧画面，看着就像「长按没选中」；下划线/底色同理，要翻页才出现
+        parts.append(selectedRange.map { "sel\($0.start)+\($0.count)" } ?? "sel-")
+        parts.append(charSelection.map { "char\($0.paragraphId):\($0.start)+\($0.length)" } ?? "char-")
+        parts.append(charAnnotations.map {
+            "\($0.paragraphId):\($0.start)+\($0.length):\($0.style.underline ? "u\($0.style.underlineHex ?? "")" : "")\($0.style.highlightHex ?? "")"
+        }.joined(separator: ","))
+        parts.append(annotationRanges.map {
+            "\($0.start)+\($0.count):\($0.style.underline ? "u\($0.style.underlineHex ?? "")" : "")\($0.style.highlightHex ?? "")"
+        }.joined(separator: ","))
         return parts.joined(separator: "|")
     }
 
@@ -387,6 +417,13 @@ public struct PageCurlPager: UIViewControllerRepresentable {
             let page = parent.pages[index]
             let host = UIHostingController(rootView: PageCurlContent(
                 blocks: page,
+                onLongPressLine: { [parent] line, charOffset in
+                    parent.onSelectParagraph?(page, line, charOffset)
+                },
+                selectedRange: parent.selectedRange,
+                charSelection: parent.charSelection,
+                charAnnotations: parent.charAnnotations,
+                annotationRanges: parent.annotationRanges,
                 chapterTitle: index == 0 ? parent.chapterTitle : nil,
                 fontSize: parent.fontSize,
                 lineSpacing: parent.lineSpacing,
@@ -696,6 +733,13 @@ public struct PageCurlPager: UIViewControllerRepresentable {
 /// 单页内容，交给 CoreTextPageView 画，跟左右翻页共用一套排版。
 struct PageCurlContent: View {
     let blocks: [ContentBlock]
+    /// 长按某一行（页内行号）—— 段落级选择的入口
+    var onLongPressLine: ((Int, Int) -> Void)? = nil
+    /// 选中与标注的绘制参数
+    var selectedRange: (start: Int, count: Int)? = nil
+    var charSelection: ReaderCharSelection? = nil
+    var charAnnotations: [ReaderCharAnnotation] = []
+    var annotationRanges: [(start: Int, count: Int, style: ReaderBlockStyle)] = []
     let chapterTitle: String?
     let fontSize: CGFloat
     let lineSpacing: CGFloat
@@ -985,7 +1029,15 @@ struct PageCurlContent: View {
                         underlineEnabled: underlineEnabled,
                         underlineColor: underlineColor,
                         paragraphSeparatorLines: paragraphSeparatorLines,
-                        paragraphSeparatorColor: paragraphSeparatorColor
+                        paragraphSeparatorColor: paragraphSeparatorColor,
+                        lineBlockIds: blocks.map(\.id),
+                        lineParagraphIds: blocks.map(\.paragraphId),
+                        lineCharStarts: blocks.map(\.charStart),
+                        selectedRange: selectedRange,
+                        charSelection: charSelection,
+                        charAnnotations: charAnnotations,
+                        annotationRanges: annotationRanges,
+                        onLongPressLine: onLongPressLine
                     )
                     .frame(width: usableWidth, height: contentHeight, alignment: .topLeading)
                 }

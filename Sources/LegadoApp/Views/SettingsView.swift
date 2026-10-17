@@ -36,7 +36,7 @@ public struct SettingsView: View {
         NavigationView {
             Form {
                 // Section 0: App Appearance (Dark Mode)
-                Section(header: Text("外观模式")) {
+                Section(header: Text("阅读显示 · 外观模式")) {
                     Picker("外观模式", selection: $appTheme) {
                         Text("跟随系统").tag("system")
                         Text("浅色模式").tag("light")
@@ -45,8 +45,40 @@ public struct SettingsView: View {
                     .pickerStyle(.segmented)
                 }
 
+                Section(header: Text("书源")) {
+                    NavigationLink(destination: SourceCheckView()) {
+                        HStack {
+                            Text("校验书源")
+                            Spacer()
+                            Text("逐个检测书源可用性")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        }
+                    }
+                    NavigationLink(destination: SourceManagerView()) {
+                        HStack {
+                            Text("管理全部网络书源")
+                            Spacer()
+                            Text("\(bookStore.sources.filter { $0.enabled != false }.count) / \(bookStore.sources.count) 个可用")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        }
+                    }
+
+                    Button {
+                        showRestoreAlert = true
+                    } label: {
+                        HStack {
+                            Text("重置书源")
+                            Spacer()
+                            Image(systemName: "arrow.clockwise")
+                                .foregroundColor(.accentColor)
+                        }
+                    }
+                }
+
                 // Section 1: Reading Display Settings
-                Section(header: Text("阅读器显示设置")) {
+                Section(header: Text("阅读显示")) {
                     NavigationLink(destination: OPDSCatalogsView()) {
                         HStack {
                             Text("OPDS / Calibre 书库")
@@ -165,6 +197,27 @@ public struct SettingsView: View {
                     }
                     .padding(.vertical, 4)
 
+                    #if os(iOS)
+                    NavigationLink(destination: ReaderBackgroundSettingsView()) {
+                        HStack {
+                            Text("正文背景图")
+                            Spacer()
+                            Text("预览 / 缩放 / 位置")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        }
+                    }
+                    NavigationLink(destination: ReaderAssetsSheet { }) {
+                        HStack {
+                            Text("下拉背景与书签外观")
+                            Spacer()
+                            Text("背景图 / 书签图")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        }
+                    }
+                    #endif
+
                     Picker("阅读背景主题", selection: $readerConfig.theme) {
                         ForEach(ReaderTheme.allCases) { theme in
                             Text(theme.rawValue).tag(theme)
@@ -193,7 +246,8 @@ public struct SettingsView: View {
                 }
 
                 // 书架角标（封面右上那个红色未读数）
-                Section(header: Text("书架角标")) {
+
+                Section(header: Text("阅读显示 · 书架角标")) {
                     Picker("显示方式", selection: $shelfConfig.badgeStyle) {
                         ForEach(BookshelfBadgeStyle.allCases) { style in
                             Text(style.rawValue).tag(style)
@@ -244,30 +298,6 @@ public struct SettingsView: View {
                     }
                 }
 
-                // Section 2: Book Sources
-                Section(header: Text("书源管理")) {
-                    NavigationLink(destination: SourceManagerView()) {
-                        HStack {
-                            Text("管理全部网络书源")
-                            Spacer()
-                            Text("\(bookStore.sources.filter { $0.enabled != false }.count) / \(bookStore.sources.count) 个可用")
-                                .font(.caption)
-                                .foregroundColor(.secondary)
-                        }
-                    }
-
-                    Button {
-                        showRestoreAlert = true
-                    } label: {
-                        HStack {
-                            Text("重置书源")
-                            Spacer()
-                            Image(systemName: "arrow.clockwise")
-                                .foregroundColor(.accentColor)
-                        }
-                    }
-                }
-
                 // Section 3: Bookshelf & Storage
                 Section(header: Text("书架与存储")) {
                     HStack {
@@ -290,7 +320,7 @@ public struct SettingsView: View {
                 }
 
                 // Section 4: Data & Cloud Sync (WebDAV)
-                Section(header: Text("数据与云备份")) {
+                Section(header: Text("数据同步")) {
                     NavigationLink(destination: WebDAVSyncView()) {
                         HStack {
                             Label("WebDAV 云同步", systemImage: "icloud.and.arrow.up")

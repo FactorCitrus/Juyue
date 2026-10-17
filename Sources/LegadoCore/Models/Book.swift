@@ -233,6 +233,8 @@ public struct BookBookmark: Codable, Identifiable, Equatable {
     public var length: Int?
     /// 底色标注的颜色名（raw value 存字符串，方便跨版本）
     public var color: String?
+    /// 标注范围单位："char" = 段内逐字；nil = 旧的整段（length 记行块数）
+    public var rangeUnitRaw: String?
     /// nil 当书签处理，老数据不用迁移
     public var kindRaw: String?
 
@@ -248,6 +250,7 @@ public struct BookBookmark: Codable, Identifiable, Equatable {
         blockId: Int? = nil,
         length: Int? = nil,
         color: String? = nil,
+        rangeUnit: String? = nil,
         kind: Kind = .bookmark
     ) {
         self.id = UUID()
@@ -261,6 +264,7 @@ public struct BookBookmark: Codable, Identifiable, Equatable {
         self.blockId = blockId
         self.length = length
         self.color = color
+        self.rangeUnitRaw = rangeUnit
         self.kindRaw = kind.rawValue
     }
 
@@ -278,6 +282,7 @@ public struct BookBookmark: Codable, Identifiable, Equatable {
         self.blockId = try? container.decodeIfPresent(Int.self, forKey: .blockId)
         self.length = try? container.decodeIfPresent(Int.self, forKey: .length)
         self.color = try? container.decodeIfPresent(String.self, forKey: .color)
+        self.rangeUnitRaw = try? container.decodeIfPresent(String.self, forKey: .rangeUnitRaw)
         self.kindRaw = try? container.decodeIfPresent(String.self, forKey: .kindRaw)
     }
 }

@@ -432,6 +432,10 @@ public class BookContentService {
 
         var contentText = analyzer.getString(contentRule.content)
 
+        // 书源把段评、本章说挂在 HTML 标记里；cleanHtml 会整段洗掉。
+        // 先换成不可见哨兵，正文里保留评论数与跳转地址，阅读页再拆出来。
+        contentText = Self.preserveReviewMarkers(contentText)
+
         // Apply regex cleanup if specified in source
         if let replaceRegex = contentRule.replaceRegex, !replaceRegex.isEmpty {
             let segments = replaceRegex.components(separatedBy: "##")
@@ -461,6 +465,48 @@ public class BookContentService {
         }
 
         return contentText
+    }
+
+    private static let reviewCommentMarkerStart = "\u{E000}C\u{1F}"
+    private static let reviewChapterMarkerStart = "\u{E000}H\u{1F}"
+    private static let reviewMarkerEnd = "\u{E001}"
+
+    /// `<comment count=… onPress=…>` → 段评哨兵；本章说卡片 → 本章说哨兵。
+    private static func preserveReviewMarkers(_ html: String) -> String {
+        var text = html
+        let nsText = text as NSString
+
+        if let tagRegex = try? NSRegularExpression(pattern: "(?is)<comment\\b[^>]*>") {
+            let matches = tagRegex.matches(in: text, range: NSRange(location: 0, length: nsText.length))
+            for match in matches.reversed() {
+                let tag = nsText.substring(with: match.range)
+                guard let count = firstCapture(in: tag, pattern: "(?i)count\\s*=\\s*\"(\\d+)\""),
+                      let url = firstCapture(in: tag, pattern: "(?i)showReadingBrowser\\(\\s*'([^']+)'") else { continue }
+                let marker = reviewCommentMarkerStart + count + "\u{1F}" + url + reviewMarkerEnd
+                text = (text as NSString).replacingCharacters(in: match.range, with: marker)
+            }
+        }
+
+        if let imgRegex = try? NSRegularExpression(pattern: "(?is)<img\\b[^>]*>") {
+            let nsText2 = text as NSString
+            let matches = imgRegex.matches(in: text, range: NSRange(location: 0, length: nsText2.length))
+            for match in matches.reversed() {
+                let tag = nsText2.substring(with: match.range)
+                guard tag.contains("showFanqieComment("),
+                      let url = firstCapture(in: tag, pattern: "showFanqieComment\\(\\\\?\"([^\"\\\\]+)") else { continue }
+                let marker = reviewChapterMarkerStart + url + reviewMarkerEnd
+                text = (text as NSString).replacingCharacters(in: match.range, with: marker)
+            }
+        }
+        return text
+    }
+
+    private static func firstCapture(in text: String, pattern: String) -> String? {
+        guard let regex = try? NSRegularExpression(pattern: pattern) else { return nil }
+        let nsText = text as NSString
+        guard let match = regex.firstMatch(in: text, range: NSRange(location: 0, length: nsText.length)),
+              match.numberOfRanges > 1 else { return nil }
+        return nsText.substring(with: match.range(at: 1))
     }
 
     // MARK: - Chapter Content Cache

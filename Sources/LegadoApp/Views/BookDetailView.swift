@@ -561,9 +561,6 @@ public struct BookDetailView: View {
 
             // Read Now Button
             Button(action: {
-                if !isInBookshelf {
-                    _ = bookStore.saveOrUpdateBook(currentBook)
-                }
                 selectedChapterIndex = currentBookshelfBook.durChapterIndex
                 isReading = true
             }) {

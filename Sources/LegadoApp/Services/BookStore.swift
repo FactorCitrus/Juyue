@@ -88,30 +88,70 @@ public class BookStore: ObservableObject {
         chapterIndex: Int,
         chapterTitle: String,
         blockId: Int,
+        charOffset: Int = 0,
         length: Int,
         kind: BookBookmark.Kind,
         color: String? = nil,
-        snippet: String = ""
+        snippet: String = "",
+        charScoped: Bool = false
     ) -> Bool {
+        if charScoped {
+            // 逐字标注：同一段可以有多个区间。同区间点同色 = 取消，点别的色 = 换色
+            let sameRange = bookmarks.firstIndex {
+                $0.bookUrl == bookUrl && $0.chapterIndex == chapterIndex
+                    && $0.blockId == blockId && $0.kind == kind
+                    && $0.charOffset == charOffset && $0.length == length
+                    && $0.rangeUnitRaw == "char"
+            }
+            if let sameRange {
+                let current = bookmarks[sameRange].color
+                    ?? (kind == .underline ? "#2F7BF6" : "#FFF59D")
+                let sameColor = current == color
+                bookmarks.remove(at: sameRange)
+                if sameColor {
+                    saveBookmarks()
+                    return false
+                }
+            }
+            bookmarks.append(BookBookmark(
+                bookUrl: bookUrl,
+                chapterIndex: chapterIndex,
+                chapterTitle: chapterTitle,
+                charOffset: charOffset,
+                snippet: String(snippet.prefix(60)),
+                blockId: blockId,
+                length: length,
+                color: color,
+                rangeUnit: "char",
+                kind: kind
+            ))
+            saveBookmarks()
+            return true
+        }
         let existing = bookmarks.firstIndex {
             $0.bookUrl == bookUrl && $0.chapterIndex == chapterIndex
-                && $0.blockId == blockId && $0.kind == kind
+                && $0.blockId == blockId && $0.kind == kind && $0.rangeUnitRaw == nil
         }
         if let existing {
+            let current = bookmarks[existing].color
+                ?? (kind == .underline ? "#2F7BF6" : "#FFF59D")
+            let sameColor = current == color
             bookmarks.remove(at: existing)
-            saveBookmarks()
-            return false
+            if sameColor {
+                saveBookmarks()
+                return false
+            }
         }
         // 一段只留一种样式：先把这一段其它标注清掉，免得下划线和底色打架
         bookmarks.removeAll {
             $0.bookUrl == bookUrl && $0.chapterIndex == chapterIndex
-                && $0.blockId == blockId && $0.kind != .bookmark
+                && $0.blockId == blockId && $0.kind != .bookmark && $0.rangeUnitRaw == nil
         }
         bookmarks.append(BookBookmark(
             bookUrl: bookUrl,
             chapterIndex: chapterIndex,
             chapterTitle: chapterTitle,
-            charOffset: 0,
+            charOffset: charOffset,
             snippet: String(snippet.prefix(60)),
             blockId: blockId,
             length: length,
@@ -122,14 +162,31 @@ public class BookStore: ObservableObject {
         return true
     }
 
+    /// 把这一章的标注整体换成给定的一批：选段里按「取消」要还原格式时用
+    public func replaceAnnotations(_ items: [BookBookmark], bookUrl: String, chapterIndex: Int) {
+        bookmarks.removeAll {
+            $0.bookUrl == bookUrl && $0.chapterIndex == chapterIndex && $0.kind != .bookmark
+        }
+        bookmarks.append(contentsOf: items)
+        saveBookmarks()
+    }
+
     /// 这一章的标注，按 blockId 索引 —— 渲染时按段查
     public func annotations(bookUrl: String, chapterIndex: Int) -> [Int: BookBookmark] {
         var map: [Int: BookBookmark] = [:]
         for item in bookmarks
-        where item.bookUrl == bookUrl && item.chapterIndex == chapterIndex && item.kind != .bookmark {
+        where item.bookUrl == bookUrl && item.chapterIndex == chapterIndex
+            && item.kind != .bookmark && item.rangeUnitRaw == nil {
             if let blockId = item.blockId { map[blockId] = item }
         }
         return map
+    }
+
+    /// 这一章所有非书签标注（含逐字区间），逐字绘制用
+    public func userAnnotations(bookUrl: String, chapterIndex: Int) -> [BookBookmark] {
+        bookmarks.filter {
+            $0.bookUrl == bookUrl && $0.chapterIndex == chapterIndex && $0.kind != .bookmark
+        }
     }
 
     // MARK: - 正文替换（阅读页选中一段做替换，按书生效）
