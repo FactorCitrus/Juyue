@@ -549,6 +549,10 @@ private struct NativeCommentListSheet: View {
     @State private var cursor = ""
     @State private var hasMore = false
     @State private var sortHot = true
+    @State private var expandedComments: Set<String> = []
+    @State private var replies: [String: [ReviewReply]] = [:]
+    @State private var replyCursor: [String: String] = [:]
+    @State private var replyHasMore: Set<String> = []
 
     var body: some View {
         NavigationView {
@@ -579,18 +583,67 @@ private struct NativeCommentListSheet: View {
                                             .foregroundColor(.secondary)
                                     }
                                 }
-                                Text(comment.content ?? "")
+                                Text(commentText(comment.content))
                                     .font(.subheadline)
+                                if let image = comment.image_url, let url = URL(string: image) {
+                                    AsyncImage(url: url) { phase in
+                                        if let image = phase.image {
+                                            image.resizable().scaledToFit()
+                                        } else if phase.error == nil {
+                                            ProgressView().frame(height: 60)
+                                        }
+                                    }
+                                    .frame(maxHeight: 180)
+                                    .clipShape(RoundedRectangle(cornerRadius: 6))
+                                }
                                 HStack(spacing: 10) {
                                     if let time = comment.create_time {
                                         Text(time)
                                     }
                                     if let replies = comment.reply_count, replies > 0 {
-                                        Text("\(replies) 回复")
+                                        Button(expandedComments.contains(comment.id)
+                                               ? "收起回复"
+                                               : "\(replies) 回复") {
+                                            toggleReplies(comment)
+                                        }
+                                        .buttonStyle(.plain)
+                                        .foregroundColor(.accentColor)
                                     }
                                 }
                                 .font(.caption2)
                                 .foregroundColor(.secondary)
+
+                                if expandedComments.contains(comment.id) {
+                                    ForEach(replies[comment.id] ?? []) { reply in
+                                        VStack(alignment: .leading, spacing: 2) {
+                                            Text(reply.user?.user_name ?? "匿名")
+                                                .font(.caption2.bold())
+                                                .foregroundColor(.secondary)
+                                            Text(commentText(reply.content))
+                                                .font(.caption)
+                                            if let image = reply.image_url, let url = URL(string: image) {
+                                                AsyncImage(url: url) { phase in
+                                                    if let image = phase.image {
+                                                        image.resizable().scaledToFit()
+                                                    }
+                                                }
+                                                .frame(maxHeight: 120)
+                                                .clipShape(RoundedRectangle(cornerRadius: 6))
+                                            }
+                                        }
+                                        .padding(.leading, 12)
+                                        .padding(.vertical, 2)
+                                    }
+                                    if replyHasMore.contains(comment.id) {
+                                        Button("加载更多回复") {
+                                            Task { await loadReplies(commentID: comment.id, reset: false) }
+                                        }
+                                        .font(.caption2)
+                                        .buttonStyle(.plain)
+                                        .foregroundColor(.accentColor)
+                                        .padding(.leading, 12)
+                                    }
+                                }
                             }
                             .padding(.vertical, 3)
                         }
@@ -685,6 +738,71 @@ private struct NativeCommentListSheet: View {
         components.queryItems = items
         return components.url
     }
+
+    private func toggleReplies(_ comment: ReviewComment) {
+        if expandedComments.contains(comment.id) {
+            expandedComments.remove(comment.id)
+        } else {
+            expandedComments.insert(comment.id)
+            if replies[comment.id] == nil {
+                Task { await loadReplies(commentID: comment.id, reset: true) }
+            }
+        }
+    }
+
+    private func loadReplies(commentID: String, reset: Bool) async {
+        guard let api = replyAPIURL(commentID: commentID, cursor: reset ? "" : (replyCursor[commentID] ?? "")) else { return }
+        do {
+            let (data, _) = try await URLSession.shared.data(from: api)
+            let envelope = try JSONDecoder().decode(ReviewEnvelope.self, from: data)
+            let page = envelope.data?.replies ?? []
+            if reset {
+                replies[commentID] = page
+            } else {
+                replies[commentID, default: []] += page
+            }
+            replyCursor[commentID] = envelope.data?.next_cursor ?? ""
+            if envelope.data?.has_more == true, envelope.data?.next_cursor != nil {
+                replyHasMore.insert(commentID)
+            } else {
+                replyHasMore.remove(commentID)
+            }
+        } catch {
+            // 回复失败保留原列表，不打断主评论
+        }
+    }
+
+    private func replyAPIURL(commentID: String, cursor: String) -> URL? {
+        guard let base = reviewAPIURL(from: target.url, cursor: ""),
+              var components = URLComponents(url: base, resolvingAgainstBaseURL: false) else { return nil }
+        var items = components.queryItems ?? []
+        items.append(URLQueryItem(name: "comment_id", value: commentID))
+        if !cursor.isEmpty {
+            items.append(URLQueryItem(name: "cursor", value: cursor))
+        }
+        components.queryItems = items
+        return components.url
+    }
+
+    private static let commentEmoji: [String: String] = [
+        "[微笑]": "😊", "[偷笑]": "😏", "[笑]": "😁", "[什么]": "🤔", "[害羞]": "😳",
+        "[爱慕]": "😍", "[飞吻]": "😘", "[奸笑]": "😏", "[尬笑]": "😅", "[思考]": "🤔",
+        "[撇嘴]": "😒", "[做鬼脸]": "😜", "[酷]": "😎", "[翻白眼]": "🙄", "[惊呆]": "😲",
+        "[震惊]": "😱", "[送心]": "❤️", "[委屈]": "🥺", "[快哭了]": "😭", "[笑哭]": "😂",
+        "[哭]": "😢", "[大笑]": "😆", "[舔屏]": "😋", "[怒]": "😡", "[捂脸]": "🤦",
+        "[吐]": "🤮", "[恐惧]": "😨", "[抓狂]": "😫", "[敬礼]": "🫡", "[石化]": "🗿",
+        "[OK]": "👌", "[赞]": "👍", "[爱心]": "💖", "[伤心]": "💔", "[吃瓜]": "🍉",
+        "[盯]": "👀", "[狗头]": "🐶", "[神评]": "🌟", "[小七_神评]": "🌟"
+    ]
+
+    private func commentText(_ raw: String?) -> String {
+        guard let raw else { return "" }
+        var text = raw
+        for (token, emoji) in Self.commentEmoji {
+            text = text.replacingOccurrences(of: token, with: emoji)
+        }
+        return text
+    }
 }
 
 private struct ReviewEnvelope: Decodable {
@@ -694,14 +812,26 @@ private struct ReviewEnvelope: Decodable {
 
 private struct ReviewData: Decodable {
     let comments: [ReviewComment]?
+    let replies: [ReviewReply]?
     let total: Int?
     let has_more: Bool?
     let next_cursor: String?
 }
 
+private struct ReviewReply: Decodable, Identifiable {
+    let reply_id: String
+    let content: String?
+    let image_url: String?
+    let like_count: Int?
+    let create_time: String?
+    let user: ReviewUser?
+    var id: String { reply_id }
+}
+
 private struct ReviewComment: Decodable, Identifiable {
     let comment_id: String
     let content: String?
+    let image_url: String?
     let like_count: Int?
     let reply_count: Int?
     let create_time: String?
@@ -5884,7 +6014,11 @@ public struct ReaderView: View {
                 currentPageHeight = 0
                 maxHeightForCurrentPage = normalHeight
             } else {
-                let pLines = splitParagraphIntoLines(text: block.text, width: usableWidth)
+                var displayText = block.text
+                if block.commentCount > 0 {
+                    displayText += "  💬\(block.commentCount >= 99 ? "99+" : "\(block.commentCount)")"
+                }
+                let pLines = splitParagraphIntoLines(text: displayText, width: usableWidth)
                 for lineInfo in pLines {
                     // 段间距算在两个段落之间：上一行是段尾时，这一行之前才加间距，
                     // 页面最后一行后面不会白留一截
