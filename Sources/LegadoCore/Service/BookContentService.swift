@@ -1110,11 +1110,13 @@ public final class RSSStore: ObservableObject {
         let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
         sources.append(RSSSource(name: trimmedName, url: trimmedURL))
         save()
+        LegadoLog.log("[RSS] 新增订阅 \(sources.count) 个")
     }
 
     public func remove(_ source: RSSSource) {
         sources.removeAll { $0.id == source.id }
         save()
+        LegadoLog.log("[RSS] 删除订阅 \(sources.count) 个")
     }
 }
 

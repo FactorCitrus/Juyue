@@ -17,6 +17,7 @@ public struct LegadoApp: App {
     @StateObject private var bookStore = BookStore.shared
     @StateObject private var scriptBrowser = ScriptBrowserPresenter.shared
     @StateObject private var toastPresenter = ToastPresenter.shared
+    @Environment(\.scenePhase) private var scenePhase
     @AppStorage("legado_app_theme") private var appTheme: String = "system"
 
     private var selectedColorScheme: ColorScheme? {
@@ -37,6 +38,9 @@ public struct LegadoApp: App {
     public var body: some Scene {
         WindowGroup {
             rootContent
+                .onChange(of: scenePhase) { phase in
+                    AppLog.write("[生命周期] \(phase)")
+                }
         }
     }
 
@@ -62,7 +66,8 @@ public struct LegadoApp: App {
             if let bundleUrl = Bundle.main.url(forResource: "bookSources", withExtension: "json"),
                let data = try? Data(contentsOf: bundleUrl),
                let json = String(data: data, encoding: .utf8) {
-                _ = try? bookStore.importSources(json: json)
+                let count = try? bookStore.importSources(json: json)
+                AppLog.write("[启动] 预装书源导入 \(count ?? 0) 条")
             }
         }
     }

@@ -160,10 +160,12 @@ public class SearchViewModel: ObservableObject {
 
         let sources = targetSources
         guard !sources.isEmpty else {
+            AppLog.write("[搜索] 没有可用书源")
             isSearching = false
             hasMore = false
             return
         }
+        AppLog.write("[搜索] 开始 源=\(sources.count) 个")
 
         currentSearchTask = Task {
             let stream = BookSearchService.shared.searchMultiSources(sources: sources, key: key, page: 1)
@@ -190,6 +192,7 @@ public class SearchViewModel: ObservableObject {
                 } else {
                     self.hasMore = true
                 }
+                AppLog.write("[搜索] 完成 结果=\(self.allResults.count) 本，无结果源=\(self.exhaustedSourceUrls.count) 个")
             }
         }
     }
@@ -213,6 +216,7 @@ public class SearchViewModel: ObservableObject {
         }
 
         isLoadingMore = true
+        AppLog.write("[搜索] 加载第 \(currentPage + 1) 页")
         let nextPage = currentPage + 1
         let countBeforeNextPage = allResults.count
 
@@ -241,6 +245,7 @@ public class SearchViewModel: ObservableObject {
                 if remainingSources.isEmpty || !foundAny {
                     self.hasMore = false
                 }
+                AppLog.write("[搜索] 第 \(nextPage) 页完成 新增 \(max(0, self.allResults.count - countBeforeNextPage)) 本")
             }
         }
     }

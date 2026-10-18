@@ -17,8 +17,6 @@
 				<array>
 					<string>AppIconClassic60x60</string>
 				</array>
-				<key>CFBundleIconName</key>
-				<string>AppIconClassic</string>
 			</dict>
 		</dict>
 	</dict>
@@ -33,8 +31,6 @@
 					<string>AppIconClassic76x76</string>
 					<string>AppIconClassic83.5x83.5</string>
 				</array>
-				<key>CFBundleIconName</key>
-				<string>AppIconClassic</string>
 			</dict>
 		</dict>
 	</dict>

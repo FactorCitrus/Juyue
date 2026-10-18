@@ -715,6 +715,7 @@ private struct NativeCommentListSheet: View {
         }
         errorText = nil
         guard let api = reviewAPIURL(from: target.url, cursor: cursor) else {
+            AppLog.write("[评论] 地址无法解析 title=\(target.title)")
             errorText = "评论地址无法解析"
             isLoading = false
             isLoadingMore = false
@@ -729,7 +730,9 @@ private struct NativeCommentListSheet: View {
             total = envelope.data?.total ?? comments.count
             cursor = envelope.data?.next_cursor ?? ""
             hasMore = envelope.data?.has_more == true && cursor != ""
+            AppLog.write("[评论] 加载完成 title=\(target.title) 当前 \(comments.count) 条 / 总数 \(total)")
         } catch {
+            AppLog.write("[评论] 加载失败 title=\(target.title) error=\(error.localizedDescription)")
             errorText = "加载失败：\(error.localizedDescription)"
         }
         isLoading = false
@@ -3149,6 +3152,7 @@ public struct ReaderView: View {
 
     /// 换源：把阅读进度搬到新书源，然后在同一个阅读界面里重拉目录和正文。
     private func switchToSource(_ newSource: BookSource, _ candidate: SearchBook) {
+        AppLog.write("[阅读] 开始更换书源")
         previousBook = activeBook
         previousSource = effectiveSource
         let newBook = Book(
@@ -3177,6 +3181,7 @@ public struct ReaderView: View {
     /// 新书源解析不出目录时退回原书源，避免卡在错误页。
     private func revertSourceSwitch() {
         guard let target = previousBook else { return }
+        AppLog.write("[阅读] 新书源目录为空，回退原书源")
         let current = activeBook
         switchedBook = target
         switchedSource = previousSource
@@ -5360,6 +5365,7 @@ public struct ReaderView: View {
         }
 
         guard let source = effectiveSource else {
+            AppLog.write("[阅读] 打开失败：未找到书籍关联书源")
             errorMessage = "未找到书籍关联的书源"
             isLoadingInitial = false
             return
@@ -5400,6 +5406,7 @@ public struct ReaderView: View {
             BookStore.shared.saveChapters(fetchedChapters, for: tocCacheKey(source: source))
             AppLog.write("[阅读] 打开网络书籍，共 \(fetchedChapters.count) 章")
             guard !fetchedChapters.isEmpty else {
+                AppLog.write("[阅读] 目录为空 source=\(source.bookSourceName)")
                 // 换源之后目录空，说明这个源用不了，直接退回原来的源
                 if previousBook != nil {
                     revertSourceSwitch()
@@ -5414,6 +5421,7 @@ public struct ReaderView: View {
             }
             loadInitialChapter(at: currentChapterIndex)
         } catch {
+            AppLog.write("[阅读] 目录解析失败 error=\(error.localizedDescription)")
             if previousBook != nil {
                 revertSourceSwitch()
                 return
@@ -5462,8 +5470,10 @@ public struct ReaderView: View {
             let pages = paginate(blocks: blocks, title: targetChapter.title)
             let loaded = LoadedChapter(chapter: targetChapter, content: content, blocks: blocks, pages: pages)
             self.chapterCache[index] = loaded
+            AppLog.write("[阅读] 正文加载完成 第 \(index + 1) 章，\(loaded.blocks.count) 段")
             return loaded
         } catch {
+            AppLog.write("[阅读] 正文加载失败 第 \(index + 1) 章 error=\(error.localizedDescription)")
             return nil
         }
     }
@@ -5595,6 +5605,7 @@ public struct ReaderView: View {
                     self.scrollToChapterId = scrollToTargetEnd ? "chapter_end_\(index)" : "chapter_\(index)"
                 }
             } catch {
+                AppLog.write("[阅读] 首章正文失败 第 \(index + 1) 章 error=\(error.localizedDescription)")
                 self.errorMessage = "正文解析失败: \(error.localizedDescription)"
                 self.isLoadingInitial = false
                 self.isSwitchingChapter = false
