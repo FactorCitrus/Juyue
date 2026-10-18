@@ -4476,26 +4476,31 @@ public struct ReaderView: View {
             settingsHeader
             if !panelCollapsed {
                 settingsPanelSwitcher
+                settingsStatusStrip
                 brightnessRow
             ScrollView {
                 VStack(alignment: .leading, spacing: 14) {
                     switch settingsPanel {
                     case .quick:
-                        pageModeRow
-                        fontSizeRow
-                        themeRow
+                        settingsBlock {
+                            pageModeRow
+                            sectionDivider
+                            fontSizeRow
+                            sectionDivider
+                            themeRow
+                        }
                         CollapsibleSettingBlock(title: "配色", tint: readerConfig.textColor) { colorSection }
                         backgroundImageSection
                         CollapsibleSettingBlock(title: "显示", tint: readerConfig.textColor, initiallyExpanded: true) { displaySection }
                     case .spacing:
-                        typographySection
+                        settingsBlock { typographySection }
                         CollapsibleSettingBlock(title: "正文排版", tint: readerConfig.textColor) { bodyLayoutSection }
                         underlineSection
                         CollapsibleSettingBlock(title: "页边距", tint: readerConfig.textColor) { marginSection }
                         CollapsibleSettingBlock(title: "章节标题", tint: readerConfig.textColor) { chapterTitleSection }
                         headerFooterSection
                     case .tts:
-                        ttsSection
+                        settingsBlock { ttsSection }
                     }
                 }
                 .transition(.opacity)
@@ -4565,20 +4570,29 @@ public struct ReaderView: View {
 
     private var settingsHeader: some View {
         HStack(spacing: 8) {
-            Image(systemName: "textformat.size")
-                .font(.system(size: 13, weight: .semibold))
-                .foregroundColor(settingsAccent)
-                .frame(width: 26, height: 26)
-                .background(Circle().fill(settingsAccent.opacity(0.14)))
+            Text("READER")
+                .font(theme.typography.label)
+                .foregroundColor(theme.palette.secondaryInk)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 5)
+                .overlay(
+                    Rectangle()
+                        .stroke(theme.palette.divider, lineWidth: theme.metrics.borderWidth)
+                )
 
             VStack(alignment: .leading, spacing: 1) {
-                Text("阅读设置")
-                    .font(.system(size: 16, weight: .semibold))
-                    .foregroundColor(readerConfig.textColor)
+                HStack(spacing: 6) {
+                    Text("阅读设置")
+                        .font(theme.typography.title)
+                        .foregroundColor(chromeInk)
+                    Text("SETTINGS / \(settingsPanel.rawValue)")
+                        .font(theme.typography.mono)
+                        .foregroundColor(theme.palette.secondaryInk)
+                }
                 // 这行小字带状态：翻页出问题时截一张就能看出来卡在哪
                 Text("\(settingsPanel.rawValue) · \(readerConfig.pageMode.rawValue) · 章 \(currentChapterIndex + 1)/\(chapters.count) · 页 \(currentPageIndex + 1)/\(currentLoadedChapter?.pages.count ?? 0)\(pagerDebugSuffix)\(isSwitchingChapter ? " · 换章中" : "")")
-                    .font(.system(size: 10))
-                    .foregroundColor(readerConfig.textColor.opacity(0.45))
+                    .font(theme.typography.mono)
+                    .foregroundColor(theme.palette.secondaryInk)
             }
 
             Spacer()
@@ -4591,7 +4605,7 @@ public struct ReaderView: View {
             }) {
                 Image(systemName: panelCollapsed ? "chevron.up.circle.fill" : "chevron.down.circle.fill")
                     .font(.system(size: 18))
-                    .foregroundColor(readerConfig.textColor.opacity(0.45))
+                    .foregroundColor(theme.palette.secondaryInk)
             }
             .buttonStyle(.plain)
 
@@ -4602,7 +4616,7 @@ public struct ReaderView: View {
             }) {
                 Image(systemName: "xmark.circle.fill")
                     .font(.system(size: 20))
-                    .foregroundColor(readerConfig.textColor.opacity(0.6))
+                    .foregroundColor(theme.palette.secondaryInk)
             }
             .buttonStyle(.plain)
         }
@@ -4610,7 +4624,7 @@ public struct ReaderView: View {
 
     /// 设置面板的强调色：跟当前主题走
     private var settingsAccent: Color {
-        readerConfig.theme.accentColor
+        theme.choice == .lunarTerminal ? theme.palette.accent : readerConfig.theme.accentColor
     }
 
     /// 三个面板做成胶囊切换，比系统分段控件更贴阅读界面的调子
@@ -4625,6 +4639,9 @@ public struct ReaderView: View {
                                 withAnimation(.easeInOut(duration: 0.18)) { settingsPanel = panel }
                 } label: {
                     HStack(spacing: 5) {
+                        Text(panelIndex(panel))
+                            .font(theme.typography.mono)
+                            .foregroundColor(theme.palette.secondaryInk)
                         Image(systemName: panel.symbolName)
                             .font(.system(size: 11, weight: .medium))
                         Text(panel.rawValue)
@@ -4633,17 +4650,25 @@ public struct ReaderView: View {
                     .padding(.vertical, 7)
                     .frame(maxWidth: .infinity)
                     .background(
-                        RoundedRectangle(cornerRadius: 10, style: .continuous)
-                            .fill(isOn ? settingsAccent.opacity(0.20) : readerConfig.textColor.opacity(0.05))
+                        RoundedRectangle(cornerRadius: theme.metrics.cornerRadius, style: .continuous)
+                            .fill(isOn ? settingsAccent.opacity(0.20) : theme.palette.elevated)
                     )
                     .overlay(
-                        RoundedRectangle(cornerRadius: 10, style: .continuous)
-                            .stroke(isOn ? settingsAccent.opacity(0.45) : .clear, lineWidth: 0.8)
+                        RoundedRectangle(cornerRadius: theme.metrics.cornerRadius, style: .continuous)
+                            .stroke(isOn ? settingsAccent.opacity(0.65) : theme.palette.divider, lineWidth: theme.metrics.borderWidth)
                     )
-                    .foregroundColor(isOn ? settingsAccent : readerConfig.textColor.opacity(0.6))
+                    .foregroundColor(isOn ? settingsAccent : theme.palette.secondaryInk)
                 }
                 .buttonStyle(.plain)
             }
+        }
+    }
+
+    private func panelIndex(_ panel: ReaderQuickPanel) -> String {
+        switch panel {
+        case .quick: return "01"
+        case .spacing: return "02"
+        case .tts: return "03"
         }
     }
 
@@ -4654,17 +4679,50 @@ public struct ReaderView: View {
                 .fill(settingsAccent.opacity(0.85))
                 .frame(width: 2.5, height: 11)
             Text(text)
-                .font(.system(size: 11, weight: .semibold))
+                .font(theme.typography.label)
                 .tracking(0.6)
-                .foregroundColor(readerConfig.textColor.opacity(0.5))
+                .foregroundColor(theme.palette.secondaryInk)
         }
     }
 
     private var sectionDivider: some View {
         Rectangle()
-            .fill(readerConfig.textColor.opacity(0.08))
+            .fill(theme.palette.divider.opacity(0.55))
             .frame(height: 0.5)
             .padding(.top, 12)
+    }
+
+    private var settingsStatusStrip: some View {
+        HStack(spacing: 10) {
+            Text("字号 \(Int(readerConfig.fontSize))")
+            Text("行距 \(Int(readerConfig.lineSpacing))")
+            Text(readerConfig.theme.rawValue)
+            Text(readerConfig.pageMode.rawValue)
+        }
+        .font(theme.typography.mono)
+        .foregroundColor(theme.palette.secondaryInk)
+        .lineLimit(1)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 7)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(theme.palette.elevated)
+        .overlay(
+            Rectangle()
+                .stroke(theme.palette.divider, lineWidth: theme.metrics.borderWidth)
+        )
+    }
+
+    private func settingsBlock<Content: View>(@ViewBuilder content: () -> Content) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            content()
+        }
+        .padding(12)
+        .background(theme.palette.elevated)
+        .overlay(
+            RoundedRectangle(cornerRadius: theme.metrics.cornerRadius, style: .continuous)
+                .stroke(theme.palette.divider, lineWidth: theme.metrics.borderWidth)
+        )
+        .clipShape(RoundedRectangle(cornerRadius: theme.metrics.cornerRadius, style: .continuous))
     }
 
     /// 页边距：上下左右四向分开调
