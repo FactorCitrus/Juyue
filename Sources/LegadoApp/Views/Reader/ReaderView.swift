@@ -2183,6 +2183,12 @@ public struct ReaderView: View {
                             let appliedExtra = readerConfig.justifyLastPage ? extraPerParagraph : 0
                             let pageContentHeight = filledBase
                                 + paragraphCount * (readerConfig.paragraphSpacing + appliedExtra)
+                            let commentMap = Dictionary(uniqueKeysWithValues:
+                                (currentLoadedChapter?.blocks ?? []).compactMap { block -> (Int, (count: Int, url: String))? in
+                                    guard block.commentCount > 0, let url = block.commentURL else { return nil }
+                                    return (block.id, (block.commentCount, url))
+                                }
+                            )
 
                             CoreTextPageView(
                                 lines: lines,
@@ -2213,6 +2219,11 @@ public struct ReaderView: View {
                                annotationRanges: annotationRangesForCurrentChapter,
                                onLongPressLine: { line, charOffset in
                                    selectCharacters(atLine: line, charOffset: charOffset, in: pageBlocks)
+                               },
+                               commentMap: commentMap,
+                               pageBackgroundColor: readerConfig.backgroundColor,
+                               onCommentTap: { url in
+                                   directCommentTarget = ReviewTarget(url: url, title: "段评")
                                }
                            )
                             .frame(width: usableWidth, height: pageContentHeight, alignment: .topLeading)
@@ -2299,6 +2310,14 @@ public struct ReaderView: View {
                         if moved < 8 {
                             // 刚长按选中过段落：松手这一次不能再当点击使唤，否则操作栏会被菜单盖掉
                             guard !tapSuppressor.isActive else { return }
+                            let pageOrigin = geo.frame(in: .global).origin
+                            let windowPoint = CGPoint(
+                                x: pageOrigin.x + value.startLocation.x,
+                                y: pageOrigin.y + value.startLocation.y
+                            )
+                            if CoreTextUIView.triggerCommentTap(atWindowPoint: windowPoint) {
+                                return
+                            }
                             // 选段中点别处：退出选段、保留这次的更改
                             if selectedBlockRange != nil {
                                 clearParagraphSelection()
@@ -5722,7 +5741,8 @@ public struct ReaderView: View {
                             let textBefore = nsLine.substring(with: NSRange(location: lastIndex, length: match.range.location - lastIndex)).trimmingCharacters(in: .whitespaces)
                             if !textBefore.isEmpty {
                                 let indent = (textBefore.hasPrefix("　") || textBefore.hasPrefix("    ")) ? "" : "　　"
-                                blocks.append(ContentBlock(id: currentId, isImage: false, text: indent + textBefore, imageUrl: nil))
+                                blocks.append(ContentBlock(id: currentId, isImage: false, text: indent + textBefore,
+                                                           imageUrl: nil, paragraphId: currentId))
                                 currentId += 1
                             }
                         }
@@ -5737,7 +5757,8 @@ public struct ReaderView: View {
                         let textAfter = nsLine.substring(with: NSRange(location: lastIndex, length: nsLine.length - lastIndex)).trimmingCharacters(in: .whitespaces)
                         if !textAfter.isEmpty {
                             let indent = (textAfter.hasPrefix("　") || textAfter.hasPrefix("    ")) ? "" : "　　"
-                            blocks.append(ContentBlock(id: currentId, isImage: false, text: indent + textAfter, imageUrl: nil))
+                            blocks.append(ContentBlock(id: currentId, isImage: false, text: indent + textAfter,
+                                                       imageUrl: nil, paragraphId: currentId))
                             currentId += 1
                         }
                     }
@@ -5749,7 +5770,8 @@ public struct ReaderView: View {
             let paragraphs = readerConfig.smartParagraphs ? smartParagraphSplit(trimmed) : [trimmed]
             for paragraph in paragraphs {
                 let indent = (paragraph.hasPrefix("　") || paragraph.hasPrefix("    ")) ? "" : "　　"
-                blocks.append(ContentBlock(id: currentId, isImage: false, text: indent + paragraph, imageUrl: nil))
+                blocks.append(ContentBlock(id: currentId, isImage: false, text: indent + paragraph,
+                                           imageUrl: nil, paragraphId: currentId))
                 currentId += 1
             }
             attachReviewMarker(marked, from: firstBlockIndex, blocks: &blocks)
@@ -6038,11 +6060,7 @@ public struct ReaderView: View {
                 currentPageHeight = 0
                 maxHeightForCurrentPage = normalHeight
             } else {
-                var displayText = block.text
-                if block.commentCount > 0 {
-                    displayText += "  💬\(block.commentCount >= 99 ? "99+" : "\(block.commentCount)")"
-                }
-                let pLines = splitParagraphIntoLines(text: displayText, width: usableWidth)
+                let pLines = splitParagraphIntoLines(text: block.text, width: usableWidth)
                 for lineInfo in pLines {
                     // 段间距算在两个段落之间：上一行是段尾时，这一行之前才加间距，
                     // 页面最后一行后面不会白留一截
@@ -6521,6 +6539,50 @@ public class CoreTextNSView: NSView {
             CTLineDraw(finalLine, ctx)
             ctx.restoreGState()
 
+            if isEnd, let info = commentMap[paragraphId] {
+                let label = info.count >= 99 ? "99+" : "\(info.count)"
+                let bodyWidth: CGFloat = label.count > 2 ? 30 : 20
+                let bubbleWidth = bodyWidth + 7
+                let bubbleHeight: CGFloat = 25
+                let endX = boundaries.last ?? 0
+                var originX = endX + 6
+                if originX + bubbleWidth > CGFloat(targetWidth) {
+                    originX = max(0, CGFloat(targetWidth) - bubbleWidth)
+                }
+                let originY = baselineY - ascent + ((ascent + descent) - bubbleHeight) / 2
+                let bodyRect = CGRect(x: originX + 7, y: originY,
+                                      width: bodyWidth, height: bubbleHeight)
+                let path = UIBezierPath(roundedRect: bodyRect, cornerRadius: 6)
+                let midY = originY + bubbleHeight / 2
+                path.move(to: CGPoint(x: originX + 7, y: midY - 6.5))
+                path.addLine(to: CGPoint(x: originX, y: midY))
+                path.addLine(to: CGPoint(x: originX + 7, y: midY + 6.5))
+                path.close()
+                ctx.saveGState()
+                ctx.setFillColor(bubbleFillColor.cgColor)
+                ctx.addPath(path.cgPath)
+                ctx.fillPath()
+                ctx.setStrokeColor(textColor.withAlphaComponent(0.45).cgColor)
+                ctx.setLineWidth(1.2)
+                ctx.addPath(path.cgPath)
+                ctx.strokePath()
+                let attr: [NSAttributedString.Key: Any] = [
+                    .font: UIFont.systemFont(ofSize: 12, weight: .semibold),
+                    .foregroundColor: textColor
+                ]
+                let textSize = (label as NSString).size(withAttributes: attr)
+                (label as NSString).draw(
+                    at: CGPoint(x: bodyRect.midX - textSize.width / 2,
+                                y: bodyRect.midY - textSize.height / 2),
+                    withAttributes: attr
+                )
+                ctx.restoreGState()
+                commentBubbleRects.append((
+                    CGRect(x: originX, y: originY, width: bubbleWidth, height: bubbleHeight),
+                    info.url
+                ))
+            }
+
             if isEnd {
                 if paragraphSeparatorLines > 0 {
                     let lineColor = paragraphSeparatorColor ?? textColor
@@ -6766,6 +6828,9 @@ public struct CoreTextPageView: UIViewRepresentable {
     /// 已加标注的段落：下划线 / 底色
     public var annotationRanges: [(start: Int, count: Int, style: ReaderBlockStyle)] = []
     public var onLongPressLine: ((Int, Int) -> Void)?
+    public var commentMap: [Int: (count: Int, url: String)] = [:]
+    public var pageBackgroundColor: Color = .clear
+    public var onCommentTap: ((String) -> Void)?
 
     public func makeUIView(context: Context) -> CoreTextUIView {
         let view = CoreTextUIView()
@@ -6798,6 +6863,9 @@ public struct CoreTextPageView: UIViewRepresentable {
         uiView.charAnnotations = charAnnotations
         uiView.annotationRanges = annotationRanges
         uiView.onLongPressLine = onLongPressLine
+        uiView.commentMap = commentMap
+        uiView.bubbleFillColor = UIColor(pageBackgroundColor)
+        uiView.onCommentTap = onCommentTap
         uiView.textColor = UIColor(textColor)
         uiView.containerWidth = width
         uiView.containerHeight = height
@@ -6854,6 +6922,11 @@ public class CoreTextUIView: UIView {
     public var underlineColor: UIColor?
     public var paragraphSeparatorLines: Int = 0
     public var paragraphSeparatorColor: UIColor?
+    /// 段落 id → 评论数 / 评论地址；段尾画气泡
+    public var commentMap: [Int: (count: Int, url: String)] = [:]
+    public var bubbleFillColor: UIColor = .clear
+    public var onCommentTap: ((String) -> Void)?
+    private var commentBubbleRects: [(rect: CGRect, url: String)] = []
 
     public override init(frame: CGRect) {
         super.init(frame: frame)
@@ -6983,6 +7056,19 @@ public class CoreTextUIView: UIView {
         return true
     }
 
+    /// 分页页面上点段评气泡：命中后打开该段评论。
+    @discardableResult
+    public static func triggerCommentTap(atWindowPoint point: CGPoint) -> Bool {
+        guard let index = activePageIndex(atWindowPoint: point),
+              let view = activePages[index].view else { return false }
+        let local = view.convert(point, from: nil)
+        guard let hit = view.commentBubbleRects.first(where: {
+            $0.rect.insetBy(dx: -8, dy: -8).contains(local)
+        }) else { return false }
+        view.onCommentTap?(hit.url)
+        return true
+    }
+
     /// 触点落在哪一页：可见、且局部坐标在页内；多页重叠时取面积最小的
     private static func activePageIndex(atWindowPoint point: CGPoint) -> Int? {
         var best: (index: Int, area: CGFloat)?
@@ -7023,6 +7109,7 @@ public class CoreTextUIView: UIView {
 
     public override func draw(_ rect: CGRect) {
         guard let ctx = UIGraphicsGetCurrentContext(), !lines.isEmpty else { return }
+        commentBubbleRects.removeAll(keepingCapacity: true)
 
         // 行矩形是长按命中的唯一依据，每画一次就重记一次
         var rects = [CGRect](repeating: .null, count: lines.count)
