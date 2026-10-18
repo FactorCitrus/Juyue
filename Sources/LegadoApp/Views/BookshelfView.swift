@@ -332,29 +332,24 @@ public struct BookshelfView: View {
                     .frame(height: 150)
                     .clipped()
                     .overlay(
-                        Rectangle()
-                            .stroke(theme.palette.divider, lineWidth: theme.metrics.borderWidth)
+                        LinearGradient(
+                            colors: [
+                                theme.palette.background.opacity(0.08),
+                                .clear,
+                                theme.palette.background.opacity(0.10)
+                            ],
+                            startPoint: .top,
+                            endPoint: .bottom
+                        )
                     )
                     .overlay(alignment: .bottom) {
                         LinearGradient(
-                            colors: [.clear, theme.palette.surface.opacity(0.92)],
+                            colors: [.clear, theme.palette.surface.opacity(0.88)],
                             startPoint: .top,
                             endPoint: .bottom
                         )
                         .frame(height: 42)
                     }
-
-                    Text(String(format: "%02d", index + 1))
-                        .font(theme.typography.mono)
-                        .foregroundColor(theme.palette.accent)
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 3)
-                        .background(theme.palette.surface.opacity(0.92))
-                        .overlay(
-                            Rectangle()
-                                .stroke(theme.palette.accent.opacity(0.55), lineWidth: 0.8)
-                        )
-                        .padding(7)
 
                     if isOrganizing {
                         Image(systemName: isSelected ? "checkmark.square.fill" : "square")
@@ -362,6 +357,19 @@ public struct BookshelfView: View {
                             .foregroundColor(isSelected ? theme.palette.accent : theme.palette.secondaryInk)
                             .padding(8)
                             .frame(maxWidth: .infinity, alignment: .trailing)
+                    }
+                }
+
+                HStack(spacing: 6) {
+                    Text(String(format: "ARCHIVE %02d", index + 1))
+                        .font(theme.typography.mono)
+                        .foregroundColor(theme.palette.secondaryInk)
+                    Spacer()
+                    if let group = bookStore.groups.first(where: { $0.id == book.groupId }) {
+                        Text(group.name)
+                            .font(theme.typography.mono)
+                            .foregroundColor(theme.palette.accent)
+                            .lineLimit(1)
                     }
                 }
 
@@ -392,29 +400,23 @@ public struct BookshelfView: View {
                         .lineLimit(1)
                 }
 
-                if let group = bookStore.groups.first(where: { $0.id == book.groupId }) {
-                    Text(group.name)
-                        .font(theme.typography.mono)
-                        .foregroundColor(theme.palette.accent)
-                        .lineLimit(1)
-                }
             }
             .padding(9)
             .frame(maxWidth: .infinity, alignment: .topLeading)
             .background(
                 LinearGradient(
-                    colors: [theme.palette.surface, theme.palette.elevated.opacity(0.92)],
+                    colors: [theme.palette.surface.opacity(0.94), theme.palette.surface],
                     startPoint: .top,
                     endPoint: .bottom
                 )
             )
             .overlay(
-                Rectangle()
-                    .stroke(isSelected ? theme.palette.accent : theme.palette.divider.opacity(0.8),
-                            lineWidth: isSelected ? 1.6 : theme.metrics.borderWidth)
+                RoundedRectangle(cornerRadius: theme.metrics.cornerRadius, style: .continuous)
+                    .stroke(isSelected ? theme.palette.accent : theme.palette.divider.opacity(0.45),
+                            lineWidth: isSelected ? 1.4 : theme.metrics.borderWidth)
             )
             .clipShape(RoundedRectangle(cornerRadius: theme.metrics.cornerRadius, style: .continuous))
-            .shadow(color: .black.opacity(0.06), radius: 8, y: 4)
+            .shadow(color: .black.opacity(0.035), radius: 6, y: 3)
         }
         .buttonStyle(.plain)
         .onLongPressGesture {
