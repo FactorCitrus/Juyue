@@ -667,16 +667,22 @@ public struct PageCurlPager: UIViewControllerRepresentable {
         }
 
         @objc private func handleTap(_ gesture: UITapGestureRecognizer) {
+            // 选字状态：点任何位置先退出选字，不翻页
+            if parent.charSelection != nil {
+                parent.onTapCenter()
+                return
+            }
+            // 气泡贴着左右翻页区也要先命中评论；否则贴边会直接翻页
+            if let view = gesture.view {
+                let point = view.convert(gesture.location(in: view), to: nil)
+                if CoreTextUIView.triggerCommentTap(atWindowPoint: point) { return }
+            }
             switch gesture.view?.tag {
             case 0:
                 step(forward: false)
             case 2:
                 step(forward: true)
             default:
-                if let view = gesture.view {
-                    let point = view.convert(gesture.location(in: view), to: nil)
-                    if CoreTextUIView.triggerCommentTap(atWindowPoint: point) { return }
-                }
                 parent.onTapCenter()
             }
         }

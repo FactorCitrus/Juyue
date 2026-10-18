@@ -1148,6 +1148,8 @@ public struct ReaderView: View {
            !showControls,
            !showSettings {
             Button {
+                // 按钮贴着右侧翻页区，先压住这一拍的整页点击，避免同时翻页
+                tapSuppressor.suppress(seconds: 0.35)
                 showComments = true
             } label: {
                 Label("本章说", systemImage: "text.bubble")
@@ -1910,7 +1912,7 @@ public struct ReaderView: View {
             .contentShape(Rectangle())
             .onTapGesture {
                 // 选段中点别处：退出选段、保留这次的更改
-                if selectedBlockRange != nil {
+                if selectedBlockRange != nil || charSelection != nil {
                     clearParagraphSelection()
                     return
                 }
@@ -2108,6 +2110,10 @@ public struct ReaderView: View {
                     }
                 },
                 onTapCenter: {
+                    if charSelection != nil {
+                        clearParagraphSelection()
+                        return
+                    }
                     withAnimation(.easeInOut(duration: 0.2)) {
                         showControls.toggle()
                     }
@@ -7032,22 +7038,21 @@ public class CoreTextUIView: UIView {
     /// 分页页面上点段评气泡：命中后打开该段评论。
     @discardableResult
     public static func triggerCommentTap(atWindowPoint point: CGPoint) -> Bool {
-        let candidates = activePages.compactMap(\.view).filter { $0.window != nil }
-        let view: CoreTextUIView?
-        if let index = activePageIndex(atWindowPoint: point) {
-            view = activePages[index].view
-        } else {
-            view = candidates.count == 1 ? candidates[0] : nil
+        let candidates = activePages.compactMap(\.view).filter { $0.window != nil && !$0.isHidden && $0.alpha > 0.01 }
+        // 翻页动画时可能同时有两页；逐页找，别只命中最上面那一页
+        for view in candidates {
+            let local = view.convert(point, from: nil)
+            guard view.bounds.contains(local) else { continue }
+            // 气泡贴在行尾，横向坐标受分页留白影响；按实际矩形外扩一圈命中
+            let hit = view.commentBubbleRects
+                .filter { $0.rect.insetBy(dx: -14, dy: -10).contains(local) }
+                .min { abs(local.y - $0.rect.midY) < abs(local.y - $1.rect.midY) }
+            if let hit {
+                view.onCommentTap?(hit.url)
+                return true
+            }
         }
-        guard let view else { return false }
-        let local = view.convert(point, from: nil)
-        // 气泡贴在行尾，横向坐标受分页留白影响；按行高纵向命中更稳。
-        let hit = view.commentBubbleRects
-            .filter { abs(local.y - $0.rect.midY) <= 18 && local.x >= $0.rect.minX - 80 }
-            .min { abs(local.y - $0.rect.midY) < abs(local.y - $1.rect.midY) }
-        guard let hit else { return false }
-        view.onCommentTap?(hit.url)
-        return true
+        return false
     }
 
     /// 触点落在哪一页：可见、且局部坐标在页内；多页重叠时取面积最小的

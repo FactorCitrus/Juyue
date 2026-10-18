@@ -85,16 +85,18 @@ final class AppIconManager: ObservableObject {
                 return
             }
             DispatchQueue.main.async {
-                guard error == nil else {
-                    AppLog.write("[图标] 切换失败 code=\((error as NSError?)?.code ?? -1)")
-                    self?.choice = previous
+                // iOS 26 可能返回 Code 35 但图标已切换，系统实际值才是准的
+                let actual = UIApplication.shared.alternateIconName
+                if actual == newChoice.alternateIconName {
+                    self?.choice = newChoice
                     self?.isSwitching = false
-                    self?.errorMessage = "系统暂时无法切换图标，请重试。"
+                    UserDefaults.standard.set(newChoice.rawValue, forKey: self?.defaultsKey ?? "juyue_app_icon_choice")
                     return
                 }
-                self?.choice = newChoice
+                AppLog.write("[图标] 切换失败 code=\((error as NSError?)?.code ?? -1), actual=\(actual ?? "nil")")
+                self?.choice = previous
                 self?.isSwitching = false
-                UserDefaults.standard.set(newChoice.rawValue, forKey: self?.defaultsKey ?? "juyue_app_icon_choice")
+                self?.errorMessage = "系统暂时无法切换图标，请重试。"
             }
         }
     }
