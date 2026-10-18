@@ -195,7 +195,9 @@ public struct SettingsView: View {
                 }
             }
             .navigationTitle("设置")
+            #if os(iOS)
             .navigationBarTitleDisplayMode(.inline)
+            #endif
             .onAppear {
                 let cfg = WebDAVService.shared.loadConfig()
                 if cfg.url.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {

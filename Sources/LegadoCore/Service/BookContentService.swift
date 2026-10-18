@@ -473,7 +473,8 @@ public class BookContentService {
     private static let reviewMarkerEnd = "\u{E001}"
 
     /// `<comment count=… onPress=…>` → 段评哨兵；本章说卡片 → 本章说哨兵。
-    private static func preserveReviewMarkers(_ html: String) -> String {
+    /// 内部可见，供 Core 测试覆盖热评卡片的解析。
+    static func preserveReviewMarkers(_ html: String) -> String {
         var text = html
         let nsText = text as NSString
 
@@ -499,9 +500,11 @@ public class BookContentService {
                     marker = reviewChapterMarkerStart + url + reviewMarkerEnd
                 } else if tag.contains("showCmt("),
                           let url = firstCapture(in: tag, pattern: "showCmt\\(\\s*'([^']+)'"),
-                          let note = godReviewText(from: tag) {
-                    let encoded = Data(note.utf8).base64EncodedString()
-                    marker = reviewGodMarkerStart + encoded + "\u{1F}" + url + reviewMarkerEnd
+                          let payload = godReviewPayload(from: tag) {
+                    let encodedText = Data(payload.text.utf8).base64EncodedString()
+                    let encodedImage = Data((payload.imageURL ?? "").utf8).base64EncodedString()
+                    marker = reviewGodMarkerStart + encodedText + "\u{1F}" + url
+                        + "\u{1F}" + encodedImage + reviewMarkerEnd
                 } else {
                     continue
                 }
@@ -511,29 +514,91 @@ public class BookContentService {
         return text
     }
 
-    /// 神评 SVG 里的 `<text>` 就是评论正文；解出来交给阅读页画原生卡片。
-    private static func godReviewText(from imgTag: String) -> String? {
-        guard let src = firstCapture(in: imgTag, pattern: "(?i)src=\"([^\"]+)\""),
-              let comma = src.firstIndex(of: ",") else { return nil }
-        let dataPart = String(src[src.startIndex..<comma])
-        guard dataPart.contains("base64"),
-              let data = Data(base64Encoded: String(src[src.index(after: comma)...])),
-              let svg = String(data: data, encoding: .utf8),
-              let regex = try? NSRegularExpression(pattern: "(?is)<text\\b[^>]*>(.*?)</text>") else { return nil }
+    private struct GodReviewPayload {
+        let text: String
+        let imageURL: String?
+    }
+
+    /// 大灰狼的热评有两种：内嵌 SVG 卡片，和远端热评图片。
+    /// 两种都解成「文字 + 可选插图」，阅读页再画原生卡片。
+    private static func godReviewPayload(from imgTag: String) -> GodReviewPayload? {
+        guard let src = firstCapture(in: imgTag, pattern: "(?i)src\\s*=\\s*[\"']([^\"']+)[\"']") else {
+            return nil
+        }
+        let imageSource = stripImageMetadata(src)
+        guard !imageSource.isEmpty else { return nil }
+
+        if imageSource.hasPrefix("data:image/svg+xml") {
+            guard let comma = imageSource.firstIndex(of: ",") else { return nil }
+            let encoded = String(imageSource[imageSource.index(after: comma)...])
+            guard let data = Data(base64Encoded: encoded),
+                  let svg = String(data: data, encoding: .utf8) else { return nil }
+            let text = svgText(in: svg)
+            let image = svgImageURL(in: svg)
+            guard !text.isEmpty || image != nil else { return nil }
+            return GodReviewPayload(text: text, imageURL: image)
+        }
+
+        if imageSource.hasPrefix("data:") {
+            return GodReviewPayload(text: "", imageURL: imageSource)
+        }
+
+        let text = remoteCardText(imageSource)
+        let lower = imageSource.lowercased()
+        let isSVGCard = lower.contains("_svg") || lower.hasSuffix(".svg")
+        return GodReviewPayload(text: text, imageURL: isSVGCard ? nil : imageSource)
+    }
+
+    /// 图片 src 可能带 `,{"click":"showCmt(...)"}` 元数据；只保留真正的图片地址。
+    private static func stripImageMetadata(_ raw: String) -> String {
+        guard let metaStart = raw.firstIndex(of: "{") else {
+            return raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        let prefix = raw[..<metaStart]
+        guard let comma = prefix.lastIndex(of: ",") else {
+            return raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        return String(prefix[..<comma]).trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private static func svgText(in svg: String) -> String {
+        guard let regex = try? NSRegularExpression(pattern: "(?is)<text\\b[^>]*>(.*?)</text>") else {
+            return ""
+        }
         let nsSvg = svg as NSString
-        var values: [String] = []
         for match in regex.matches(in: svg, range: NSRange(location: 0, length: nsSvg.length)) {
-            var value = nsSvg.substring(with: match.range(at: 1))
-            for (entity, replacement) in [("&amp;", "&"), ("&lt;", "<"), ("&gt;", ">"),
-                                          ("&quot;", "\""), ("&apos;", "'")] {
-                value = value.replacingOccurrences(of: entity, with: replacement)
-            }
-            let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
-            if !trimmed.isEmpty && trimmed != "神评论" {
-                values.append(trimmed)
+            let value = decodeHTMLEntities(nsSvg.substring(with: match.range(at: 1)))
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            if !value.isEmpty && value != "神评论" {
+                return value
             }
         }
-        return values.first
+        return ""
+    }
+
+    private static func svgImageURL(in svg: String) -> String? {
+        firstCapture(
+            in: svg,
+            pattern: "(?is)<image\\b[^>]*(?:href|xlink:href)\\s*=\\s*[\"']([^\"']+)[\"']"
+        )
+    }
+
+    /// 书旗等远端热评卡片把正文放在 `text` 查询参数里；SVG 本身不能直接交给 UIImage。
+    private static func remoteCardText(_ raw: String) -> String {
+        guard let components = URLComponents(string: raw),
+              let value = components.queryItems?.first(where: { $0.name == "text" })?.value else {
+            return ""
+        }
+        return decodeHTMLEntities(value).trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private static func decodeHTMLEntities(_ value: String) -> String {
+        var text = value
+        for (entity, replacement) in [("&amp;", "&"), ("&lt;", "<"), ("&gt;", ">"),
+                                      ("&quot;", "\""), ("&apos;", "'"), ("&#39;", "'")] {
+            text = text.replacingOccurrences(of: entity, with: replacement)
+        }
+        return text
     }
 
     private static func firstCapture(in text: String, pattern: String) -> String? {
@@ -687,20 +752,31 @@ public class BookContentService {
     private static func extractImageSrc(from imgTag: String, baseUrl: String?) -> String? {
         let patterns = [
             "(?i)data-original\\s*=\\s*[\"']([^\"']+)[\"']",
+            "(?i)data-original-src\\s*=\\s*[\"']([^\"']+)[\"']",
             "(?i)data-src\\s*=\\s*[\"']([^\"']+)[\"']",
+            "(?i)data-lazy-src\\s*=\\s*[\"']([^\"']+)[\"']",
+            "(?i)data-echo\\s*=\\s*[\"']([^\"']+)[\"']",
+            "(?i)data-url\\s*=\\s*[\"']([^\"']+)[\"']",
             "(?i)src\\s*=\\s*[\"']([^\"']+)[\"']"
         ]
 
         var rawSrc: String? = nil
         for pattern in patterns {
-            if let rx = try? NSRegularExpression(pattern: pattern),
-               let match = rx.firstMatch(in: imgTag, range: NSRange(location: 0, length: (imgTag as NSString).length)),
-               match.numberOfRanges > 1 {
-                let found = (imgTag as NSString).substring(with: match.range(at: 1)).trimmingCharacters(in: .whitespacesAndNewlines)
-                if !found.isEmpty && !found.hasPrefix("data:image") {
-                    rawSrc = found
-                    break
-                }
+            guard let found = firstCapture(in: imgTag, pattern: pattern) else { continue }
+            let cleaned = stripImageMetadata(found)
+            if !cleaned.isEmpty && !isPlaceholderImage(cleaned) {
+                rawSrc = cleaned
+                break
+            }
+        }
+
+        if rawSrc == nil {
+            for pattern in ["(?i)data-srcset\\s*=\\s*[\"']([^\"']+)[\"']",
+                            "(?i)srcset\\s*=\\s*[\"']([^\"']+)[\"']"] {
+                guard let srcset = firstCapture(in: imgTag, pattern: pattern),
+                      let first = firstURL(from: srcset) else { continue }
+                rawSrc = stripImageMetadata(first)
+                break
             }
         }
 
@@ -709,6 +785,10 @@ public class BookContentService {
         // Filter out decorative avatars/logos
         if src.contains("discord_logo") || src.contains("nophoto.png") {
             return nil
+        }
+
+        if src.hasPrefix("data:") {
+            return isUsableDataImage(src) ? src : nil
         }
 
         // Resolve relative URL
@@ -725,6 +805,28 @@ public class BookContentService {
             }
         }
         return src
+    }
+
+    private static func isPlaceholderImage(_ src: String) -> Bool {
+        let lower = src.lowercased()
+        if lower.hasPrefix("data:image") {
+            return !isUsableDataImage(src)
+        }
+        return lower == "about:blank" || lower.isEmpty
+    }
+
+    /// 1x1 透明占位图常用于懒加载；真正的大图 data URI 仍保留。
+    private static func isUsableDataImage(_ src: String) -> Bool {
+        let lower = src.lowercased()
+        if lower.contains("r0lgodlh") { return false }
+        return src.count > 512
+    }
+
+    private static func firstURL(from srcset: String) -> String? {
+        let firstEntry = srcset.split(separator: ",").first.map(String.init) ?? srcset
+        let token = firstEntry.split(whereSeparator: { $0 == " " || $0 == "\t" || $0 == "\n" })
+            .first.map(String.init) ?? firstEntry
+        return token.isEmpty ? nil : token
     }
 }
 

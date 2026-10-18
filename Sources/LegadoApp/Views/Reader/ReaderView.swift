@@ -559,6 +559,12 @@ private struct ReviewTarget: Identifiable {
     let title: String
 }
 
+private struct GodReviewMarker {
+    let text: String
+    let imageURL: String?
+    let url: String
+}
+
 private struct NativeCommentListSheet: View {
     let target: ReviewTarget
 
@@ -595,7 +601,8 @@ private struct NativeCommentListSheet: View {
                     List {
                         ForEach(comments) { comment in
                             VStack(alignment: .leading, spacing: 6) {
-                                HStack(spacing: 6) {
+                                HStack(spacing: 8) {
+                                    avatarView(comment.user)
                                     Text(comment.user?.user_name ?? "匿名")
                                         .font(.caption.bold())
                                         .foregroundColor(.secondary)
@@ -608,14 +615,8 @@ private struct NativeCommentListSheet: View {
                                 }
                                 Text(commentText(comment.content))
                                     .font(.subheadline)
-                                if let image = comment.image_url, let url = URL(string: image) {
-                                    AsyncImage(url: url) { phase in
-                                        if let image = phase.image {
-                                            image.resizable().scaledToFit()
-                                        } else if phase.error == nil {
-                                            ProgressView().frame(height: 60)
-                                        }
-                                    }
+                                if let image = comment.image_url, let url = resolvedImageURL(image) {
+                                    ChapterImageView(urlString: url.absoluteString, referer: target.url)
                                     .frame(maxHeight: 180)
                                     .clipShape(RoundedRectangle(cornerRadius: 6))
                                 }
@@ -638,20 +639,19 @@ private struct NativeCommentListSheet: View {
 
                                 if expandedComments.contains(comment.id) {
                                     ForEach(replies[comment.id] ?? []) { reply in
-                                        VStack(alignment: .leading, spacing: 2) {
-                                            Text(reply.user?.user_name ?? "匿名")
-                                                .font(.caption2.bold())
-                                                .foregroundColor(.secondary)
-                                            Text(commentText(reply.content))
-                                                .font(.caption)
-                                            if let image = reply.image_url, let url = URL(string: image) {
-                                                AsyncImage(url: url) { phase in
-                                                    if let image = phase.image {
-                                                        image.resizable().scaledToFit()
-                                                    }
+                                        HStack(alignment: .top, spacing: 6) {
+                                            avatarView(reply.user, size: 20)
+                                            VStack(alignment: .leading, spacing: 2) {
+                                                Text(reply.user?.user_name ?? "匿名")
+                                                    .font(.caption2.bold())
+                                                    .foregroundColor(.secondary)
+                                                Text(commentText(reply.content))
+                                                    .font(.caption)
+                                                if let image = reply.image_url, let url = resolvedImageURL(image) {
+                                                    ChapterImageView(urlString: url.absoluteString, referer: target.url)
+                                                        .frame(maxHeight: 120)
+                                                        .clipShape(RoundedRectangle(cornerRadius: 6))
                                                 }
-                                                .frame(maxHeight: 120)
-                                                .clipShape(RoundedRectangle(cornerRadius: 6))
                                             }
                                         }
                                         .padding(.leading, 12)
@@ -709,6 +709,39 @@ private struct NativeCommentListSheet: View {
             }
         }
         .task { await load(reset: true) }
+    }
+
+    @ViewBuilder
+    private func avatarView(_ user: ReviewUser?, size: CGFloat = 24) -> some View {
+        if let raw = user?.user_avatar, let url = resolvedImageURL(raw) {
+            AsyncImage(url: url) { phase in
+                if let image = phase.image {
+                    image.resizable().scaledToFill()
+                } else {
+                    Color.secondary.opacity(0.12)
+                }
+            }
+            .frame(width: size, height: size)
+            .clipShape(Circle())
+        } else {
+            Image(systemName: "person.crop.circle.fill")
+                .font(.system(size: size))
+                .foregroundColor(.secondary.opacity(0.55))
+                .frame(width: size, height: size)
+        }
+    }
+
+    private func resolvedImageURL(_ raw: String?) -> URL? {
+        guard let raw = raw?.trimmingCharacters(in: .whitespacesAndNewlines), !raw.isEmpty else {
+            return nil
+        }
+        if raw.hasPrefix("//") {
+            return URL(string: "https:" + raw)
+        }
+        if let url = URL(string: raw), url.scheme != nil {
+            return url
+        }
+        return URL(string: raw, relativeTo: URL(string: target.url))?.absoluteURL
     }
 
     private func load(reset: Bool) async {
@@ -869,6 +902,7 @@ private struct ReviewComment: Decodable, Identifiable {
 
 private struct ReviewUser: Decodable {
     let user_name: String?
+    let user_avatar: String?
 }
 
 public struct BlockFrameInfo: Equatable {
@@ -3674,26 +3708,38 @@ public struct ReaderView: View {
         .buttonStyle(.plain)
     }
 
-    /// 神评：源里的 SVG 卡片换成原生样式，点了直接开该段评论。
+    /// 热评：源里的 SVG / 图片卡片换成原生样式，文字和插图都保留。
     private func godReviewCard(_ block: ContentBlock) -> some View {
-        let text = block.text.replacingOccurrences(of: "神评 · ", with: "")
+        let text = block.text
+            .replacingOccurrences(of: "热评 · ", with: "")
+            .replacingOccurrences(of: "神评 · ", with: "")
         return Button {
             if let url = block.commentURL {
                 directCommentTarget = ReviewTarget(url: url, title: "段评")
             }
         } label: {
-            HStack(alignment: .top, spacing: 9) {
-                Text("神评")
-                    .font(.system(size: 11, weight: .bold))
-                    .foregroundColor(.white)
-                    .padding(.horizontal, 7)
-                    .padding(.vertical, 4)
-                    .background(Color.orange, in: RoundedRectangle(cornerRadius: 6))
-                Text(text)
-                    .font(.subheadline)
-                    .foregroundColor(.primary)
-                    .multilineTextAlignment(.leading)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+            VStack(alignment: .leading, spacing: 8) {
+                HStack(alignment: .top, spacing: 9) {
+                    Text("热评")
+                        .font(.system(size: 11, weight: .bold))
+                        .foregroundColor(.white)
+                        .padding(.horizontal, 7)
+                        .padding(.vertical, 4)
+                        .background(Color.orange, in: RoundedRectangle(cornerRadius: 6))
+                    if !text.isEmpty, text != "热评" {
+                        Text(text)
+                            .font(.subheadline)
+                            .foregroundColor(.primary)
+                            .multilineTextAlignment(.leading)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                }
+                if let imageURL = block.imageUrl, !imageURL.isEmpty {
+                    ChapterImageView(urlString: imageURL, referer: effectiveSource?.bookSourceUrl)
+                        .frame(maxHeight: 240)
+                        .clipShape(RoundedRectangle(cornerRadius: 8))
+                        .allowsHitTesting(false)
+                }
             }
             .padding(11)
             .background(RoundedRectangle(cornerRadius: 10).fill(Color.orange.opacity(0.10)))
@@ -5970,12 +6016,12 @@ public struct ReaderView: View {
 
     /// 从一行里拆出段评 / 本章说哨兵，剩下才是正文。
     private func extractReviewMarkers(from line: String)
-        -> (line: String, count: Int, url: String?, chapterURL: String?, godText: String?) {
+        -> (line: String, count: Int, url: String?, chapterURL: String?, godReviews: [GodReviewMarker]) {
         var text = line
         var count = 0
         var url: String?
         var chapterURL: String?
-        var godText: String?
+        var godReviews: [GodReviewMarker] = []
 
         if let regex = try? NSRegularExpression(pattern: "\u{E000}C\u{1F}(\\d+)\u{1F}([^\u{E001}]*)\u{E001}") {
             let nsText = text as NSString
@@ -5992,22 +6038,29 @@ public struct ReaderView: View {
                 text = (text as NSString).replacingCharacters(in: match.range, with: "")
             }
         }
-        if let regex = try? NSRegularExpression(pattern: "\u{E000}G\u{1F}([^\u{1F}]*)\u{1F}([^\u{E001}]*)\u{E001}") {
+        if let regex = try? NSRegularExpression(pattern: "\u{E000}G\u{1F}([^\u{E001}]*)\u{E001}") {
             let nsText = text as NSString
-            if let match = regex.firstMatch(in: text, range: NSRange(location: 0, length: nsText.length)) {
-                let encoded = nsText.substring(with: match.range(at: 1))
-                if let data = Data(base64Encoded: encoded) {
-                    godText = String(data: data, encoding: .utf8)
+            let matches = regex.matches(in: text, range: NSRange(location: 0, length: nsText.length))
+            for match in matches.reversed() {
+                let body = nsText.substring(with: match.range(at: 1))
+                let parts = body.components(separatedBy: "\u{1F}")
+                let reviewText = decodeMarkerBase64(parts.first ?? "") ?? ""
+                let reviewURL = parts.count > 1 ? parts[1] : ""
+                let imageURL = parts.count > 2 ? decodeMarkerBase64(parts[2]) : nil
+                if !reviewText.isEmpty || imageURL != nil {
+                    godReviews.insert(
+                        GodReviewMarker(text: reviewText, imageURL: imageURL, url: reviewURL),
+                        at: 0
+                    )
                 }
-                url = nsText.substring(with: match.range(at: 2))
                 text = (text as NSString).replacingCharacters(in: match.range, with: "")
             }
         }
-        return (text, count, url, chapterURL, godText)
+        return (text, count, url, chapterURL, godReviews)
     }
 
     /// 段评挂在段落最后一块上；本章说单独生成一条入口。
-    private func attachReviewMarker(_ marker: (line: String, count: Int, url: String?, chapterURL: String?, godText: String?),
+    private func attachReviewMarker(_ marker: (line: String, count: Int, url: String?, chapterURL: String?, godReviews: [GodReviewMarker]),
                                     from firstBlockIndex: Int,
                                     blocks: inout [ContentBlock]) {
         if marker.count > 0, let url = marker.url,
@@ -6020,11 +6073,23 @@ public struct ReaderView: View {
             blocks.append(ContentBlock(id: id, isImage: false, text: "本章说 · 查看全部评论", imageUrl: nil,
                                        commentCount: -1, commentURL: chapterURL))
         }
-        if let godText = marker.godText, let url = marker.url {
+        for review in marker.godReviews {
             let id = (blocks.last?.id ?? 0) + 1
-            blocks.append(ContentBlock(id: id, isImage: false, text: "神评 · \(godText)", imageUrl: nil,
-                                       commentCount: -2, commentURL: url))
+            let text = review.text.isEmpty ? "热评" : "热评 · \(review.text)"
+            blocks.append(ContentBlock(
+                id: id,
+                isImage: false,
+                text: text,
+                imageUrl: review.imageURL,
+                commentCount: -2,
+                commentURL: review.url.isEmpty ? nil : review.url
+            ))
         }
+    }
+
+    private func decodeMarkerBase64(_ value: String) -> String? {
+        guard !value.isEmpty, let data = Data(base64Encoded: value) else { return nil }
+        return String(data: data, encoding: .utf8)
     }
 
     private func currentChapterCharOffset() -> Int {
@@ -6352,7 +6417,20 @@ public struct ChapterImageView: View {
             return
         }
 
-        // 2. Check local file
+        // 2. Inline data URI（部分书源把插图直接塞进正文）
+        if trimmed.hasPrefix("data:image") {
+            if let data = Self.decodeDataURL(trimmed) {
+                Self.imageCache.setObject(data as NSData, forKey: trimmed as NSString)
+                self.imageData = data
+                self.isLoading = false
+                self.loadFailed = false
+            } else {
+                self.loadFailed = true
+            }
+            return
+        }
+
+        // 3. Check local file
         if trimmed.hasPrefix("file://") {
             if let url = URL(string: trimmed), let data = try? Data(contentsOf: url) {
                 Self.imageCache.setObject(data as NSData, forKey: trimmed as NSString)
@@ -6361,7 +6439,7 @@ public struct ChapterImageView: View {
             }
         }
 
-        // 3. Remote URL with proper browser headers
+        // 4. Remote URL with proper browser headers
         guard let url = URL(string: trimmed) else {
             self.loadFailed = true
             return
@@ -6376,11 +6454,15 @@ public struct ChapterImageView: View {
             request.setValue("Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148", forHTTPHeaderField: "User-Agent")
             request.setValue("image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8", forHTTPHeaderField: "Accept")
 
-            // Determine Referer
-            if let ref = referer, !ref.isEmpty {
+            // 书源的 bookSourceUrl 可能只是「大灰狼融合VIP5.0」这种标识，
+            // 不是网址。无效 Referer 比不传更容易被图床拒绝，这里只接受 http(s)。
+            if let ref = referer,
+               let refURL = URL(string: ref),
+               let scheme = refURL.scheme?.lowercased(),
+               scheme == "http" || scheme == "https" {
                 request.setValue(ref, forHTTPHeaderField: "Referer")
-            } else if let host = url.host {
-                request.setValue("https://\(host)/", forHTTPHeaderField: "Referer")
+            } else if let host = url.host, let scheme = url.scheme {
+                request.setValue("\(scheme)://\(host)/", forHTTPHeaderField: "Referer")
             }
 
             let (data, response) = try await URLSession.shared.data(for: request)
@@ -6403,6 +6485,17 @@ public struct ChapterImageView: View {
                 self.loadFailed = true
             }
         }
+    }
+
+    private static func decodeDataURL(_ value: String) -> Data? {
+        guard let comma = value.firstIndex(of: ",") else { return nil }
+        let header = String(value[value.startIndex..<comma]).lowercased()
+        let payload = String(value[value.index(after: comma)...])
+        if header.contains(";base64") {
+            return Data(base64Encoded: payload, options: [.ignoreUnknownCharacters])
+        }
+        guard let decoded = payload.removingPercentEncoding else { return nil }
+        return decoded.data(using: .utf8)
     }
 
     private func platformImage(from data: Data) -> Image? {
