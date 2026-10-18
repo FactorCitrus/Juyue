@@ -493,6 +493,7 @@ struct ReaderCommentsSheet: View {
     let chapterURL: String?
 
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.appTheme) private var theme
     @State private var target: ReviewTarget?
 
     var body: some View {
@@ -525,16 +526,17 @@ struct ReaderCommentsSheet: View {
                                     .frame(maxWidth: .infinity, alignment: .leading)
                                 Text(item.count >= 99 ? "99+" : "\(item.count)")
                                     .font(.caption.bold())
-                                    .foregroundColor(.white)
+                                .foregroundColor(theme.palette.onAccent)
                                     .padding(.horizontal, 7)
                                     .padding(.vertical, 3)
-                                    .background(Color.accentColor, in: Capsule())
+                                .background(theme.palette.accent, in: Capsule())
                             }
                         }
                     }
                 }
             }
             .navigationTitle(chapterTitle.isEmpty ? "段评" : chapterTitle)
+            .tint(theme.palette.accent)
             #if os(iOS)
             .navigationBarTitleDisplayMode(.inline)
             #endif
@@ -560,6 +562,7 @@ private struct NativeCommentListSheet: View {
     let target: ReviewTarget
 
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.appTheme) private var theme
     @State private var comments: [ReviewComment] = []
     @State private var total = 0
     @State private var isLoading = true
@@ -687,6 +690,7 @@ private struct NativeCommentListSheet: View {
                 }
             }
             .navigationTitle(total > 0 ? "\(target.title) · \(total)" : target.title)
+            .tint(theme.palette.accent)
             #if os(iOS)
             .navigationBarTitleDisplayMode(.inline)
             #endif
@@ -973,6 +977,7 @@ public struct ScrollOffsetPreferenceKey: PreferenceKey {
 
 public struct ReaderView: View {
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.appTheme) private var theme
     @StateObject private var readerConfig = ReaderConfig.shared
     @StateObject private var audioService = AudioBookService.shared
 
@@ -987,6 +992,18 @@ public struct ReaderView: View {
     @State private var previousSource: BookSource?
 
     private var activeBook: Book { switchedBook ?? book }
+
+    private var chromeBackground: Color {
+        theme.choice == .lunarTerminal ? theme.palette.background : readerConfig.backgroundColor
+    }
+
+    private var chromeInk: Color {
+        theme.choice == .lunarTerminal ? theme.palette.ink : readerConfig.textColor
+    }
+
+    private var chromeRadius: CGFloat {
+        theme.choice == .lunarTerminal ? theme.metrics.cornerRadius : 24
+    }
 
     private var effectiveSource: BookSource? {
         switchedSource ?? source ?? BookStore.shared.findSource(for: activeBook)
@@ -1657,7 +1674,7 @@ public struct ReaderView: View {
         } else {
             Text(title)
                 .font(.system(size: readerConfig.fontSize * readerConfig.chapterTitleScale, weight: .semibold))
-                .foregroundColor(readerConfig.textColor)
+                .foregroundColor(chromeInk)
                 .padding(.leading, readerConfig.paddingLeft)
                 .padding(.trailing, readerConfig.paddingRight)
                 .padding(.top, readerConfig.chapterTopSpacing)
@@ -2566,7 +2583,7 @@ public struct ReaderView: View {
                     Text("书架")
                         .font(.system(size: 16))
                 }
-                .foregroundColor(readerConfig.textColor)
+                .foregroundColor(chromeInk)
                 .contentShape(Rectangle())
             }
 
@@ -2620,21 +2637,21 @@ public struct ReaderView: View {
             } label: {
                 Image(systemName: "ellipsis.circle")
                     .font(.system(size: 19))
-                    .foregroundColor(readerConfig.textColor)
+                    .foregroundColor(chromeInk)
                     .frame(width: 54, height: 32)
             }
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 10)
         .background(
-            readerConfig.backgroundColor
+            chromeBackground
                 .opacity(0.97)
                 .shadow(color: Color.black.opacity(0.08), radius: 8, x: 0, y: 3)
                 .ignoresSafeArea(edges: .top)
         )
         .overlay(
             Rectangle()
-                .fill(readerConfig.textColor.opacity(0.12))
+                .fill(chromeInk.opacity(0.12))
                 .frame(height: 0.5),
             alignment: .bottom
         )
@@ -2645,7 +2662,7 @@ public struct ReaderView: View {
             chapterNavigationRow
 
             Rectangle()
-                .fill(readerConfig.textColor.opacity(0.12))
+                .fill(chromeInk.opacity(0.12))
                 .frame(height: 0.5)
 
             bottomActionRow
@@ -2654,7 +2671,7 @@ public struct ReaderView: View {
         .padding(.top, 14)
         .padding(.bottom, 10)
         .background(
-            readerConfig.backgroundColor
+            chromeBackground
                 .opacity(0.97)
                 .shadow(color: Color.black.opacity(0.12), radius: 10, x: 0, y: -4)
                 .ignoresSafeArea(edges: .bottom)
@@ -3614,8 +3631,21 @@ public struct ReaderView: View {
         .frame(maxWidth: .infinity)
         .padding(.horizontal, 4)
         .padding(.vertical, 6)
-        .background(.regularMaterial, in: Capsule())
-        .overlay(Capsule().stroke(Color.secondary.opacity(0.18), lineWidth: 0.5))
+        .background {
+            if theme.choice == .lunarTerminal {
+                RoundedRectangle(cornerRadius: theme.metrics.cornerRadius, style: .continuous)
+                    .fill(theme.palette.surface)
+            } else {
+                RoundedRectangle(cornerRadius: 22, style: .continuous)
+                    .fill(.regularMaterial)
+            }
+        }
+        .overlay(
+            RoundedRectangle(cornerRadius: theme.choice == .lunarTerminal ? theme.metrics.cornerRadius : 22,
+                             style: .continuous)
+                .stroke(theme.choice == .lunarTerminal ? theme.palette.divider : Color.secondary.opacity(0.18),
+                        lineWidth: 0.5)
+        )
         .shadow(color: Color.black.opacity(0.18), radius: 10, y: 4)
     }
 
@@ -4478,23 +4508,25 @@ public struct ReaderView: View {
         .padding(.top, 14)
         .padding(.bottom, 22)
         .background(
-            RoundedRectangle(cornerRadius: 24, style: .continuous)
+            RoundedRectangle(cornerRadius: chromeRadius, style: .continuous)
                 // 面板调半透明时不要毛玻璃，否则还是看不清底下的正文
-                .fill(readerConfig.backgroundColor.opacity(readerConfig.panelLayerOpacity))
+                .fill(theme.choice == .lunarTerminal
+                      ? theme.palette.surface
+                      : readerConfig.backgroundColor.opacity(readerConfig.panelLayerOpacity))
                 .overlay(
                     Group {
-                        if readerConfig.panelOpacity >= 0.99 {
-                            RoundedRectangle(cornerRadius: 24, style: .continuous)
+                        if readerConfig.panelOpacity >= 0.99, theme.choice == .standard {
+                            RoundedRectangle(cornerRadius: chromeRadius, style: .continuous)
                                 .fill(.ultraThinMaterial)
                         }
                     }
                 )
         )
         .overlay(
-            RoundedRectangle(cornerRadius: 24, style: .continuous)
-                .stroke(readerConfig.textColor.opacity(0.08), lineWidth: 0.5)
+            RoundedRectangle(cornerRadius: chromeRadius, style: .continuous)
+                .stroke(chromeInk.opacity(0.08), lineWidth: 0.5)
         )
-        .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
+        .clipShape(RoundedRectangle(cornerRadius: chromeRadius, style: .continuous))
         .shadow(color: .black.opacity(0.16), radius: 18, y: -6)
         .fileImporter(
             isPresented: $showBackgroundImagePicker,
@@ -4506,15 +4538,15 @@ public struct ReaderView: View {
             }
         }
         .background(
-            readerConfig.backgroundColor
-                .opacity(readerConfig.panelLayerOpacity)
+            chromeBackground
+                .opacity(theme.choice == .lunarTerminal ? 1 : readerConfig.panelLayerOpacity)
                 .shadow(color: Color.black.opacity(0.2), radius: 16, x: 0, y: -6)
                 .ignoresSafeArea(edges: .bottom)
         )
-        .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .clipShape(RoundedRectangle(cornerRadius: chromeRadius, style: .continuous))
         .overlay(
-            RoundedRectangle(cornerRadius: 18, style: .continuous)
-                .stroke(readerConfig.textColor.opacity(0.10), lineWidth: 0.5)
+            RoundedRectangle(cornerRadius: chromeRadius, style: .continuous)
+                .stroke(chromeInk.opacity(0.10), lineWidth: 0.5)
         )
         .padding(.horizontal, 10)
         .padding(.bottom, 6)
