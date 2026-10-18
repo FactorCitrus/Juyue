@@ -3,10 +3,10 @@
 [![iOS](https://img.shields.io/badge/Platform-iOS%2015.0%2B-blue.svg)](https://developer.apple.com/ios/)
 [![Swift](https://img.shields.io/badge/Swift-5.0%2B-orange.svg)](https://swift.org)
 [![Xcode](https://img.shields.io/badge/Xcode-14.0%2B-blue.svg)](https://developer.apple.com/xcode/)
-[![Release](https://img.shields.io/badge/Release-4.7.2-green.svg)](https://github.com/FactorCitrus/Legado-iOS/releases)
+[![Release](https://img.shields.io/github/v/release/FactorCitrus/Legado-iOS?label=Release&color=green)](https://github.com/FactorCitrus/Legado-iOS/releases)
 [![License](https://img.shields.io/badge/License-GPLv3-lightgrey.svg)](LICENSE)
 
-> **Legado iOS** 是使用 **SwiftUI** 与 **Swift** 现代化技术栈构建的开源网络小说阅读器，高度兼容 Android 端 **Legado (开源阅读 3.0)** 书源生态、解析规则与 WebDAV 多端同步机制。
+> **Legado iOS** 是一个用 SwiftUI 和 Swift 编写的开源阅读器，兼容 Android 端 **Legado（开源阅读 3.0）** 的书源规则和 WebDAV 同步格式。
 
 ## Fork 与品牌
 
@@ -14,37 +14,41 @@
 
 ---
 
-## 核心特性 (v4.7.6)
+## 核心功能
 
-- 📚 **全面兼容 Legado 3.0 书源生态**
-  - 支持 CSS 选择器、JSONPath、XPath、正则表达式、JavaScript 动态脚本与模版语法的多重混合解析。
-  - 支持从**本地 `.json` 文件**、网络链接或剪贴板一键导入与批量更新书源。
-  - 仓库不预置任何书源；请通过本地 `.json` 文件、网络链接或剪贴板自行导入。
-  - 支持内置 Web 浏览器交互式登录（适配复杂防爬或需要 Cookie 验证的书源，支持双域会话镜像）。
-  - 📖 详细规范请参阅：[**书源制作与兼容性规范指南 (BOOKSOURCE_GUIDE.md)**](BOOKSOURCE_GUIDE.md)。
+**书源**
 
-- 📑 **全新“分类”发现流**
-  - **Level 1（快速换源）**：顶部胶囊栏单指轻点即切书源。
-  - **Level 2（预设分类）**：横向标签滚动栏搭配矩阵分类抽屉，快速筛选来源、类型、分级与排序。
-  - **Level 3（书籍信息流）**：标准书籍卡片流、自动下拉刷新、触底无限分页加载。
+- 支持 CSS 选择器、JSONPath、XPath、正则、JavaScript 和模板语法。
+- 可从本地 JSON 文件、网络链接或剪贴板导入、更新书源。
+- 仓库和安装包不预置书源，需要用户自行导入。
+- 书源登录使用 App 内网页完成，支持需要 Cookie 的站点。
+- 规则说明见 [BOOKSOURCE_GUIDE.md](BOOKSOURCE_GUIDE.md)。
 
-- 📖 **沉浸式全屏阅读器**
-  - **无缝滚动阅读**：纵向连续滚动模式支持向下拉动无缝加载上一章，并在章节断点间丝滑阅读，不再重置回章节首页。
-  - **多排版模式**：支持覆盖翻页、左右平滑翻页与纵向连续滚动三种模式，互相切换完美保留阅读位置。
-  - **分卷连贯性**：彻底解决多卷小说因卷标导致的目录章节断连问题，各章节顺畅连贯翻阅。
-  - **原生全屏呈现**：所有入口（书籍详情页、目录跳转等）均以原生全屏视图进入阅读器，去除侵入性卡片交互。
-  - 内置羊皮纸、柔光暗调、纯黑夜间、护眼草绿等专属阅读主题，随心调节字号、行距、内边距与避头尾规则。
-  - 支持离线正文缓存与单书一键清除缓存。
+**分类发现**
 
-- 🔄 **WebDAV 多端无缝互通 (对齐 Android Legado)**
-  - **标准 ZIP 备份**：完整支持 Android Legado 标准的 `backup${yyyy-MM-dd}-${deviceName}.zip` 打包格式，保留 100% 书籍元数据与精确阅读进度（`durChapterIndex`, `durChapterPos`, `durChapterTime`）。
-  - **多设备支持**：可自定义配置“设备名称”（默认自动识别为 iPhone / Mac 等），轻松识别不同设备的备份档案。
-  - **秒级极速备份**：彻底移除高耗时的串行网络循环，全量备份由原本的 30+ 秒降至 1 秒内完成。
-  - **云端历史备份选择**：支持一键检索并列出 WebDAV 远程所有历史备份归档（展示备份日期、文件体积），可自由挑选 Android 或 iOS 备份包进行合并恢复。
-  - 本地文件管理器亦可直接选取导入 Android 导出的 `backup*.zip`（配合 `bookProgress/` 进度目录）。
+- 顶部分组切换书源。
+- 预设分类可筛选来源、类型、分级和排序。
+- 书籍列表支持下拉刷新和触底加载下一页。
 
-- 🌓 **全景暗黑模式**
-  - 原生支持跟随系统、浅色模式与深色模式，界面与组件即时切换。
+**阅读器**
+
+- 支持连续滚动、左右翻页、覆盖翻页、滑动翻页、仿真翻页和无动画。
+- 滚动模式可在章节间连续阅读，切换翻页模式时保留阅读位置。
+- 书籍详情和目录以全屏视图进入阅读器。
+- 内置羊皮纸、暗色、纯黑和护眼绿主题，可调字号、行距、页边距和标点禁则。
+- 支持正文缓存和单书清除缓存。
+- 大灰狼书源支持段评、本章说和神评，评论以原生列表显示。
+
+**WebDAV**
+
+- 备份格式与 Android Legado 一致：`backup${yyyy-MM-dd}-${deviceName}.zip`。
+- 备份包含书籍元数据和阅读进度（`durChapterIndex`、`durChapterPos`、`durChapterTime`）。
+- 可设置设备名称，区分不同设备的备份。
+- 可列出 WebDAV 上的历史备份并选择恢复；也能从本地文件导入 `backup*.zip`。
+
+**主题**
+
+- 支持跟随系统、浅色和深色模式。
 
 ---
 
@@ -178,7 +182,7 @@ Legado-iOS/
 - **GitHub Issues**：https://github.com/FactorCitrus/Legado-iOS/issues
 - 装了 App 的也可以从「设置 → 关于」点进 GitHub 仓库
 
-反馈时带上这几样，能省一半来回：**应用版本**（设置 → 关于，形如 `4.7.2 (4.7.2)`）、**机型 + iOS 版本**、**复现步骤**，再加一段**诊断日志**（设置 → 诊断日志 → 复制全部）。
+反馈时带上这几样，能省一半来回：**应用版本**（设置 → 关于，形如 `4.7.8.7 (4.7.8.7)`）、**机型 + iOS 版本**、**复现步骤**，再加一段**诊断日志**（设置 → 诊断日志 → 复制全部）。
 
 ## 支持项目
 

@@ -384,6 +384,25 @@ struct ReaderPullDownCatcher: UIViewRepresentable {
 #endif
 
 /// 书签绶带：矩形 + 底部三角缺口，落在页顶当书签用
+/// 段评气泡：左侧尖角 + 圆角矩形，跟正文纸色融合。
+struct ReaderCommentBubbleShape: Shape {
+    func path(in rect: CGRect) -> Path {
+        let tailWidth: CGFloat = 6
+        let tailHeight: CGFloat = 11
+        let radius: CGFloat = 5
+        let body = CGRect(x: tailWidth, y: 0,
+                          width: max(1, rect.width - tailWidth),
+                          height: rect.height)
+        var path = Path(roundedRect: body, cornerRadius: radius)
+        let midY = rect.midY
+        path.move(to: CGPoint(x: tailWidth, y: midY - tailHeight / 2))
+        path.addLine(to: CGPoint(x: 0, y: midY))
+        path.addLine(to: CGPoint(x: tailWidth, y: midY + tailHeight / 2))
+        path.closeSubpath()
+        return path
+    }
+}
+
 struct BookmarkRibbonShape: Shape {
     func path(in rect: CGRect) -> Path {
         var path = Path()
@@ -544,7 +563,15 @@ private struct NativeCommentListSheet: View {
     @State private var comments: [ReviewComment] = []
     @State private var total = 0
     @State private var isLoading = true
+    @State private var isLoadingMore = false
     @State private var errorText: String?
+    @State private var cursor = ""
+    @State private var hasMore = false
+    @State private var sortHot = true
+    @State private var expandedComments: Set<String> = []
+    @State private var replies: [String: [ReviewReply]] = [:]
+    @State private var replyCursor: [String: String] = [:]
+    @State private var replyHasMore: Set<String> = []
 
     var body: some View {
         NavigationView {
@@ -555,34 +582,106 @@ private struct NativeCommentListSheet: View {
                     VStack(spacing: 12) {
                         Text(errorText)
                             .foregroundColor(.secondary)
-                        Button("重试") { Task { await load() } }
+                        Button("重试") { Task { await load(reset: true) } }
                     }
                 } else if comments.isEmpty {
                     Text("暂无评论")
                         .foregroundColor(.secondary)
                 } else {
-                    List(comments) { comment in
-                        VStack(alignment: .leading, spacing: 6) {
-                            HStack(spacing: 6) {
-                                Text(comment.user?.user_name ?? "匿名")
-                                    .font(.caption.bold())
-                                    .foregroundColor(.secondary)
-                                Spacer()
-                                if let likes = comment.like_count, likes > 0 {
-                                    Label("\(likes)", systemImage: "heart")
-                                        .font(.caption2)
+                    List {
+                        ForEach(comments) { comment in
+                            VStack(alignment: .leading, spacing: 6) {
+                                HStack(spacing: 6) {
+                                    Text(comment.user?.user_name ?? "匿名")
+                                        .font(.caption.bold())
                                         .foregroundColor(.secondary)
+                                    Spacer()
+                                    if let likes = comment.like_count, likes > 0 {
+                                        Label("\(likes)", systemImage: "heart")
+                                            .font(.caption2)
+                                            .foregroundColor(.secondary)
+                                    }
+                                }
+                                Text(commentText(comment.content))
+                                    .font(.subheadline)
+                                if let image = comment.image_url, let url = URL(string: image) {
+                                    AsyncImage(url: url) { phase in
+                                        if let image = phase.image {
+                                            image.resizable().scaledToFit()
+                                        } else if phase.error == nil {
+                                            ProgressView().frame(height: 60)
+                                        }
+                                    }
+                                    .frame(maxHeight: 180)
+                                    .clipShape(RoundedRectangle(cornerRadius: 6))
+                                }
+                                HStack(spacing: 10) {
+                                    if let time = comment.create_time {
+                                        Text(time)
+                                    }
+                                    if let replies = comment.reply_count, replies > 0 {
+                                        Button(expandedComments.contains(comment.id)
+                                               ? "收起回复"
+                                               : "\(replies) 回复") {
+                                            toggleReplies(comment)
+                                        }
+                                        .buttonStyle(.plain)
+                                        .foregroundColor(.accentColor)
+                                    }
+                                }
+                                .font(.caption2)
+                                .foregroundColor(.secondary)
+
+                                if expandedComments.contains(comment.id) {
+                                    ForEach(replies[comment.id] ?? []) { reply in
+                                        VStack(alignment: .leading, spacing: 2) {
+                                            Text(reply.user?.user_name ?? "匿名")
+                                                .font(.caption2.bold())
+                                                .foregroundColor(.secondary)
+                                            Text(commentText(reply.content))
+                                                .font(.caption)
+                                            if let image = reply.image_url, let url = URL(string: image) {
+                                                AsyncImage(url: url) { phase in
+                                                    if let image = phase.image {
+                                                        image.resizable().scaledToFit()
+                                                    }
+                                                }
+                                                .frame(maxHeight: 120)
+                                                .clipShape(RoundedRectangle(cornerRadius: 6))
+                                            }
+                                        }
+                                        .padding(.leading, 12)
+                                        .padding(.vertical, 2)
+                                    }
+                                    if replyHasMore.contains(comment.id) {
+                                        Button("加载更多回复") {
+                                            Task { await loadReplies(commentID: comment.id, reset: false) }
+                                        }
+                                        .font(.caption2)
+                                        .buttonStyle(.plain)
+                                        .foregroundColor(.accentColor)
+                                        .padding(.leading, 12)
+                                    }
                                 }
                             }
-                            Text(comment.content ?? "")
-                                .font(.subheadline)
-                            if let time = comment.create_time {
-                                Text(time)
-                                    .font(.caption2)
-                                    .foregroundColor(.secondary)
-                            }
+                            .padding(.vertical, 3)
                         }
-                        .padding(.vertical, 3)
+                        if hasMore {
+                            Button {
+                                Task { await load(reset: false) }
+                            } label: {
+                                HStack {
+                                    Spacer()
+                                    if isLoadingMore {
+                                        ProgressView()
+                                    } else {
+                                        Text("加载更多")
+                                    }
+                                    Spacer()
+                                }
+                            }
+                            .disabled(isLoadingMore)
+                        }
                     }
                     .listStyle(.plain)
                 }
@@ -595,46 +694,136 @@ private struct NativeCommentListSheet: View {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("关闭") { dismiss() }
                 }
+                ToolbarItem(placement: .primaryAction) {
+                    Button(sortHot ? "最热" : "最新") {
+                        sortHot.toggle()
+                        Task { await load(reset: true) }
+                    }
+                }
             }
         }
-        .task { await load() }
+        .task { await load(reset: true) }
     }
 
-    private func load() async {
-        isLoading = true
+    private func load(reset: Bool) async {
+        if reset {
+            isLoading = true
+            cursor = ""
+            comments = []
+        } else {
+            isLoadingMore = true
+        }
         errorText = nil
-        guard let api = reviewAPIURL(from: target.url) else {
+        guard let api = reviewAPIURL(from: target.url, cursor: cursor) else {
+            AppLog.write("[评论] 地址无法解析 title=\(target.title)")
             errorText = "评论地址无法解析"
             isLoading = false
+            isLoadingMore = false
             return
         }
         do {
             let (data, _) = try await URLSession.shared.data(from: api)
             let envelope = try JSONDecoder().decode(ReviewEnvelope.self, from: data)
-            comments = envelope.data?.comments ?? []
+            let page = envelope.data?.comments ?? []
+            let existing = Set(comments.map(\.id))
+            comments += page.filter { !existing.contains($0.id) }
             total = envelope.data?.total ?? comments.count
+            cursor = envelope.data?.next_cursor ?? ""
+            hasMore = envelope.data?.has_more == true && cursor != ""
+            AppLog.write("[评论] 加载完成 title=\(target.title) 当前 \(comments.count) 条 / 总数 \(total)")
         } catch {
+            AppLog.write("[评论] 加载失败 title=\(target.title) error=\(error.localizedDescription)")
             errorText = "加载失败：\(error.localizedDescription)"
         }
         isLoading = false
+        isLoadingMore = false
     }
 
-    private func reviewAPIURL(from raw: String) -> URL? {
+    private func reviewAPIURL(from raw: String, cursor: String) -> URL? {
         guard var components = URLComponents(string: raw) else { return nil }
         let query = components.queryItems ?? []
         let originalMode = query.first(where: { $0.name == "mode" })?.value
         let para = query.first(where: { $0.name == "para" || $0.name == "paragraph_id" })?.value ?? "0"
         components.path = "/para_review"
-        components.queryItems = [
+        var items = [
             URLQueryItem(name: "book_id", value: query.first(where: { $0.name == "book_id" })?.value ?? ""),
             URLQueryItem(name: "item_id", value: query.first(where: { $0.name == "item_id" })?.value ?? ""),
             URLQueryItem(name: "item_version", value: query.first(where: { $0.name == "item_version" })?.value ?? ""),
             URLQueryItem(name: "para", value: para),
             URLQueryItem(name: "source", value: query.first(where: { $0.name == "source" })?.value ?? "番茄"),
             URLQueryItem(name: "mode", value: (originalMode == "paragraph" || target.title == "段评") ? "paragraph" : "chapter"),
-            URLQueryItem(name: "hot", value: "1")
+            URLQueryItem(name: "hot", value: sortHot ? "1" : "0")
         ]
+        if !cursor.isEmpty {
+            items.append(URLQueryItem(name: "cursor", value: cursor))
+        }
+        components.queryItems = items
         return components.url
+    }
+
+    private func toggleReplies(_ comment: ReviewComment) {
+        if expandedComments.contains(comment.id) {
+            expandedComments.remove(comment.id)
+        } else {
+            expandedComments.insert(comment.id)
+            if replies[comment.id] == nil {
+                Task { await loadReplies(commentID: comment.id, reset: true) }
+            }
+        }
+    }
+
+    private func loadReplies(commentID: String, reset: Bool) async {
+        guard let api = replyAPIURL(commentID: commentID, cursor: reset ? "" : (replyCursor[commentID] ?? "")) else { return }
+        do {
+            let (data, _) = try await URLSession.shared.data(from: api)
+            let envelope = try JSONDecoder().decode(ReviewEnvelope.self, from: data)
+            let page = envelope.data?.replies ?? []
+            if reset {
+                replies[commentID] = page
+            } else {
+                replies[commentID, default: []] += page
+            }
+            replyCursor[commentID] = envelope.data?.next_cursor ?? ""
+            if envelope.data?.has_more == true, envelope.data?.next_cursor != nil {
+                replyHasMore.insert(commentID)
+            } else {
+                replyHasMore.remove(commentID)
+            }
+        } catch {
+            // 回复失败保留原列表，不打断主评论
+        }
+    }
+
+    private func replyAPIURL(commentID: String, cursor: String) -> URL? {
+        guard let base = reviewAPIURL(from: target.url, cursor: ""),
+              var components = URLComponents(url: base, resolvingAgainstBaseURL: false) else { return nil }
+        var items = components.queryItems ?? []
+        items.append(URLQueryItem(name: "comment_id", value: commentID))
+        if !cursor.isEmpty {
+            items.append(URLQueryItem(name: "cursor", value: cursor))
+        }
+        components.queryItems = items
+        return components.url
+    }
+
+    private static let commentEmoji: [String: String] = [
+        "[微笑]": "😊", "[偷笑]": "😏", "[笑]": "😁", "[什么]": "🤔", "[害羞]": "😳",
+        "[爱慕]": "😍", "[飞吻]": "😘", "[奸笑]": "😏", "[尬笑]": "😅", "[思考]": "🤔",
+        "[撇嘴]": "😒", "[做鬼脸]": "😜", "[酷]": "😎", "[翻白眼]": "🙄", "[惊呆]": "😲",
+        "[震惊]": "😱", "[送心]": "❤️", "[委屈]": "🥺", "[快哭了]": "😭", "[笑哭]": "😂",
+        "[哭]": "😢", "[大笑]": "😆", "[舔屏]": "😋", "[怒]": "😡", "[捂脸]": "🤦",
+        "[吐]": "🤮", "[恐惧]": "😨", "[抓狂]": "😫", "[敬礼]": "🫡", "[石化]": "🗿",
+        "[OK]": "👌", "[赞]": "👍", "[爱心]": "💖", "[伤心]": "💔", "[吃瓜]": "🍉",
+        "[盯]": "👀", "[狗头]": "🐶", "[神评]": "🌟", "[小七_神评]": "🌟"
+    ]
+
+    private func commentText(_ raw: String?) -> String {
+        guard let raw else { return "" }
+        var text = raw
+        for (token, emoji) in Self.commentEmoji {
+            text = text.replacingOccurrences(of: token, with: emoji)
+        }
+        return text
     }
 }
 
@@ -645,13 +834,28 @@ private struct ReviewEnvelope: Decodable {
 
 private struct ReviewData: Decodable {
     let comments: [ReviewComment]?
+    let replies: [ReviewReply]?
     let total: Int?
+    let has_more: Bool?
+    let next_cursor: String?
+}
+
+private struct ReviewReply: Decodable, Identifiable {
+    let reply_id: String
+    let content: String?
+    let image_url: String?
+    let like_count: Int?
+    let create_time: String?
+    let user: ReviewUser?
+    var id: String { reply_id }
 }
 
 private struct ReviewComment: Decodable, Identifiable {
     let comment_id: String
     let content: String?
+    let image_url: String?
     let like_count: Int?
+    let reply_count: Int?
     let create_time: String?
     let user: ReviewUser?
     var id: String { comment_id }
@@ -817,6 +1021,7 @@ public struct ReaderView: View {
     @State private var tocReversed: Bool = false
     @State private var showBookmarks: Bool = false
     @State private var showComments: Bool = false
+    @State private var directCommentTarget: ReviewTarget?
     @State private var readingTickStart: Date? = nil
     @State private var newBookmarkNote: String = ""
     /// 书签列表的面板状态：搜索、排序、类型筛选、多选
@@ -932,7 +1137,35 @@ public struct ReaderView: View {
     }
 
     private var chapterCommentURL: String? {
-        currentLoadedChapter?.blocks.first(where: { $0.commentCount < 0 })?.commentURL
+        currentLoadedChapter?.blocks.first(where: { $0.commentCount == -1 })?.commentURL
+    }
+
+    /// 分页模式的章末入口：最后一页右下角浮一个「本章说」。
+    @ViewBuilder
+    private var chapterCommentPill: some View {
+        let pages = currentLoadedChapter?.pages.count ?? 0
+        if readerConfig.pageMode != .scroll,
+           chapterCommentURL != nil,
+           pages > 0,
+           currentPageIndex >= pages - 1,
+           !showControls,
+           !showSettings {
+            Button {
+                // 按钮贴着右侧翻页区，先压住这一拍的整页点击，避免同时翻页
+                tapSuppressor.suppress(seconds: 0.35)
+                showComments = true
+            } label: {
+                Label("本章说", systemImage: "text.bubble")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundColor(readerConfig.textColor)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 6)
+                    .background(.ultraThinMaterial, in: Capsule())
+            }
+            .buttonStyle(.plain)
+            .padding(.trailing, 14)
+            .padding(.bottom, 24)
+        }
     }
 
     public var body: some View {
@@ -1136,6 +1369,7 @@ public struct ReaderView: View {
         .background(pullBackgroundLayer)
         .overlay(alignment: .topTrailing) { bookmarkRibbonOverlay }
         .overlay(alignment: .top) { bookmarkHintOverlay }
+        .overlay(alignment: .bottomTrailing) { chapterCommentPill }
         #if os(iOS)
         .navigationBarHidden(true)
         .statusBar(hidden: !showControls)
@@ -1233,6 +1467,9 @@ public struct ReaderView: View {
                 items: chapterCommentItems,
                 chapterURL: chapterCommentURL
             )
+        }
+        .sheet(item: $directCommentTarget) { target in
+            NativeCommentListSheet(target: target)
         }
         .sheet(isPresented: $showSourceSwitch) {
             SourceSwitchSheet(
@@ -1559,6 +1796,26 @@ public struct ReaderView: View {
                                                         )
                                                 }
                                             )
+                                    } else if block.commentCount == -2 {
+                                        godReviewCard(block)
+                                            .padding(.leading, readerConfig.paddingLeft)
+                                            .padding(.trailing, readerConfig.paddingRight)
+                                            .padding(.bottom, readerConfig.paragraphSpacing)
+                                            .id("block_\(loadedCh.chapter.index)_\(block.id)")
+                                            .background(
+                                                GeometryReader { geo in
+                                                    Color.clear.preference(
+                                                        key: ReaderScrollPreferenceKey.self,
+                                                        value: [BlockFrameInfo(
+                                                            chapterIndex: loadedCh.chapter.index,
+                                                            blockId: block.id,
+                                                            minY: geo.frame(in: .named("readerScrollCoordinate")).minY,
+                                                            maxY: geo.frame(in: .named("readerScrollCoordinate")).maxY,
+                                                            rect: geo.frame(in: .global)
+                                                        )]
+                                                    )
+                                                }
+                                            )
                                     } else {
                                         bodyTextView(applyingKinsoku(block.text))
                                             .padding(.leading, readerConfig.paddingLeft)
@@ -1569,8 +1826,16 @@ public struct ReaderView: View {
                                                 selectScrollParagraph(block, chapterIndex: loadedCh.chapter.index)
                                             }
                                             .onTapGesture {
-                                                if block.commentCount < 0 {
+                                                if block.commentCount == -1 {
                                                     showComments = true
+                                                } else if block.commentCount == -2, let url = block.commentURL {
+                                                    directCommentTarget = ReviewTarget(url: url, title: "段评")
+                                                }
+                                            }
+                                            .overlay(alignment: .bottomTrailing) {
+                                                if block.commentCount > 0, let url = block.commentURL {
+                                                    paragraphCommentBadge(block, url: url)
+                                                        .offset(x: -2, y: 7)
                                                 }
                                             }
                                             .background(scrollAnnotationBackground(for: block, chapterIndex: loadedCh.chapter.index))
@@ -1650,7 +1915,7 @@ public struct ReaderView: View {
             .contentShape(Rectangle())
             .onTapGesture {
                 // 选段中点别处：退出选段、保留这次的更改
-                if selectedBlockRange != nil {
+                if selectedBlockRange != nil || charSelection != nil {
                     clearParagraphSelection()
                     return
                 }
@@ -1762,6 +2027,12 @@ public struct ReaderView: View {
                 Spacer()
             }
         } else {
+            let commentMap = Dictionary(uniqueKeysWithValues:
+                (currentLoadedChapter?.blocks ?? []).compactMap { block -> (Int, (count: Int, url: String))? in
+                    guard block.commentCount > 0, let url = block.commentURL else { return nil }
+                    return (block.id, (block.commentCount, url))
+                }
+            )
             PageCurlPager(
                 pages: pages,
                 loadedChapterIndex: currentLoadedChapter?.chapter.index ?? -1,
@@ -1842,9 +2113,17 @@ public struct ReaderView: View {
                     }
                 },
                 onTapCenter: {
+                    if charSelection != nil {
+                        clearParagraphSelection()
+                        return
+                    }
                     withAnimation(.easeInOut(duration: 0.2)) {
                         showControls.toggle()
                     }
+                },
+                commentMap: commentMap,
+                onCommentTap: { url in
+                    directCommentTarget = ReviewTarget(url: url, title: "段评")
                 }
             )
             // 这里不要再挂 .id / .transition：给 pager 换 id 会让 SwiftUI 整块重建，
@@ -1923,6 +2202,12 @@ public struct ReaderView: View {
                             let appliedExtra = readerConfig.justifyLastPage ? extraPerParagraph : 0
                             let pageContentHeight = filledBase
                                 + paragraphCount * (readerConfig.paragraphSpacing + appliedExtra)
+                            let commentMap = Dictionary(uniqueKeysWithValues:
+                                (currentLoadedChapter?.blocks ?? []).compactMap { block -> (Int, (count: Int, url: String))? in
+                                    guard block.commentCount > 0, let url = block.commentURL else { return nil }
+                                    return (block.id, (block.commentCount, url))
+                                }
+                            )
 
                             CoreTextPageView(
                                 lines: lines,
@@ -1953,6 +2238,11 @@ public struct ReaderView: View {
                                annotationRanges: annotationRangesForCurrentChapter,
                                onLongPressLine: { line, charOffset in
                                    selectCharacters(atLine: line, charOffset: charOffset, in: pageBlocks)
+                               },
+                               commentMap: commentMap,
+                               pageBackgroundColor: readerConfig.backgroundColor,
+                               onCommentTap: { url in
+                                   directCommentTarget = ReviewTarget(url: url, title: "段评")
                                }
                            )
                             .frame(width: usableWidth, height: pageContentHeight, alignment: .topLeading)
@@ -2003,7 +2293,7 @@ public struct ReaderView: View {
             }
             .gesture(
                 // minimumDistance 0：同一个手势同时管点击和滑动，位移小就是点击
-                DragGesture(minimumDistance: 0)
+                DragGesture(minimumDistance: 0, coordinateSpace: .global)
                     .onChanged { value in
                         // 字选模式只让手柄动，整页不再跟手翻页
                         guard charSelection == nil else { return }
@@ -2039,12 +2329,23 @@ public struct ReaderView: View {
                         if moved < 8 {
                             // 刚长按选中过段落：松手这一次不能再当点击使唤，否则操作栏会被菜单盖掉
                             guard !tapSuppressor.isActive else { return }
+                            #if os(iOS)
+                            // SwiftUI 的 global 坐标不含顶部安全区；UIKit 窗口坐标含，
+                            // 直接传会整体偏一条状态栏，气泡就点不中。
+                            let windowPoint = CGPoint(
+                                x: value.startLocation.x,
+                                y: value.startLocation.y + safeInsets.top
+                            )
+                            if CoreTextUIView.triggerCommentTap(atWindowPoint: windowPoint) {
+                                return
+                            }
+                            #endif
                             // 选段中点别处：退出选段、保留这次的更改
                             if selectedBlockRange != nil {
                                 clearParagraphSelection()
                                 return
                             }
-                            let x = value.startLocation.x
+                            let x = value.startLocation.x - geo.frame(in: .global).minX
                             if x < width * 0.3 {
                                 turnPage(forward: false)
                             } else if x > width * 0.7 {
@@ -2749,7 +3050,7 @@ public struct ReaderView: View {
     }
 
     private var bottomActionRow: some View {
-        HStack(spacing: 0) {
+        return HStack(spacing: 0) {
             // Contents Table (目录)
             Button(action: { showTOC = true }) {
                 VStack(spacing: 4) {
@@ -2851,6 +3152,7 @@ public struct ReaderView: View {
 
     /// 换源：把阅读进度搬到新书源，然后在同一个阅读界面里重拉目录和正文。
     private func switchToSource(_ newSource: BookSource, _ candidate: SearchBook) {
+        AppLog.write("[阅读] 开始更换书源")
         previousBook = activeBook
         previousSource = effectiveSource
         let newBook = Book(
@@ -2879,6 +3181,7 @@ public struct ReaderView: View {
     /// 新书源解析不出目录时退回原书源，避免卡在错误页。
     private func revertSourceSwitch() {
         guard let target = previousBook else { return }
+        AppLog.write("[阅读] 新书源目录为空，回退原书源")
         let current = activeBook
         switchedBook = target
         switchedSource = previousSource
@@ -3220,7 +3523,7 @@ public struct ReaderView: View {
                 let x = min(max(rect.midX - origin.x, bubbleWidth / 2 + 6), max(bubbleWidth / 2 + 6, geo.size.width - bubbleWidth / 2 - 6))
                 let above = rect.minY - origin.y - 44
                 let y = above < 64 ? rect.maxY - origin.y + 44 : above
-                paragraphBubble
+                paragraphBubble(width: bubbleWidth)
                     .frame(width: bubbleWidth)
                     .position(x: x, y: y)
                     .transition(.opacity)
@@ -3285,27 +3588,30 @@ public struct ReaderView: View {
     }
     #endif
 
-    private var paragraphBubble: some View {
-        HStack(spacing: 0) {
-            paragraphAction("复制", "doc.on.doc") { copySelectedParagraph() }
-            paragraphAction("搜索", "magnifyingglass") { searchSelectedParagraph() }
-            paragraphAction("书签", "bookmark") { addBookmarkForSelection() }
-            paragraphAction("下划线", "underline", tint: readerHexColor(underlineHex)) {
+    private func paragraphBubble(width: CGFloat) -> some View {
+        let actionCount = readerConfig.pageMode == .scroll ? 7 : 8
+        let actionWidth = max(34, (width - 9) / CGFloat(actionCount))
+        return HStack(spacing: 0) {
+            paragraphAction("复制", "doc.on.doc", width: actionWidth) { copySelectedParagraph() }
+            paragraphAction("搜索", "magnifyingglass", width: actionWidth) { searchSelectedParagraph() }
+            paragraphAction("书签", "bookmark", width: actionWidth) { addBookmarkForSelection() }
+            paragraphAction("下划线", "underline", width: actionWidth, tint: readerHexColor(underlineHex)) {
                 colorPickerKind = .underline
             }
-            paragraphAction("底色", "highlighter", tint: readerHexColor(highlightHex)) {
+            paragraphAction("底色", "highlighter", width: actionWidth, tint: readerHexColor(highlightHex)) {
                 colorPickerKind = .highlight
             }
-            paragraphAction("替换", "arrow.left.arrow.right") {
+            paragraphAction("替换", "arrow.left.arrow.right", width: actionWidth) {
                 replaceInput = ""
                 showReplaceInput = true
             }
             if readerConfig.pageMode != .scroll {
-                paragraphAction("整段", "text.alignleft") { resetToWholeParagraph() }
+                paragraphAction("整段", "text.alignleft", width: actionWidth) { resetToWholeParagraph() }
             }
             Divider().frame(height: 22)
-            paragraphAction("取消", "xmark") { cancelParagraphSelection() }
+            paragraphAction("取消", "xmark", width: actionWidth) { cancelParagraphSelection() }
         }
+        .frame(maxWidth: .infinity)
         .padding(.horizontal, 4)
         .padding(.vertical, 6)
         .background(.regularMaterial, in: Capsule())
@@ -3313,7 +3619,7 @@ public struct ReaderView: View {
         .shadow(color: Color.black.opacity(0.18), radius: 10, y: 4)
     }
 
-    private func paragraphAction(_ title: String, _ icon: String, tint: Color? = nil,
+    private func paragraphAction(_ title: String, _ icon: String, width: CGFloat, tint: Color? = nil,
                                  action: @escaping () -> Void) -> some View {
         Button {
             // 这一下也会落到页面那套「点一下开关工具栏」的手势上，先按住它，
@@ -3324,14 +3630,66 @@ public struct ReaderView: View {
             VStack(spacing: 2) {
                 Image(systemName: icon)
                     .font(.system(size: 16))
-                    .foregroundColor(tint)
+                    .foregroundColor(tint ?? .primary)
                 Text(title)
                     .font(.system(size: 10, weight: .medium))
+                    .foregroundColor(.primary)
             }
-            .foregroundColor(readerConfig.textColor)
-            .frame(maxWidth: .infinity)
+            .frame(width: width)
         }
         .buttonStyle(.plain)
+    }
+
+    /// 神评：源里的 SVG 卡片换成原生样式，点了直接开该段评论。
+    private func godReviewCard(_ block: ContentBlock) -> some View {
+        let text = block.text.replacingOccurrences(of: "神评 · ", with: "")
+        return Button {
+            if let url = block.commentURL {
+                directCommentTarget = ReviewTarget(url: url, title: "段评")
+            }
+        } label: {
+            HStack(alignment: .top, spacing: 9) {
+                Text("神评")
+                    .font(.system(size: 11, weight: .bold))
+                    .foregroundColor(.white)
+                    .padding(.horizontal, 7)
+                    .padding(.vertical, 4)
+                    .background(Color.orange, in: RoundedRectangle(cornerRadius: 6))
+                Text(text)
+                    .font(.subheadline)
+                    .foregroundColor(.primary)
+                    .multilineTextAlignment(.leading)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .padding(11)
+            .background(RoundedRectangle(cornerRadius: 10).fill(Color.orange.opacity(0.10)))
+            .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.orange.opacity(0.22), lineWidth: 0.5))
+        }
+        .buttonStyle(.plain)
+    }
+
+    /// 段评数量气泡，贴在段落右下角。
+    private func paragraphCommentBadge(_ block: ContentBlock, url: String) -> some View {
+        let label = block.commentCount >= 99 ? "99+" : "\(block.commentCount)"
+        let bodyWidth: CGFloat = label.count > 2 ? 26 : 18
+        let totalWidth = bodyWidth + 6
+        return Button {
+            directCommentTarget = ReviewTarget(url: url, title: "段评")
+        } label: {
+            ZStack {
+                ReaderCommentBubbleShape()
+                    .fill(readerConfig.backgroundColor)
+                ReaderCommentBubbleShape()
+                    .stroke(readerConfig.textColor.opacity(0.45), lineWidth: 1.2)
+                Text(label)
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundColor(readerConfig.textColor)
+                    .padding(.leading, 6)
+            }
+            .frame(width: totalWidth, height: 22)
+        }
+        .buttonStyle(.plain)
+        .contentShape(Rectangle())
     }
 
     private func annotationPalette(for kind: BookBookmark.Kind) -> [String] {
@@ -3828,6 +4186,7 @@ public struct ReaderView: View {
         showBookmarks || showTOC || showSearch || showTTSSettings || showBookInfo
             || showSourceSwitch || showTitleDesigner || showReplaceRules
             || showAggregateSearch || showBackgroundImagePicker || showReplaceInput
+            || showComments || directCommentTarget != nil
     }
 
     /// 下拉最多能拉多低：屏幕的一半多一点，屏幕高就多给一点
@@ -5006,6 +5365,7 @@ public struct ReaderView: View {
         }
 
         guard let source = effectiveSource else {
+            AppLog.write("[阅读] 打开失败：未找到书籍关联书源")
             errorMessage = "未找到书籍关联的书源"
             isLoadingInitial = false
             return
@@ -5046,6 +5406,7 @@ public struct ReaderView: View {
             BookStore.shared.saveChapters(fetchedChapters, for: tocCacheKey(source: source))
             AppLog.write("[阅读] 打开网络书籍，共 \(fetchedChapters.count) 章")
             guard !fetchedChapters.isEmpty else {
+                AppLog.write("[阅读] 目录为空 source=\(source.bookSourceName)")
                 // 换源之后目录空，说明这个源用不了，直接退回原来的源
                 if previousBook != nil {
                     revertSourceSwitch()
@@ -5060,6 +5421,7 @@ public struct ReaderView: View {
             }
             loadInitialChapter(at: currentChapterIndex)
         } catch {
+            AppLog.write("[阅读] 目录解析失败 error=\(error.localizedDescription)")
             if previousBook != nil {
                 revertSourceSwitch()
                 return
@@ -5108,8 +5470,10 @@ public struct ReaderView: View {
             let pages = paginate(blocks: blocks, title: targetChapter.title)
             let loaded = LoadedChapter(chapter: targetChapter, content: content, blocks: blocks, pages: pages)
             self.chapterCache[index] = loaded
+            AppLog.write("[阅读] 正文加载完成 第 \(index + 1) 章，\(loaded.blocks.count) 段")
             return loaded
         } catch {
+            AppLog.write("[阅读] 正文加载失败 第 \(index + 1) 章 error=\(error.localizedDescription)")
             return nil
         }
     }
@@ -5241,6 +5605,7 @@ public struct ReaderView: View {
                     self.scrollToChapterId = scrollToTargetEnd ? "chapter_end_\(index)" : "chapter_\(index)"
                 }
             } catch {
+                AppLog.write("[阅读] 首章正文失败 第 \(index + 1) 章 error=\(error.localizedDescription)")
                 self.errorMessage = "正文解析失败: \(error.localizedDescription)"
                 self.isLoadingInitial = false
                 self.isSwitchingChapter = false
@@ -5407,7 +5772,8 @@ public struct ReaderView: View {
                             let textBefore = nsLine.substring(with: NSRange(location: lastIndex, length: match.range.location - lastIndex)).trimmingCharacters(in: .whitespaces)
                             if !textBefore.isEmpty {
                                 let indent = (textBefore.hasPrefix("　") || textBefore.hasPrefix("    ")) ? "" : "　　"
-                                blocks.append(ContentBlock(id: currentId, isImage: false, text: indent + textBefore, imageUrl: nil))
+                                blocks.append(ContentBlock(id: currentId, isImage: false, text: indent + textBefore,
+                                                           imageUrl: nil, paragraphId: currentId))
                                 currentId += 1
                             }
                         }
@@ -5422,7 +5788,8 @@ public struct ReaderView: View {
                         let textAfter = nsLine.substring(with: NSRange(location: lastIndex, length: nsLine.length - lastIndex)).trimmingCharacters(in: .whitespaces)
                         if !textAfter.isEmpty {
                             let indent = (textAfter.hasPrefix("　") || textAfter.hasPrefix("    ")) ? "" : "　　"
-                            blocks.append(ContentBlock(id: currentId, isImage: false, text: indent + textAfter, imageUrl: nil))
+                            blocks.append(ContentBlock(id: currentId, isImage: false, text: indent + textAfter,
+                                                       imageUrl: nil, paragraphId: currentId))
                             currentId += 1
                         }
                     }
@@ -5434,7 +5801,8 @@ public struct ReaderView: View {
             let paragraphs = readerConfig.smartParagraphs ? smartParagraphSplit(trimmed) : [trimmed]
             for paragraph in paragraphs {
                 let indent = (paragraph.hasPrefix("　") || paragraph.hasPrefix("    ")) ? "" : "　　"
-                blocks.append(ContentBlock(id: currentId, isImage: false, text: indent + paragraph, imageUrl: nil))
+                blocks.append(ContentBlock(id: currentId, isImage: false, text: indent + paragraph,
+                                           imageUrl: nil, paragraphId: currentId))
                 currentId += 1
             }
             attachReviewMarker(marked, from: firstBlockIndex, blocks: &blocks)
@@ -5444,11 +5812,12 @@ public struct ReaderView: View {
 
     /// 从一行里拆出段评 / 本章说哨兵，剩下才是正文。
     private func extractReviewMarkers(from line: String)
-        -> (line: String, count: Int, url: String?, chapterURL: String?) {
+        -> (line: String, count: Int, url: String?, chapterURL: String?, godText: String?) {
         var text = line
         var count = 0
         var url: String?
         var chapterURL: String?
+        var godText: String?
 
         if let regex = try? NSRegularExpression(pattern: "\u{E000}C\u{1F}(\\d+)\u{1F}([^\u{E001}]*)\u{E001}") {
             let nsText = text as NSString
@@ -5465,11 +5834,22 @@ public struct ReaderView: View {
                 text = (text as NSString).replacingCharacters(in: match.range, with: "")
             }
         }
-        return (text, count, url, chapterURL)
+        if let regex = try? NSRegularExpression(pattern: "\u{E000}G\u{1F}([^\u{1F}]*)\u{1F}([^\u{E001}]*)\u{E001}") {
+            let nsText = text as NSString
+            if let match = regex.firstMatch(in: text, range: NSRange(location: 0, length: nsText.length)) {
+                let encoded = nsText.substring(with: match.range(at: 1))
+                if let data = Data(base64Encoded: encoded) {
+                    godText = String(data: data, encoding: .utf8)
+                }
+                url = nsText.substring(with: match.range(at: 2))
+                text = (text as NSString).replacingCharacters(in: match.range, with: "")
+            }
+        }
+        return (text, count, url, chapterURL, godText)
     }
 
     /// 段评挂在段落最后一块上；本章说单独生成一条入口。
-    private func attachReviewMarker(_ marker: (line: String, count: Int, url: String?, chapterURL: String?),
+    private func attachReviewMarker(_ marker: (line: String, count: Int, url: String?, chapterURL: String?, godText: String?),
                                     from firstBlockIndex: Int,
                                     blocks: inout [ContentBlock]) {
         if marker.count > 0, let url = marker.url,
@@ -5481,6 +5861,11 @@ public struct ReaderView: View {
             let id = (blocks.last?.id ?? 0) + 1
             blocks.append(ContentBlock(id: id, isImage: false, text: "本章说 · 查看全部评论", imageUrl: nil,
                                        commentCount: -1, commentURL: chapterURL))
+        }
+        if let godText = marker.godText, let url = marker.url {
+            let id = (blocks.last?.id ?? 0) + 1
+            blocks.append(ContentBlock(id: id, isImage: false, text: "神评 · \(godText)", imageUrl: nil,
+                                       commentCount: -2, commentURL: url))
         }
     }
 
@@ -6044,6 +6429,9 @@ public struct CoreTextPageView: NSViewRepresentable {
     public var annotationRanges: [(start: Int, count: Int, style: ReaderBlockStyle)] = []
     /// 长按回调：页内行号 + 该行内的字符偏移（UTF-16）
     public var onLongPressLine: ((Int, Int) -> Void)?
+    public var commentMap: [Int: (count: Int, url: String)] = [:]
+    public var pageBackgroundColor: Color = .clear
+    public var onCommentTap: ((String) -> Void)?
 
     public func makeNSView(context: Context) -> CoreTextNSView {
         let view = CoreTextNSView()
@@ -6430,6 +6818,9 @@ public struct CoreTextPageView: UIViewRepresentable {
     /// 已加标注的段落：下划线 / 底色
     public var annotationRanges: [(start: Int, count: Int, style: ReaderBlockStyle)] = []
     public var onLongPressLine: ((Int, Int) -> Void)?
+    public var commentMap: [Int: (count: Int, url: String)] = [:]
+    public var pageBackgroundColor: Color = .clear
+    public var onCommentTap: ((String) -> Void)?
 
     public func makeUIView(context: Context) -> CoreTextUIView {
         let view = CoreTextUIView()
@@ -6462,6 +6853,9 @@ public struct CoreTextPageView: UIViewRepresentable {
         uiView.charAnnotations = charAnnotations
         uiView.annotationRanges = annotationRanges
         uiView.onLongPressLine = onLongPressLine
+        uiView.commentMap = commentMap
+        uiView.bubbleFillColor = UIColor(pageBackgroundColor)
+        uiView.onCommentTap = onCommentTap
         uiView.textColor = UIColor(textColor)
         uiView.containerWidth = width
         uiView.containerHeight = height
@@ -6518,6 +6912,11 @@ public class CoreTextUIView: UIView {
     public var underlineColor: UIColor?
     public var paragraphSeparatorLines: Int = 0
     public var paragraphSeparatorColor: UIColor?
+    /// 段落 id → 评论数 / 评论地址；段尾画气泡
+    public var commentMap: [Int: (count: Int, url: String)] = [:]
+    public var bubbleFillColor: UIColor = .clear
+    public var onCommentTap: ((String) -> Void)?
+    private var commentBubbleRects: [(rect: CGRect, url: String)] = []
 
     public override init(frame: CGRect) {
         super.init(frame: frame)
@@ -6647,6 +7046,26 @@ public class CoreTextUIView: UIView {
         return true
     }
 
+    /// 分页页面上点段评气泡：命中后打开该段评论。
+    @discardableResult
+    public static func triggerCommentTap(atWindowPoint point: CGPoint) -> Bool {
+        let candidates = activePages.compactMap(\.view).filter { $0.window != nil && !$0.isHidden && $0.alpha > 0.01 }
+        // 翻页动画时可能同时有两页；逐页找，别只命中最上面那一页
+        for view in candidates {
+            let local = view.convert(point, from: nil)
+            guard view.bounds.contains(local) else { continue }
+            // 气泡贴在行尾，横向坐标受分页留白影响；按实际矩形外扩一圈命中
+            let hit = view.commentBubbleRects
+                .filter { $0.rect.insetBy(dx: -14, dy: -10).contains(local) }
+                .min { abs(local.y - $0.rect.midY) < abs(local.y - $1.rect.midY) }
+            if let hit {
+                view.onCommentTap?(hit.url)
+                return true
+            }
+        }
+        return false
+    }
+
     /// 触点落在哪一页：可见、且局部坐标在页内；多页重叠时取面积最小的
     private static func activePageIndex(atWindowPoint point: CGPoint) -> Int? {
         var best: (index: Int, area: CGFloat)?
@@ -6687,6 +7106,7 @@ public class CoreTextUIView: UIView {
 
     public override func draw(_ rect: CGRect) {
         guard let ctx = UIGraphicsGetCurrentContext(), !lines.isEmpty else { return }
+        commentBubbleRects.removeAll(keepingCapacity: true)
 
         // 行矩形是长按命中的唯一依据，每画一次就重记一次
         var rects = [CGRect](repeating: .null, count: lines.count)
@@ -6831,6 +7251,50 @@ public class CoreTextUIView: UIView {
             ctx.scaleBy(x: 1.0, y: -1.0)
             CTLineDraw(finalLine, ctx)
             ctx.restoreGState()
+
+            if isEnd, let info = commentMap[paragraphId] {
+                let label = info.count >= 99 ? "99+" : "\(info.count)"
+                let bodyWidth: CGFloat = label.count > 2 ? 24 : 16
+                let bubbleWidth = bodyWidth + 6
+                let bubbleHeight: CGFloat = 21
+                let endX = boundaries.last ?? 0
+                var originX = endX + 5
+                if originX + bubbleWidth > CGFloat(targetWidth) {
+                    originX = max(0, CGFloat(targetWidth) - bubbleWidth)
+                }
+                let originY = baselineY - ascent + ((ascent + descent) - bubbleHeight) / 2
+                let bodyRect = CGRect(x: originX + 6, y: originY,
+                                      width: bodyWidth, height: bubbleHeight)
+                let path = UIBezierPath(roundedRect: bodyRect, cornerRadius: 5)
+                let midY = originY + bubbleHeight / 2
+                path.move(to: CGPoint(x: originX + 6, y: midY - 5))
+                path.addLine(to: CGPoint(x: originX, y: midY))
+                path.addLine(to: CGPoint(x: originX + 6, y: midY + 5))
+                path.close()
+                ctx.saveGState()
+                ctx.setFillColor(bubbleFillColor.cgColor)
+                ctx.addPath(path.cgPath)
+                ctx.fillPath()
+                ctx.setStrokeColor(textColor.withAlphaComponent(0.45).cgColor)
+                ctx.setLineWidth(1)
+                ctx.addPath(path.cgPath)
+                ctx.strokePath()
+                let attr: [NSAttributedString.Key: Any] = [
+                    .font: UIFont.systemFont(ofSize: 10, weight: .semibold),
+                    .foregroundColor: textColor
+                ]
+                let textSize = (label as NSString).size(withAttributes: attr)
+                (label as NSString).draw(
+                    at: CGPoint(x: bodyRect.midX - textSize.width / 2,
+                                y: bodyRect.midY - textSize.height / 2),
+                    withAttributes: attr
+                )
+                ctx.restoreGState()
+                commentBubbleRects.append((
+                    CGRect(x: originX, y: originY, width: bubbleWidth, height: bubbleHeight),
+                    info.url
+                ))
+            }
 
             if isEnd {
                 if paragraphSeparatorLines > 0 {

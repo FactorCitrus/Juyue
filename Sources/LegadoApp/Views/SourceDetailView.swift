@@ -80,6 +80,17 @@ public struct SourceDetailView: View {
                 }
             }
 
+            if let variable = currentSource.variable, !variable.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                Section(header: Text("书源变量")) {
+                    Text(variable)
+                        .font(.system(size: 11, design: .monospaced))
+                        .foregroundColor(.secondary)
+                        .lineLimit(8)
+                    Button("编辑变量") { showEditSheet = true }
+                        .font(.subheadline)
+                }
+            }
+
             // Section 3: Preset Explore Categories
             Section(header: HStack {
                 Text("预设分类与发现")

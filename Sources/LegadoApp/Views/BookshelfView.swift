@@ -260,18 +260,22 @@ public struct BookshelfView: View {
                 switch result {
                 case .success(let urls):
                     guard let url = urls.first else { return }
+                    let ext = url.pathExtension.lowercased()
                     let canAccess = url.startAccessingSecurityScopedResource()
                     defer {
                         if canAccess { url.stopAccessingSecurityScopedResource() }
                     }
                     do {
                         let imported = try bookStore.importFile(from: url)
+                        AppLog.write("[导入] 本地文件成功 type=\(ext.isEmpty ? "?" : ext)")
                         selectedBook = imported
                     } catch {
+                        AppLog.write("[导入] 本地文件失败 type=\(ext.isEmpty ? "?" : ext) error=\(error.localizedDescription)")
                         importErrorMessage = "导入失败: \(error.localizedDescription)"
                         showImportAlert = true
                     }
                 case .failure(let error):
+                    AppLog.write("[导入] 文件选择失败 error=\(error.localizedDescription)")
                     importErrorMessage = "打开文件失败: \(error.localizedDescription)"
                     showImportAlert = true
                 }
@@ -283,6 +287,7 @@ public struct BookshelfView: View {
                 TextField("分组名", text: $newGroupName)
                 Button("创建") {
                     let group = bookStore.addGroup(name: newGroupName)
+                    AppLog.write("[书架] 新建分组")
                     selectedGroupId = group.id
                 }
                 Button("取消", role: .cancel) {}

@@ -436,6 +436,7 @@ public class BookStore: ObservableObject {
     // MARK: - Book Management
     public func addBook(from searchResult: SearchBook) -> Book {
         if let existing = bookshelf.first(where: { $0.bookUrl == searchResult.bookUrl }) {
+            AppLog.write("[书架] 加入网络书：已存在")
             return existing
         }
 
@@ -452,6 +453,7 @@ public class BookStore: ObservableObject {
         )
         bookshelf.insert(newBook, at: 0)
         saveBookshelf()
+        AppLog.write("[书架] 加入网络书：新增")
         return newBook
     }
 
@@ -484,6 +486,7 @@ public class BookStore: ObservableObject {
     }
 
     public func removeBook(bookUrl: String) {
+        AppLog.write("[书架] 删除书籍")
         bookshelf.removeAll { $0.bookUrl == bookUrl }
         saveBookshelf()
     }
@@ -491,6 +494,7 @@ public class BookStore: ObservableObject {
     /// 换源：把阅读进度搬到新书源的同名书上，旧记录与旧目录缓存一并清掉。
     @discardableResult
     public func changeBookSource(from oldBook: Book, to newBook: Book) -> Book {
+        AppLog.write("[书架] 更换书源")
         var target = newBook
         target.durChapterIndex = oldBook.durChapterIndex
         target.durChapterTitle = oldBook.durChapterTitle
@@ -1013,6 +1017,7 @@ public class BookStore: ObservableObject {
 
     public func importFile(from fileUrl: URL) throws -> Book {
         let ext = fileUrl.pathExtension.lowercased()
+        AppLog.write("[导入] 开始 type=\(ext.isEmpty ? "?" : ext)")
         switch ext {
         case "txt":
             return try importTxt(from: fileUrl)
@@ -1277,11 +1282,13 @@ public final class OPDSStore: ObservableObject {
         guard !trimmed.isEmpty else { return }
         catalogs.append(OPDSCatalog(name: name.trimmingCharacters(in: .whitespacesAndNewlines), url: trimmed, username: username, password: password))
         save()
+        AppLog.write("[OPDS] 新增书库 \(catalogs.count) 个")
     }
 
     public func remove(_ catalog: OPDSCatalog) {
         catalogs.removeAll { $0.id == catalog.id }
         save()
+        AppLog.write("[OPDS] 删除书库 \(catalogs.count) 个")
     }
 }
 

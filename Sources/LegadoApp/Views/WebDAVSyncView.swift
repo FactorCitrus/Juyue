@@ -333,7 +333,9 @@ public struct WebDAVSyncView: View {
             backupExportName = result.fileName
             backupExportDocument = ExportedFile(data: result.data)
             showBackupExporter = true
+            AppLog.write("[云备份] 导出本地备份完成")
         } catch {
+            AppLog.write("[云备份] 导出本地备份失败 \(error.localizedDescription)")
             alertTitle = "导出失败"
             alertMessage = error.localizedDescription
             showAlert = true
@@ -419,7 +421,9 @@ public struct WebDAVSyncView: View {
             alertTitle = "备份包导入成功"
             alertMessage = "成功识别并合并 Android 备份数据：\n• 书架更新/新增: \(bCount) 本\n• 书源更新/新增: \(sCount) 个\(settingsNote)"
             showAlert = true
+            AppLog.write("[云备份] 本地备份导入完成 书架=\(bCount) 书源=\(sCount)")
         } catch {
+            AppLog.write("[云备份] 本地备份导入失败 \(error.localizedDescription)")
             alertTitle = "导入失败"
             alertMessage = error.localizedDescription
             showAlert = true
@@ -448,11 +452,13 @@ public struct WebDAVSyncView: View {
                 let msg = try await WebDAVService.shared.testConnection(config: currentConfig)
                 await MainActor.run {
                     isTesting = false
+                    AppLog.write("[云备份] 测试连接成功")
                     alertTitle = "测试连接成功"
                     alertMessage = msg
                     showAlert = true
                 }
             } catch {
+                AppLog.write("[云备份] 测试连接失败 \(error.localizedDescription)")
                 await MainActor.run {
                     isTesting = false
                     alertTitle = "测试连接失败"
@@ -504,11 +510,13 @@ public struct WebDAVSyncView: View {
                 await MainActor.run {
                     isBackingUp = false
                     lastSyncTime = Date()
+                    AppLog.write("[云备份] WebDAV 备份完成 书=\(result.booksCount) 源=\(result.sourcesCount)")
                     alertTitle = "备份成功"
                     alertMessage = "已成功生成 Android 兼容压缩包并上传至 WebDAV 远程目录 [\(remotePath)]：\n• 备份文件：\(result.backupFileName)\n• 书架藏书：\(result.booksCount) 本\n• 书源配置：\(result.sourcesCount) 个"
                     showAlert = true
                 }
             } catch {
+                AppLog.write("[云备份] WebDAV 备份失败 \(error.localizedDescription)")
                 await MainActor.run {
                     isBackingUp = false
                     alertTitle = "备份失败"
@@ -536,6 +544,7 @@ public struct WebDAVSyncView: View {
                 await MainActor.run {
                     isRestoring = false
                     lastSyncTime = Date()
+                    AppLog.write("[云备份] WebDAV 恢复完成 新增书=\(result.booksAdded) 新增源=\(result.sourcesAdded)")
                     alertTitle = "恢复成功"
                     var detail = "已完成从 WebDAV 数据合并：\n"
                     if let name = backupName {
@@ -558,6 +567,7 @@ public struct WebDAVSyncView: View {
                     showAlert = true
                 }
             } catch {
+                AppLog.write("[云备份] WebDAV 恢复失败 \(error.localizedDescription)")
                 await MainActor.run {
                     isRestoring = false
                     alertTitle = "恢复失败"

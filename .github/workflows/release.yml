@@ -11,16 +11,17 @@ on:
       - 'Legado.xcodeproj/**'
       - 'Package.swift'
   workflow_dispatch:
-    inputs:
-      tag_name:
-        description: 'Tag name for release (e.g. v0.2.0)'
-        required: false
-        default: 'v0.2.0'
+
+concurrency:
+  group: legado-release-main
+  cancel-in-progress: false
 
 jobs:
   build-and-release:
     name: Build & Release IPA
     runs-on: macos-14
+    timeout-minutes: 30
+    if: github.ref == 'refs/heads/main'
     permissions:
       contents: write
 
@@ -30,24 +31,45 @@ jobs:
 
       - name: Select Xcode
         run: |
-          sudo xcode-select -s /Applications/Xcode_15.4.app || sudo xcode-select -s /Applications/Xcode.app
+          sudo xcode-select -s /Applications/Xcode_15.4.app
           xcodebuild -version
+          xcodebuild -version | grep -q 'Xcode 15.4' || {
+            echo "Xcode 15.4 不可用，停止发布"
+            exit 1
+          }
+
+      - name: Verify Version Consistency
+        run: |
+          TAG=$(tr -d '[:space:]' < VERSION)
+          VERSION_NO_V=${TAG#v}
+          echo "TAG=$TAG" >> "$GITHUB_ENV"
+          echo "VERSION_NO_V=$VERSION_NO_V" >> "$GITHUB_ENV"
+          echo "VERSION=$TAG"
+          echo "VERSION_NO_V=$VERSION_NO_V"
+          [[ "$TAG" =~ ^v[0-9]+(\.[0-9]+)+$ ]] || {
+            echo "VERSION 格式错误：$TAG"
+            exit 1
+          }
+          MARKETING=$(sed -n '/<key>MARKETING_VERSION<\/key>/{n;s/.*<string>\(.*\)<\/string>.*/\1/p;}' Legado.xcodeproj/project.pbxproj | sort -u)
+          BUILD=$(sed -n '/<key>CURRENT_PROJECT_VERSION<\/key>/{n;s/.*<string>\(.*\)<\/string>.*/\1/p;}' Legado.xcodeproj/project.pbxproj | sort -u)
+          echo "MARKETING_VERSION=$MARKETING"
+          echo "CURRENT_PROJECT_VERSION=$BUILD"
+          [ "$MARKETING" = "$VERSION_NO_V" ] || {
+            echo "MARKETING_VERSION 与 VERSION 不一致"
+            exit 1
+          }
+          [ "$BUILD" = "$VERSION_NO_V" ] || {
+            echo "CURRENT_PROJECT_VERSION 与 VERSION 不一致"
+            exit 1
+          }
+          grep -Fqx "## $TAG" CHANGELOG.md || {
+            echo "CHANGELOG 缺少 $TAG 段落"
+            exit 1
+          }
 
       - name: Run Tests
         run: |
           swift test
-
-      - name: Determine Release Tag
-        id: version_step
-        run: |
-          if [ -n "${{ github.event.inputs.tag_name }}" ]; then
-            TAG="${{ github.event.inputs.tag_name }}"
-          elif [ -f "VERSION" ]; then
-            TAG=$(cat VERSION | tr -d '[:space:]')
-          else
-            TAG="v0.4.5.41"
-          fi
-          echo "tag=${TAG}" >> $GITHUB_OUTPUT
 
       - name: Build Archive (Unsigned)
         run: |
@@ -71,6 +93,7 @@ jobs:
             -configuration Release \
             -destination 'generic/platform=iOS' \
             -archivePath build/LegadoApp.xcarchive \
+            -derivedDataPath build/DerivedData \
             archive \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
@@ -79,25 +102,27 @@ jobs:
             SWIFT_ACTIVE_COMPILATION_CONDITIONS="NO_BAIDU_TTS"
 
       - name: Package IPA
-        id: package
         run: |
+          APP=build/LegadoApp.xcarchive/Products/Applications/LegadoApp.app
+          BUILT=$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" "$APP/Info.plist")
+          echo "包内版本号: $BUILT"
+          [ "$BUILT" = "$VERSION_NO_V" ] || {
+            echo "包内版本号与 VERSION 不一致：$BUILT != $VERSION_NO_V"
+            exit 1
+          }
           mkdir -p build/Payload
-          cp -R build/LegadoApp.xcarchive/Products/Applications/LegadoApp.app build/Payload/
-          cd build
-          RELEASE_TAG="${{ steps.version_step.outputs.tag }}"
-          zip -r "Legado-${RELEASE_TAG}.ipa" Payload
-          ls -la "Legado-${RELEASE_TAG}.ipa"
-          cd ..
+          cp -R "$APP" build/Payload/
+          (cd build && zip -qr "Legado-${TAG}.ipa" Payload)
+          ls -lh "build/Legado-${TAG}.ipa"
 
       - name: Upload IPA Artifact
         uses: actions/upload-artifact@v5
         with:
-          name: Legado-${{ steps.version_step.outputs.tag }}-ipa
+          name: Legado-${{ env.TAG }}-ipa
           path: build/Legado-*.ipa
 
       - name: Extract Release Notes
         run: |
-          TAG="${{ steps.version_step.outputs.tag }}"
           mkdir -p build
           {
             echo "## $TAG"
@@ -122,14 +147,24 @@ jobs:
           } > build/RELEASE_NOTES.md
           cat build/RELEASE_NOTES.md
 
-      - name: Publish GitHub Release
+      - name: Remove stale IPA asset
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          TAG="${{ steps.version_step.outputs.tag }}"
-          if gh release view "$TAG" >/dev/null 2>&1; then
-            gh release edit "$TAG" --title "Legado iOS $TAG" --notes-file build/RELEASE_NOTES.md
-          else
-            gh release create "$TAG" --title "Legado iOS $TAG" --notes-file build/RELEASE_NOTES.md
+          OLD="Legado-${TAG#v}.ipa"
+          if [ "$OLD" != "Legado-${TAG}.ipa" ] && gh release view "$TAG" >/dev/null 2>&1; then
+            gh release delete-asset "$TAG" "$OLD" --yes || true
           fi
-          gh release upload "$TAG" build/Legado-*.ipa --clobber
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.TAG }}
+          target_commitish: ${{ github.sha }}
+          name: "Legado iOS ${{ env.TAG }}"
+          prerelease: false
+          draft: false
+          overwrite_files: true
+          fail_on_unmatched_files: true
+          files: build/Legado-*.ipa
+          body_path: build/RELEASE_NOTES.md

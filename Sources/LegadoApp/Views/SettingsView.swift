@@ -59,16 +59,18 @@ final class AppIconManager: ObservableObject {
     func apply(_ newChoice: AppIconChoice) {
         #if os(iOS)
         guard UIApplication.shared.supportsAlternateIcons else {
+            AppLog.write("[图标] 请求切换 \(newChoice.rawValue)，但系统不支持")
             errorMessage = "当前系统不支持切换应用图标。"
             return
         }
         guard !isSwitching, newChoice != choice else {
             return
         }
+        AppLog.write("[图标] 请求切换 \(newChoice.rawValue)")
         let previous = choice
         choice = newChoice
         isSwitching = true
-        performSwitch(to: newChoice, previous: previous, retries: 2)
+        performSwitch(to: newChoice, previous: previous, retries: 5)
         #else
         choice = newChoice
         UserDefaults.standard.set(newChoice.rawValue, forKey: defaultsKey)
@@ -78,23 +80,31 @@ final class AppIconManager: ObservableObject {
     #if os(iOS)
     private func performSwitch(to newChoice: AppIconChoice, previous: AppIconChoice, retries: Int) {
         UIApplication.shared.setAlternateIconName(newChoice.alternateIconName) { [weak self] error in
-            if let error, retries > 0 {
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.45) {
-                    self?.performSwitch(to: newChoice, previous: previous, retries: retries - 1)
-                }
-                return
-            }
             DispatchQueue.main.async {
-                guard error == nil else {
-                    AppLog.write("[图标] 切换失败 code=\((error as NSError?)?.code ?? -1)")
-                    self?.choice = previous
+                // iOS 26 可能返回 Code 35 但图标已切换，系统实际值才是准的
+                let actual = UIApplication.shared.alternateIconName
+                if actual == newChoice.alternateIconName {
+                    AppLog.write("[图标] 切换成功 \(newChoice.rawValue)")
+                    self?.choice = newChoice
                     self?.isSwitching = false
-                    self?.errorMessage = "系统暂时无法切换图标，请重试。"
+                    UserDefaults.standard.set(newChoice.rawValue, forKey: self?.defaultsKey ?? "juyue_app_icon_choice")
                     return
                 }
-                self?.choice = newChoice
+                if let error, retries > 0 {
+                    let delays: [TimeInterval] = [0.5, 1.5, 3, 6, 10]
+                    let delay = delays[min(delays.count - 1, 5 - retries)]
+                    DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
+                        self?.performSwitch(to: newChoice, previous: previous, retries: retries - 1)
+                    }
+                    return
+                }
+                let nsError = error as NSError?
+                AppLog.write("[图标] 切换失败 domain=\(nsError?.domain ?? "-") code=\(nsError?.code ?? -1) desc=\(nsError?.localizedDescription ?? "-") actual=\(actual ?? "nil") uptime=\(Int(ProcessInfo.processInfo.systemUptime / 60))m")
+                self?.choice = previous
                 self?.isSwitching = false
-                UserDefaults.standard.set(newChoice.rawValue, forKey: self?.defaultsKey ?? "juyue_app_icon_choice")
+                self?.errorMessage = nsError?.code == -54
+                    ? "系统图标服务暂不可用，请重启手机后再试。"
+                    : "系统暂时无法切换图标，请重试。"
             }
         }
     }
@@ -239,7 +249,7 @@ public struct SettingsView: View {
                         HStack {
                             Text("诊断日志")
                             Spacer()
-                            Text("查崩溃")
+                            Text("操作与崩溃")
                                 .foregroundColor(.secondary)
                         }
                     }
@@ -529,9 +539,13 @@ public struct SettingsView: View {
                     webDAVStatusText = cfg.lastSyncTime != nil ? "已同步" : "已配置"
                 }
             }
+            .onChange(of: appTheme) { newValue in
+                AppLog.write("[设置] 外观模式 → \(newValue)")
+            }
             .alert("重置书源", isPresented: $showRestoreAlert) {
                 Button("取消", role: .cancel) {}
                 Button("确定重置", role: .destructive) {
+                    AppLog.write("[设置] 重置书源")
                     bookStore.loadBundledSources(forceReset: true)
                     restoreSuccessMessage = "书源已重置为预装状态"
                 }
@@ -541,6 +555,7 @@ public struct SettingsView: View {
             .alert("清理阅读缓存", isPresented: $showClearCacheAlert) {
                 Button("取消", role: .cancel) {}
                 Button("确定清理", role: .destructive) {
+                    AppLog.write("[设置] 清理阅读缓存")
                     clearCacheMessage = "缓存已成功清理"
                 }
             } message: {
@@ -1095,10 +1110,14 @@ struct DownloadManagerView: View {
                         Spacer()
                         if job.isRunning {
                             Button(job.isPaused ? "继续" : "暂停") {
+                                AppLog.write("[下载] \(job.isPaused ? "继续" : "暂停")任务 \(job.finished)/\(job.total)")
                                 job.isPaused ? manager.resume(job.id) : manager.pause(job.id)
                             }
                             .font(.system(size: 12))
-                            Button("取消") { manager.cancel(job.id) }
+                            Button("取消") {
+                                AppLog.write("[下载] 取消任务 \(job.finished)/\(job.total)")
+                                manager.cancel(job.id)
+                            }
                                 .font(.system(size: 12))
                                 .foregroundColor(.red)
                         }
@@ -1109,7 +1128,10 @@ struct DownloadManagerView: View {
         }
         .navigationTitle("下载管理")
         .toolbar {
-            Button("清理已完成") { manager.clearFinished() }
+            Button("清理已完成") {
+                AppLog.write("[下载] 清理已完成任务 \(manager.jobs.count) 个")
+                manager.clearFinished()
+            }
         }
     }
 }
@@ -1153,11 +1175,13 @@ final class SubscribeSourceStore: ObservableObject {
                 added += 1
             }
         }
+        LegadoLog.log("[订阅源] 导入 新增=\(added) 更新=\(updated) 总计=\(sources.count)")
         return (added, updated)
     }
 
     func remove(sourceUrl: String) {
         sources.removeAll { $0.sourceUrl == sourceUrl }
+        LegadoLog.log("[订阅源] 删除 剩余=\(sources.count)")
     }
 
     func toggle(sourceUrl: String) {
@@ -1505,8 +1529,10 @@ struct SubscribeArticlesView: View {
         errorText = nil
         do {
             articles = try await SubscribeSourceService.fetchArticles(source: source)
+            LegadoLog.log("[订阅源] 抓取完成 \(articles.count) 条")
             if articles.isEmpty { errorText = "这条源没抓到条目：检查规则或地址。" }
         } catch {
+            LegadoLog.log("[订阅源] 抓取失败 \(error.localizedDescription)")
             errorText = "抓取失败：\(error.localizedDescription)"
         }
         isLoading = false
@@ -1654,8 +1680,10 @@ struct RSSItemsView: View {
         errorText = nil
         do {
             items = try await RSSService.shared.fetchFeed(url: source.url, sourceName: source.name)
+            AppLog.write("[RSS] 抓取完成 \(items.count) 条")
             if items.isEmpty { errorText = "没解析出条目，确认地址是 RSS / Atom 输出。" }
         } catch {
+            AppLog.write("[RSS] 抓取失败 \(error.localizedDescription)")
             errorText = "拉取失败：" + error.localizedDescription
         }
         loading = false
@@ -1771,8 +1799,10 @@ struct OPDSBrowserView: View {
         do {
             let result = try await OPDSService.shared.fetch(path, username: catalog.username, password: catalog.password)
             entries = result.entries
+            AppLog.write("[OPDS] 目录加载完成 \(entries.count) 条")
             if entries.isEmpty { message = "这个地址没返回条目。" }
         } catch {
+            AppLog.write("[OPDS] 目录加载失败 \(error.localizedDescription)")
             message = "拉取失败：" + error.localizedDescription
         }
         loading = false
@@ -1784,8 +1814,10 @@ struct OPDSBrowserView: View {
         do {
             let file = try await OPDSService.shared.download(href, username: catalog.username, password: catalog.password)
             _ = try BookStore.shared.importFile(from: file)
+            AppLog.write("[OPDS] 下载并导入完成")
             message = "已加入书架：" + name
         } catch {
+            AppLog.write("[OPDS] 下载失败 \(error.localizedDescription)")
             message = "下载失败：" + error.localizedDescription
         }
         loading = false
@@ -1962,6 +1994,11 @@ struct LogViewerView: View {
                     NSPasteboard.general.setString(text, forType: .string)
                     #endif
                     copied = true
+                }
+                if #available(iOS 16.0, macOS 13.0, *) {
+                    ShareLink(item: AppLog.fileURL) {
+                        Image(systemName: "square.and.arrow.up")
+                    }
                 }
                 Button("刷新") { load() }
                 Button("清空", role: .destructive) {

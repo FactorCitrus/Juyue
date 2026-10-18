@@ -469,6 +469,7 @@ public class BookContentService {
 
     private static let reviewCommentMarkerStart = "\u{E000}C\u{1F}"
     private static let reviewChapterMarkerStart = "\u{E000}H\u{1F}"
+    private static let reviewGodMarkerStart = "\u{E000}G\u{1F}"
     private static let reviewMarkerEnd = "\u{E001}"
 
     /// `<comment count=… onPress=…>` → 段评哨兵；本章说卡片 → 本章说哨兵。
@@ -492,13 +493,47 @@ public class BookContentService {
             let matches = imgRegex.matches(in: text, range: NSRange(location: 0, length: nsText2.length))
             for match in matches.reversed() {
                 let tag = nsText2.substring(with: match.range)
-                guard tag.contains("showFanqieComment("),
-                      let url = firstCapture(in: tag, pattern: "showFanqieComment\\(\\\\?\"([^\"\\\\]+)") else { continue }
-                let marker = reviewChapterMarkerStart + url + reviewMarkerEnd
+                let marker: String
+                if tag.contains("showFanqieComment("),
+                   let url = firstCapture(in: tag, pattern: "showFanqieComment\\(\\\\?\"([^\"\\\\]+)") {
+                    marker = reviewChapterMarkerStart + url + reviewMarkerEnd
+                } else if tag.contains("showCmt("),
+                          let url = firstCapture(in: tag, pattern: "showCmt\\(\\s*'([^']+)'"),
+                          let note = godReviewText(from: tag) {
+                    let encoded = Data(note.utf8).base64EncodedString()
+                    marker = reviewGodMarkerStart + encoded + "\u{1F}" + url + reviewMarkerEnd
+                } else {
+                    continue
+                }
                 text = (text as NSString).replacingCharacters(in: match.range, with: marker)
             }
         }
         return text
+    }
+
+    /// 神评 SVG 里的 `<text>` 就是评论正文；解出来交给阅读页画原生卡片。
+    private static func godReviewText(from imgTag: String) -> String? {
+        guard let src = firstCapture(in: imgTag, pattern: "(?i)src=\"([^\"]+)\""),
+              let comma = src.firstIndex(of: ",") else { return nil }
+        let dataPart = String(src[src.startIndex..<comma])
+        guard dataPart.contains("base64"),
+              let data = Data(base64Encoded: String(src[src.index(after: comma)...])),
+              let svg = String(data: data, encoding: .utf8),
+              let regex = try? NSRegularExpression(pattern: "(?is)<text\\b[^>]*>(.*?)</text>") else { return nil }
+        let nsSvg = svg as NSString
+        var values: [String] = []
+        for match in regex.matches(in: svg, range: NSRange(location: 0, length: nsSvg.length)) {
+            var value = nsSvg.substring(with: match.range(at: 1))
+            for (entity, replacement) in [("&amp;", "&"), ("&lt;", "<"), ("&gt;", ">"),
+                                          ("&quot;", "\""), ("&apos;", "'")] {
+                value = value.replacingOccurrences(of: entity, with: replacement)
+            }
+            let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !trimmed.isEmpty && trimmed != "神评论" {
+                values.append(trimmed)
+            }
+        }
+        return values.first
     }
 
     private static func firstCapture(in text: String, pattern: String) -> String? {
@@ -1075,11 +1110,13 @@ public final class RSSStore: ObservableObject {
         let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
         sources.append(RSSSource(name: trimmedName, url: trimmedURL))
         save()
+        LegadoLog.log("[RSS] 新增订阅 \(sources.count) 个")
     }
 
     public func remove(_ source: RSSSource) {
         sources.removeAll { $0.id == source.id }
         save()
+        LegadoLog.log("[RSS] 删除订阅 \(sources.count) 个")
     }
 }
 

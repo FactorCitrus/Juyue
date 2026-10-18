@@ -10,6 +10,78 @@
 	<string>54</string>
 	<key>objects</key>
 	<dict>
+		<key>B1C0DE000000000000000001</key>
+		<dict>
+			<key>fileRef</key>
+			<string>A1C0DE000000000000000001</string>
+			<key>isa</key>
+			<string>PBXBuildFile</string>
+		</dict>
+		<key>B1C0DE000000000000000002</key>
+		<dict>
+			<key>fileRef</key>
+			<string>A1C0DE000000000000000002</string>
+			<key>isa</key>
+			<string>PBXBuildFile</string>
+		</dict>
+		<key>B1C0DE000000000000000003</key>
+		<dict>
+			<key>fileRef</key>
+			<string>A1C0DE000000000000000003</string>
+			<key>isa</key>
+			<string>PBXBuildFile</string>
+		</dict>
+		<key>B1C0DE000000000000000004</key>
+		<dict>
+			<key>fileRef</key>
+			<string>A1C0DE000000000000000004</string>
+			<key>isa</key>
+			<string>PBXBuildFile</string>
+		</dict>
+		<key>A1C0DE000000000000000001</key>
+		<dict>
+			<key>isa</key>
+			<string>PBXFileReference</string>
+			<key>lastKnownFileType</key>
+			<string>image.png</string>
+			<key>path</key>
+			<string>Sources/LegadoApp/Resources/AppIconClassic60x60@2x.png</string>
+			<key>sourceTree</key>
+			<string>&lt;group&gt;</string>
+		</dict>
+		<key>A1C0DE000000000000000002</key>
+		<dict>
+			<key>isa</key>
+			<string>PBXFileReference</string>
+			<key>lastKnownFileType</key>
+			<string>image.png</string>
+			<key>path</key>
+			<string>Sources/LegadoApp/Resources/AppIconClassic60x60@3x.png</string>
+			<key>sourceTree</key>
+			<string>&lt;group&gt;</string>
+		</dict>
+		<key>A1C0DE000000000000000003</key>
+		<dict>
+			<key>isa</key>
+			<string>PBXFileReference</string>
+			<key>lastKnownFileType</key>
+			<string>image.png</string>
+			<key>path</key>
+			<string>Sources/LegadoApp/Resources/AppIconClassic76x76@2x~ipad.png</string>
+			<key>sourceTree</key>
+			<string>&lt;group&gt;</string>
+		</dict>
+		<key>A1C0DE000000000000000004</key>
+		<dict>
+			<key>isa</key>
+			<string>PBXFileReference</string>
+			<key>lastKnownFileType</key>
+			<string>image.png</string>
+			<key>path</key>
+			<string>Sources/LegadoApp/Resources/AppIconClassic83.5x83.5@2x~ipad.png</string>
+			<key>sourceTree</key>
+			<string>&lt;group&gt;</string>
+		</dict>
 		<key>C0EAEEF5B1D649AD9FADFD30</key>
 		<dict>
 			<key>fileRef</key>
@@ -419,12 +491,12 @@
 			<dict>
 				<key>ASSETCATALOG_COMPILER_APPICON_NAME</key>
 				<string>AppIcon</string>
-				<key>ASSETCATALOG_COMPILER_ALTERNATE_APPICON_NAMES</key>
-				<string>AppIconClassic</string>
+				<key>ASSETCATALOG_COMPILER_INCLUDE_ALL_APPICON_ASSETS</key>
+				<string>YES</string>
 				<key>CODE_SIGN_STYLE</key>
 				<string>Automatic</string>
 				<key>CURRENT_PROJECT_VERSION</key>
-				<string>4.7.7.7</string>
+				<string>4.7.8.7</string>
 				<key>DEVELOPMENT_TEAM</key>
 				<string></string>
 				<key>ENABLE_PREVIEWS</key>
@@ -446,7 +518,7 @@
 				<key>LD_RUNPATH_SEARCH_PATHS</key>
 				<string>$(inherited) @executable_path/Frameworks</string>
 				<key>MARKETING_VERSION</key>
-				<string>4.7.7.7</string>
+				<string>4.7.8.7</string>
 				<key>PRODUCT_BUNDLE_IDENTIFIER</key>
 				<string>com.factorcitrus.juyue</string>
 				<key>PRODUCT_NAME</key>
@@ -539,6 +611,10 @@
 				<string>AA11BB22CC33DD44EE55FF69</string>
 				<string>BB01AA0000000000000004A4</string>
 				<string>BB01AA0000000000000009B9</string>
+				<string>B1C0DE000000000000000001</string>
+				<string>B1C0DE000000000000000002</string>
+				<string>B1C0DE000000000000000003</string>
+				<string>B1C0DE000000000000000004</string>
 			</array>
 			<key>isa</key>
 			<string>PBXResourcesBuildPhase</string>
@@ -1235,12 +1311,12 @@
 			<dict>
 				<key>ASSETCATALOG_COMPILER_APPICON_NAME</key>
 				<string>AppIcon</string>
-				<key>ASSETCATALOG_COMPILER_ALTERNATE_APPICON_NAMES</key>
-				<string>AppIconClassic</string>
+				<key>ASSETCATALOG_COMPILER_INCLUDE_ALL_APPICON_ASSETS</key>
+				<string>YES</string>
 				<key>CODE_SIGN_STYLE</key>
 				<string>Automatic</string>
 				<key>CURRENT_PROJECT_VERSION</key>
-				<string>4.7.7.7</string>
+				<string>4.7.8.7</string>
 				<key>DEVELOPMENT_TEAM</key>
 				<string></string>
 				<key>ENABLE_PREVIEWS</key>
@@ -1262,7 +1338,7 @@
 				<key>LD_RUNPATH_SEARCH_PATHS</key>
 				<string>$(inherited) @executable_path/Frameworks</string>
 				<key>MARKETING_VERSION</key>
-				<string>4.7.7.7</string>
+				<string>4.7.8.7</string>
 				<key>PRODUCT_BUNDLE_IDENTIFIER</key>
 				<string>com.factorcitrus.juyue</string>
 				<key>PRODUCT_NAME</key>
