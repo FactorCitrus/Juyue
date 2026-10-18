@@ -84,6 +84,8 @@ public struct PageCurlPager: UIViewControllerRepresentable {
     public let onReachEnd: () -> Void
     public let onReachStart: () -> Void
     public let onTapCenter: () -> Void
+    public var commentMap: [Int: (count: Int, url: String)] = [:]
+    public var onCommentTap: ((String) -> Void)? = nil
 
     public init(
         pages: [[ContentBlock]],
@@ -139,7 +141,9 @@ public struct PageCurlPager: UIViewControllerRepresentable {
         onIndexChange: @escaping (Int) -> Void,
         onReachEnd: @escaping () -> Void,
         onReachStart: @escaping () -> Void,
-        onTapCenter: @escaping () -> Void
+        onTapCenter: @escaping () -> Void,
+        commentMap: [Int: (count: Int, url: String)] = [:],
+        onCommentTap: ((String) -> Void)? = nil
     ) {
         self.pages = pages
         self.loadedChapterIndex = loadedChapterIndex
@@ -195,6 +199,8 @@ public struct PageCurlPager: UIViewControllerRepresentable {
         self.onReachEnd = onReachEnd
         self.onReachStart = onReachStart
         self.onTapCenter = onTapCenter
+        self.commentMap = commentMap
+        self.onCommentTap = onCommentTap
     }
 
     public func makeCoordinator() -> Coordinator {
@@ -424,6 +430,8 @@ public struct PageCurlPager: UIViewControllerRepresentable {
                 charSelection: parent.charSelection,
                 charAnnotations: parent.charAnnotations,
                 annotationRanges: parent.annotationRanges,
+                commentMap: parent.commentMap,
+                onCommentTap: parent.onCommentTap,
                 chapterTitle: index == 0 ? parent.chapterTitle : nil,
                 fontSize: parent.fontSize,
                 lineSpacing: parent.lineSpacing,
@@ -665,6 +673,10 @@ public struct PageCurlPager: UIViewControllerRepresentable {
             case 2:
                 step(forward: true)
             default:
+                if let view = gesture.view {
+                    let point = view.convert(gesture.location(in: view), to: nil)
+                    if CoreTextUIView.triggerCommentTap(atWindowPoint: point) { return }
+                }
                 parent.onTapCenter()
             }
         }
@@ -740,6 +752,8 @@ struct PageCurlContent: View {
     var charSelection: ReaderCharSelection? = nil
     var charAnnotations: [ReaderCharAnnotation] = []
     var annotationRanges: [(start: Int, count: Int, style: ReaderBlockStyle)] = []
+    var commentMap: [Int: (count: Int, url: String)] = [:]
+    var onCommentTap: ((String) -> Void)? = nil
     let chapterTitle: String?
     let fontSize: CGFloat
     let lineSpacing: CGFloat
@@ -1037,7 +1051,10 @@ struct PageCurlContent: View {
                         charSelection: charSelection,
                         charAnnotations: charAnnotations,
                         annotationRanges: annotationRanges,
-                        onLongPressLine: onLongPressLine
+                        onLongPressLine: onLongPressLine,
+                        commentMap: commentMap,
+                        pageBackgroundColor: backgroundColor,
+                        onCommentTap: onCommentTap
                     )
                     .frame(width: usableWidth, height: contentHeight, alignment: .topLeading)
                 }

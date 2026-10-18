@@ -2022,6 +2022,12 @@ public struct ReaderView: View {
                 Spacer()
             }
         } else {
+            let commentMap = Dictionary(uniqueKeysWithValues:
+                (currentLoadedChapter?.blocks ?? []).compactMap { block -> (Int, (count: Int, url: String))? in
+                    guard block.commentCount > 0, let url = block.commentURL else { return nil }
+                    return (block.id, (block.commentCount, url))
+                }
+            )
             PageCurlPager(
                 pages: pages,
                 loadedChapterIndex: currentLoadedChapter?.chapter.index ?? -1,
@@ -2105,6 +2111,10 @@ public struct ReaderView: View {
                     withAnimation(.easeInOut(duration: 0.2)) {
                         showControls.toggle()
                     }
+                },
+                commentMap: commentMap,
+                onCommentTap: { url in
+                    directCommentTarget = ReviewTarget(url: url, title: "段评")
                 }
             )
             // 这里不要再挂 .id / .transition：给 pager 换 id 会让 SwiftUI 整块重建，
