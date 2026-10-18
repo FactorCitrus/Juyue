@@ -190,6 +190,7 @@ Legado-iOS/
 如果 Legado-iOS 对你有帮助，欢迎自愿赞助，支持项目持续维护与开发。
 
 赞助完全自愿，不影响软件使用，也不影响用户依据 GPL-3.0 许可证享有的权利。
+请我喝茶🍵
 <table>
   <tr>
     <td align="center"><strong>微信赞赏</strong></td>
