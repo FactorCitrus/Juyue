@@ -4172,6 +4172,7 @@ public struct ReaderView: View {
         showBookmarks || showTOC || showSearch || showTTSSettings || showBookInfo
             || showSourceSwitch || showTitleDesigner || showReplaceRules
             || showAggregateSearch || showBackgroundImagePicker || showReplaceInput
+            || showComments || directCommentTarget != nil
     }
 
     /// 下拉最多能拉多低：屏幕的一半多一点，屏幕高就多给一点
