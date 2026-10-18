@@ -7,5 +7,7 @@
 		<key>NSAllowsArbitraryLoads</key>
 		<true/>
 	</dict>
+	<key>NSHumanReadableCopyright</key>
+	<string>© 2026 FactorCitrus. 橘阅名称与图标保留所有权利。</string>
 </dict>
 </plist>

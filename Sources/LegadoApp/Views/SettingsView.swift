@@ -376,6 +376,10 @@ public struct SettingsView: View {
                                 .foregroundColor(.secondary)
                         }
                     }
+
+                    Text("© 2026 FactorCitrus。橘阅名称、图标与截图保留所有权利；非官方分支请改名换标。")
+                        .font(.caption2)
+                        .foregroundColor(.secondary)
                 }
             }
             .navigationTitle("设置")
