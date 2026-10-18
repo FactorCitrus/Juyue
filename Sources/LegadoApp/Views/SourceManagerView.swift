@@ -23,6 +23,8 @@ public struct SourceManagerView: View {
     @State private var alertMessage: String? = nil
     @State private var showAlert: Bool = false
     @State private var showBatchDeleteAlert: Bool = false
+    /// 导入前确认：应用不提供书源，用户只导入有权使用的规则
+    @State private var acceptedImportNotice = false
 
     // 源多的时候靠这几项筛
     @State private var searchText: String = ""
@@ -112,6 +114,12 @@ public struct SourceManagerView: View {
 
     public var body: some View {
         List {
+            Section {
+                Text("本应用不提供、不推荐任何书源。请只导入你有权使用的书源；书源可能访问第三方网站。")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
+
             Section(header: Text("筛选")) {
                 HStack {
                     Text("显示 \(filteredSources.count) / 共 \(bookStore.sources.count)")
@@ -553,6 +561,13 @@ enum SourceDocumentPicker {
     private var importSourceSheet: some View {
         NavigationView {
             Form {
+                Section {
+                    Text("书源是用户自行提供的解析规则。应用不托管、不推荐、不索引任何内容。")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                    Toggle("我确认只导入有权使用的书源", isOn: $acceptedImportNotice)
+                }
+
                 Section(header: Text("本地文件导入")) {
                     Button {
 #if os(iOS)
@@ -569,6 +584,7 @@ enum SourceDocumentPicker {
                     } label: {
                         Label("从本地文件导入 (.json)", systemImage: "doc.badge.plus")
                     }
+                    .disabled(!acceptedImportNotice)
                 }
 
                 Section(header: Text("网络导入 (JSON URL)")) {
@@ -580,7 +596,7 @@ enum SourceDocumentPicker {
                     Button("从网络获取并导入") {
                         importFromUrl()
                     }
-                    .disabled(importUrl.trimmingCharacters(in: .whitespaces).isEmpty)
+                    .disabled(!acceptedImportNotice || importUrl.trimmingCharacters(in: .whitespaces).isEmpty)
                 }
 
                 Section(header: Text("剪贴板 / 本地文本导入")) {
@@ -589,7 +605,7 @@ enum SourceDocumentPicker {
                     Button("导入 JSON 文本") {
                         importFromText()
                     }
-                    .disabled(importText.trimmingCharacters(in: .whitespaces).isEmpty)
+                    .disabled(!acceptedImportNotice || importText.trimmingCharacters(in: .whitespaces).isEmpty)
                 }
             }
             .navigationTitle("导入书源")
@@ -601,6 +617,7 @@ enum SourceDocumentPicker {
                     Button("取消") { showImportSheet = false }
                 }
             }
+            .onAppear { acceptedImportNotice = false }
         }
     }
 

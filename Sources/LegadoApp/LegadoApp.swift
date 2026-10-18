@@ -16,6 +16,8 @@ import LegadoCore
 /// 聚合书源、第三方登录、段评本章说都不进这个构建。
 enum AppEdition {
     static let isAppStoreClean = true
+    /// 商店版允许用户自行导入书源；应用本身不提供、不推荐任何源。
+    static let allowsUserSources = true
 }
 
 @main

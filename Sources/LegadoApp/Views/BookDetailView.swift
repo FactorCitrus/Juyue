@@ -121,7 +121,7 @@ public struct BookDetailView: View {
             .toolbar {
                 ToolbarItem(placement: .primaryAction) {
                     Menu {
-                        if !AppEdition.isAppStoreClean {
+                        if !AppEdition.isAppStoreClean || AppEdition.allowsUserSources {
                             Button {
                                 showSourceSwitch = true
                             } label: {
@@ -154,7 +154,7 @@ public struct BookDetailView: View {
                             Label("刷新目录与详情", systemImage: "arrow.clockwise")
                         }
 
-                        if !AppEdition.isAppStoreClean {
+                        if !AppEdition.isAppStoreClean || AppEdition.allowsUserSources {
                             Button {
                                 let all = chapters.indices.map { $0 }
                                 ChapterDownloadManager.shared.start(book: currentBook, chapters: chapters, source: source ?? bookStore.findSource(for: currentBook), indices: all)

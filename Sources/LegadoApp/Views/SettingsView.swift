@@ -45,7 +45,7 @@ public struct SettingsView: View {
                     .pickerStyle(.segmented)
                 }
 
-                if !AppEdition.isAppStoreClean {
+                if !AppEdition.isAppStoreClean || AppEdition.allowsUserSources {
                     Section(header: Text("书源")) {
                     NavigationLink(destination: SourceCheckView()) {
                         HStack {
@@ -66,14 +66,16 @@ public struct SettingsView: View {
                         }
                     }
 
-                    Button {
-                        showRestoreAlert = true
-                    } label: {
-                        HStack {
-                            Text("重置书源")
-                            Spacer()
-                            Image(systemName: "arrow.clockwise")
-                                .foregroundColor(.accentColor)
+                    if !AppEdition.allowsUserSources {
+                        Button {
+                            showRestoreAlert = true
+                        } label: {
+                            HStack {
+                                Text("重置书源")
+                                Spacer()
+                                Image(systemName: "arrow.clockwise")
+                                    .foregroundColor(.accentColor)
+                            }
                         }
                     }
                     }
@@ -1866,7 +1868,7 @@ struct ReaderPrivacyView: View {
                 Text("1. 本应用不创建账号，不收集姓名、邮箱、通讯录、位置或广告标识。")
                 Text("2. 书籍文件、阅读进度、书签和设置只保存在你的设备上。卸载应用会删除这些数据。")
                 Text("3. 只有你主动添加 OPDS / Calibre 书库或使用 WebDAV 备份时，应用才会连接你填写的服务器。")
-                Text("4. 本应用不提供书籍内容，也不内置第三方书源；请只导入你拥有合法使用权的文件。")
+                Text("4. 本应用不提供书籍内容，也不内置任何书源。用户可以自行导入书源规则；书源可能访问第三方网站，请确认你有权使用。")
                 Text("5. 应用使用系统语音朗读；不会把正文上传到服务器。")
                 Text("如有问题，请在项目主页提交 issue。")
             }

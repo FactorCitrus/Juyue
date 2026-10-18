@@ -241,7 +241,7 @@ public struct BookshelfView: View {
             .navigationTitle("我的书架")
             .toolbar {
                 ToolbarItemGroup(placement: .primaryAction) {
-                    if !AppEdition.isAppStoreClean {
+                    if !AppEdition.isAppStoreClean || AppEdition.allowsUserSources {
                         // Search button activating isSearchActive
                         Button(action: { isSearchActive = true }) {
                             Image(systemName: "magnifyingglass")
@@ -324,15 +324,33 @@ public struct BookshelfView: View {
                 .foregroundColor(.secondary.opacity(0.6))
             Text("书架空空如也")
                 .font(.headline)
-            Text(AppEdition.isAppStoreClean
+            Text(AppEdition.allowsUserSources
+                 ? "导入本地书籍，或搜索你已导入的书源"
+                 : (AppEdition.isAppStoreClean
                  ? "点击右上角“+”导入本地 TXT / EPUB / PDF"
                  : "可点击右上角放大镜搜索网络小说，或点击“+”导入本地书籍")
+                 )
                 .font(.subheadline)
                 .foregroundColor(.secondary)
                 .multilineTextAlignment(.center)
                 .padding(.horizontal, 32)
 
-            if AppEdition.isAppStoreClean {
+            if AppEdition.allowsUserSources {
+                Button(action: { isSearchActive = true }) {
+                    HStack(spacing: 6) {
+                        Image(systemName: "magnifyingglass")
+                        Text("搜索书源")
+                    }
+                    .font(.subheadline.bold())
+                    .padding(.horizontal, 18)
+                    .padding(.vertical, 10)
+                    .background(Color.accentColor)
+                    .foregroundColor(.white)
+                    .cornerRadius(20)
+                }
+                .buttonStyle(.plain)
+                .padding(.top, 8)
+            } else if AppEdition.isAppStoreClean {
                 Button(action: { showFileImporter = true }) {
                     HStack(spacing: 6) {
                         Image(systemName: "doc.badge.plus")

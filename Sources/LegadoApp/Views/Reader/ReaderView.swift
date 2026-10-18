@@ -1154,7 +1154,7 @@ public struct ReaderView: View {
                     } label: {
                         Label("刷新目录", systemImage: "list.bullet.rectangle")
                     }
-                    if !AppEdition.isAppStoreClean {
+                    if !AppEdition.isAppStoreClean || AppEdition.allowsUserSources {
                         Button {
                             downloadCachedChapters()
                         } label: {
@@ -2828,7 +2828,7 @@ public struct ReaderView: View {
                 showTTSSettings = true
             }
 
-            if !AppEdition.isAppStoreClean {
+            if !AppEdition.isAppStoreClean || AppEdition.allowsUserSources {
                 // Switch Book Source (换源)
                 Button(action: { showSourceSwitch = true }) {
                     VStack(spacing: 4) {

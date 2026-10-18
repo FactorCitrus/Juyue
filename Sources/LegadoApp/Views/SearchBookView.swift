@@ -70,6 +70,15 @@ public struct SearchBookView: View {
             .padding(.horizontal, 16)
             .padding(.top, 12)
 
+            if viewModel.availableSources.isEmpty {
+                Text("尚未导入书源。请到“设置 → 书源”导入你拥有使用权的书源。")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 16)
+                    .padding(.top, 8)
+            }
+
             if !viewModel.history.isEmpty && viewModel.searchQuery.isEmpty {
                 recentSearchChips
             }
