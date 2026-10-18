@@ -34,6 +34,11 @@ public struct TTSSettingsSheet: View {
     public var body: some View {
         NavigationView {
             Form {
+                Section {
+                    TerminalPageHeader(code: "READ / VOICE", title: "听书设置", detail: "系统语音 / HTTP 语音 / 多角色")
+                        .listRowInsets(EdgeInsets(top: 8, leading: 12, bottom: 8, trailing: 12))
+                        .listRowBackground(Color.clear)
+                }
                 Section(header: Text("引擎")) {
                     engineRow(name: "系统语音", subtitle: "iOS 内置，离线可用", selected: activeId == nil) {
                         select(nil)

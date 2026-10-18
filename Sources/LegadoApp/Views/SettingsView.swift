@@ -187,7 +187,7 @@ public struct SettingsView: View {
                     .padding(.top, 8)
                     .padding(.bottom, 110)
                 }
-                .background(SettingsBackdrop())
+                .background(AppThemeBackdrop())
 
                 if let board = presentedBoard {
                     boardExpandedScreen(board)
@@ -355,7 +355,7 @@ public struct SettingsView: View {
 
     private func boardExpandedScreen(_ board: SettingsBoard) -> some View {
         ZStack {
-            SettingsBackdrop()
+            AppThemeBackdrop()
 
             RoundedRectangle(cornerRadius: theme.metrics.cornerRadius, style: .continuous)
                 .fill(panelFill)
@@ -872,32 +872,6 @@ public struct SettingsView: View {
     }
 }
 
-private struct SettingsBackdrop: View {
-    @Environment(\.appTheme) private var theme
-
-    var body: some View {
-        ZStack {
-            theme.palette.background
-
-            if theme.showsGrid {
-                Canvas { context, size in
-                    var grid = Path()
-                    for x in stride(from: 0.0, through: size.width, by: theme.metrics.gridSpacing) {
-                        grid.move(to: CGPoint(x: x, y: 0))
-                        grid.addLine(to: CGPoint(x: x, y: size.height))
-                    }
-                    for y in stride(from: 0.0, through: size.height, by: theme.metrics.gridSpacing) {
-                        grid.move(to: CGPoint(x: 0, y: y))
-                        grid.addLine(to: CGPoint(x: size.width, y: y))
-                    }
-                    context.stroke(grid, with: .color(theme.palette.ink.opacity(theme.gridOpacity)), lineWidth: 0.5)
-                }
-            }
-        }
-        .ignoresSafeArea()
-    }
-}
-
 /// 字体管理：导入 ttf/otf、删除，选中的字体立刻能在阅读设置里用。
 struct FontManageView: View {
     @ObservedObject private var readerConfig = ReaderConfig.shared
@@ -909,6 +883,12 @@ struct FontManageView: View {
 
     var body: some View {
         List {
+            Section {
+                TerminalPageHeader(code: "READ / FONT", title: "字体管理", detail: "内置字体 / 自定义字体")
+                    .listRowInsets(EdgeInsets(top: 8, leading: 12, bottom: 8, trailing: 12))
+                    .listRowBackground(Color.clear)
+            }
+
             Section(header: Text("正在使用")) {
                 HStack {
                     Text(readerConfig.font.displayName)
@@ -1085,6 +1065,12 @@ struct ReplacementRulesView: View {
 
     var body: some View {
         List {
+            Section {
+                TerminalPageHeader(code: "READ / PURIFY", title: "替换净化", detail: "按顺序执行的正则与文本规则")
+                    .listRowInsets(EdgeInsets(top: 8, leading: 12, bottom: 8, trailing: 12))
+                    .listRowBackground(Color.clear)
+            }
+
             Section {
                 Button {
                     editing = ReplacementRule(name: "", pattern: "", replacement: "")
@@ -1393,6 +1379,12 @@ struct DownloadManagerView: View {
 
     var body: some View {
         List {
+            Section {
+                TerminalPageHeader(code: "DATA / DOWNLOAD", title: "下载管理", detail: "缓存队列与失败重试")
+                    .listRowInsets(EdgeInsets(top: 8, leading: 12, bottom: 8, trailing: 12))
+                    .listRowBackground(Color.clear)
+            }
+
             if manager.jobs.isEmpty {
                 Text("没有下载任务。在书籍详情页右上「⋯」里可以缓存全本或未读章节。")
                     .font(.footnote)
@@ -1916,6 +1908,12 @@ struct RSSFeedsView: View {
     var body: some View {
         List {
             Section {
+                TerminalPageHeader(code: "SOURCE / RSS", title: "RSS 订阅", detail: "公众号镜像 / 博客 / 新闻源")
+                    .listRowInsets(EdgeInsets(top: 8, leading: 12, bottom: 8, trailing: 12))
+                    .listRowBackground(Color.clear)
+            }
+
+            Section {
                 Button {
                     newName = ""; newURL = ""
                     showAdd = true
@@ -2018,6 +2016,12 @@ struct OPDSCatalogsView: View {
 
     var body: some View {
         List {
+            Section {
+                TerminalPageHeader(code: "SOURCE / OPDS", title: "OPDS 书库", detail: "Calibre 与自建 OPDS")
+                    .listRowInsets(EdgeInsets(top: 8, leading: 12, bottom: 8, trailing: 12))
+                    .listRowBackground(Color.clear)
+            }
+
             Section {
                 Button {
                     name = ""; url = ""; user = ""; pass = ""

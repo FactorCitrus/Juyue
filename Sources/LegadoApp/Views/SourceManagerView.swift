@@ -112,6 +112,12 @@ public struct SourceManagerView: View {
 
     public var body: some View {
         List {
+            Section {
+                TerminalPageHeader(code: "SOURCE / LIBRARY", title: "书源管理", detail: "筛选 / 排序 / 校验 / 导入导出")
+                    .listRowInsets(EdgeInsets(top: 8, leading: 12, bottom: 8, trailing: 12))
+                    .listRowBackground(Color.clear)
+            }
+
             Section(header: Text("工具")) {
                 NavigationLink(destination: SourceCheckView()) {
                     HStack {

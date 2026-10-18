@@ -171,11 +171,11 @@ private struct AppThemedListModifier: ViewModifier {
             content
                 .scrollContentBackground(.hidden)
                 .listRowBackground(theme.palette.surface)
-                .background(theme.palette.background)
+                .background(AppThemeBackdrop())
         } else {
             content
                 .listRowBackground(theme.palette.surface)
-                .background(theme.palette.background)
+                .background(AppThemeBackdrop())
         }
     }
 }
@@ -183,6 +183,73 @@ private struct AppThemedListModifier: ViewModifier {
 extension View {
     func appThemedList() -> some View {
         modifier(AppThemedListModifier())
+    }
+}
+
+struct AppThemeBackdrop: View {
+    @Environment(\.appTheme) private var theme
+
+    var body: some View {
+        ZStack {
+            theme.palette.background
+
+            if theme.showsGrid {
+                Canvas { context, size in
+                    var grid = Path()
+                    for x in stride(from: 0.0, through: size.width, by: theme.metrics.gridSpacing) {
+                        grid.move(to: CGPoint(x: x, y: 0))
+                        grid.addLine(to: CGPoint(x: x, y: size.height))
+                    }
+                    for y in stride(from: 0.0, through: size.height, by: theme.metrics.gridSpacing) {
+                        grid.move(to: CGPoint(x: 0, y: y))
+                        grid.addLine(to: CGPoint(x: size.width, y: y))
+                    }
+                    context.stroke(grid, with: .color(theme.palette.ink.opacity(theme.gridOpacity)), lineWidth: 0.5)
+                }
+            }
+        }
+        .ignoresSafeArea()
+    }
+}
+
+struct TerminalPageHeader: View {
+    @Environment(\.appTheme) private var theme
+
+    let code: String
+    let title: String
+    let detail: String
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            HStack {
+                Text(code)
+                    .font(theme.typography.label)
+                Spacer()
+                Text("MODULE")
+                    .font(theme.typography.mono)
+            }
+            .foregroundColor(theme.palette.secondaryInk)
+
+            Text(title)
+                .font(theme.typography.title)
+                .foregroundColor(theme.palette.ink)
+
+            Text(detail)
+                .font(theme.typography.mono)
+                .foregroundColor(theme.palette.secondaryInk)
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(theme.palette.surface)
+        .overlay(alignment: .leading) {
+            Rectangle()
+                .fill(theme.palette.accent)
+                .frame(width: 3)
+        }
+        .overlay {
+            Rectangle()
+                .stroke(theme.palette.divider, lineWidth: theme.metrics.borderWidth)
+        }
     }
 }
 
