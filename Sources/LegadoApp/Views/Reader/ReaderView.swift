@@ -1120,6 +1120,8 @@ public struct ReaderView: View {
     @State private var settingsPanel: ReaderQuickPanel = .quick
     /// 设置面板收起状态：调布局时把它折起来，整页都露出来
     @State private var panelCollapsed = false
+    @State private var layoutPreviewActive = false
+    @State private var layoutPreviewToken = 0
     /// 换章进行中：期间拦掉重复的翻页触发，免得拿旧章的页数推进
     @State private var isSwitchingChapter = false
     @State private var paginationTask: Task<Void, Never>?
@@ -1328,7 +1330,7 @@ public struct ReaderView: View {
                 // 5. Reading Settings Card Overlay (Bottom 1/3 of the screen)
                 if showSettings {
                     // 面板调淡的时候，底下这层压暗也得跟着淡，不然还是看不清正文
-                    Color.black.opacity(0.2 * readerConfig.panelOpacity)
+                    Color.black.opacity(0.2 * effectivePanelOpacity)
                         .contentShape(Rectangle())
                         .onTapGesture {
                             withAnimation(.easeInOut(duration: 0.22)) {
@@ -4518,11 +4520,11 @@ public struct ReaderView: View {
             RoundedRectangle(cornerRadius: chromeRadius, style: .continuous)
                 // 面板调半透明时不要毛玻璃，否则还是看不清底下的正文
                 .fill(theme.choice == .lunarTerminal
-                      ? theme.palette.surface.opacity(readerConfig.panelLayerOpacity)
-                      : readerConfig.backgroundColor.opacity(readerConfig.panelLayerOpacity))
+                      ? theme.palette.surface.opacity(effectivePanelLayerOpacity)
+                      : readerConfig.backgroundColor.opacity(effectivePanelLayerOpacity))
                 .overlay(
                     Group {
-                        if readerConfig.panelOpacity >= 0.99, theme.choice == .standard {
+                        if effectivePanelOpacity >= 0.99, theme.choice == .standard {
                             RoundedRectangle(cornerRadius: chromeRadius, style: .continuous)
                                 .fill(.ultraThinMaterial)
                         }
@@ -4546,7 +4548,7 @@ public struct ReaderView: View {
         }
         .background(
             chromeBackground
-                .opacity(readerConfig.panelLayerOpacity)
+                .opacity(effectivePanelLayerOpacity)
                 .shadow(color: Color.black.opacity(0.2), radius: 16, x: 0, y: -6)
                 .ignoresSafeArea(edges: .bottom)
         )
@@ -4557,6 +4559,24 @@ public struct ReaderView: View {
         )
         .padding(.horizontal, 10)
         .padding(.bottom, 6)
+        .onChange(of: readerConfig.fontSize) { _ in flashLayoutPreview() }
+        .onChange(of: readerConfig.lineSpacing) { _ in flashLayoutPreview() }
+        .onChange(of: readerConfig.letterSpacing) { _ in flashLayoutPreview() }
+        .onChange(of: readerConfig.paragraphSpacing) { _ in flashLayoutPreview() }
+        .onChange(of: readerConfig.paddingTop) { _ in flashLayoutPreview() }
+        .onChange(of: readerConfig.paddingBottom) { _ in flashLayoutPreview() }
+        .onChange(of: readerConfig.paddingLeft) { _ in flashLayoutPreview() }
+        .onChange(of: readerConfig.paddingRight) { _ in flashLayoutPreview() }
+        .onChange(of: readerConfig.firstLineIndent) { _ in flashLayoutPreview() }
+        .onChange(of: readerConfig.pageMode) { _ in flashLayoutPreview() }
+        .onChange(of: readerConfig.chapterTitleScale) { _ in flashLayoutPreview() }
+        .onChange(of: readerConfig.chapterTitleSpacing) { _ in flashLayoutPreview() }
+        .onChange(of: readerConfig.chapterTopSpacing) { _ in flashLayoutPreview() }
+        .onChange(of: readerConfig.chapterBottomSpacing) { _ in flashLayoutPreview() }
+        .onDisappear {
+            layoutPreviewToken += 1
+            layoutPreviewActive = false
+        }
     }
 
     /// iOS 上附带仿真翻页的手势计数，方便截屏排查；其他平台为空。
@@ -4627,6 +4647,31 @@ public struct ReaderView: View {
         theme.choice == .lunarTerminal ? theme.palette.accent : readerConfig.theme.accentColor
     }
 
+    private var effectivePanelOpacity: Double {
+        layoutPreviewActive ? min(readerConfig.panelOpacity, 0.24) : readerConfig.panelOpacity
+    }
+
+    private var effectivePanelLayerOpacity: Double {
+        let value = max(0.0, min(1.0, effectivePanelOpacity))
+        return 1 - (1 - value).squareRoot()
+    }
+
+    private func flashLayoutPreview() {
+        layoutPreviewToken += 1
+        let token = layoutPreviewToken
+        if !layoutPreviewActive {
+            withAnimation(.easeOut(duration: 0.16)) {
+                layoutPreviewActive = true
+            }
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
+            guard token == layoutPreviewToken else { return }
+            withAnimation(.easeInOut(duration: 0.22)) {
+                layoutPreviewActive = false
+            }
+        }
+    }
+
     /// 三个面板做成胶囊切换，比系统分段控件更贴阅读界面的调子
     private var settingsPanelSwitcher: some View {
         HStack(spacing: 6) {
@@ -4651,7 +4696,7 @@ public struct ReaderView: View {
                     .frame(maxWidth: .infinity)
                     .background(
                         RoundedRectangle(cornerRadius: theme.metrics.cornerRadius, style: .continuous)
-                            .fill(isOn ? settingsAccent.opacity(0.20) : theme.palette.elevated.opacity(readerConfig.panelLayerOpacity))
+                            .fill(isOn ? settingsAccent.opacity(0.20) : theme.palette.elevated.opacity(effectivePanelLayerOpacity))
                     )
                     .overlay(
                         RoundedRectangle(cornerRadius: theme.metrics.cornerRadius, style: .continuous)
@@ -4705,7 +4750,7 @@ public struct ReaderView: View {
         .padding(.horizontal, 10)
         .padding(.vertical, 7)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(theme.palette.elevated.opacity(readerConfig.panelLayerOpacity))
+        .background(theme.palette.elevated.opacity(effectivePanelLayerOpacity))
         .overlay(
             Rectangle()
                 .stroke(theme.palette.divider, lineWidth: theme.metrics.borderWidth)
@@ -4717,7 +4762,7 @@ public struct ReaderView: View {
             content()
         }
         .padding(12)
-        .background(theme.palette.elevated.opacity(readerConfig.panelLayerOpacity))
+        .background(theme.palette.elevated.opacity(effectivePanelLayerOpacity))
         .overlay(
             RoundedRectangle(cornerRadius: theme.metrics.cornerRadius, style: .continuous)
                 .stroke(theme.palette.divider, lineWidth: theme.metrics.borderWidth)
