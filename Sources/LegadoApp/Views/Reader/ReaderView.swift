@@ -4789,14 +4789,38 @@ public struct ReaderView: View {
     }
 
     private var pageModeRow: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: 10) {
             sectionTitle("阅读模式")
-            Picker("阅读模式", selection: $readerConfig.pageMode) {
+            LazyVGrid(
+                columns: Array(repeating: GridItem(.flexible(), spacing: 6), count: 3),
+                spacing: 6
+            ) {
                 ForEach(PageMode.allCases) { mode in
-                    Text(mode.rawValue).tag(mode)
+                    let isOn = readerConfig.pageMode == mode
+                    Button {
+                        withAnimation(.easeInOut(duration: 0.16)) {
+                            readerConfig.pageMode = mode
+                        }
+                    } label: {
+                        Text(mode.rawValue)
+                            .font(.system(size: 12, weight: isOn ? .semibold : .regular))
+                            .foregroundColor(isOn ? theme.palette.onAccent : theme.palette.ink)
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 11)
+                            .background(
+                                RoundedRectangle(cornerRadius: theme.metrics.cornerRadius, style: .continuous)
+                                    .fill(isOn ? settingsAccent : theme.palette.elevated)
+                            )
+                            .overlay(
+                                RoundedRectangle(cornerRadius: theme.metrics.cornerRadius, style: .continuous)
+                                    .stroke(isOn ? settingsAccent : theme.palette.divider,
+                                            lineWidth: theme.metrics.borderWidth)
+                            )
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityAddTraits(isOn ? .isSelected : [])
                 }
             }
-            .pickerStyle(.segmented)
         }
     }
 
