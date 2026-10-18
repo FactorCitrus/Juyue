@@ -4488,7 +4488,6 @@ public struct ReaderView: View {
                             pageModeRow
                             sectionDivider
                             fontSizeRow
-                            sectionDivider
                             themeRow
                         }
                         CollapsibleSettingBlock(title: "配色", tint: readerConfig.textColor) { colorSection }
@@ -4734,7 +4733,7 @@ public struct ReaderView: View {
         Rectangle()
             .fill(theme.palette.divider.opacity(0.55))
             .frame(height: 0.5)
-            .padding(.top, 12)
+            .padding(.top, 8)
     }
 
     private var settingsStatusStrip: some View {
@@ -4758,10 +4757,10 @@ public struct ReaderView: View {
     }
 
     private func settingsBlock<Content: View>(@ViewBuilder content: () -> Content) -> some View {
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: 8) {
             content()
         }
-        .padding(12)
+        .padding(10)
         .background(theme.palette.elevated.opacity(effectivePanelLayerOpacity))
         .overlay(
             RoundedRectangle(cornerRadius: theme.metrics.cornerRadius, style: .continuous)
@@ -5431,30 +5430,28 @@ public struct ReaderView: View {
     }
 
     private var fontSizeRow: some View {
-        HStack(spacing: 12) {
-            Text("字号")
-                .font(.system(size: 13, weight: .medium))
-                .foregroundColor(readerConfig.textColor.opacity(0.7))
-                .frame(width: 36, alignment: .leading)
+        VStack(alignment: .leading, spacing: 8) {
+            sectionTitle("字号")
+            HStack(spacing: 12) {
+                Text("A-")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundColor(readerConfig.textColor.opacity(0.8))
 
-            Text("A-")
-                .font(.system(size: 13, weight: .semibold))
-                .foregroundColor(readerConfig.textColor.opacity(0.8))
+                Slider(value: $readerConfig.fontSize, in: 12...32, step: 1)
+                    .accentColor(.accentColor)
+                    .onChange(of: readerConfig.fontSize) { _ in
+                        recomputePagination()
+                    }
 
-            Slider(value: $readerConfig.fontSize, in: 12...32, step: 1)
-                .accentColor(.accentColor)
-                .onChange(of: readerConfig.fontSize) { _ in
-                    recomputePagination()
-                }
+                Text("A+")
+                    .font(.system(size: 16, weight: .bold))
+                    .foregroundColor(readerConfig.textColor.opacity(0.8))
 
-            Text("A+")
-                .font(.system(size: 16, weight: .bold))
-                .foregroundColor(readerConfig.textColor.opacity(0.8))
-
-            Text("\(Int(readerConfig.fontSize)) pt")
-                .font(.system(size: 12, weight: .medium, design: .monospaced))
-                .foregroundColor(readerConfig.textColor.opacity(0.7))
-                .frame(width: 42, alignment: .trailing)
+                Text("\(Int(readerConfig.fontSize)) pt")
+                    .font(.system(size: 12, weight: .medium, design: .monospaced))
+                    .foregroundColor(readerConfig.textColor.opacity(0.7))
+                    .frame(width: 42, alignment: .trailing)
+            }
         }
     }
 
