@@ -421,6 +421,8 @@
 			<dict>
 				<key>ASSETCATALOG_COMPILER_APPICON_NAME</key>
 				<string>AppIcon</string>
+				<key>ASSETCATALOG_COMPILER_ALTERNATE_APPICON_NAMES</key>
+				<string>AppIconClassic</string>
 				<key>CODE_SIGN_STYLE</key>
 				<string>Automatic</string>
 				<key>CURRENT_PROJECT_VERSION</key>
@@ -1233,6 +1235,8 @@
 			<dict>
 				<key>ASSETCATALOG_COMPILER_APPICON_NAME</key>
 				<string>AppIcon</string>
+				<key>ASSETCATALOG_COMPILER_ALTERNATE_APPICON_NAMES</key>
+				<string>AppIconClassic</string>
 				<key>CODE_SIGN_STYLE</key>
 				<string>Automatic</string>
 				<key>CURRENT_PROJECT_VERSION</key>

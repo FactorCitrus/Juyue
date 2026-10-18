@@ -8,10 +8,93 @@ import UIKit
 import LegadoCore
 #endif
 
+enum AppIconChoice: String, CaseIterable, Identifiable {
+    case modern
+    case classic
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .modern: return "猫与橙（新）"
+        case .classic: return "像素猫（经典）"
+        }
+    }
+
+    var subtitle: String {
+        switch self {
+        case .modern: return "当前默认图标"
+        case .classic: return "紫色像素风旧图标"
+        }
+    }
+
+    var alternateIconName: String? {
+        switch self {
+        case .modern: return nil
+        case .classic: return "AppIconClassic"
+        }
+    }
+}
+
+final class AppIconManager: ObservableObject {
+    static let shared = AppIconManager()
+
+    @Published private(set) var choice: AppIconChoice
+    @Published var errorMessage: String?
+
+    private let defaultsKey = "juyue_app_icon_choice"
+
+    private init() {
+        let stored = UserDefaults.standard.string(forKey: defaultsKey)
+        choice = AppIconChoice(rawValue: stored ?? "") ?? .modern
+        #if os(iOS)
+        if let current = UIApplication.shared.alternateIconName,
+           current == AppIconChoice.classic.alternateIconName {
+            choice = .classic
+        }
+        #endif
+    }
+
+    func apply(_ newChoice: AppIconChoice) {
+        #if os(iOS)
+        guard UIApplication.shared.supportsAlternateIcons else {
+            return
+        }
+        performSwitch(to: newChoice, retries: 2)
+        #else
+        choice = newChoice
+        UserDefaults.standard.set(newChoice.rawValue, forKey: defaultsKey)
+        #endif
+    }
+
+    #if os(iOS)
+    private func performSwitch(to newChoice: AppIconChoice, retries: Int) {
+        UIApplication.shared.setAlternateIconName(newChoice.alternateIconName) { [weak self] error in
+            if let error, retries > 0 {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.45) {
+                    self?.performSwitch(to: newChoice, retries: retries - 1)
+                }
+                return
+            }
+            DispatchQueue.main.async {
+                guard error == nil else {
+                    AppLog.write("[图标] 切换失败 code=\((error as NSError?)?.code ?? -1)")
+                    self?.errorMessage = "系统暂时无法切换图标，请重试。"
+                    return
+                }
+                self?.choice = newChoice
+                UserDefaults.standard.set(newChoice.rawValue, forKey: self?.defaultsKey ?? "juyue_app_icon_choice")
+            }
+        }
+    }
+    #endif
+}
+
 public struct SettingsView: View {
     @ObservedObject var bookStore = BookStore.shared
     @ObservedObject var readerConfig = ReaderConfig.shared
     @ObservedObject var shelfConfig = BookshelfConfig.shared
+    @StateObject private var appIcon = AppIconManager.shared
 
     @AppStorage("legado_app_theme") private var appTheme: String = "system"
 
@@ -43,6 +126,31 @@ public struct SettingsView: View {
                         Text("深色模式").tag("dark")
                     }
                     .pickerStyle(.segmented)
+                }
+
+                Section(header: Text("应用图标"),
+                        footer: Text("切换后系统桌面图标会更新；若没变化，回桌面或重启 App。")) {
+                    ForEach(AppIconChoice.allCases) { option in
+                        Button {
+                            appIcon.apply(option)
+                        } label: {
+                            HStack {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(option.title)
+                                        .foregroundColor(.primary)
+                                    Text(option.subtitle)
+                                        .font(.caption)
+                                        .foregroundColor(.secondary)
+                                }
+                                Spacer()
+                                if appIcon.choice == option {
+                                    Image(systemName: "checkmark.circle.fill")
+                                        .foregroundColor(.accentColor)
+                                }
+                            }
+                        }
+                        .buttonStyle(.plain)
+                    }
                 }
 
                 if !AppEdition.isAppStoreClean || AppEdition.allowsUserSources {
@@ -426,6 +534,14 @@ public struct SettingsView: View {
                 }
             } message: {
                 Text("确定要清理临时章节与图片缓存吗？书架书籍与阅读进度将保留。")
+            }
+            .alert("图标切换失败", isPresented: Binding(
+                get: { appIcon.errorMessage != nil },
+                set: { if !$0 { appIcon.errorMessage = nil } }
+            )) {
+                Button("好", role: .cancel) {}
+            } message: {
+                Text(appIcon.errorMessage ?? "")
             }
         }
     }
