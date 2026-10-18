@@ -70,7 +70,7 @@ final class AppIconManager: ObservableObject {
         let previous = choice
         choice = newChoice
         isSwitching = true
-        performSwitch(to: newChoice, previous: previous, retries: 2)
+        performSwitch(to: newChoice, previous: previous, retries: 5)
         #else
         choice = newChoice
         UserDefaults.standard.set(newChoice.rawValue, forKey: defaultsKey)
@@ -81,7 +81,9 @@ final class AppIconManager: ObservableObject {
     private func performSwitch(to newChoice: AppIconChoice, previous: AppIconChoice, retries: Int) {
         UIApplication.shared.setAlternateIconName(newChoice.alternateIconName) { [weak self] error in
             if let error, retries > 0 {
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.45) {
+                let delays: [TimeInterval] = [0.5, 1.5, 3, 6, 10]
+                let delay = delays[min(delays.count - 1, 5 - retries)]
+                DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
                     self?.performSwitch(to: newChoice, previous: previous, retries: retries - 1)
                 }
                 return
@@ -96,10 +98,13 @@ final class AppIconManager: ObservableObject {
                     UserDefaults.standard.set(newChoice.rawValue, forKey: self?.defaultsKey ?? "juyue_app_icon_choice")
                     return
                 }
-                AppLog.write("[图标] 切换失败 code=\((error as NSError?)?.code ?? -1), actual=\(actual ?? "nil")")
+                let nsError = error as NSError?
+                AppLog.write("[图标] 切换失败 domain=\(nsError?.domain ?? "-") code=\(nsError?.code ?? -1) desc=\(nsError?.localizedDescription ?? "-") actual=\(actual ?? "nil") uptime=\(Int(ProcessInfo.processInfo.systemUptime / 60))m")
                 self?.choice = previous
                 self?.isSwitching = false
-                self?.errorMessage = "系统暂时无法切换图标，请重试。"
+                self?.errorMessage = nsError?.code == -54
+                    ? "系统图标服务暂不可用，请重启手机后再试。"
+                    : "系统暂时无法切换图标，请重试。"
             }
         }
     }
