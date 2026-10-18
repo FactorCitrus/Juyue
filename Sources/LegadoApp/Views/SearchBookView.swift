@@ -247,7 +247,9 @@ public struct SearchBookView: View {
                         Image(systemName: "books.vertical")
                             .font(.system(size: 40))
                             .foregroundColor(.secondary.opacity(0.5))
-                        Text("输入关键词开启全网搜索")
+                        Text(AppEdition.allowsUserSources
+                             ? "输入关键词搜索你导入的书源"
+                             : "输入关键词开启全网搜索")
                             .font(.subheadline)
                             .foregroundColor(.secondary)
                     }
