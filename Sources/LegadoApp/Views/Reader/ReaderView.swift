@@ -387,9 +387,9 @@ struct ReaderPullDownCatcher: UIViewRepresentable {
 /// 段评气泡：左侧尖角 + 圆角矩形，跟正文纸色融合。
 struct ReaderCommentBubbleShape: Shape {
     func path(in rect: CGRect) -> Path {
-        let tailWidth: CGFloat = 7
-        let tailHeight: CGFloat = 13
-        let radius: CGFloat = 6
+        let tailWidth: CGFloat = 6
+        let tailHeight: CGFloat = 11
+        let radius: CGFloat = 5
         let body = CGRect(x: tailWidth, y: 0,
                           width: max(1, rect.width - tailWidth),
                           height: rect.height)
@@ -3657,8 +3657,8 @@ public struct ReaderView: View {
     /// 段评数量气泡，贴在段落右下角。
     private func paragraphCommentBadge(_ block: ContentBlock, url: String) -> some View {
         let label = block.commentCount >= 99 ? "99+" : "\(block.commentCount)"
-        let bodyWidth: CGFloat = label.count > 2 ? 32 : 22
-        let totalWidth = bodyWidth + 7
+        let bodyWidth: CGFloat = label.count > 2 ? 26 : 18
+        let totalWidth = bodyWidth + 6
         return Button {
             directCommentTarget = ReviewTarget(url: url, title: "段评")
         } label: {
@@ -3668,11 +3668,11 @@ public struct ReaderView: View {
                 ReaderCommentBubbleShape()
                     .stroke(readerConfig.textColor.opacity(0.45), lineWidth: 1.2)
                 Text(label)
-                    .font(.system(size: 13, weight: .semibold))
+                    .font(.system(size: 11, weight: .semibold))
                     .foregroundColor(readerConfig.textColor)
-                    .padding(.leading, 7)
+                    .padding(.leading, 6)
             }
-            .frame(width: totalWidth, height: 27)
+            .frame(width: totalWidth, height: 22)
         }
         .buttonStyle(.plain)
         .contentShape(Rectangle())
@@ -6550,50 +6550,6 @@ public class CoreTextNSView: NSView {
             CTLineDraw(finalLine, ctx)
             ctx.restoreGState()
 
-            if isEnd, let info = commentMap[paragraphId] {
-                let label = info.count >= 99 ? "99+" : "\(info.count)"
-                let bodyWidth: CGFloat = label.count > 2 ? 30 : 20
-                let bubbleWidth = bodyWidth + 7
-                let bubbleHeight: CGFloat = 25
-                let endX = boundaries.last ?? 0
-                var originX = endX + 6
-                if originX + bubbleWidth > CGFloat(targetWidth) {
-                    originX = max(0, CGFloat(targetWidth) - bubbleWidth)
-                }
-                let originY = baselineY - ascent + ((ascent + descent) - bubbleHeight) / 2
-                let bodyRect = CGRect(x: originX + 7, y: originY,
-                                      width: bodyWidth, height: bubbleHeight)
-                let path = UIBezierPath(roundedRect: bodyRect, cornerRadius: 6)
-                let midY = originY + bubbleHeight / 2
-                path.move(to: CGPoint(x: originX + 7, y: midY - 6.5))
-                path.addLine(to: CGPoint(x: originX, y: midY))
-                path.addLine(to: CGPoint(x: originX + 7, y: midY + 6.5))
-                path.close()
-                ctx.saveGState()
-                ctx.setFillColor(bubbleFillColor.cgColor)
-                ctx.addPath(path.cgPath)
-                ctx.fillPath()
-                ctx.setStrokeColor(textColor.withAlphaComponent(0.45).cgColor)
-                ctx.setLineWidth(1.2)
-                ctx.addPath(path.cgPath)
-                ctx.strokePath()
-                let attr: [NSAttributedString.Key: Any] = [
-                    .font: UIFont.systemFont(ofSize: 12, weight: .semibold),
-                    .foregroundColor: textColor
-                ]
-                let textSize = (label as NSString).size(withAttributes: attr)
-                (label as NSString).draw(
-                    at: CGPoint(x: bodyRect.midX - textSize.width / 2,
-                                y: bodyRect.midY - textSize.height / 2),
-                    withAttributes: attr
-                )
-                ctx.restoreGState()
-                commentBubbleRects.append((
-                    CGRect(x: originX, y: originY, width: bubbleWidth, height: bubbleHeight),
-                    info.url
-                ))
-            }
-
             if isEnd {
                 if paragraphSeparatorLines > 0 {
                     let lineColor = paragraphSeparatorColor ?? textColor
@@ -7265,6 +7221,50 @@ public class CoreTextUIView: UIView {
             ctx.scaleBy(x: 1.0, y: -1.0)
             CTLineDraw(finalLine, ctx)
             ctx.restoreGState()
+
+            if isEnd, let info = commentMap[paragraphId] {
+                let label = info.count >= 99 ? "99+" : "\(info.count)"
+                let bodyWidth: CGFloat = label.count > 2 ? 24 : 16
+                let bubbleWidth = bodyWidth + 6
+                let bubbleHeight: CGFloat = 21
+                let endX = boundaries.last ?? 0
+                var originX = endX + 5
+                if originX + bubbleWidth > CGFloat(targetWidth) {
+                    originX = max(0, CGFloat(targetWidth) - bubbleWidth)
+                }
+                let originY = baselineY - ascent + ((ascent + descent) - bubbleHeight) / 2
+                let bodyRect = CGRect(x: originX + 6, y: originY,
+                                      width: bodyWidth, height: bubbleHeight)
+                let path = UIBezierPath(roundedRect: bodyRect, cornerRadius: 5)
+                let midY = originY + bubbleHeight / 2
+                path.move(to: CGPoint(x: originX + 6, y: midY - 5))
+                path.addLine(to: CGPoint(x: originX, y: midY))
+                path.addLine(to: CGPoint(x: originX + 6, y: midY + 5))
+                path.close()
+                ctx.saveGState()
+                ctx.setFillColor(bubbleFillColor.cgColor)
+                ctx.addPath(path.cgPath)
+                ctx.fillPath()
+                ctx.setStrokeColor(textColor.withAlphaComponent(0.45).cgColor)
+                ctx.setLineWidth(1)
+                ctx.addPath(path.cgPath)
+                ctx.strokePath()
+                let attr: [NSAttributedString.Key: Any] = [
+                    .font: UIFont.systemFont(ofSize: 10, weight: .semibold),
+                    .foregroundColor: textColor
+                ]
+                let textSize = (label as NSString).size(withAttributes: attr)
+                (label as NSString).draw(
+                    at: CGPoint(x: bodyRect.midX - textSize.width / 2,
+                                y: bodyRect.midY - textSize.height / 2),
+                    withAttributes: attr
+                )
+                ctx.restoreGState()
+                commentBubbleRects.append((
+                    CGRect(x: originX, y: originY, width: bubbleWidth, height: bubbleHeight),
+                    info.url
+                ))
+            }
 
             if isEnd {
                 if paragraphSeparatorLines > 0 {
