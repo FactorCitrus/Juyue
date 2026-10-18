@@ -2284,7 +2284,7 @@ public struct ReaderView: View {
             }
             .gesture(
                 // minimumDistance 0：同一个手势同时管点击和滑动，位移小就是点击
-                DragGesture(minimumDistance: 0)
+                DragGesture(minimumDistance: 0, coordinateSpace: .global)
                     .onChanged { value in
                         // 字选模式只让手柄动，整页不再跟手翻页
                         guard charSelection == nil else { return }
@@ -2320,20 +2320,23 @@ public struct ReaderView: View {
                         if moved < 8 {
                             // 刚长按选中过段落：松手这一次不能再当点击使唤，否则操作栏会被菜单盖掉
                             guard !tapSuppressor.isActive else { return }
-                            let pageOrigin = geo.frame(in: .global).origin
+                            #if os(iOS)
+                            // SwiftUI 的 global 坐标不含顶部安全区；UIKit 窗口坐标含，
+                            // 直接传会整体偏一条状态栏，气泡就点不中。
                             let windowPoint = CGPoint(
-                                x: pageOrigin.x + value.startLocation.x,
-                                y: pageOrigin.y + value.startLocation.y
+                                x: value.startLocation.x,
+                                y: value.startLocation.y + safeInsets.top
                             )
                             if CoreTextUIView.triggerCommentTap(atWindowPoint: windowPoint) {
                                 return
                             }
+                            #endif
                             // 选段中点别处：退出选段、保留这次的更改
                             if selectedBlockRange != nil {
                                 clearParagraphSelection()
                                 return
                             }
-                            let x = value.startLocation.x
+                            let x = value.startLocation.x - geo.frame(in: .global).minX
                             if x < width * 0.3 {
                                 turnPage(forward: false)
                             } else if x > width * 0.7 {
@@ -6409,6 +6412,9 @@ public struct CoreTextPageView: NSViewRepresentable {
     public var annotationRanges: [(start: Int, count: Int, style: ReaderBlockStyle)] = []
     /// 长按回调：页内行号 + 该行内的字符偏移（UTF-16）
     public var onLongPressLine: ((Int, Int) -> Void)?
+    public var commentMap: [Int: (count: Int, url: String)] = [:]
+    public var pageBackgroundColor: Color = .clear
+    public var onCommentTap: ((String) -> Void)?
 
     public func makeNSView(context: Context) -> CoreTextNSView {
         let view = CoreTextNSView()
@@ -7026,12 +7032,20 @@ public class CoreTextUIView: UIView {
     /// 分页页面上点段评气泡：命中后打开该段评论。
     @discardableResult
     public static func triggerCommentTap(atWindowPoint point: CGPoint) -> Bool {
-        guard let index = activePageIndex(atWindowPoint: point),
-              let view = activePages[index].view else { return false }
+        let candidates = activePages.compactMap(\.view).filter { $0.window != nil }
+        let view: CoreTextUIView?
+        if let index = activePageIndex(atWindowPoint: point) {
+            view = activePages[index].view
+        } else {
+            view = candidates.count == 1 ? candidates[0] : nil
+        }
+        guard let view else { return false }
         let local = view.convert(point, from: nil)
-        guard let hit = view.commentBubbleRects.first(where: {
-            $0.rect.insetBy(dx: -8, dy: -8).contains(local)
-        }) else { return false }
+        // 气泡贴在行尾，横向坐标受分页留白影响；按行高纵向命中更稳。
+        let hit = view.commentBubbleRects
+            .filter { abs(local.y - $0.rect.midY) <= 18 && local.x >= $0.rect.minX - 80 }
+            .min { abs(local.y - $0.rect.midY) < abs(local.y - $1.rect.midY) }
+        guard let hit else { return false }
         view.onCommentTap?(hit.url)
         return true
     }
