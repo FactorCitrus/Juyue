@@ -84,6 +84,9 @@ public struct BookshelfView: View {
     @State private var newGroupName: String = ""
     @State private var importErrorMessage: String? = nil
     @State private var showImportAlert: Bool = false
+    @State private var isOrganizing = false
+    @State private var selectedBookIDs: Set<String> = []
+    @State private var showDeleteSelectedAlert = false
 
     public init() {}
 
@@ -202,6 +205,73 @@ public struct BookshelfView: View {
         }.count
     }
 
+    private var organizerBar: some View {
+        HStack(spacing: 10) {
+            Button(allVisibleSelected ? "取消全选" : "全选") {
+                if allVisibleSelected {
+                    selectedBookIDs.removeAll()
+                } else {
+                    selectedBookIDs = Set(displayedBooks.map(\.bookUrl))
+                }
+            }
+
+            Menu {
+                Button("未分组") {
+                    for url in selectedBookIDs {
+                        if let book = bookStore.bookshelf.first(where: { $0.bookUrl == url }) {
+                            bookStore.assign(book, toGroup: nil)
+                        }
+                    }
+                }
+                ForEach(bookStore.groups) { group in
+                    Button(group.name) {
+                        for url in selectedBookIDs {
+                            if let book = bookStore.bookshelf.first(where: { $0.bookUrl == url }) {
+                                bookStore.assign(book, toGroup: group.id)
+                            }
+                        }
+                    }
+                }
+            } label: {
+                Label("分组", systemImage: "folder")
+            }
+            .disabled(selectedBookIDs.isEmpty)
+
+            Button(role: .destructive) {
+                showDeleteSelectedAlert = true
+            } label: {
+                Label("删除", systemImage: "trash")
+            }
+            .disabled(selectedBookIDs.isEmpty)
+
+            Spacer()
+
+            Text("\(selectedBookIDs.count) 本")
+                .font(theme.typography.mono)
+                .foregroundColor(theme.palette.secondaryInk)
+
+            Button("完成") {
+                withAnimation(.easeInOut(duration: 0.18)) {
+                    isOrganizing = false
+                    selectedBookIDs.removeAll()
+                }
+            }
+        }
+        .font(.system(size: 13, weight: .medium))
+        .padding(.horizontal, 16)
+        .padding(.vertical, 10)
+        .background(theme.palette.surface)
+        .overlay(alignment: .top) {
+            Rectangle()
+                .fill(theme.palette.divider)
+                .frame(height: 1)
+        }
+    }
+
+    private var allVisibleSelected: Bool {
+        !displayedBooks.isEmpty && displayedBooks.allSatisfy { selectedBookIDs.contains($0.bookUrl) }
+    }
+
     private var bookshelfGrid: some View {
         ScrollView {
             LazyVGrid(
@@ -225,8 +295,17 @@ public struct BookshelfView: View {
     }
 
     private func bookshelfCard(_ book: Book, index: Int) -> some View {
-        Button {
-            selectedBook = book
+        let isSelected = selectedBookIDs.contains(book.bookUrl)
+        return Button {
+            if isOrganizing {
+                if isSelected {
+                    selectedBookIDs.remove(book.bookUrl)
+                } else {
+                    selectedBookIDs.insert(book.bookUrl)
+                }
+            } else {
+                selectedBook = book
+            }
         } label: {
             VStack(alignment: .leading, spacing: 8) {
                 ZStack(alignment: .topLeading) {
@@ -276,6 +355,14 @@ public struct BookshelfView: View {
                                 .stroke(theme.palette.accent.opacity(0.55), lineWidth: 0.8)
                         )
                         .padding(7)
+
+                    if isOrganizing {
+                        Image(systemName: isSelected ? "checkmark.square.fill" : "square")
+                            .font(.system(size: 20, weight: .semibold))
+                            .foregroundColor(isSelected ? theme.palette.accent : theme.palette.secondaryInk)
+                            .padding(8)
+                            .frame(maxWidth: .infinity, alignment: .trailing)
+                    }
                 }
 
                 Text(book.name)
@@ -323,7 +410,8 @@ public struct BookshelfView: View {
             )
             .overlay(
                 Rectangle()
-                    .stroke(theme.palette.divider.opacity(0.8), lineWidth: theme.metrics.borderWidth)
+                    .stroke(isSelected ? theme.palette.accent : theme.palette.divider.opacity(0.8),
+                            lineWidth: isSelected ? 1.6 : theme.metrics.borderWidth)
             )
             .clipShape(RoundedRectangle(cornerRadius: theme.metrics.cornerRadius, style: .continuous))
             .shadow(color: .black.opacity(0.06), radius: 8, y: 4)
@@ -377,6 +465,7 @@ public struct BookshelfView: View {
                     bookshelfGrid
                 }
             }
+            .background(AppThemeBackdrop())
             .background(
                 Group {
                     // Programmatic push to SearchBookView
@@ -406,6 +495,22 @@ public struct BookshelfView: View {
                 .hidden()
                 .frame(width: 0, height: 0)
             )
+            .safeAreaInset(edge: .bottom) {
+                if isOrganizing {
+                    organizerBar
+                }
+            }
+            .alert("删除选中的书籍", isPresented: $showDeleteSelectedAlert) {
+                Button("取消", role: .cancel) {}
+                Button("删除", role: .destructive) {
+                    for url in selectedBookIDs {
+                        bookStore.removeBook(bookUrl: url)
+                    }
+                    selectedBookIDs.removeAll()
+                }
+            } message: {
+                Text("将删除 \(selectedBookIDs.count) 本书，阅读进度与缓存也会一起移除。")
+            }
             .navigationTitle("我的书架")
             .toolbar {
                 ToolbarItemGroup(placement: .primaryAction) {
@@ -418,6 +523,16 @@ public struct BookshelfView: View {
                     Button(action: { showFileImporter = true }) {
                         Image(systemName: "doc.badge.plus")
                     }
+
+                    Button {
+                        withAnimation(.easeInOut(duration: 0.18)) {
+                            isOrganizing.toggle()
+                            if !isOrganizing { selectedBookIDs.removeAll() }
+                        }
+                    } label: {
+                        Image(systemName: isOrganizing ? "checkmark.circle.fill" : "square.grid.2x2")
+                    }
+                    .accessibilityLabel(isOrganizing ? "完成整理" : "整理书架")
                 }
             }
             .fileImporter(
@@ -476,7 +591,7 @@ public struct BookshelfView: View {
         }
         #endif
         }
-        .background(theme.palette.background.ignoresSafeArea())
+        .background(AppThemeBackdrop())
     }
 
     @ViewBuilder
