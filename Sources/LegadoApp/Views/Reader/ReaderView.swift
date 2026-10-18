@@ -4518,7 +4518,7 @@ public struct ReaderView: View {
             RoundedRectangle(cornerRadius: chromeRadius, style: .continuous)
                 // 面板调半透明时不要毛玻璃，否则还是看不清底下的正文
                 .fill(theme.choice == .lunarTerminal
-                      ? theme.palette.surface
+                      ? theme.palette.surface.opacity(readerConfig.panelLayerOpacity)
                       : readerConfig.backgroundColor.opacity(readerConfig.panelLayerOpacity))
                 .overlay(
                     Group {
@@ -4546,7 +4546,7 @@ public struct ReaderView: View {
         }
         .background(
             chromeBackground
-                .opacity(theme.choice == .lunarTerminal ? 1 : readerConfig.panelLayerOpacity)
+                .opacity(readerConfig.panelLayerOpacity)
                 .shadow(color: Color.black.opacity(0.2), radius: 16, x: 0, y: -6)
                 .ignoresSafeArea(edges: .bottom)
         )
@@ -4651,7 +4651,7 @@ public struct ReaderView: View {
                     .frame(maxWidth: .infinity)
                     .background(
                         RoundedRectangle(cornerRadius: theme.metrics.cornerRadius, style: .continuous)
-                            .fill(isOn ? settingsAccent.opacity(0.20) : theme.palette.elevated)
+                            .fill(isOn ? settingsAccent.opacity(0.20) : theme.palette.elevated.opacity(readerConfig.panelLayerOpacity))
                     )
                     .overlay(
                         RoundedRectangle(cornerRadius: theme.metrics.cornerRadius, style: .continuous)
@@ -4705,7 +4705,7 @@ public struct ReaderView: View {
         .padding(.horizontal, 10)
         .padding(.vertical, 7)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(theme.palette.elevated)
+        .background(theme.palette.elevated.opacity(readerConfig.panelLayerOpacity))
         .overlay(
             Rectangle()
                 .stroke(theme.palette.divider, lineWidth: theme.metrics.borderWidth)
@@ -4717,7 +4717,7 @@ public struct ReaderView: View {
             content()
         }
         .padding(12)
-        .background(theme.palette.elevated)
+        .background(theme.palette.elevated.opacity(readerConfig.panelLayerOpacity))
         .overlay(
             RoundedRectangle(cornerRadius: theme.metrics.cornerRadius, style: .continuous)
                 .stroke(theme.palette.divider, lineWidth: theme.metrics.borderWidth)
