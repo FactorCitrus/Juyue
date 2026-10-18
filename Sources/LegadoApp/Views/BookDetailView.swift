@@ -11,6 +11,7 @@ import PhotosUI
 
 public struct BookDetailView: View {
     @ObservedObject var bookStore = BookStore.shared
+    @Environment(\.appTheme) private var theme
     @Environment(\.dismiss) private var dismiss
 
     let initialBook: Book
@@ -114,6 +115,7 @@ public struct BookDetailView: View {
                 // Fixed Bottom Action Bar (Add to shelf + Read Now)
                 bottomActionBar
             }
+            .background(theme.palette.background)
             .navigationTitle("书籍详情")
             #if os(iOS)
             .navigationBarTitleDisplayMode(.inline)
@@ -368,18 +370,18 @@ public struct BookDetailView: View {
                         .font(.caption2.bold())
                         .padding(.horizontal, 7)
                         .padding(.vertical, 3)
-                        .background(Color.accentColor.opacity(0.15))
-                        .foregroundColor(.accentColor)
-                        .cornerRadius(6)
+                        .background(theme.palette.accent.opacity(0.15))
+                        .foregroundColor(theme.palette.accent)
+                        .cornerRadius(theme.metrics.cornerRadius + 4)
 
                     if let wordCount = currentBook.wordCount, !wordCount.isEmpty {
                         Text(wordCount)
                             .font(.caption2)
                             .padding(.horizontal, 6)
                             .padding(.vertical, 3)
-                            .background(Color.secondary.opacity(0.12))
-                            .foregroundColor(.secondary)
-                            .cornerRadius(6)
+                            .background(theme.palette.elevated)
+                            .foregroundColor(theme.palette.secondaryInk)
+                            .cornerRadius(theme.metrics.cornerRadius + 4)
                     }
                 }
 
@@ -395,8 +397,8 @@ public struct BookDetailView: View {
             Spacer()
         }
         .padding(14)
-        .background(Color.secondary.opacity(0.08))
-        .cornerRadius(12)
+        .background(theme.palette.surface)
+        .cornerRadius(theme.metrics.cornerRadius)
     }
 
     private var coverPlaceholder: some View {
@@ -482,8 +484,8 @@ public struct BookDetailView: View {
                     .foregroundColor(.secondary)
             }
             .padding(14)
-            .background(Color.secondary.opacity(0.08))
-            .cornerRadius(12)
+            .background(theme.palette.surface)
+            .cornerRadius(theme.metrics.cornerRadius)
         }
         .buttonStyle(.plain)
     }
@@ -534,8 +536,8 @@ public struct BookDetailView: View {
         }
         .padding(14)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color.secondary.opacity(0.08))
-        .cornerRadius(12)
+        .background(theme.palette.surface)
+        .cornerRadius(theme.metrics.cornerRadius)
     }
 
     // MARK: - Bottom Action Bar
@@ -554,8 +556,8 @@ public struct BookDetailView: View {
                 .foregroundColor(isInBookshelf ? .secondary : .accentColor)
                 .frame(maxWidth: .infinity)
                 .padding(.vertical, 12)
-                .background(Color.secondary.opacity(0.12))
-                .cornerRadius(10)
+                .background(theme.palette.elevated)
+                .cornerRadius(theme.metrics.cornerRadius)
             }
             .buttonStyle(.plain)
 
@@ -569,24 +571,18 @@ public struct BookDetailView: View {
                     Text(currentBookshelfBook.durChapterIndex > 0 ? "继续阅读" : "立即阅读")
                 }
                 .font(.subheadline.bold())
-                .foregroundColor(.white)
+                .foregroundColor(theme.palette.onAccent)
                 .frame(maxWidth: .infinity)
                 .padding(.vertical, 12)
-                .background(Color.accentColor)
-                .cornerRadius(10)
+                .background(theme.palette.accent)
+                .cornerRadius(theme.metrics.cornerRadius)
             }
             .buttonStyle(.plain)
         }
         .padding(.horizontal)
         .padding(.vertical, 10)
         .background(
-            Group {
-                #if os(iOS)
-                Color(UIColor.systemBackground)
-                #else
-                Color.primary.colorInvert()
-                #endif
-            }
+            theme.palette.surface
             .shadow(color: Color.black.opacity(0.06), radius: 4, x: 0, y: -2)
         )
     }

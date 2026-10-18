@@ -5,6 +5,7 @@ import LegadoCore
 
 public struct SearchBookView: View {
     @ObservedObject var viewModel = SearchViewModel.shared
+    @Environment(\.appTheme) private var theme
     @State private var selectedDetailBook: SearchBook? = nil
     /// 范围与匹配默认收起，先看结果；收起状态是临时的
     @State private var showOptions = false
@@ -19,23 +20,14 @@ public struct SearchBookView: View {
 
     /// 卡片底：整页走浅灰底 + 白卡片，控件不再直接贴在灰底上
     private var searchCard: some View {
-        #if os(iOS)
-        RoundedRectangle(cornerRadius: 14, style: .continuous)
-            .fill(Color(.secondarySystemGroupedBackground))
-            .shadow(color: Color.black.opacity(0.05), radius: 6, y: 2)
-        #else
-        RoundedRectangle(cornerRadius: 14, style: .continuous)
-            .fill(Color.secondary.opacity(0.08))
-        #endif
+        RoundedRectangle(cornerRadius: theme.metrics.cornerRadius, style: .continuous)
+            .fill(theme.palette.surface)
+            .shadow(color: Color.black.opacity(theme.choice == .standard ? 0.05 : 0), radius: 6, y: 2)
     }
 
     /// 整页底色：浅灰分组底，白卡片才有对比
     private var pageBackground: Color {
-        #if os(iOS)
-        Color(.systemGroupedBackground)
-        #else
-        Color.clear
-        #endif
+        theme.palette.background
     }
 
     public var body: some View {
@@ -367,7 +359,7 @@ public struct SearchBookView: View {
                             .foregroundColor(.primary)
                             .padding(.horizontal, 10)
                             .padding(.vertical, 5)
-                            .background(Capsule().fill(Color.secondary.opacity(0.12)))
+                            .background(Capsule().fill(theme.palette.elevated))
                     }
                     .buttonStyle(.plain)
                 }
@@ -423,6 +415,7 @@ public struct SearchBookView: View {
 /// 系统的 placeholder 颜色太浅，压在灰底上看着像「这个框没设置内容」，
 /// 这里用 secondary 自己画一层，没输入时才显示。
 struct PlaceholderField: View {
+    @Environment(\.appTheme) private var theme
     let placeholder: String
     @Binding var text: String
     var onSubmit: (() -> Void)? = nil
@@ -446,11 +439,12 @@ struct PlaceholderField: View {
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 9)
-        .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(Color.secondary.opacity(0.12)))
+        .background(RoundedRectangle(cornerRadius: theme.metrics.cornerRadius, style: .continuous).fill(theme.palette.elevated))
     }
 }
 
 struct FilterChip: View {
+    @Environment(\.appTheme) private var theme
     let title: String
     let isSelected: Bool
     let action: () -> Void
@@ -461,7 +455,7 @@ struct FilterChip: View {
                 .font(.caption.weight(isSelected ? .bold : .regular))
                 .padding(.horizontal, 13)
                 .padding(.vertical, 7)
-                .background(isSelected ? Color.accentColor : Color.secondary.opacity(0.12))
+                .background(isSelected ? theme.palette.accent : theme.palette.elevated)
                 .foregroundColor(isSelected ? .white : .primary)
                 .cornerRadius(17)
         }
@@ -472,6 +466,7 @@ struct FilterChip: View {
 // MARK: - SearchResultRow
 
 public struct SearchResultRow: View {
+    @Environment(\.appTheme) private var theme
     public let item: SearchBook
 
     public init(item: SearchBook) {
@@ -525,7 +520,7 @@ public struct SearchResultRow: View {
                         .font(.caption2)
                         .padding(.horizontal, 5)
                         .padding(.vertical, 2)
-                        .background(Color.accentColor.opacity(0.12))
+                        .background(theme.palette.accent.opacity(0.12))
                         .foregroundColor(.accentColor)
                         .cornerRadius(4)
                 }

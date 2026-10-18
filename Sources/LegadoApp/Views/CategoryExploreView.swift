@@ -11,6 +11,7 @@ import AppKit
 
 public struct CategoryExploreView: View {
     @ObservedObject var bookStore = BookStore.shared
+    @Environment(\.appTheme) private var theme
     /// 书源脚本改完设置会调 `java.refreshExplore()`（安卓语义：刷新分类页），这里跟着重拉
     @ObservedObject private var exploreRefresh = ExploreRefreshCenter.shared
 
@@ -85,6 +86,7 @@ public struct CategoryExploreView: View {
                     mainContentView
                 }
             }
+            .background(theme.palette.background)
             .navigationTitle("分类")
             #if os(iOS)
             .navigationBarTitleDisplayMode(.inline)
@@ -190,9 +192,9 @@ public struct CategoryExploreView: View {
                         }
                         .padding(.horizontal, 12)
                         .padding(.vertical, 6)
-                        .background(isSelected ? Color.accentColor : Color.secondary.opacity(0.12))
-                        .foregroundColor(isSelected ? .white : .primary)
-                        .cornerRadius(16)
+                        .background(isSelected ? theme.palette.accent : theme.palette.elevated)
+                        .foregroundColor(isSelected ? theme.palette.onAccent : theme.palette.ink)
+                        .cornerRadius(theme.metrics.cornerRadius + 6)
                     }
                     .buttonStyle(.plain)
                 }
@@ -209,9 +211,9 @@ public struct CategoryExploreView: View {
                         }
                         .padding(.horizontal, 12)
                         .padding(.vertical, 6)
-                        .background(Color.secondary.opacity(0.12))
-                        .foregroundColor(.primary)
-                        .cornerRadius(16)
+                        .background(theme.palette.elevated)
+                        .foregroundColor(theme.palette.ink)
+                        .cornerRadius(theme.metrics.cornerRadius + 6)
                     }
                     .buttonStyle(.plain)
                 }
@@ -266,13 +268,7 @@ public struct CategoryExploreView: View {
     }
 
     private var switcherBackgroundColor: Color {
-        #if canImport(UIKit)
-        return Color(UIColor.secondarySystemBackground).opacity(0.5)
-        #elseif canImport(AppKit)
-        return Color(NSColor.controlBackgroundColor).opacity(0.5)
-        #else
-        return Color.secondary.opacity(0.1)
-        #endif
+        theme.palette.surface
     }
 
     // MARK: - Level 2: Category Quick Bar
@@ -292,9 +288,9 @@ public struct CategoryExploreView: View {
                                 .font(.system(size: 13, weight: isSelected ? .bold : .regular))
                                 .padding(.horizontal, 10)
                                 .padding(.vertical, 5)
-                                .background(isSelected ? Color.blue.opacity(0.15) : Color.clear)
-                                .foregroundColor(isSelected ? .blue : .secondary)
-                                .cornerRadius(8)
+                                .background(isSelected ? theme.palette.accent.opacity(0.15) : Color.clear)
+                                .foregroundColor(isSelected ? theme.palette.accent : theme.palette.secondaryInk)
+                                .cornerRadius(theme.metrics.cornerRadius)
                         }
                         .buttonStyle(.plain)
                     }
@@ -319,13 +315,7 @@ public struct CategoryExploreView: View {
     }
 
     private var barBackgroundColor: Color {
-        #if canImport(UIKit)
-        return Color(UIColor.systemBackground)
-        #elseif canImport(AppKit)
-        return Color(NSColor.windowBackgroundColor)
-        #else
-        return Color.white
-        #endif
+        theme.palette.surface
     }
 
     // MARK: - Level 3: Main Book Content Stream
@@ -459,6 +449,7 @@ public struct CategoryExploreView: View {
                 .padding(.horizontal, 32)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(theme.palette.background)
     }
 
     // MARK: - All Categories Sheet (Grouped by Header)
@@ -488,9 +479,9 @@ public struct CategoryExploreView: View {
                                             .frame(maxWidth: .infinity)
                                             .padding(.vertical, 8)
                                             .padding(.horizontal, 6)
-                                            .background(isSelected ? Color.blue : Color.secondary.opacity(0.12))
-                                            .foregroundColor(isSelected ? .white : .primary)
-                                            .cornerRadius(8)
+                                            .background(isSelected ? theme.palette.accent : theme.palette.elevated)
+                                            .foregroundColor(isSelected ? theme.palette.onAccent : theme.palette.ink)
+                                            .cornerRadius(theme.metrics.cornerRadius)
                                     }
                                     .buttonStyle(.plain)
                                 }
