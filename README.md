@@ -8,6 +8,10 @@
 
 > **Legado iOS** 是使用 **SwiftUI** 与 **Swift** 现代化技术栈构建的开源网络小说阅读器，高度兼容 Android 端 **Legado (开源阅读 3.0)** 书源生态、解析规则与 WebDAV 多端同步机制。
 
+## Fork 与品牌
+
+代码按 GPLv3 授权，允许 fork；但“橘阅”名称、官方图标和截图不随 GPL 授权。非官方分支必须改名、换标、换 Bundle ID，并标注“非官方”。详见 [TRADEMARK.md](TRADEMARK.md)。
+
 ---
 
 ## 核心特性 (v4.7.6)
