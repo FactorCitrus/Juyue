@@ -130,9 +130,14 @@ public struct BookshelfView: View {
                 .font(.system(size: 13, weight: isSelected ? .semibold : .regular))
                 .padding(.horizontal, 12)
                 .padding(.vertical, 6)
-                .background(isSelected ? Color.accentColor.opacity(0.85) : Color.secondary.opacity(0.12))
-                .foregroundColor(isSelected ? .white : .primary)
-                .cornerRadius(14)
+                .background(isSelected ? theme.palette.accent : theme.palette.surface.opacity(0.88))
+                .foregroundColor(isSelected ? theme.palette.onAccent : theme.palette.ink)
+                .overlay(
+                    RoundedRectangle(cornerRadius: theme.metrics.cornerRadius, style: .continuous)
+                        .stroke(isSelected ? theme.palette.accent : theme.palette.divider,
+                                lineWidth: theme.metrics.borderWidth)
+                )
+                .cornerRadius(theme.metrics.cornerRadius)
         }
         .buttonStyle(.plain)
     }
@@ -163,16 +168,30 @@ public struct BookshelfView: View {
                 .foregroundColor(theme.palette.secondaryInk)
         }
         .padding(14)
-        .background(theme.palette.surface)
+        .background(
+            LinearGradient(
+                colors: [theme.palette.elevated.opacity(0.9), theme.palette.surface],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
+        )
         .overlay(alignment: .leading) {
             Rectangle()
                 .fill(theme.palette.accent)
                 .frame(width: 3)
         }
+        .overlay(alignment: .trailing) {
+            Text(String(format: "%03d", bookStore.bookshelf.count))
+                .font(.system(size: 58, weight: .bold, design: .monospaced))
+                .foregroundColor(theme.palette.ink.opacity(0.035))
+                .padding(.trailing, 10)
+        }
         .overlay(
             Rectangle()
-                .stroke(theme.palette.divider, lineWidth: theme.metrics.borderWidth)
+                .stroke(theme.palette.divider.opacity(0.85), lineWidth: theme.metrics.borderWidth)
         )
+        .clipShape(RoundedRectangle(cornerRadius: theme.metrics.cornerRadius, style: .continuous))
+        .shadow(color: .black.opacity(0.05), radius: 10, y: 5)
         .padding(.horizontal, 16)
         .padding(.top, 8)
     }
@@ -216,11 +235,17 @@ public struct BookshelfView: View {
                             BookCoverImage(urlString: book.coverUrl)
                         } else {
                             RoundedRectangle(cornerRadius: theme.metrics.cornerRadius)
-                                .fill(theme.palette.elevated)
+                                .fill(
+                                    LinearGradient(
+                                        colors: [theme.palette.elevated, theme.palette.surface],
+                                        startPoint: .topLeading,
+                                        endPoint: .bottomTrailing
+                                    )
+                                )
                                 .overlay(
                                     Image(systemName: "book.closed.fill")
                                         .font(.title2)
-                                        .foregroundColor(theme.palette.accent)
+                                        .foregroundColor(theme.palette.accent.opacity(0.65))
                                 )
                         }
                     }
@@ -231,13 +256,25 @@ public struct BookshelfView: View {
                         Rectangle()
                             .stroke(theme.palette.divider, lineWidth: theme.metrics.borderWidth)
                     )
+                    .overlay(alignment: .bottom) {
+                        LinearGradient(
+                            colors: [.clear, theme.palette.surface.opacity(0.92)],
+                            startPoint: .top,
+                            endPoint: .bottom
+                        )
+                        .frame(height: 42)
+                    }
 
                     Text(String(format: "%02d", index + 1))
                         .font(theme.typography.mono)
-                        .foregroundColor(theme.palette.onAccent)
+                        .foregroundColor(theme.palette.accent)
                         .padding(.horizontal, 6)
                         .padding(.vertical, 3)
-                        .background(theme.palette.accent)
+                        .background(theme.palette.surface.opacity(0.92))
+                        .overlay(
+                            Rectangle()
+                                .stroke(theme.palette.accent.opacity(0.55), lineWidth: 0.8)
+                        )
                         .padding(7)
                 }
 
@@ -277,11 +314,19 @@ public struct BookshelfView: View {
             }
             .padding(9)
             .frame(maxWidth: .infinity, alignment: .topLeading)
-            .background(theme.palette.surface)
+            .background(
+                LinearGradient(
+                    colors: [theme.palette.surface, theme.palette.elevated.opacity(0.92)],
+                    startPoint: .top,
+                    endPoint: .bottom
+                )
+            )
             .overlay(
                 Rectangle()
-                    .stroke(theme.palette.divider, lineWidth: theme.metrics.borderWidth)
+                    .stroke(theme.palette.divider.opacity(0.8), lineWidth: theme.metrics.borderWidth)
             )
+            .clipShape(RoundedRectangle(cornerRadius: theme.metrics.cornerRadius, style: .continuous))
+            .shadow(color: .black.opacity(0.06), radius: 8, y: 4)
         }
         .buttonStyle(.plain)
         .onLongPressGesture {

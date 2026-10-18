@@ -193,6 +193,27 @@ struct AppThemeBackdrop: View {
         GeometryReader { geo in
             ZStack {
                 theme.palette.background
+                LinearGradient(
+                    colors: [
+                        theme.palette.elevated.opacity(0.55),
+                        theme.palette.background,
+                        theme.palette.background.opacity(0.94)
+                    ],
+                    startPoint: .topLeading,
+                    endPoint: .bottomTrailing
+                )
+                RadialGradient(
+                    colors: [theme.palette.elevated.opacity(0.55), .clear],
+                    center: .topTrailing,
+                    startRadius: 10,
+                    endRadius: 320
+                )
+                RadialGradient(
+                    colors: [theme.palette.ink.opacity(0.035), .clear],
+                    center: .bottomLeading,
+                    startRadius: 20,
+                    endRadius: 420
+                )
 
                 if theme.showsGrid {
                     Canvas { context, size in
