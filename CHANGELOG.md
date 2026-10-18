@@ -1,5 +1,8 @@
 # 更新日志
 
+## v4.7.8.7
+- **修复**：改用 Xcode 官方 `ASSETCATALOG_COMPILER_INCLUDE_ALL_APPICON_ASSETS`，并保留原生 `CFBundleIconFiles` 声明
+
 ## v4.7.8.6
 - **改进**：图标切换改为最长约 21 秒退避重试，并记录错误域、错误码和系统运行时长
 - **改进**：`-54` 明确提示系统图标服务暂不可用，需要重启手机
