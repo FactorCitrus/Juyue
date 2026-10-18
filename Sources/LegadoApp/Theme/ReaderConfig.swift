@@ -162,6 +162,30 @@ extension EnvironmentValues {
     }
 }
 
+private struct AppThemedListModifier: ViewModifier {
+    @Environment(\.appTheme) private var theme
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if #available(iOS 16.0, macOS 13.0, *) {
+            content
+                .scrollContentBackground(.hidden)
+                .listRowBackground(theme.palette.surface)
+                .background(theme.palette.background)
+        } else {
+            content
+                .listRowBackground(theme.palette.surface)
+                .background(theme.palette.background)
+        }
+    }
+}
+
+extension View {
+    func appThemedList() -> some View {
+        modifier(AppThemedListModifier())
+    }
+}
+
 public enum ReaderTheme: String, CaseIterable, Identifiable {
     case white = "默认白"
     case parchment = "复古羊皮纸"

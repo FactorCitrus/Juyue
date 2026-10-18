@@ -950,6 +950,7 @@ struct FontManageView: View {
                 }
             }
         }
+        .appThemedList()
         .navigationTitle("字体管理")
         .toolbar {
             Button {
@@ -1143,6 +1144,7 @@ struct ReplacementRulesView: View {
                     .foregroundColor(.secondary)
             }
         }
+        .appThemedList()
         .navigationTitle("替换净化")
         .sheet(item: $editing) { rule in
             ReplacementRuleEditor(rule: rule) { saved in
@@ -1381,6 +1383,7 @@ struct ReadingStatsView: View {
                 }
             }
         }
+        .appThemedList()
         .navigationTitle("阅读统计")
     }
 
@@ -1445,6 +1448,7 @@ struct DownloadManagerView: View {
                 .padding(.vertical, 2)
             }
         }
+        .appThemedList()
         .navigationTitle("下载管理")
         .toolbar {
             Button("清理已完成") {
@@ -1576,6 +1580,7 @@ struct SubscribeSourcesView: View {
                 }
             }
         }
+        .appThemedList()
         .navigationTitle("订阅源")
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
@@ -1949,6 +1954,7 @@ struct RSSFeedsView: View {
                 }
             }
         }
+        .appThemedList()
         .navigationTitle("订阅（RSS）")
         .alert("添加订阅源", isPresented: $showAdd) {
             TextField("名称（可留空）", text: $newName)
@@ -1989,6 +1995,7 @@ struct RSSItemsView: View {
             }
         }
         .overlay { if loading { ProgressView() } }
+        .appThemedList()
         .navigationTitle(source.name.isEmpty ? "订阅" : source.name)
         .task { await load() }
         .refreshable { await load() }
@@ -2049,6 +2056,7 @@ struct OPDSCatalogsView: View {
                 }
             }
         }
+        .appThemedList()
         .navigationTitle("OPDS 书库")
         .alert("添加书库", isPresented: $showAdd) {
             TextField("名称（可留空）", text: $name)

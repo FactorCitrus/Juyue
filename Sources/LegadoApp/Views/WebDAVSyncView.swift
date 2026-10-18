@@ -52,6 +52,7 @@ public struct WebDAVSyncView: View {
             actionsSection
             localBackupSection
         }
+        .appThemedList()
         .navigationTitle("WebDAV 云同步")
         .onAppear {
             loadConfig()
@@ -385,6 +386,7 @@ public struct WebDAVSyncView: View {
                     }
                 }
             }
+            .appThemedList()
             .navigationTitle("选择云端备份")
             #if os(iOS)
             .navigationBarTitleDisplayMode(.inline)

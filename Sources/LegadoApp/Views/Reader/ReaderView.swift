@@ -535,6 +535,7 @@ struct ReaderCommentsSheet: View {
                     }
                 }
             }
+            .appThemedList()
             .navigationTitle(chapterTitle.isEmpty ? "段评" : chapterTitle)
             .tint(theme.palette.accent)
             #if os(iOS)
@@ -687,6 +688,7 @@ private struct NativeCommentListSheet: View {
                         }
                     }
                     .listStyle(.plain)
+                    .appThemedList()
                 }
             }
             .navigationTitle(total > 0 ? "\(target.title) · \(total)" : target.title)

@@ -243,6 +243,7 @@ public struct SourceManagerView: View {
 #else
             .listStyle(.inset)
 #endif
+            .appThemedList()
             .navigationTitle("书源管理")
             .toolbar {
                 ToolbarItem(placement: .primaryAction) {
@@ -592,6 +593,7 @@ enum SourceDocumentPicker {
                     .disabled(importText.trimmingCharacters(in: .whitespaces).isEmpty)
                 }
             }
+            .appThemedList()
             .navigationTitle("导入书源")
             #if os(iOS)
             .navigationBarTitleDisplayMode(.inline)
@@ -839,6 +841,7 @@ public struct SourceLoginSheet: View {
                     }
                 }
             }
+            .appThemedList()
             .navigationTitle("书源登录")
             #if os(iOS)
             .navigationBarTitleDisplayMode(.inline)

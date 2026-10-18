@@ -304,6 +304,7 @@ public struct TTSSettingsSheet: View {
                     Text("当前：\(audio.currentEngineName)")
                 }
             }
+            .appThemedList()
             .navigationTitle("听书设置")
             #if os(iOS)
             .navigationBarTitleDisplayMode(.inline)
@@ -505,6 +506,7 @@ struct BaiduVoiceManagerSheet: View {
                     }
                 }
             }
+            .appThemedList()
             .navigationTitle("自备音色")
             #if os(iOS)
             .navigationBarTitleDisplayMode(.inline)
@@ -613,6 +615,7 @@ struct TTSCastRoleEditor: View {
                 Text("选「跟随全局设置」就用听书设置里当前选的那个音色。")
             }
         }
+        .appThemedList()
         .navigationTitle(role.name.isEmpty ? "角色" : role.name)
         #if os(iOS)
         .navigationBarTitleDisplayMode(.inline)
@@ -671,6 +674,7 @@ struct BaiduCredentialView: View {
                 Text("内置默认值是打包时带的那份。公开仓库里默认值为空，需要在这里填自己的 APP ID、API Key、Secret Key 和离线序列号；离线引擎要求序列号与 APP ID 配套。")
             }
         }
+        .appThemedList()
         .navigationTitle("百度语音授权")
         #if os(iOS)
         .navigationBarTitleDisplayMode(.inline)
