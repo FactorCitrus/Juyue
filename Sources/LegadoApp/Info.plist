@@ -13,6 +13,8 @@
 	<string>用于连接你局域网内的 OPDS / Calibre 书库。</string>
 	<key>ITSAppUsesNonExemptEncryption</key>
 	<false/>
+	<key>NSHumanReadableCopyright</key>
+	<string>© 2026 FactorCitrus. 橘阅名称与图标保留所有权利。</string>
 	<key>UISupportedInterfaceOrientations~ipad</key>
 	<array>
 		<string>UIInterfaceOrientationPortrait</string>
