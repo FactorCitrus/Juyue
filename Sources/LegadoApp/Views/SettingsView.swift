@@ -40,6 +40,7 @@ final class AppIconManager: ObservableObject {
     static let shared = AppIconManager()
 
     @Published private(set) var choice: AppIconChoice
+    @Published private(set) var isSwitching = false
     @Published var errorMessage: String?
 
     private let defaultsKey = "juyue_app_icon_choice"
@@ -58,9 +59,16 @@ final class AppIconManager: ObservableObject {
     func apply(_ newChoice: AppIconChoice) {
         #if os(iOS)
         guard UIApplication.shared.supportsAlternateIcons else {
+            errorMessage = "当前系统不支持切换应用图标。"
             return
         }
-        performSwitch(to: newChoice, retries: 2)
+        guard !isSwitching, newChoice != choice else {
+            return
+        }
+        let previous = choice
+        choice = newChoice
+        isSwitching = true
+        performSwitch(to: newChoice, previous: previous, retries: 2)
         #else
         choice = newChoice
         UserDefaults.standard.set(newChoice.rawValue, forKey: defaultsKey)
@@ -68,21 +76,24 @@ final class AppIconManager: ObservableObject {
     }
 
     #if os(iOS)
-    private func performSwitch(to newChoice: AppIconChoice, retries: Int) {
+    private func performSwitch(to newChoice: AppIconChoice, previous: AppIconChoice, retries: Int) {
         UIApplication.shared.setAlternateIconName(newChoice.alternateIconName) { [weak self] error in
             if let error, retries > 0 {
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.45) {
-                    self?.performSwitch(to: newChoice, retries: retries - 1)
+                    self?.performSwitch(to: newChoice, previous: previous, retries: retries - 1)
                 }
                 return
             }
             DispatchQueue.main.async {
                 guard error == nil else {
                     AppLog.write("[图标] 切换失败 code=\((error as NSError?)?.code ?? -1)")
+                    self?.choice = previous
+                    self?.isSwitching = false
                     self?.errorMessage = "系统暂时无法切换图标，请重试。"
                     return
                 }
                 self?.choice = newChoice
+                self?.isSwitching = false
                 UserDefaults.standard.set(newChoice.rawValue, forKey: self?.defaultsKey ?? "juyue_app_icon_choice")
             }
         }
@@ -105,6 +116,7 @@ public struct SettingsView: View {
     /// 之前只看 lastSyncTime，所以填完地址回来还显示「未配置」。
     @State private var webDAVStatusText: String = "未配置"
     @State private var clearCacheMessage: String? = nil
+    @State private var showAppIconOptions: Bool = false
 
     public init() {}
 
@@ -126,30 +138,48 @@ public struct SettingsView: View {
                         Text("深色模式").tag("dark")
                     }
                     .pickerStyle(.segmented)
-                }
-
-                Section(header: Text("应用图标"),
-                        footer: Text("切换后系统桌面图标会更新；若没变化，回桌面或重启 App。")) {
-                    ForEach(AppIconChoice.allCases) { option in
-                        Button {
-                            appIcon.apply(option)
-                        } label: {
-                            HStack {
-                                VStack(alignment: .leading, spacing: 2) {
-                                    Text(option.title)
-                                        .foregroundColor(.primary)
-                                    Text(option.subtitle)
-                                        .font(.caption)
-                                        .foregroundColor(.secondary)
+                    DisclosureGroup(isExpanded: $showAppIconOptions) {
+                        ForEach(AppIconChoice.allCases) { option in
+                            Button {
+                                appIcon.apply(option)
+                            } label: {
+                                HStack {
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text(option.title)
+                                            .foregroundColor(.primary)
+                                        Text(option.subtitle)
+                                            .font(.caption)
+                                            .foregroundColor(.secondary)
+                                    }
+                                    Spacer()
+                                    if appIcon.choice == option {
+                                        Image(systemName: "checkmark.circle.fill")
+                                            .foregroundColor(.accentColor)
+                                    }
                                 }
-                                Spacer()
-                                if appIcon.choice == option {
-                                    Image(systemName: "checkmark.circle.fill")
-                                        .foregroundColor(.accentColor)
-                                }
+                                .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.borderless)
+                            .disabled(appIcon.isSwitching)
+                        }
+                    } label: {
+                        HStack {
+                            Text("应用图标")
+                            Spacer()
+                            if appIcon.isSwitching {
+                                ProgressView()
+                                    .controlSize(.small)
+                            } else {
+                                Text(appIcon.choice.title)
+                                    .foregroundColor(.secondary)
                             }
                         }
-                        .buttonStyle(.plain)
+                    }
+
+                    if showAppIconOptions {
+                        Text("切换后系统桌面图标会更新；若没变化，回桌面或重启 App。")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
                     }
                 }
 
