@@ -112,6 +112,18 @@ public struct SourceManagerView: View {
 
     public var body: some View {
         List {
+            Section(header: Text("工具")) {
+                NavigationLink(destination: SourceCheckView()) {
+                    HStack {
+                        Label("校验书源", systemImage: "checkmark.shield")
+                        Spacer()
+                        Text("逐个检测书源可用性")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
+                }
+            }
+
             Section(header: Text("筛选")) {
                 HStack {
                     Text("显示 \(filteredSources.count) / 共 \(bookStore.sources.count)")

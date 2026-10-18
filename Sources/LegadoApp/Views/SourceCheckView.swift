@@ -113,6 +113,7 @@ struct SourceCheckView: View {
                 }
             }
         }
+        .appThemedList()
         .navigationTitle("书源校验")
         #if os(iOS)
         .navigationBarTitleDisplayMode(.inline)

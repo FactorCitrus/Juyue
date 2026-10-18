@@ -706,15 +706,6 @@ public struct SettingsView: View {
     private var sourcesBoard: some View {
         subheader("书源")
 
-        NavigationLink(destination: SourceCheckView()) {
-            HStack {
-                Text("校验书源")
-                Spacer()
-                Text("逐个检测书源可用性")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-            }
-        }
         NavigationLink(destination: SourceManagerView()) {
             HStack {
                 Text("管理全部网络书源")
@@ -2278,6 +2269,7 @@ enum AppLog {
 
 /// 日志查看：崩溃后进来复制一份发我就够定位了
 struct LogViewerView: View {
+    @Environment(\.appTheme) private var theme
     @State private var text = ""
     @State private var copied = false
     @State private var logEnabled = AppLog.isEnabled
@@ -2339,6 +2331,7 @@ struct LogViewerView: View {
             }
             .padding(12)
         }
+        .background(theme.palette.background)
         .navigationTitle("诊断日志")
         .onAppear { load() }
     }
