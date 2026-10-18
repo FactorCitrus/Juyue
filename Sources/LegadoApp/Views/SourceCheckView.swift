@@ -88,9 +88,7 @@ struct SourceCheckView: View {
                                 Text(row.name)
                                     .font(.system(size: 14, weight: .medium))
                                 Spacer()
-                                Text(row.step.rawValue)
-                                    .font(.system(size: 11))
-                                    .foregroundColor(color(for: row.step))
+                                TerminalStatusPill(text: row.step.rawValue, color: color(for: row.step))
                                 if row.seconds > 0 {
                                     Text(String(format: "%.1fs", row.seconds))
                                         .font(.system(size: 11, design: .rounded))

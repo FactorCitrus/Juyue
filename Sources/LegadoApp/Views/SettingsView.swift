@@ -876,6 +876,7 @@ public struct SettingsView: View {
 struct FontManageView: View {
     @ObservedObject private var readerConfig = ReaderConfig.shared
     @ObservedObject private var fontService = CustomFontService.shared
+    @Environment(\.appTheme) private var theme
 
     @State private var showImporter = false
     @State private var message: String?
@@ -998,21 +999,17 @@ struct FontManageView: View {
         Button {
             readerConfig.fontName = font.postScriptName
         } label: {
-            HStack {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(font.displayName)
-                        .foregroundColor(.primary)
-                    // 用这个字体本身预览一行，选之前先看清长什么样
-                    Text("天地玄黄，宇宙洪荒")
-                        .font(.custom(font.postScriptName, size: 15))
-                        .foregroundColor(.secondary)
-                        .lineLimit(1)
-                }
-                Spacer()
-                if readerConfig.fontName == font.postScriptName {
-                    Image(systemName: "checkmark")
-                        .foregroundColor(.accentColor)
-                }
+            VStack(alignment: .leading, spacing: 4) {
+                TerminalInfoRow(
+                    symbol: "textformat",
+                    title: font.displayName,
+                    value: readerConfig.fontName == font.postScriptName ? "使用中" : nil
+                )
+                // 用这个字体本身预览一行，选之前先看清长什么样
+                Text("天地玄黄，宇宙洪荒")
+                    .font(.custom(font.postScriptName, size: 15))
+                    .foregroundColor(theme.palette.secondaryInk)
+                    .lineLimit(1)
             }
         }
     }
@@ -1057,6 +1054,7 @@ struct FontDocumentPicker: UIViewControllerRepresentable {
 /// 正文替换净化：规则按顺序过一遍，用来去广告、水印、站点名
 struct ReplacementRulesView: View {
     @ObservedObject private var purifier = TextPurifier.shared
+    @Environment(\.appTheme) private var theme
     @State private var editing: ReplacementRule? = nil
     @State private var showImport = false
     @State private var importText = ""
@@ -1072,34 +1070,54 @@ struct ReplacementRulesView: View {
             }
 
             Section {
-                Button {
-                    editing = ReplacementRule(name: "", pattern: "", replacement: "")
-                } label: {
-                    Label("新增规则", systemImage: "plus")
+                HStack(spacing: 8) {
+                    TerminalActionTile(symbol: "plus", title: "新增规则", detail: "文本 / 正则") {
+                        editing = ReplacementRule(name: "", pattern: "", replacement: "")
+                    }
+                    TerminalActionTile(symbol: "square.and.arrow.down", title: "一键导入", detail: "JSON 规则包") {
+                        importText = ""
+                        importMessage = nil
+                        showImport = true
+                    }
                 }
-                Button {
-                    importText = ""
-                    importMessage = nil
-                    showImport = true
-                } label: {
-                    Label("一键导入", systemImage: "square.and.arrow.down")
-                }
+                .padding(.vertical, 4)
             }
 
             Section(header: Text("规则（从上到下依次执行）")) {
-                ForEach(purifier.rules) { rule in
+                if purifier.rules.isEmpty {
+                    VStack(spacing: 8) {
+                        Image(systemName: "wand.and.stars")
+                            .font(.system(size: 28))
+                            .foregroundColor(theme.palette.secondaryInk)
+                        Text("还没有替换规则")
+                            .font(theme.typography.body.weight(.semibold))
+                        Text("新增一条规则，去掉广告、水印或站点名。")
+                            .font(theme.typography.mono)
+                            .foregroundColor(theme.palette.secondaryInk)
+                    }
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 18)
+                }
+                ForEach(Array(purifier.rules.enumerated()), id: \.element.id) { index, rule in
                     HStack(alignment: .top, spacing: 10) {
                         VStack(alignment: .leading, spacing: 3) {
-                            Text(rule.name.isEmpty ? (rule.isRegex ? "正则规则" : "文本替换") : rule.name)
-                                .font(.system(size: 14, weight: .medium))
-                            Text((rule.isRegex ? "正则：" : "文本：") + rule.pattern)
-                                .font(.system(size: 11))
-                                .foregroundColor(.secondary)
+                            HStack(spacing: 6) {
+                                Text(String(format: "%02d", index + 1))
+                                    .font(theme.typography.mono)
+                                    .foregroundColor(theme.palette.secondaryInk)
+                                Text(rule.name.isEmpty ? (rule.isRegex ? "正则规则" : "文本替换") : rule.name)
+                                    .font(.system(size: 14, weight: .semibold))
+                                TerminalStatusPill(text: rule.isRegex ? "REGEX" : "TEXT",
+                                                   color: rule.isRegex ? theme.palette.accent : theme.palette.secondaryInk)
+                            }
+                            Text(rule.pattern)
+                                .font(.system(size: 11, design: .monospaced))
+                                .foregroundColor(theme.palette.secondaryInk)
                                 .lineLimit(2)
                             if !rule.replacement.isEmpty {
                                 Text("→ " + rule.replacement)
-                                    .font(.system(size: 11))
-                                    .foregroundColor(.secondary)
+                                    .font(.system(size: 11, design: .monospaced))
+                                    .foregroundColor(theme.palette.secondaryInk)
                                     .lineLimit(1)
                             }
                         }
@@ -1313,6 +1331,7 @@ struct ReplacementRuleEditor: View {
 // MARK: - 阅读统计
 struct ReadingStatsView: View {
     @ObservedObject private var stats = ReadingStatsStore.shared
+    @Environment(\.appTheme) private var theme
 
     private func duration(_ seconds: Int) -> String {
         if seconds < 60 { return "\(seconds) 秒" }
@@ -1324,40 +1343,65 @@ struct ReadingStatsView: View {
 
     var body: some View {
         List {
-            Section(header: Text("今天")) {
-                statRow("阅读时长", duration(stats.todaySeconds))
-                statRow("连续天数", "\(stats.streakDays) 天")
+            Section {
+                TerminalPageHeader(code: "READ / STATS", title: "阅读统计", detail: "今日数据 / 累计数据 / 最近 7 天")
+                    .listRowInsets(EdgeInsets(top: 8, leading: 12, bottom: 8, trailing: 12))
+                    .listRowBackground(Color.clear)
             }
-            Section(header: Text("累计")) {
-                statRow("总时长", duration(stats.totalSeconds))
-                statRow("总字数", NumberFormatter.localizedString(from: NSNumber(value: stats.totalCharacters), number: .decimal) + " 字")
-                statRow("读完章节", "\(stats.chaptersRead) 章")
-                statRow("有记录天数", "\(stats.daysRead) 天")
+
+            Section {
+                LazyVGrid(
+                    columns: [GridItem(.flexible(), spacing: 8), GridItem(.flexible(), spacing: 8)],
+                    spacing: 8
+                ) {
+                    TerminalMetricCard(label: "今日阅读", value: duration(stats.todaySeconds), symbol: "clock")
+                    TerminalMetricCard(label: "连续天数", value: "\(stats.streakDays) 天", symbol: "flame")
+                    TerminalMetricCard(label: "总时长", value: duration(stats.totalSeconds), symbol: "calendar")
+                    TerminalMetricCard(
+                        label: "总字数",
+                        value: NumberFormatter.localizedString(from: NSNumber(value: stats.totalCharacters), number: .decimal),
+                        symbol: "text.alignleft"
+                    )
+                    TerminalMetricCard(label: "读完章节", value: "\(stats.chaptersRead) 章", symbol: "book.closed")
+                    TerminalMetricCard(label: "有记录天数", value: "\(stats.daysRead) 天", symbol: "chart.bar")
+                }
+                .padding(.vertical, 4)
             }
+
             Section(header: Text("最近 7 天")) {
-                let days = stats.recentDays(7)
-                let maxSeconds = max(1, days.map { $0.seconds }.max() ?? 1)
-                ForEach(days, id: \.day) { item in
-                    HStack(spacing: 10) {
-                        Text(String(item.day.suffix(5)))
-                            .font(.system(size: 11, design: .monospaced))
-                            .foregroundColor(.secondary)
-                            .frame(width: 44, alignment: .leading)
-                        GeometryReader { geo in
-                            ZStack(alignment: .leading) {
-                                RoundedRectangle(cornerRadius: 3).fill(Color.secondary.opacity(0.15))
-                                RoundedRectangle(cornerRadius: 3)
-                                    .fill(Color.accentColor.opacity(0.7))
-                                    .frame(width: max(2, geo.size.width * CGFloat(item.seconds) / CGFloat(maxSeconds)))
+                VStack(spacing: 9) {
+                    let days = stats.recentDays(7)
+                    let maxSeconds = max(1, days.map { $0.seconds }.max() ?? 1)
+                    ForEach(days, id: \.day) { item in
+                        HStack(spacing: 10) {
+                            Text(String(item.day.suffix(5)))
+                                .font(.system(size: 11, design: .monospaced))
+                                .foregroundColor(.secondary)
+                                .frame(width: 44, alignment: .leading)
+                            GeometryReader { geo in
+                                ZStack(alignment: .leading) {
+                                    RoundedRectangle(cornerRadius: 3)
+                                        .fill(theme.palette.divider.opacity(0.35))
+                                    RoundedRectangle(cornerRadius: 3)
+                                        .fill(theme.palette.accent.opacity(0.72))
+                                        .frame(width: max(2, geo.size.width * CGFloat(item.seconds) / CGFloat(maxSeconds)))
+                                }
                             }
+                            .frame(height: 12)
+                            Text(item.seconds > 0 ? duration(item.seconds) : "—")
+                                .font(.system(size: 11))
+                                .foregroundColor(.secondary)
+                                .frame(width: 74, alignment: .trailing)
                         }
-                        .frame(height: 12)
-                        Text(item.seconds > 0 ? duration(item.seconds) : "—")
-                            .font(.system(size: 11))
-                            .foregroundColor(.secondary)
-                            .frame(width: 74, alignment: .trailing)
                     }
                 }
+                .padding(12)
+                .background(theme.palette.surface)
+                .overlay(
+                    RoundedRectangle(cornerRadius: theme.metrics.cornerRadius, style: .continuous)
+                        .stroke(theme.palette.divider, lineWidth: theme.metrics.borderWidth)
+                )
+                .clipShape(RoundedRectangle(cornerRadius: theme.metrics.cornerRadius, style: .continuous))
             }
         }
         .appThemedList()
@@ -1365,17 +1409,23 @@ struct ReadingStatsView: View {
     }
 
     private func statRow(_ title: String, _ value: String) -> some View {
-        HStack {
-            Text(title)
-            Spacer()
-            Text(value).foregroundColor(.secondary)
+        let symbol: String
+        switch title {
+        case "阅读时长", "总时长": symbol = "clock"
+        case "连续天数": symbol = "flame"
+        case "总字数": symbol = "text.alignleft"
+        case "读完章节": symbol = "book.closed"
+        case "有记录天数": symbol = "calendar"
+        default: symbol = "chart.bar"
         }
+        return TerminalInfoRow(symbol: symbol, title: title, value: value)
     }
 }
 
 // MARK: - 下载管理
 struct DownloadManagerView: View {
     @ObservedObject private var manager = ChapterDownloadManager.shared
+    @Environment(\.appTheme) private var theme
 
     var body: some View {
         List {
@@ -1386,9 +1436,19 @@ struct DownloadManagerView: View {
             }
 
             if manager.jobs.isEmpty {
-                Text("没有下载任务。在书籍详情页右上「⋯」里可以缓存全本或未读章节。")
-                    .font(.footnote)
-                    .foregroundColor(.secondary)
+                VStack(spacing: 9) {
+                    Image(systemName: "arrow.down.circle")
+                        .font(.system(size: 30))
+                        .foregroundColor(theme.palette.secondaryInk)
+                    Text("没有下载任务")
+                        .font(theme.typography.body.weight(.semibold))
+                    Text("在书籍详情页右上「⋯」里缓存全本或未读章节。")
+                        .font(theme.typography.mono)
+                        .foregroundColor(theme.palette.secondaryInk)
+                        .multilineTextAlignment(.center)
+                }
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 18)
             }
             ForEach(manager.jobs) { job in
                 VStack(alignment: .leading, spacing: 6) {
@@ -1397,9 +1457,10 @@ struct DownloadManagerView: View {
                             .font(.system(size: 15, weight: .medium))
                             .lineLimit(1)
                         Spacer()
-                        Text(job.isCancelled ? "已取消" : (job.isPaused ? "已暂停" : (job.isRunning ? "下载中" : "已完成")))
-                            .font(.system(size: 11))
-                            .foregroundColor(.secondary)
+                        TerminalStatusPill(
+                            text: job.isCancelled ? "已取消" : (job.isPaused ? "已暂停" : (job.isRunning ? "下载中" : "已完成")),
+                            color: job.isCancelled ? theme.palette.danger : theme.palette.accent
+                        )
                     }
                     ProgressView(value: job.progress)
                     HStack(spacing: 8) {
@@ -1428,7 +1489,14 @@ struct DownloadManagerView: View {
                         }
                     }
                 }
-                .padding(.vertical, 2)
+                .padding(10)
+                .background(theme.palette.surface)
+                .overlay(
+                    RoundedRectangle(cornerRadius: theme.metrics.cornerRadius, style: .continuous)
+                        .stroke(theme.palette.divider, lineWidth: theme.metrics.borderWidth)
+                )
+                .clipShape(RoundedRectangle(cornerRadius: theme.metrics.cornerRadius, style: .continuous))
+                .padding(.vertical, 3)
             }
         }
         .appThemedList()

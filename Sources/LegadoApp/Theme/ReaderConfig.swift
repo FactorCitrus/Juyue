@@ -253,6 +253,142 @@ struct TerminalPageHeader: View {
     }
 }
 
+struct TerminalInfoRow: View {
+    @Environment(\.appTheme) private var theme
+
+    let symbol: String
+    let title: String
+    var detail: String? = nil
+    var value: String? = nil
+
+    var body: some View {
+        HStack(alignment: .center, spacing: 10) {
+            Image(systemName: symbol)
+                .font(theme.typography.symbol)
+                .foregroundColor(theme.palette.accent)
+                .frame(width: 28, height: 28)
+                .background(theme.palette.accent.opacity(0.10))
+                .overlay(
+                    Rectangle()
+                        .stroke(theme.palette.divider, lineWidth: theme.metrics.borderWidth)
+                )
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title)
+                    .font(theme.typography.body)
+                    .foregroundColor(theme.palette.ink)
+                if let detail {
+                    Text(detail)
+                        .font(theme.typography.mono)
+                        .foregroundColor(theme.palette.secondaryInk)
+                        .lineLimit(2)
+                }
+            }
+
+            Spacer(minLength: 8)
+
+            if let value {
+                Text(value)
+                    .font(theme.typography.mono)
+                    .foregroundColor(theme.palette.secondaryInk)
+                    .lineLimit(1)
+            }
+        }
+        .padding(.vertical, 3)
+    }
+}
+
+struct TerminalStatusPill: View {
+    @Environment(\.appTheme) private var theme
+
+    let text: String
+    var color: Color? = nil
+
+    var body: some View {
+        Text(text)
+            .font(theme.typography.mono)
+            .foregroundColor(color ?? theme.palette.secondaryInk)
+            .padding(.horizontal, 7)
+            .padding(.vertical, 3)
+            .background((color ?? theme.palette.secondaryInk).opacity(0.10))
+            .overlay(
+                Rectangle()
+                    .stroke((color ?? theme.palette.divider).opacity(0.7),
+                            lineWidth: theme.metrics.borderWidth)
+            )
+    }
+}
+
+struct TerminalMetricCard: View {
+    @Environment(\.appTheme) private var theme
+
+    let label: String
+    let value: String
+    let symbol: String
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text(label)
+                    .font(theme.typography.label)
+                    .foregroundColor(theme.palette.secondaryInk)
+                Spacer()
+                Image(systemName: symbol)
+                    .font(theme.typography.symbol)
+                    .foregroundColor(theme.palette.accent)
+            }
+            Text(value)
+                .font(.system(size: 20, weight: .semibold, design: .monospaced))
+                .foregroundColor(theme.palette.ink)
+                .lineLimit(1)
+                .minimumScaleFactor(0.7)
+        }
+        .padding(10)
+        .frame(maxWidth: .infinity, minHeight: 78, alignment: .leading)
+        .background(theme.palette.surface)
+        .overlay(
+            RoundedRectangle(cornerRadius: theme.metrics.cornerRadius, style: .continuous)
+                .stroke(theme.palette.divider, lineWidth: theme.metrics.borderWidth)
+        )
+        .clipShape(RoundedRectangle(cornerRadius: theme.metrics.cornerRadius, style: .continuous))
+    }
+}
+
+struct TerminalActionTile: View {
+    @Environment(\.appTheme) private var theme
+
+    let symbol: String
+    let title: String
+    let detail: String
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            VStack(alignment: .leading, spacing: 7) {
+                Image(systemName: symbol)
+                    .font(theme.typography.symbol)
+                    .foregroundColor(theme.palette.accent)
+                Text(title)
+                    .font(theme.typography.body.weight(.semibold))
+                    .foregroundColor(theme.palette.ink)
+                Text(detail)
+                    .font(theme.typography.mono)
+                    .foregroundColor(theme.palette.secondaryInk)
+                    .lineLimit(1)
+            }
+            .padding(10)
+            .frame(maxWidth: .infinity, minHeight: 92, alignment: .leading)
+            .background(theme.palette.surface)
+            .overlay(
+                RoundedRectangle(cornerRadius: theme.metrics.cornerRadius, style: .continuous)
+                    .stroke(theme.palette.divider, lineWidth: theme.metrics.borderWidth)
+            )
+            .clipShape(RoundedRectangle(cornerRadius: theme.metrics.cornerRadius, style: .continuous))
+        }
+        .buttonStyle(.plain)
+    }
+}
+
 public enum ReaderTheme: String, CaseIterable, Identifiable {
     case white = "默认白"
     case parchment = "复古羊皮纸"
