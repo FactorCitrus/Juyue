@@ -1,5 +1,167 @@
 import SwiftUI
 
+enum AppThemeChoice: String, CaseIterable, Identifiable {
+    case standard
+    case lunarTerminal
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .standard: return "标准"
+        case .lunarTerminal: return "月面终端"
+        }
+    }
+
+    var subtitle: String {
+        switch self {
+        case .standard: return "跟随系统外观"
+        case .lunarTerminal: return "暖纸、墨色与氧化红"
+        }
+    }
+}
+
+struct AppThemePalette {
+    var background: Color
+    var surface: Color
+    var elevated: Color
+    var ink: Color
+    var secondaryInk: Color
+    var divider: Color
+    var accent: Color
+    var danger: Color
+    var onAccent: Color
+}
+
+struct AppThemeTypography {
+    var title: Font
+    var body: Font
+    var label: Font
+    var mono: Font
+    var symbol: Font
+    var readerBody: Font
+}
+
+struct AppThemeMetrics {
+    var cornerRadius: CGFloat
+    var borderWidth: CGFloat
+    var gridSpacing: CGFloat
+    var tileHeight: CGFloat
+}
+
+struct AppThemeTokens {
+    var choice: AppThemeChoice
+    var palette: AppThemePalette
+    var typography: AppThemeTypography
+    var metrics: AppThemeMetrics
+    var showsGrid: Bool
+    var gridOpacity: Double
+    var forcedColorScheme: ColorScheme?
+
+    static let standard = AppThemeTokens(
+        choice: .standard,
+        palette: AppThemePalette(
+            background: systemGroupedBackground,
+            surface: secondarySystemGroupedBackground,
+            elevated: Color.primary.opacity(0.04),
+            ink: .primary,
+            secondaryInk: .secondary,
+            divider: Color.primary.opacity(0.12),
+            accent: .accentColor,
+            danger: .red,
+            onAccent: .white
+        ),
+        typography: AppThemeTypography(
+            title: .system(size: 26, weight: .bold),
+            body: .system(size: 15),
+            label: .system(size: 11, weight: .semibold),
+            mono: .system(size: 12, design: .monospaced),
+            symbol: .system(size: 16, weight: .medium),
+            readerBody: .system(size: 17)
+        ),
+        metrics: AppThemeMetrics(cornerRadius: 14, borderWidth: 1, gridSpacing: 28, tileHeight: 146),
+        showsGrid: false,
+        gridOpacity: 0,
+        forcedColorScheme: nil
+    )
+
+    static let lunarTerminal = AppThemeTokens(
+        choice: .lunarTerminal,
+        palette: AppThemePalette(
+            background: Color(red: 0.851, green: 0.831, blue: 0.765),
+            surface: Color(red: 0.906, green: 0.882, blue: 0.820),
+            elevated: Color(red: 0.945, green: 0.925, blue: 0.871),
+            ink: Color(red: 0.090, green: 0.090, blue: 0.082),
+            secondaryInk: Color(red: 0.435, green: 0.416, blue: 0.369),
+            divider: Color(red: 0.604, green: 0.580, blue: 0.522),
+            accent: Color(red: 0.702, green: 0.227, blue: 0.169),
+            danger: Color(red: 0.702, green: 0.227, blue: 0.169),
+            onAccent: Color(red: 0.965, green: 0.945, blue: 0.894)
+        ),
+        typography: AppThemeTypography(
+            title: .system(size: 25, weight: .bold),
+            body: .system(size: 15),
+            label: .system(size: 11, weight: .semibold, design: .monospaced),
+            mono: .system(size: 12, design: .monospaced),
+            symbol: .system(size: 16, weight: .regular),
+            readerBody: .custom("Songti SC", size: 18)
+        ),
+        metrics: AppThemeMetrics(cornerRadius: 2, borderWidth: 1, gridSpacing: 28, tileHeight: 146),
+        showsGrid: true,
+        gridOpacity: 0.09,
+        forcedColorScheme: .light
+    )
+
+    private static var systemGroupedBackground: Color {
+        #if os(iOS)
+        Color(uiColor: .systemGroupedBackground)
+        #else
+        Color(nsColor: .windowBackgroundColor)
+        #endif
+    }
+
+    private static var secondarySystemGroupedBackground: Color {
+        #if os(iOS)
+        Color(uiColor: .secondarySystemGroupedBackground)
+        #else
+        Color(nsColor: .controlBackgroundColor)
+        #endif
+    }
+}
+
+final class AppThemeManager: ObservableObject {
+    static let shared = AppThemeManager()
+
+    @Published var choice: AppThemeChoice {
+        didSet { UserDefaults.standard.set(choice.rawValue, forKey: Self.key) }
+    }
+
+    private static let key = "app_theme_choice_v1"
+
+    var theme: AppThemeTokens {
+        switch choice {
+        case .standard: return .standard
+        case .lunarTerminal: return .lunarTerminal
+        }
+    }
+
+    private init() {
+        let stored = UserDefaults.standard.string(forKey: Self.key)
+        choice = AppThemeChoice(rawValue: stored ?? "") ?? .standard
+    }
+}
+
+private struct AppThemeKey: EnvironmentKey {
+    static let defaultValue = AppThemeTokens.standard
+}
+
+extension EnvironmentValues {
+    var appTheme: AppThemeTokens {
+        get { self[AppThemeKey.self] }
+        set { self[AppThemeKey.self] = newValue }
+    }
+}
+
 public enum ReaderTheme: String, CaseIterable, Identifiable {
     case white = "默认白"
     case parchment = "复古羊皮纸"

@@ -36,6 +36,27 @@ enum AppIconChoice: String, CaseIterable, Identifiable {
     }
 }
 
+private enum SettingsBoard: Int, CaseIterable, Identifiable {
+    case read
+    case display
+    case sources
+    case data
+    case system
+
+    var id: Int { rawValue }
+    var index: String { String(format: "%02d", rawValue + 1) }
+
+    var title: String {
+        switch self {
+        case .read: return "阅读"
+        case .display: return "外观"
+        case .sources: return "内容源"
+        case .data: return "数据"
+        case .system: return "系统"
+        }
+    }
+}
+
 final class AppIconManager: ObservableObject {
     static let shared = AppIconManager()
 
@@ -116,6 +137,8 @@ public struct SettingsView: View {
     @ObservedObject var readerConfig = ReaderConfig.shared
     @ObservedObject var shelfConfig = BookshelfConfig.shared
     @StateObject private var appIcon = AppIconManager.shared
+    @ObservedObject private var themeManager = AppThemeManager.shared
+    @Environment(\.appTheme) private var theme
 
     @AppStorage("legado_app_theme") private var appTheme: String = "system"
 
@@ -127,6 +150,9 @@ public struct SettingsView: View {
     @State private var webDAVStatusText: String = "未配置"
     @State private var clearCacheMessage: String? = nil
     @State private var showAppIconOptions: Bool = false
+    @State private var presentedBoard: SettingsBoard? = nil
+    @State private var boardContentVisible = false
+    @Namespace private var boardNamespace
 
     public init() {}
 
@@ -139,394 +165,37 @@ public struct SettingsView: View {
 
     public var body: some View {
         NavigationView {
-            Form {
-                // Section 0: App Appearance (Dark Mode)
-                Section(header: Text("阅读显示 · 外观模式")) {
-                    Picker("外观模式", selection: $appTheme) {
-                        Text("跟随系统").tag("system")
-                        Text("浅色模式").tag("light")
-                        Text("深色模式").tag("dark")
-                    }
-                    .pickerStyle(.segmented)
-                    DisclosureGroup(isExpanded: $showAppIconOptions) {
-                        ForEach(AppIconChoice.allCases) { option in
-                            Button {
-                                appIcon.apply(option)
-                            } label: {
-                                HStack {
-                                    VStack(alignment: .leading, spacing: 2) {
-                                        Text(option.title)
-                                            .foregroundColor(.primary)
-                                        Text(option.subtitle)
-                                            .font(.caption)
-                                            .foregroundColor(.secondary)
-                                    }
-                                    Spacer()
-                                    if appIcon.choice == option {
-                                        Image(systemName: "checkmark.circle.fill")
-                                            .foregroundColor(.accentColor)
-                                    }
-                                }
-                                .contentShape(Rectangle())
-                            }
-                            .buttonStyle(.borderless)
-                            .disabled(appIcon.isSwitching)
-                        }
-                    } label: {
-                        HStack {
-                            Text("应用图标")
-                            Spacer()
-                            if appIcon.isSwitching {
-                                ProgressView()
-                                    .controlSize(.small)
-                            } else {
-                                Text(appIcon.choice.title)
-                                    .foregroundColor(.secondary)
-                            }
+            ZStack {
+                ScrollView {
+                    VStack(spacing: 14) {
+                        settingsHero
+                        boardTile(.read, height: 132)
+                        LazyVGrid(
+                            columns: [
+                                GridItem(.flexible(), spacing: 12),
+                                GridItem(.flexible(), spacing: 12)
+                            ],
+                            spacing: 12
+                        ) {
+                            boardTile(.display)
+                            boardTile(.sources)
+                            boardTile(.data)
+                            boardTile(.system)
                         }
                     }
-
-                    if showAppIconOptions {
-                        Text("切换后系统桌面图标会更新；若没变化，回桌面或重启 App。")
-                            .font(.caption)
-                            .foregroundColor(.secondary)
-                    }
+                    .padding(.horizontal, 16)
+                    .padding(.top, 8)
+                    .padding(.bottom, 110)
                 }
+                .background(SettingsBackdrop())
 
-                Section(header: Text("书源")) {
-                    NavigationLink(destination: SourceCheckView()) {
-                        HStack {
-                            Text("校验书源")
-                            Spacer()
-                            Text("逐个检测书源可用性")
-                                .font(.caption)
-                                .foregroundColor(.secondary)
-                        }
-                    }
-                    NavigationLink(destination: SourceManagerView()) {
-                        HStack {
-                            Text("管理全部网络书源")
-                            Spacer()
-                            Text("\(bookStore.sources.filter { $0.enabled != false }.count) / \(bookStore.sources.count) 个可用")
-                                .font(.caption)
-                                .foregroundColor(.secondary)
-                        }
-                    }
-
-                    Button {
-                        showRestoreAlert = true
-                    } label: {
-                        HStack {
-                            Text("重置书源")
-                            Spacer()
-                            Image(systemName: "arrow.clockwise")
-                                .foregroundColor(.accentColor)
-                        }
-                    }
-                }
-
-                // Section 1: Reading Display Settings
-                Section(header: Text("阅读显示")) {
-                    NavigationLink(destination: OPDSCatalogsView()) {
-                        HStack {
-                            Text("OPDS / Calibre 书库")
-                            Spacer()
-                            Text("\(OPDSStore.shared.catalogs.count) 个")
-                                .foregroundColor(.secondary)
-                        }
-                    }
-
-                    NavigationLink(destination: RSSFeedsView()) {
-                        HStack {
-                            Text("订阅（RSS）")
-                            Spacer()
-                            Text("\(RSSStore.shared.sources.count) 个源")
-                                .foregroundColor(.secondary)
-                        }
-                    }
-
-                    NavigationLink(destination: LogViewerView()) {
-                        HStack {
-                            Text("诊断日志")
-                            Spacer()
-                            Text("操作与崩溃")
-                                .foregroundColor(.secondary)
-                        }
-                    }
-
-                    NavigationLink(destination: SubscribeSourcesView()) {
-                        HStack {
-                            Text("订阅源（阅读订阅源）")
-                            Spacer()
-                            Text("\(SubscribeSourceStore.shared.sources.count) 个源")
-                                .foregroundColor(.secondary)
-                        }
-                    }
-
-                    HStack {
-                        Text("默认缓存章数")
-                        Spacer()
-                        Stepper(
-                            "\(readerConfig.cachedChapterCount) 章",
-                            value: $readerConfig.cachedChapterCount,
-                            in: 1...200
-                        )
-                        .labelsHidden()
-                        Text("\(readerConfig.cachedChapterCount) 章")
-                            .foregroundColor(.secondary)
-                    }
-
-                    NavigationLink(destination: DownloadManagerView()) {
-                        HStack {
-                            Text("下载管理")
-                            Spacer()
-                            let running = ChapterDownloadManager.shared.jobs.filter { $0.isRunning }.count
-                            Text(running > 0 ? "\(running) 个进行中" : "空闲")
-                                .foregroundColor(.secondary)
-                        }
-                    }
-
-                    NavigationLink(destination: ReadingStatsView()) {
-                        HStack {
-                            Text("阅读统计")
-                            Spacer()
-                            Text("\(ReadingStatsStore.shared.streakDays) 天连续")
-                                .foregroundColor(.secondary)
-                        }
-                    }
-
-                    NavigationLink(destination: ReplacementRulesView()) {
-                        HStack {
-                            Text("替换净化")
-                            Spacer()
-                            Text("\(TextPurifier.shared.rules.filter { $0.enabled }.count) 条启用")
-                                .foregroundColor(.secondary)
-                        }
-                    }
-
-                    NavigationLink(destination: FontManageView()) {
-                        HStack {
-                            Text("字体管理")
-                            Spacer()
-                            Text(readerConfig.font.displayName)
-                                .foregroundColor(.secondary)
-                        }
-                    }
-
-                    VStack(alignment: .leading, spacing: 8) {
-                        HStack {
-                            Text("正文字号")
-                            Spacer()
-                            Text("\(Int(readerConfig.fontSize)) pt")
-                                .foregroundColor(.secondary)
-                        }
-
-                        HStack {
-                            Text("A-")
-                                .font(.caption)
-                                .foregroundColor(.secondary)
-                            Slider(value: $readerConfig.fontSize, in: 12...32, step: 1)
-                            Text("A+")
-                                .font(.body.bold())
-                                .foregroundColor(.secondary)
-                        }
-                    }
-                    .padding(.vertical, 4)
-
-                    VStack(alignment: .leading, spacing: 8) {
-                        HStack {
-                            Text("段落行距")
-                            Spacer()
-                            Text("\(Int(readerConfig.lineSpacing)) pt")
-                                .foregroundColor(.secondary)
-                        }
-
-                        Slider(value: $readerConfig.lineSpacing, in: 4...24, step: 1)
-                    }
-                    .padding(.vertical, 4)
-
-                    #if os(iOS)
-                    NavigationLink(destination: ReaderBackgroundSettingsView()) {
-                        HStack {
-                            Text("正文背景图")
-                            Spacer()
-                            Text("预览 / 缩放 / 位置")
-                                .font(.caption)
-                                .foregroundColor(.secondary)
-                        }
-                    }
-                    NavigationLink(destination: ReaderAssetsSheet { }) {
-                        HStack {
-                            Text("下拉背景与书签外观")
-                            Spacer()
-                            Text("背景图 / 书签图")
-                                .font(.caption)
-                                .foregroundColor(.secondary)
-                        }
-                    }
-                    #endif
-
-                    Picker("阅读背景主题", selection: $readerConfig.theme) {
-                        ForEach(ReaderTheme.allCases) { theme in
-                            Text(theme.rawValue).tag(theme)
-                        }
-                    }
-
-                    // Live theme preview box
-                    VStack(alignment: .leading, spacing: 6) {
-                        Text("排版预览")
-                            .font(.caption2)
-                            .foregroundColor(.secondary)
-                        Text("这是示例文本，天地玄黄，宇宙洪荒。日月盈昃，辰宿列张。")
-                            .font(.system(size: readerConfig.fontSize))
-                            .lineSpacing(readerConfig.lineSpacing)
-                            .foregroundColor(readerConfig.theme.textColor)
-                            .padding(10)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .background(readerConfig.theme.backgroundColor)
-                            .cornerRadius(8)
-                            .overlay(
-                                RoundedRectangle(cornerRadius: 8)
-                                    .stroke(Color.secondary.opacity(0.2), lineWidth: 1)
-                            )
-                    }
-                    .padding(.vertical, 4)
-                }
-
-                // 书架角标（封面右上那个红色未读数）
-
-                Section(header: Text("阅读显示 · 书架角标")) {
-                    Picker("显示方式", selection: $shelfConfig.badgeStyle) {
-                        ForEach(BookshelfBadgeStyle.allCases) { style in
-                            Text(style.rawValue).tag(style)
-                        }
-                    }
-
-                    if shelfConfig.badgeStyle == .count {
-                        Stepper(value: $shelfConfig.badgeCap, in: 0...999, step: 5) {
-                            HStack {
-                                Text("数字封顶")
-                                Spacer()
-                                Text(shelfConfig.badgeCap == 0 ? "不封顶" : "\(shelfConfig.badgeCap)+")
-                                    .foregroundColor(.secondary)
-                            }
-                        }
-                    }
-
-                    if shelfConfig.badgeStyle != .hidden {
-                        ColorPicker("角标颜色", selection: badgeColorBinding, supportsOpacity: false)
-
-                        Picker("位置", selection: $shelfConfig.badgeCorner) {
-                            ForEach(BookshelfBadgeCorner.allCases) { corner in
-                                Text(corner.rawValue).tag(corner)
-                            }
-                        }
-
-                        VStack(alignment: .leading, spacing: 2) {
-                            HStack {
-                                Text("字号")
-                                Spacer()
-                                Text("\(Int(shelfConfig.badgeFontSize)) pt")
-                                    .foregroundColor(.secondary)
-                            }
-                            Slider(value: $shelfConfig.badgeFontSize, in: 7...16, step: 1)
-                        }
-
-                        VStack(alignment: .leading, spacing: 2) {
-                            HStack {
-                                Text("离封面距离")
-                                Spacer()
-                                Text("\(Int(shelfConfig.badgeOffset)) pt")
-                                    .foregroundColor(.secondary)
-                            }
-                            Slider(value: $shelfConfig.badgeOffset, in: 0...16, step: 1)
-                        }
-
-                        Toggle("白色描边", isOn: $shelfConfig.badgeOutline)
-                    }
-                }
-
-                // Section 3: Bookshelf & Storage
-                Section(header: Text("书架与存储")) {
-                    HStack {
-                        Text("书架藏书")
-                        Spacer()
-                        Text("\(bookStore.bookshelf.count) 本")
-                            .foregroundColor(.secondary)
-                    }
-
-                    Button(role: .destructive) {
-                        showClearCacheAlert = true
-                    } label: {
-                        HStack {
-                            Text("清理阅读缓存")
-                            Spacer()
-                            Image(systemName: "trash")
-                                .foregroundColor(.red)
-                        }
-                    }
-                }
-
-                // Section 4: Data & Cloud Sync (WebDAV)
-                Section(header: Text("数据同步")) {
-                    NavigationLink(destination: WebDAVSyncView()) {
-                        HStack {
-                            Label("WebDAV 云同步", systemImage: "icloud.and.arrow.up")
-                            Spacer()
-                            Text(webDAVStatusText)
-                                .font(.caption)
-                                .foregroundColor(.secondary)
-                        }
-                    }
-                }
-
-                // Section 5: 听书语音源
-                Section(header: Text("听书（朗读引擎）")) {
-                    NavigationLink(destination: TTSourceManagerView()) {
-                        HStack {
-                            Text("朗读引擎")
-                            Spacer()
-                            Text(TTSourceSelection.displayName(in: HttpTTSStore.shared.sources))
-                                .font(.caption)
-                                .foregroundColor(.secondary)
-                        }
-                    }
-                }
-
-                Section(header: Text("关于 Legado iOS")) {
-                    HStack {
-                        Text("应用名称")
-                        Spacer()
-                        Text("Legado iOS (开源阅读)")
-                            .foregroundColor(.secondary)
-                    }
-
-                    HStack {
-                        Text("当前版本")
-                        Spacer()
-                        Text(Self.appVersionText)
-                            .foregroundColor(.secondary)
-                    }
-
-                    HStack {
-                        Text("内核引擎")
-                        Spacer()
-                        Text("Swift 原生 + JavaScriptCore")
-                            .foregroundColor(.secondary)
-                    }
-
-                    Link(destination: URL(string: "https://github.com/FactorCitrus/Legado-iOS")!) {
-                        HStack {
-                            Text("GitHub")
-                            Spacer()
-                            Text("github.com/FactorCitrus/Legado-iOS")
-                                .font(.caption)
-                                .foregroundColor(.secondary)
-                        }
-                    }
+                if let board = presentedBoard {
+                    boardExpandedScreen(board)
+                        .zIndex(2)
                 }
             }
             .navigationTitle("设置")
+            .navigationBarTitleDisplayMode(.inline)
             .onAppear {
                 let cfg = WebDAVService.shared.loadConfig()
                 if cfg.url.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
@@ -568,6 +237,634 @@ public struct SettingsView: View {
         }
     }
 
+    private var settingsHero: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text("SETTINGS / 橘阅")
+                    .font(theme.typography.label)
+                    .foregroundColor(theme.palette.secondaryInk)
+                Spacer()
+                Text("SYS.ONLINE")
+                    .font(theme.typography.mono)
+                    .foregroundColor(theme.palette.secondaryInk)
+            }
+            HStack(alignment: .firstTextBaseline) {
+                Text("设置中心")
+                    .font(theme.typography.title)
+                    .foregroundColor(theme.palette.ink)
+                Spacer()
+                Text("05 MODULES")
+                    .font(theme.typography.mono)
+                    .foregroundColor(theme.palette.secondaryInk)
+            }
+            Text("本地设置 · 即时生效 · v\(shortVersion)")
+                .font(theme.typography.mono)
+                .foregroundColor(theme.palette.secondaryInk)
+        }
+        .padding(16)
+        .background(
+            RoundedRectangle(cornerRadius: theme.metrics.cornerRadius, style: .continuous)
+                .fill(theme.palette.surface)
+        )
+        .overlay(alignment: .leading) {
+            Rectangle()
+                .fill(theme.palette.accent)
+                .frame(width: 3)
+                .padding(.vertical, 14)
+        }
+        .overlay(
+            RoundedRectangle(cornerRadius: theme.metrics.cornerRadius, style: .continuous)
+                .stroke(theme.palette.divider, lineWidth: theme.metrics.borderWidth)
+        )
+    }
+
+    private var shortVersion: String {
+        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "?"
+    }
+
+    private var panelFill: Color {
+        theme.palette.surface
+    }
+
+    private func boardTile(_ board: SettingsBoard, height: CGFloat = 146) -> some View {
+        return Button {
+            boardContentVisible = false
+            withAnimation(.easeInOut(duration: 0.26)) {
+                presentedBoard = board
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) {
+                withAnimation(.easeOut(duration: 0.18)) {
+                    boardContentVisible = true
+                }
+            }
+        } label: {
+            VStack(alignment: .leading, spacing: 6) {
+                HStack {
+                    Text(board.index)
+                        .font(theme.typography.mono)
+                        .foregroundColor(theme.palette.secondaryInk)
+                    Spacer()
+                    Image(systemName: boardSymbol(board))
+                        .font(theme.typography.symbol)
+                        .foregroundColor(theme.palette.secondaryInk)
+                }
+                Spacer(minLength: 0)
+                Text(board.title)
+                    .font(.headline)
+                    .foregroundColor(theme.palette.ink)
+                Text(boardDescription(board))
+                    .font(.caption2)
+                    .foregroundColor(theme.palette.secondaryInk)
+                    .lineLimit(2)
+                Text(boardSummary(board))
+                    .font(theme.typography.mono)
+                    .foregroundColor(theme.palette.secondaryInk)
+                    .lineLimit(1)
+            }
+            .padding(14)
+            .frame(maxWidth: .infinity, minHeight: height, alignment: .topLeading)
+            .background(
+                RoundedRectangle(cornerRadius: theme.metrics.cornerRadius, style: .continuous)
+                    .fill(panelFill)
+                    .matchedGeometryEffect(id: board.id, in: boardNamespace)
+            )
+            .clipShape(RoundedRectangle(cornerRadius: theme.metrics.cornerRadius, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: theme.metrics.cornerRadius, style: .continuous)
+                    .stroke(theme.palette.divider, lineWidth: theme.metrics.borderWidth)
+            )
+            .overlay(alignment: .bottomTrailing) {
+                Text(board.index)
+                    .font(.system(size: 38, weight: .bold, design: .monospaced))
+                    .foregroundColor(theme.palette.ink.opacity(0.045))
+                    .padding(8)
+            }
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func boardSymbol(_ board: SettingsBoard) -> String {
+        switch board {
+        case .read: return "book.closed"
+        case .display: return "paintpalette"
+        case .sources: return "square.stack.3d.up"
+        case .data: return "externaldrive"
+        case .system: return "gearshape"
+        }
+    }
+
+    private func boardExpandedScreen(_ board: SettingsBoard) -> some View {
+        ZStack {
+            SettingsBackdrop()
+
+            RoundedRectangle(cornerRadius: theme.metrics.cornerRadius, style: .continuous)
+                .fill(panelFill)
+                .matchedGeometryEffect(id: board.id, in: boardNamespace)
+                .ignoresSafeArea()
+
+            VStack(spacing: 0) {
+                HStack(spacing: 10) {
+                    Button {
+                        boardContentVisible = false
+                        withAnimation(.easeInOut(duration: 0.22)) {
+                            presentedBoard = nil
+                        }
+                    } label: {
+                        Image(systemName: "chevron.left")
+                            .font(.caption.weight(.semibold))
+                            .foregroundColor(.primary)
+                            .padding(8)
+                    }
+                    .buttonStyle(.plain)
+
+                    Text(board.index)
+                        .font(theme.typography.mono)
+                        .foregroundColor(theme.palette.secondaryInk)
+                    Text(board.title)
+                        .font(.headline)
+                        .foregroundColor(theme.palette.ink)
+                    Spacer()
+                    Text("MODULE \(board.index)")
+                        .font(theme.typography.mono)
+                        .foregroundColor(theme.palette.secondaryInk)
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
+
+                Divider()
+
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 14) {
+                        boardContent(board)
+                    }
+                    .padding(16)
+                    .padding(.bottom, 40)
+                }
+            }
+            .opacity(boardContentVisible ? 1 : 0)
+            .scaleEffect(boardContentVisible ? 1 : 0.985)
+        }
+        .transition(.opacity)
+    }
+
+    @ViewBuilder
+    private func boardContent(_ board: SettingsBoard) -> some View {
+        switch board {
+        case .read: readBoard
+        case .display: displayBoard
+        case .sources: sourcesBoard
+        case .data: dataBoard
+        case .system: systemBoard
+        }
+    }
+
+    private func boardDescription(_ board: SettingsBoard) -> String {
+        switch board {
+        case .read: return "字号、行距、背景与净化"
+        case .display: return "主题、图标与书架外观"
+        case .sources: return "书源、OPDS、RSS 与订阅"
+        case .data: return "云同步、缓存与下载"
+        case .system: return "朗读、日志与关于"
+        }
+    }
+
+    private func boardSummary(_ board: SettingsBoard) -> String {
+        switch board {
+        case .read:
+            return "字号 \(Int(readerConfig.fontSize)) / 行距 \(Int(readerConfig.lineSpacing))"
+        case .display:
+            let appearance: String
+            switch appTheme {
+            case "light": appearance = "浅色"
+            case "dark": appearance = "深色"
+            default: appearance = "跟随系统"
+            }
+            return "\(appearance) / \(appIcon.choice.title)"
+        case .sources:
+            return "书源 \(bookStore.sources.count) / OPDS \(OPDSStore.shared.catalogs.count) / RSS \(RSSStore.shared.sources.count)"
+        case .data:
+            return "WebDAV \(webDAVStatusText)"
+        case .system:
+            let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "?"
+            return "v\(version) / 5 MODULES"
+        }
+    }
+
+    private func subheader(_ title: String) -> some View {
+        Text(title)
+            .font(.caption.weight(.semibold))
+            .foregroundColor(.secondary)
+            .listRowInsets(EdgeInsets(top: 10, leading: 16, bottom: 2, trailing: 16))
+    }
+
+    @ViewBuilder
+    private var readBoard: some View {
+        subheader("排版")
+
+        NavigationLink(destination: FontManageView()) {
+            HStack {
+                Text("字体管理")
+                Spacer()
+                Text(readerConfig.font.displayName)
+                    .foregroundColor(.secondary)
+            }
+        }
+
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text("正文字号")
+                Spacer()
+                Text("\(Int(readerConfig.fontSize)) pt")
+                    .foregroundColor(.secondary)
+            }
+            HStack {
+                Text("A-")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                Slider(value: $readerConfig.fontSize, in: 12...32, step: 1)
+                Text("A+")
+                    .font(.body.bold())
+                    .foregroundColor(.secondary)
+            }
+        }
+        .padding(.vertical, 4)
+
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text("段落行距")
+                Spacer()
+                Text("\(Int(readerConfig.lineSpacing)) pt")
+                    .foregroundColor(.secondary)
+            }
+            Slider(value: $readerConfig.lineSpacing, in: 4...24, step: 1)
+        }
+        .padding(.vertical, 4)
+
+        HStack {
+            Text("默认缓存章数")
+            Spacer()
+            Stepper(
+                "\(readerConfig.cachedChapterCount) 章",
+                value: $readerConfig.cachedChapterCount,
+                in: 1...200
+            )
+            .labelsHidden()
+            Text("\(readerConfig.cachedChapterCount) 章")
+                .foregroundColor(.secondary)
+        }
+
+        subheader("背景")
+
+        Picker("阅读背景主题", selection: $readerConfig.theme) {
+            ForEach(ReaderTheme.allCases) { theme in
+                Text(theme.rawValue).tag(theme)
+            }
+        }
+
+        VStack(alignment: .leading, spacing: 6) {
+            Text("排版预览")
+                .font(.caption2)
+                .foregroundColor(.secondary)
+            Text("这是示例文本，天地玄黄，宇宙洪荒。日月盈昃，辰宿列张。")
+                .font(.system(size: readerConfig.fontSize))
+                .lineSpacing(readerConfig.lineSpacing)
+                .foregroundColor(readerConfig.theme.textColor)
+                .padding(10)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(readerConfig.theme.backgroundColor)
+                .cornerRadius(8)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 8)
+                        .stroke(Color.secondary.opacity(0.2), lineWidth: 1)
+                )
+        }
+        .padding(.vertical, 4)
+
+        #if os(iOS)
+        NavigationLink(destination: ReaderBackgroundSettingsView()) {
+            HStack {
+                Text("正文背景图")
+                Spacer()
+                Text("预览 / 缩放 / 位置")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
+        }
+        NavigationLink(destination: ReaderAssetsSheet { }) {
+            HStack {
+                Text("下拉背景与书签外观")
+                Spacer()
+                Text("背景图 / 书签图")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
+        }
+        #endif
+
+        subheader("内容处理")
+
+        NavigationLink(destination: ReplacementRulesView()) {
+            HStack {
+                Text("替换净化")
+                Spacer()
+                Text("\(TextPurifier.shared.rules.filter { $0.enabled }.count) 条启用")
+                    .foregroundColor(.secondary)
+            }
+        }
+
+        NavigationLink(destination: ReadingStatsView()) {
+            HStack {
+                Text("阅读统计")
+                Spacer()
+                Text("\(ReadingStatsStore.shared.streakDays) 天连续")
+                    .foregroundColor(.secondary)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var displayBoard: some View {
+        subheader("主题")
+
+        Picker("界面主题", selection: $themeManager.choice) {
+            ForEach(AppThemeChoice.allCases) { choice in
+                Text(choice.title).tag(choice)
+            }
+        }
+        .pickerStyle(.segmented)
+
+        Text(themeManager.choice.subtitle)
+            .font(.caption)
+            .foregroundColor(.secondary)
+
+        subheader("外观模式")
+
+        Picker("外观模式", selection: $appTheme) {
+            Text("跟随系统").tag("system")
+            Text("浅色模式").tag("light")
+            Text("深色模式").tag("dark")
+        }
+        .pickerStyle(.segmented)
+
+        subheader("应用图标")
+
+        DisclosureGroup(isExpanded: $showAppIconOptions) {
+            ForEach(AppIconChoice.allCases) { option in
+                Button {
+                    appIcon.apply(option)
+                } label: {
+                    HStack {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(option.title)
+                                .foregroundColor(.primary)
+                            Text(option.subtitle)
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        }
+                        Spacer()
+                        if appIcon.choice == option {
+                            Image(systemName: "checkmark.circle.fill")
+                                .foregroundColor(.accentColor)
+                        }
+                    }
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.borderless)
+                .disabled(appIcon.isSwitching)
+            }
+            if showAppIconOptions {
+                Text("切换后系统桌面图标会更新；若没变化，回桌面或重启 App。")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
+        } label: {
+            HStack {
+                Text("当前图标")
+                Spacer()
+                if appIcon.isSwitching {
+                    ProgressView().controlSize(.small)
+                } else {
+                    Text(appIcon.choice.title)
+                        .foregroundColor(.secondary)
+                }
+            }
+        }
+
+        subheader("书架角标")
+
+        Picker("显示方式", selection: $shelfConfig.badgeStyle) {
+            ForEach(BookshelfBadgeStyle.allCases) { style in
+                Text(style.rawValue).tag(style)
+            }
+        }
+
+        if shelfConfig.badgeStyle == .count {
+            Stepper(value: $shelfConfig.badgeCap, in: 0...999, step: 5) {
+                HStack {
+                    Text("数字封顶")
+                    Spacer()
+                    Text(shelfConfig.badgeCap == 0 ? "不封顶" : "\(shelfConfig.badgeCap)+")
+                        .foregroundColor(.secondary)
+                }
+            }
+        }
+
+        if shelfConfig.badgeStyle != .hidden {
+            ColorPicker("角标颜色", selection: badgeColorBinding, supportsOpacity: false)
+
+            Picker("位置", selection: $shelfConfig.badgeCorner) {
+                ForEach(BookshelfBadgeCorner.allCases) { corner in
+                    Text(corner.rawValue).tag(corner)
+                }
+            }
+
+            VStack(alignment: .leading, spacing: 2) {
+                HStack {
+                    Text("字号")
+                    Spacer()
+                    Text("\(Int(shelfConfig.badgeFontSize)) pt")
+                        .foregroundColor(.secondary)
+                }
+                Slider(value: $shelfConfig.badgeFontSize, in: 7...16, step: 1)
+            }
+
+            VStack(alignment: .leading, spacing: 2) {
+                HStack {
+                    Text("离封面距离")
+                    Spacer()
+                    Text("\(Int(shelfConfig.badgeOffset)) pt")
+                        .foregroundColor(.secondary)
+                }
+                Slider(value: $shelfConfig.badgeOffset, in: 0...16, step: 1)
+            }
+
+            Toggle("白色描边", isOn: $shelfConfig.badgeOutline)
+        }
+    }
+
+    @ViewBuilder
+    private var sourcesBoard: some View {
+        subheader("书源")
+
+        NavigationLink(destination: SourceCheckView()) {
+            HStack {
+                Text("校验书源")
+                Spacer()
+                Text("逐个检测书源可用性")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
+        }
+        NavigationLink(destination: SourceManagerView()) {
+            HStack {
+                Text("管理全部网络书源")
+                Spacer()
+                Text("\(bookStore.sources.filter { $0.enabled != false }.count) / \(bookStore.sources.count) 个可用")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
+        }
+        Button {
+            showRestoreAlert = true
+        } label: {
+            HStack {
+                Text("重置书源")
+                Spacer()
+                Image(systemName: "arrow.clockwise")
+                    .foregroundColor(.accentColor)
+            }
+        }
+
+        subheader("外部内容")
+
+        NavigationLink(destination: OPDSCatalogsView()) {
+            HStack {
+                Text("OPDS / Calibre 书库")
+                Spacer()
+                Text("\(OPDSStore.shared.catalogs.count) 个")
+                    .foregroundColor(.secondary)
+            }
+        }
+        NavigationLink(destination: RSSFeedsView()) {
+            HStack {
+                Text("订阅（RSS）")
+                Spacer()
+                Text("\(RSSStore.shared.sources.count) 个源")
+                    .foregroundColor(.secondary)
+            }
+        }
+        NavigationLink(destination: SubscribeSourcesView()) {
+            HStack {
+                Text("订阅源（阅读订阅源）")
+                Spacer()
+                Text("\(SubscribeSourceStore.shared.sources.count) 个源")
+                    .foregroundColor(.secondary)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var dataBoard: some View {
+        subheader("云同步")
+
+        NavigationLink(destination: WebDAVSyncView()) {
+            HStack {
+                Label("WebDAV 云同步", systemImage: "icloud.and.arrow.up")
+                Spacer()
+                Text(webDAVStatusText)
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
+        }
+
+        subheader("存储")
+
+        HStack {
+            Text("书架藏书")
+            Spacer()
+            Text("\(bookStore.bookshelf.count) 本")
+                .foregroundColor(.secondary)
+        }
+        Button(role: .destructive) {
+            showClearCacheAlert = true
+        } label: {
+            HStack {
+                Text("清理阅读缓存")
+                Spacer()
+                Image(systemName: "trash")
+                    .foregroundColor(.red)
+            }
+        }
+
+        subheader("下载")
+
+        NavigationLink(destination: DownloadManagerView()) {
+            HStack {
+                Text("下载管理")
+                Spacer()
+                let running = ChapterDownloadManager.shared.jobs.filter { $0.isRunning }.count
+                Text(running > 0 ? "\(running) 个进行中" : "空闲")
+                    .foregroundColor(.secondary)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var systemBoard: some View {
+        subheader("朗读")
+
+        NavigationLink(destination: TTSourceManagerView()) {
+            HStack {
+                Text("朗读引擎")
+                Spacer()
+                Text(TTSourceSelection.displayName(in: HttpTTSStore.shared.sources))
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
+        }
+
+        subheader("诊断")
+
+        NavigationLink(destination: LogViewerView()) {
+            HStack {
+                Text("诊断日志")
+                Spacer()
+                Text("操作与崩溃")
+                    .foregroundColor(.secondary)
+            }
+        }
+
+        subheader("关于")
+
+        HStack {
+            Text("应用名称")
+            Spacer()
+            Text("Legado iOS (开源阅读)")
+                .foregroundColor(.secondary)
+        }
+        HStack {
+            Text("当前版本")
+            Spacer()
+            Text(Self.appVersionText)
+                .foregroundColor(.secondary)
+        }
+        HStack {
+            Text("内核引擎")
+            Spacer()
+            Text("Swift 原生 + JavaScriptCore")
+                .foregroundColor(.secondary)
+        }
+        Link(destination: URL(string: "https://github.com/FactorCitrus/Legado-iOS")!) {
+            HStack {
+                Text("GitHub")
+                Spacer()
+                Text("github.com/FactorCitrus/Legado-iOS")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
+        }
+    }
+
     /// 装的是哪个包，一眼能看出来：版本号 + 构建号 + 这个可执行文件的编译时间。
     static var appVersionText: String {
         let info = Bundle.main.infoDictionary
@@ -581,6 +878,32 @@ public struct SettingsView: View {
         let formatter = DateFormatter()
         formatter.dateFormat = "MM-dd HH:mm"
         return "\(short) (\(build)) · \(formatter.string(from: created))"
+    }
+}
+
+private struct SettingsBackdrop: View {
+    @Environment(\.appTheme) private var theme
+
+    var body: some View {
+        ZStack {
+            theme.palette.background
+
+            if theme.showsGrid {
+                Canvas { context, size in
+                    var grid = Path()
+                    for x in stride(from: 0.0, through: size.width, by: theme.metrics.gridSpacing) {
+                        grid.move(to: CGPoint(x: x, y: 0))
+                        grid.addLine(to: CGPoint(x: x, y: size.height))
+                    }
+                    for y in stride(from: 0.0, through: size.height, by: theme.metrics.gridSpacing) {
+                        grid.move(to: CGPoint(x: 0, y: y))
+                        grid.addLine(to: CGPoint(x: size.width, y: y))
+                    }
+                    context.stroke(grid, with: .color(theme.palette.ink.opacity(theme.gridOpacity)), lineWidth: 0.5)
+                }
+            }
+        }
+        .ignoresSafeArea()
     }
 }
 

@@ -74,6 +74,7 @@ public class BookshelfConfig: ObservableObject {
 
 public struct BookshelfView: View {
     @ObservedObject var bookStore = BookStore.shared
+    @Environment(\.appTheme) private var theme
     @State private var selectedBook: Book? = nil
     @State private var navigateToDetailBook: Book? = nil
     @State private var isSearchActive: Bool = false
@@ -206,6 +207,8 @@ public struct BookshelfView: View {
                     #else
                     .listStyle(.inset)
                     #endif
+                    .modifier(ClearListBackgroundModifier())
+                    .listRowBackground(theme.palette.surface)
                     }
                 }
             }
@@ -308,6 +311,7 @@ public struct BookshelfView: View {
         }
         #endif
         }
+        .background(theme.palette.background.ignoresSafeArea())
     }
 
     @ViewBuilder
@@ -341,14 +345,27 @@ public struct BookshelfView: View {
                 .font(.subheadline.bold())
                 .padding(.horizontal, 18)
                 .padding(.vertical, 10)
-                .background(Color.accentColor)
-                .foregroundColor(.white)
-                .cornerRadius(20)
+                .background(theme.palette.accent)
+                .foregroundColor(theme.palette.onAccent)
+                .cornerRadius(theme.metrics.cornerRadius)
             }
             .buttonStyle(.plain)
             .padding(.top, 8)
         }
         .padding()
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(theme.palette.background)
+    }
+}
+
+private struct ClearListBackgroundModifier: ViewModifier {
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if #available(iOS 16.0, macOS 13.0, *) {
+            content.scrollContentBackground(.hidden)
+        } else {
+            content
+        }
     }
 }
 
