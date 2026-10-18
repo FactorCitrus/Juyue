@@ -179,6 +179,7 @@ Legado-iOS/
 遇到 bug、想要新功能，或者只是想说点什么，都可以直接找我：
 
 - **邮箱**：**Deathandfly@outlook.com** —— 本人亲收，最直接
+- **QQ 群**：**1128675417**
 - **GitHub Issues**：https://github.com/FactorCitrus/Legado-iOS/issues
 - 装了 App 的也可以从「设置 → 关于」点进 GitHub 仓库
 
