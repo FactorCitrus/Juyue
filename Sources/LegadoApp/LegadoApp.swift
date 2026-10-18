@@ -12,6 +12,12 @@ import UIKit
 import LegadoCore
 #endif
 
+/// 商店干净版：只保留本地书 / OPDS / 系统语音。
+/// 聚合书源、第三方登录、段评本章说都不进这个构建。
+enum AppEdition {
+    static let isAppStoreClean = true
+}
+
 @main
 public struct LegadoApp: App {
     @StateObject private var bookStore = BookStore.shared
@@ -29,7 +35,6 @@ public struct LegadoApp: App {
 
     public init() {
         AppLog.install()
-        preloadDefaultSources()
         // 导入过的自定义字体要在用之前注册进进程，否则 CoreText 认不出来
         CustomFontService.shared.loadAll()
     }
@@ -56,16 +61,6 @@ public struct LegadoApp: App {
         #endif
     }
 
-    private func preloadDefaultSources() {
-        if bookStore.sources.isEmpty {
-            // Load bundled default sources if available
-            if let bundleUrl = Bundle.main.url(forResource: "bookSources", withExtension: "json"),
-               let data = try? Data(contentsOf: bundleUrl),
-               let json = String(data: data, encoding: .utf8) {
-                _ = try? bookStore.importSources(json: json)
-            }
-        }
-    }
 }
 
 /// 脚本 toast 的上屏入口。
@@ -497,11 +492,13 @@ public struct MainTabView: View {
                 }
                 .tag(0)
 
-            CategoryExploreView(isActive: selection == 1)
-                .tabItem {
-                    Label("分类", systemImage: "square.grid.2x2.fill")
-                }
-                .tag(1)
+            if !AppEdition.isAppStoreClean {
+                CategoryExploreView(isActive: selection == 1)
+                    .tabItem {
+                        Label("分类", systemImage: "square.grid.2x2.fill")
+                    }
+                    .tag(1)
+            }
 
             SettingsView()
                 .tabItem {

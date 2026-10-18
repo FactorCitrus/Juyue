@@ -125,7 +125,7 @@
 			<key>lastKnownFileType</key>
 			<string>sourcecode.c.h</string>
 			<key>path</key>
-			<string>Vendor/BaiduSpeech/BaiduSpeech-Bridging-Header.h</string>
+			<string></string>
 			<key>sourceTree</key>
 			<string>&lt;group&gt;</string>
 		</dict>
@@ -360,6 +360,8 @@
 				<string>iphoneos</string>
 				<key>SWIFT_COMPILATION_MODE</key>
 				<string>wholemodule</string>
+				<key>SWIFT_ACTIVE_COMPILATION_CONDITIONS</key>
+				<string>NO_BAIDU_TTS</string>
 				<key>SWIFT_OPTIMIZATION_LEVEL</key>
 				<string>-O</string>
 				<key>SWIFT_VERSION</key>
@@ -422,7 +424,7 @@
 				<key>CODE_SIGN_STYLE</key>
 				<string>Automatic</string>
 				<key>CURRENT_PROJECT_VERSION</key>
-				<string>4.7.7.7</string>
+				<string>1.0.0</string>
 				<key>DEVELOPMENT_TEAM</key>
 				<string></string>
 				<key>ENABLE_PREVIEWS</key>
@@ -432,7 +434,7 @@
 				<key>INFOPLIST_FILE</key>
 				<string>Sources/LegadoApp/Info.plist</string>
 				<key>INFOPLIST_KEY_CFBundleDisplayName</key>
-				<string>橘阅</string>
+				<string>橘阅阅读器</string>
 				<key>INFOPLIST_KEY_UIApplicationSceneManifest_Generation</key>
 				<string>YES</string>
 				<key>INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents</key>
@@ -444,9 +446,9 @@
 				<key>LD_RUNPATH_SEARCH_PATHS</key>
 				<string>$(inherited) @executable_path/Frameworks</string>
 				<key>MARKETING_VERSION</key>
-				<string>4.7.7.7</string>
+				<string>1.0.0</string>
 				<key>PRODUCT_BUNDLE_IDENTIFIER</key>
-				<string>com.factorcitrus.juyue</string>
+				<string>com.factorcitrus.juyue.reader</string>
 				<key>PRODUCT_NAME</key>
 				<string>$(TARGET_NAME)</string>
 				<key>SWIFT_VERSION</key>
@@ -454,7 +456,7 @@
 				<key>TARGETED_DEVICE_FAMILY</key>
 				<string>1,2</string>
 				<key>SWIFT_OBJC_BRIDGING_HEADER</key>
-				<string>Vendor/BaiduSpeech/BaiduSpeech-Bridging-Header.h</string>
+				<string></string>
 				<key>HEADER_SEARCH_PATHS</key>
 				<array>
 					<string>$(inherited)</string>
@@ -533,10 +535,9 @@
 			<string>2147483647</string>
 			<key>files</key>
 			<array>
-				<string>F8605495CCFB2EF6EFFA85E6</string>
 				<string>AA11BB22CC33DD44EE55FF69</string>
-				<string>BB01AA0000000000000004A4</string>
 				<string>BB01AA0000000000000009B9</string>
+				<string>AE01AA0000000000000002C2</string>
 			</array>
 			<key>isa</key>
 			<string>PBXResourcesBuildPhase</string>
@@ -1053,7 +1054,6 @@
 			<array>
 				<string>56A0F6E7B159B88C9BE3A1DD</string>
 				<string>7B54E4C3682E2D192F748519</string>
-				<string>BB01AA0000000000000002A2</string>
 			</array>
 			<key>isa</key>
 			<string>PBXFrameworksBuildPhase</string>
@@ -1092,7 +1092,7 @@
 				<key>SDKROOT</key>
 				<string>iphoneos</string>
 				<key>SWIFT_ACTIVE_COMPILATION_CONDITIONS</key>
-				<string>DEBUG</string>
+				<string>DEBUG NO_BAIDU_TTS</string>
 				<key>SWIFT_OPTIMIZATION_LEVEL</key>
 				<string>-Onone</string>
 				<key>SWIFT_VERSION</key>
@@ -1236,7 +1236,7 @@
 				<key>CODE_SIGN_STYLE</key>
 				<string>Automatic</string>
 				<key>CURRENT_PROJECT_VERSION</key>
-				<string>4.7.7.7</string>
+				<string>1.0.0</string>
 				<key>DEVELOPMENT_TEAM</key>
 				<string></string>
 				<key>ENABLE_PREVIEWS</key>
@@ -1246,7 +1246,7 @@
 				<key>INFOPLIST_FILE</key>
 				<string>Sources/LegadoApp/Info.plist</string>
 				<key>INFOPLIST_KEY_CFBundleDisplayName</key>
-				<string>橘阅</string>
+				<string>橘阅阅读器</string>
 				<key>INFOPLIST_KEY_UIApplicationSceneManifest_Generation</key>
 				<string>YES</string>
 				<key>INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents</key>
@@ -1258,9 +1258,9 @@
 				<key>LD_RUNPATH_SEARCH_PATHS</key>
 				<string>$(inherited) @executable_path/Frameworks</string>
 				<key>MARKETING_VERSION</key>
-				<string>4.7.7.7</string>
+				<string>1.0.0</string>
 				<key>PRODUCT_BUNDLE_IDENTIFIER</key>
-				<string>com.factorcitrus.juyue</string>
+				<string>com.factorcitrus.juyue.reader</string>
 				<key>PRODUCT_NAME</key>
 				<string>$(TARGET_NAME)</string>
 				<key>SWIFT_VERSION</key>
@@ -1268,7 +1268,7 @@
 				<key>TARGETED_DEVICE_FAMILY</key>
 				<string>1,2</string>
 				<key>SWIFT_OBJC_BRIDGING_HEADER</key>
-				<string>Vendor/BaiduSpeech/BaiduSpeech-Bridging-Header.h</string>
+				<string></string>
 				<key>HEADER_SEARCH_PATHS</key>
 				<array>
 					<string>$(inherited)</string>
@@ -1333,6 +1333,24 @@
 			<string>Sources/LegadoApp/Resources/bookSources.json</string>
 			<key>sourceTree</key>
 			<string>&lt;group&gt;</string>
+		</dict>
+		<key>AE01AA0000000000000001C1</key>
+		<dict>
+			<key>isa</key>
+			<string>PBXFileReference</string>
+			<key>lastKnownFileType</key>
+			<string>text.plist.xml</string>
+			<key>path</key>
+			<string>Sources/LegadoApp/PrivacyInfo.xcprivacy</string>
+			<key>sourceTree</key>
+			<string>&lt;group&gt;</string>
+		</dict>
+		<key>AE01AA0000000000000002C2</key>
+		<dict>
+			<key>fileRef</key>
+			<string>AE01AA0000000000000001C1</string>
+			<key>isa</key>
+			<string>PBXBuildFile</string>
 		</dict>
 		<key>AA11BB22CC33DD44EE55FF68</key>
 		<dict>

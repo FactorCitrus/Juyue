@@ -241,9 +241,11 @@ public struct BookshelfView: View {
             .navigationTitle("我的书架")
             .toolbar {
                 ToolbarItemGroup(placement: .primaryAction) {
-                    // Search button activating isSearchActive
-                    Button(action: { isSearchActive = true }) {
-                        Image(systemName: "magnifyingglass")
+                    if !AppEdition.isAppStoreClean {
+                        // Search button activating isSearchActive
+                        Button(action: { isSearchActive = true }) {
+                            Image(systemName: "magnifyingglass")
+                        }
                     }
 
                     // Import local file button
@@ -322,26 +324,51 @@ public struct BookshelfView: View {
                 .foregroundColor(.secondary.opacity(0.6))
             Text("书架空空如也")
                 .font(.headline)
-            Text("可点击右上角放大镜搜索网络小说，或点击“+”导入本地书籍")
+            Text(AppEdition.isAppStoreClean
+                 ? "点击右上角“+”导入本地 TXT / EPUB / PDF"
+                 : "可点击右上角放大镜搜索网络小说，或点击“+”导入本地书籍")
                 .font(.subheadline)
                 .foregroundColor(.secondary)
                 .multilineTextAlignment(.center)
                 .padding(.horizontal, 32)
 
-            Button(action: { isSearchActive = true }) {
-                HStack(spacing: 6) {
-                    Image(systemName: "magnifyingglass")
-                    Text("前往全网搜索")
+            if AppEdition.isAppStoreClean {
+                Button(action: { showFileImporter = true }) {
+                    HStack(spacing: 6) {
+                        Image(systemName: "doc.badge.plus")
+                        Text("导入本地书籍")
+                    }
+                    .font(.subheadline.bold())
+                    .padding(.horizontal, 18)
+                    .padding(.vertical, 10)
+                    .background(Color.accentColor)
+                    .foregroundColor(.white)
+                    .cornerRadius(20)
                 }
-                .font(.subheadline.bold())
-                .padding(.horizontal, 18)
-                .padding(.vertical, 10)
-                .background(Color.accentColor)
-                .foregroundColor(.white)
-                .cornerRadius(20)
+                .buttonStyle(.plain)
+                .padding(.top, 8)
+
+                Text("本应用不提供书籍内容，请导入你拥有合法使用权的文件。")
+                    .font(.caption2)
+                    .foregroundColor(.secondary)
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal, 32)
+            } else {
+                Button(action: { isSearchActive = true }) {
+                    HStack(spacing: 6) {
+                        Image(systemName: "magnifyingglass")
+                        Text("前往全网搜索")
+                    }
+                    .font(.subheadline.bold())
+                    .padding(.horizontal, 18)
+                    .padding(.vertical, 10)
+                    .background(Color.accentColor)
+                    .foregroundColor(.white)
+                    .cornerRadius(20)
+                }
+                .buttonStyle(.plain)
+                .padding(.top, 8)
             }
-            .buttonStyle(.plain)
-            .padding(.top, 8)
         }
         .padding()
     }

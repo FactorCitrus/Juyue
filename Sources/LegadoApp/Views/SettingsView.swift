@@ -45,7 +45,8 @@ public struct SettingsView: View {
                     .pickerStyle(.segmented)
                 }
 
-                Section(header: Text("书源")) {
+                if !AppEdition.isAppStoreClean {
+                    Section(header: Text("书源")) {
                     NavigationLink(destination: SourceCheckView()) {
                         HStack {
                             Text("校验书源")
@@ -74,6 +75,7 @@ public struct SettingsView: View {
                             Image(systemName: "arrow.clockwise")
                                 .foregroundColor(.accentColor)
                         }
+                    }
                     }
                 }
 
@@ -345,11 +347,26 @@ public struct SettingsView: View {
                     }
                 }
 
-                Section(header: Text("关于 Legado iOS")) {
+                Section(header: Text("隐私与许可")) {
+                    NavigationLink(destination: ReaderPrivacyView()) {
+                        Text("隐私政策")
+                    }
+                    Link(destination: URL(string: "https://github.com/FactorCitrus/Legado-iOS")!) {
+                        HStack {
+                            Text("源代码")
+                            Spacer()
+                            Text("GPLv3")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        }
+                    }
+                }
+
+                Section(header: Text("关于橘阅")) {
                     HStack {
                         Text("应用名称")
                         Spacer()
-                        Text("Legado iOS (开源阅读)")
+                        Text("橘阅阅读器（基于 Legado）")
                             .foregroundColor(.secondary)
                     }
 
@@ -1832,5 +1849,27 @@ struct LogViewerView: View {
     private func load() {
         copied = false
         text = AppLog.read()
+    }
+}
+
+/// 商店版的隐私说明：不建账号、不做分析，数据只留在本机。
+struct ReaderPrivacyView: View {
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 14) {
+                Text("橘阅阅读器隐私政策")
+                    .font(.title3.bold())
+                Text("1. 本应用不创建账号，不收集姓名、邮箱、通讯录、位置或广告标识。")
+                Text("2. 书籍文件、阅读进度、书签和设置只保存在你的设备上。卸载应用会删除这些数据。")
+                Text("3. 只有你主动添加 OPDS / Calibre 书库或使用 WebDAV 备份时，应用才会连接你填写的服务器。")
+                Text("4. 本应用不提供书籍内容，也不内置第三方书源；请只导入你拥有合法使用权的文件。")
+                Text("5. 应用使用系统语音朗读；不会把正文上传到服务器。")
+                Text("如有问题，请在项目主页提交 issue。")
+            }
+            .font(.subheadline)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(20)
+        }
+        .navigationTitle("隐私政策")
     }
 }
