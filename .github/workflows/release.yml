@@ -4,6 +4,12 @@ on:
   push:
     branches:
       - main
+    paths:
+      - 'VERSION'
+      - 'CHANGELOG.md'
+      - 'Sources/**'
+      - 'Legado.xcodeproj/**'
+      - 'Package.swift'
   workflow_dispatch:
     inputs:
       tag_name:
@@ -20,7 +26,7 @@ jobs:
 
     steps:
       - name: Checkout Repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Select Xcode
         run: |
@@ -84,7 +90,7 @@ jobs:
           cd ..
 
       - name: Upload IPA Artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: Legado-${{ steps.version_step.outputs.tag }}-ipa
           path: build/Legado-*.ipa
@@ -117,11 +123,13 @@ jobs:
           cat build/RELEASE_NOTES.md
 
       - name: Publish GitHub Release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ steps.version_step.outputs.tag }}
-          name: "Legado iOS ${{ steps.version_step.outputs.tag }}"
-          prerelease: false
-          draft: false
-          files: build/Legado-*.ipa
-          body_path: build/RELEASE_NOTES.md
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="${{ steps.version_step.outputs.tag }}"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release edit "$TAG" --title "Legado iOS $TAG" --notes-file build/RELEASE_NOTES.md
+          else
+            gh release create "$TAG" --title "Legado iOS $TAG" --notes-file build/RELEASE_NOTES.md
+          fi
+          gh release upload "$TAG" build/Legado-*.ipa --clobber
