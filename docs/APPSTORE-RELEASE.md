@@ -34,6 +34,7 @@
 - 注册“橘阅”商标（建议中国区第 9、42 类）。
 - 保留图标、截图、UI 的创作证据。
 - 监控 App Store 搜索“橘阅”“Legado”，发现冒用按 `TAKEDOWN-TEMPLATES.md` 处理。
+- 可直接运行 `scripts/appstore-clone-check.sh` 查询中国区 App Store。
 - 有服务端后再加 App Attest / DeviceCheck + 收据校验；纯本地版无法阻止界面克隆。
 
 ## 已知法律门槛
