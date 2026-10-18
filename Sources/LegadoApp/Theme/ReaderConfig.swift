@@ -190,23 +190,66 @@ struct AppThemeBackdrop: View {
     @Environment(\.appTheme) private var theme
 
     var body: some View {
-        ZStack {
-            theme.palette.background
+        GeometryReader { geo in
+            ZStack {
+                theme.palette.background
 
-            if theme.showsGrid {
-                Canvas { context, size in
-                    var grid = Path()
-                    for x in stride(from: 0.0, through: size.width, by: theme.metrics.gridSpacing) {
-                        grid.move(to: CGPoint(x: x, y: 0))
-                        grid.addLine(to: CGPoint(x: x, y: size.height))
+                if theme.showsGrid {
+                    Canvas { context, size in
+                        var grid = Path()
+                        for x in stride(from: 0.0, through: size.width, by: theme.metrics.gridSpacing) {
+                            grid.move(to: CGPoint(x: x, y: 0))
+                            grid.addLine(to: CGPoint(x: x, y: size.height))
+                        }
+                        for y in stride(from: 0.0, through: size.height, by: theme.metrics.gridSpacing) {
+                            grid.move(to: CGPoint(x: 0, y: y))
+                            grid.addLine(to: CGPoint(x: size.width, y: y))
+                        }
+                        context.stroke(grid, with: .color(theme.palette.ink.opacity(theme.gridOpacity)), lineWidth: 0.5)
+
+                        var scanlines = Path()
+                        for y in stride(from: 0.0, through: size.height, by: 4.0) {
+                            scanlines.move(to: CGPoint(x: 0, y: y))
+                            scanlines.addLine(to: CGPoint(x: size.width, y: y))
+                        }
+                        context.stroke(scanlines, with: .color(theme.palette.ink.opacity(0.018)), lineWidth: 0.5)
+
+                        var corners = Path()
+                        let inset: CGFloat = 14
+                        let arm: CGFloat = 26
+                        corners.move(to: CGPoint(x: inset, y: inset + arm))
+                        corners.addLine(to: CGPoint(x: inset, y: inset))
+                        corners.addLine(to: CGPoint(x: inset + arm, y: inset))
+                        corners.move(to: CGPoint(x: size.width - inset - arm, y: inset))
+                        corners.addLine(to: CGPoint(x: size.width - inset, y: inset))
+                        corners.addLine(to: CGPoint(x: size.width - inset, y: inset + arm))
+                        corners.move(to: CGPoint(x: inset, y: size.height - inset - arm))
+                        corners.addLine(to: CGPoint(x: inset, y: size.height - inset))
+                        corners.addLine(to: CGPoint(x: inset + arm, y: size.height - inset))
+                        corners.move(to: CGPoint(x: size.width - inset - arm, y: size.height - inset))
+                        corners.addLine(to: CGPoint(x: size.width - inset, y: size.height - inset))
+                        corners.addLine(to: CGPoint(x: size.width - inset, y: size.height - inset - arm))
+                        context.stroke(corners, with: .color(theme.palette.ink.opacity(0.16)), lineWidth: 0.8)
+
+                        var ticks = Path()
+                        let tickY = size.height - 34
+                        for index in 0..<14 {
+                            let height = CGFloat((index % 5) + 1) * 2.2
+                            let x = size.width - 34 - CGFloat(index) * 4
+                            ticks.addRect(CGRect(x: x, y: tickY - height, width: 2, height: height))
+                        }
+                        context.fill(ticks, with: .color(theme.palette.ink.opacity(0.08)))
                     }
-                    for y in stride(from: 0.0, through: size.height, by: theme.metrics.gridSpacing) {
-                        grid.move(to: CGPoint(x: 0, y: y))
-                        grid.addLine(to: CGPoint(x: size.width, y: y))
-                    }
-                    context.stroke(grid, with: .color(theme.palette.ink.opacity(theme.gridOpacity)), lineWidth: 0.5)
+
+                    Text("TERMINAL / READER")
+                        .font(.system(size: 9, weight: .medium, design: .monospaced))
+                        .tracking(3)
+                        .foregroundColor(theme.palette.ink.opacity(0.055))
+                        .rotationEffect(.degrees(-90))
+                        .position(x: geo.size.width - 9, y: geo.size.height * 0.52)
                 }
             }
+            .frame(width: geo.size.width, height: geo.size.height)
         }
         .ignoresSafeArea()
     }
