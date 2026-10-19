@@ -15,6 +15,7 @@ import CommonCrypto
     func base64Decode(_ str: String) -> String
     func timeFormat(_ timestamp: JSValue) -> String
     func getString(_ path: String) -> String
+    func jsonPath(_ json: String, _ path: String) -> JSValue
     func toast(_ message: String)
     func longToast(_ message: String)
     func log(_ message: JSValue)
@@ -71,6 +72,11 @@ public final class ScriptBrowser {
     private static let storeLock = NSLock()
     private let lock = NSLock()
     private weak var jsContext: JSContext?
+    /// 书源声明的响应时间。聚合源给到 180s，默认 15s 会先超时。
+    var respondTimeout: TimeInterval?
+    /// 脚本里的同步请求也要吃书源的 concurrentRate，否则规则脚本会绕过限速。
+    var rateKey: String?
+    var rateLimit: SourceRateLimit?
 
     public init(context: JSContext?) {
         self.jsContext = context
@@ -85,7 +91,12 @@ public final class ScriptBrowser {
 
     public func ajax(_ url: String) -> String {
         guard let parsed = NetworkClient.parseLegadoUrl(url, defaultHeader: jarCookieHeader(for: url)) else { return "" }
-        let resp = NetworkClient.shared.requestSync(parsed: parsed)
+        let resp = NetworkClient.shared.requestSync(
+            parsed: parsed,
+            timeout: respondTimeout ?? 15,
+            rateKey: rateKey,
+            rateLimit: rateLimit
+        )
         return resp?.bodyString ?? ""
     }
 
@@ -100,7 +111,12 @@ public final class ScriptBrowser {
         guard let parsed = NetworkClient.parseLegadoUrl(url, defaultHeader: header) else {
             return JSValue(nullIn: ctx)
         }
-        let resp = NetworkClient.shared.requestSync(parsed: parsed)
+        let resp = NetworkClient.shared.requestSync(
+            parsed: parsed,
+            timeout: respondTimeout ?? 15,
+            rateKey: rateKey,
+            rateLimit: rateLimit
+        )
         let body = resp?.bodyString ?? ""
         let code = resp?.statusCode ?? 0
 
@@ -148,7 +164,12 @@ public final class ScriptBrowser {
         }
 
         let parsed = NetworkClient.ParsedRequest(url: cleanUrl, method: "POST", headers: headerDict, body: bodyData)
-        let resp = NetworkClient.shared.requestSync(parsed: parsed)
+        let resp = NetworkClient.shared.requestSync(
+            parsed: parsed,
+            timeout: respondTimeout ?? 15,
+            rateKey: rateKey,
+            rateLimit: rateLimit
+        )
         let respBody = resp?.bodyString ?? ""
         let respCode = resp?.statusCode ?? 0
 
@@ -401,13 +422,24 @@ public final class ScriptBrowser {
     private func browserResult(url: String, title: String, wait: Bool) -> JSValue {
         let ctx = jsContext ?? JSContext()
         guard let result = ScriptBrowser.shared.present?(url, title, wait) else {
-            return JSValue(object: ["url": url, "body": "", "code": 0], in: ctx)
+            let empty = JSValue(newObjectIn: ctx) ?? JSValue(nullIn: ctx)
+            let emptyBody: @convention(block) () -> String = { "" }
+            empty?.setValue(emptyBody, forProperty: "body")
+            empty?.setValue("", forProperty: "bodyString")
+            empty?.setValue(url, forProperty: "url")
+            empty?.setValue(0, forProperty: "code")
+            return empty ?? JSValue(nullIn: ctx)
         }
-        return JSValue(object: [
-            "url": result.url.isEmpty ? url : result.url,
-            "body": result.body,
-            "code": 200
-        ], in: ctx)
+        // 安卓契约是 `java.startBrowserAwait(...).body()`，body 必须是方法；
+        // 同时给一份 bodyString 方便原生侧读取。
+        let obj = JSValue(newObjectIn: ctx) ?? JSValue(nullIn: ctx)
+        let finalUrl = result.url.isEmpty ? url : result.url
+        let bodyBlock: @convention(block) () -> String = { result.body }
+        obj?.setValue(bodyBlock, forProperty: "body")
+        obj?.setValue(result.body, forProperty: "bodyString")
+        obj?.setValue(finalUrl, forProperty: "url")
+        obj?.setValue(200, forProperty: "code")
+        return obj ?? JSValue(nullIn: ctx)
     }
 
     private static func persistentDeviceID() -> String {
@@ -477,6 +509,16 @@ public final class ScriptBrowser {
         }
         return ""
     }
+
+    public func jsonPath(_ json: String, _ path: String) -> JSValue {
+        let ctx = jsContext ?? JSContext()
+        guard let data = json.data(using: .utf8),
+              let object = try? JSONSerialization.jsonObject(with: data),
+              let result = JSONPath.evaluate(path: path, json: object) else {
+            return JSValue(nullIn: ctx)
+        }
+        return JSValue(object: result, in: ctx) ?? JSValue(nullIn: ctx)
+    }
 }
 
 public class JSEngine {
@@ -508,6 +550,11 @@ public class JSEngine {
         self.context = JSContext()
         self.javaShim = JavaShim(context: context)
         self.book = book
+        self.javaShim.rateKey = bookSource?.bookSourceUrl
+        self.javaShim.rateLimit = bookSource?.rateLimit
+        if let ms = bookSource?.respondTime, ms > 0 {
+            javaShim.respondTimeout = min(180, max(10, TimeInterval(ms) / 1000))
+        }
 
         setupEnvironment(bookSource: bookSource, baseUrl: baseUrl)
 
@@ -588,6 +635,18 @@ public class JSEngine {
         sourceObj?.setValue(getLoginInfoMapBlock, forProperty: "getLoginInfoMap")
         sourceObj?.setValue(getVariableBlock, forProperty: "getVariable")
         sourceObj?.setValue(setVariableBlock, forProperty: "setVariable")
+        let sourcePutBlock: @convention(block) (String, String) -> String = { [weak javaShim] key, value in
+            javaShim?.put(key, value) ?? value
+        }
+        let sourceGetBlock: @convention(block) (String) -> String = { [weak javaShim] key in
+            javaShim?.get(key) ?? ""
+        }
+        let sourceRemoveBlock: @convention(block) (String) -> Void = { [weak javaShim] key in
+            javaShim?.removeCache(key)
+        }
+        sourceObj?.setValue(sourcePutBlock, forProperty: "put")
+        sourceObj?.setValue(sourceGetBlock, forProperty: "get")
+        sourceObj?.setValue(sourceRemoveBlock, forProperty: "remove")
         sourceObj?.setValue(bookSource?.loginUrl ?? "", forProperty: "loginUrl")
         // 脚本用它做缓存键：cache.put(`userInfo_${source.getKey()}`, ...)
         let getKeyBlock: @convention(block) () -> String = { bookSource?.bookSourceUrl ?? "" }
@@ -684,6 +743,18 @@ public class JSEngine {
           android: { util: { Base64: { encodeToString: function(bytes, flags){ return java.base64EncodeBytes(bytes); } } } },
           java: { lang: { Thread: { sleep: function(ms){ java.sleepMs(ms); } } } },
           io: { legato: { kazusa: { utils: { TimeoutCancellationException: function(message){ this.message = message; this.name = 'TimeoutCancellationException'; } } } } }
+        };
+        var com = {
+          jayway: {
+            jsonpath: {
+              JsonPath: {
+                read: function(json, path){ return java.jsonPath(String(json), String(path)); },
+                parse: function(json){
+                  return { read: function(path){ return java.jsonPath(String(json), String(path)); } };
+                }
+              }
+            }
+          }
         };
         if (!java.refreshExplore) { java.refreshExplore = function(){}; }
 

@@ -23,6 +23,9 @@ public class BookStore: ObservableObject {
     /// 按书的正文替换规则（阅读页里选的「把这段换成…」）
     @Published public var textReplaceRulesMap: [String: [TextReplaceRule]] = [:]
 
+    /// 搜索实测的响应时间批量落盘，避免一搜 50 个源就写 50 次 UserDefaults。
+    private var respondTimeSaveWorkItem: DispatchWorkItem?
+
     /// 书签 / 笔记：按书存，读取时按书过滤
     @Published public var bookmarks: [BookBookmark] = []
 
@@ -61,6 +64,28 @@ public class BookStore: ObservableObject {
                 store.saveBookshelf()
             }
         }
+        // 搜索实测耗时写回书源 respondTime，下一次选源排序就有真实依据。
+        BookSearchService.respondTimeSink = { url, milliseconds in
+            guard !url.isEmpty, milliseconds > 0 else { return }
+            DispatchQueue.main.async {
+                let store = BookStore.shared
+                guard let idx = store.sources.firstIndex(where: { $0.bookSourceUrl == url }) else { return }
+                let old = store.sources[idx].respondTime
+                // 抖动小于 50ms 不重写，避免每次搜索都刷 UserDefaults
+                if let old, abs(old - milliseconds) < 50 { return }
+                store.sources[idx].respondTime = milliseconds
+                store.scheduleRespondTimeSave()
+            }
+        }
+    }
+
+    private func scheduleRespondTimeSave() {
+        respondTimeSaveWorkItem?.cancel()
+        let item = DispatchWorkItem { [weak self] in
+            self?.saveSources()
+        }
+        respondTimeSaveWorkItem = item
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5, execute: item)
     }
 
     private func loadBookmarks() {
@@ -580,6 +605,82 @@ public class BookStore: ObservableObject {
     }
 
     // MARK: - Source Management
+    public struct SourceImportEntry: Identifiable {
+        public enum Status: String {
+            case new = "新增"
+            case update = "更新"
+            case conflict = "同名冲突"
+        }
+
+        public var id: String { incoming.bookSourceUrl + "|" + (existing?.bookSourceUrl ?? "") }
+        public let incoming: BookSource
+        public let existing: BookSource?
+        public let status: Status
+    }
+
+    /// 只解析、不改仓库，供导入预览使用。
+    public func planImportSources(json: String) throws -> [SourceImportEntry] {
+        guard let data = json.data(using: .utf8) else { return [] }
+        let imported = try JSONDecoder().decode([BookSource].self, from: data)
+
+        var entries: [SourceImportEntry] = []
+        var seenURLs = Set<String>()
+        for source in imported where !source.bookSourceUrl.isEmpty {
+            guard seenURLs.insert(source.bookSourceUrl).inserted else { continue }
+            if let existing = sources.first(where: { $0.bookSourceUrl == source.bookSourceUrl }) {
+                entries.append(SourceImportEntry(incoming: source, existing: existing, status: .update))
+            } else if let sameName = sources.first(where: { $0.bookSourceName == source.bookSourceName }) {
+                entries.append(SourceImportEntry(incoming: source, existing: sameName, status: .conflict))
+            } else {
+                entries.append(SourceImportEntry(incoming: source, existing: nil, status: .new))
+            }
+        }
+        return entries
+    }
+
+    /// 应用已预览的导入计划。同名不同网址默认保留两边，勾选覆盖时按名字替换。
+    @discardableResult
+    public func applyImport(
+        entries: [BookStore.SourceImportEntry],
+        overwriteConflicts: Bool
+    ) -> (added: Int, updated: Int, conflictsAdded: Int) {
+        var added = 0
+        var updated = 0
+        var conflictsAdded = 0
+
+        for entry in entries {
+            switch entry.status {
+            case .new:
+                if !sources.contains(where: { $0.bookSourceUrl == entry.incoming.bookSourceUrl }) {
+                    sources.append(entry.incoming)
+                    added += 1
+                }
+            case .update:
+                if let idx = sources.firstIndex(where: { $0.bookSourceUrl == entry.incoming.bookSourceUrl }) {
+                    sources[idx] = entry.incoming
+                    updated += 1
+                }
+            case .conflict:
+                if overwriteConflicts,
+                   let idx = sources.firstIndex(where: { $0.bookSourceUrl == entry.existing?.bookSourceUrl
+                       || $0.bookSourceName == entry.incoming.bookSourceName }) {
+                    sources[idx] = entry.incoming
+                    updated += 1
+                } else if !sources.contains(where: { $0.bookSourceUrl == entry.incoming.bookSourceUrl }) {
+                    // 同名不同网址：名字后加标记，避免列表里两个同名源分不清。
+                    var incoming = entry.incoming
+                    if let existingName = entry.existing?.bookSourceName, existingName == incoming.bookSourceName {
+                        incoming.bookSourceName += "（导入）"
+                    }
+                    sources.append(incoming)
+                    conflictsAdded += 1
+                }
+            }
+        }
+        if added + updated + conflictsAdded > 0 { saveSources() }
+        return (added, updated, conflictsAdded)
+    }
+
     public func importSources(json: String) throws -> Int {
         guard let data = json.data(using: .utf8) else { return 0 }
         let imported = try JSONDecoder().decode([BookSource].self, from: data)
@@ -621,45 +722,19 @@ public class BookStore: ObservableObject {
         saveSources()
     }
 
-    /// Robustly resolves the BookSource corresponding to a Book using URL, Name, Domain, or Aliases
+    /// 解析这本书所属的书源。
+    ///
+    /// 判定顺序与安卓一致：origin 精确匹配 → bookUrlPattern → 源名精确匹配 →
+    /// 同域且路径相关。后缀模糊匹配只接受唯一候选，找不到就返回 nil；
+    /// 以前兜底 `sources.first` 会把书串到完全无关的源上。
     public func findSource(for book: Book) -> BookSource? {
-        if book.origin == "local" || book.bookUrl.hasPrefix("file://") || book.bookUrl.hasPrefix("epub://") || book.bookUrl.hasPrefix("txt://") {
-            return nil
-        }
+        BookSourceResolver.find(book: book, in: sources)
+    }
 
-        // 1. Exact URL match
-        if let s = sources.first(where: { $0.bookSourceUrl == book.origin }) {
-            return s
-        }
-
-        // 2. Exact Name match
-        if !book.originName.isEmpty, let s = sources.first(where: { $0.bookSourceName == book.originName }) {
-            return s
-        }
-
-        // 3. Domain / Host Match
-        let bookHost = URL(string: book.origin)?.host ?? URL(string: book.bookUrl)?.host ?? ""
-        if !bookHost.isEmpty {
-            for s in sources {
-                let sHost = URL(string: s.bookSourceUrl)?.host ?? ""
-                if !sHost.isEmpty && sHost == bookHost {
-                    return s
-                }
-            }
-        }
-
-        // 4. Substring / URL contains matching
-        if let s = sources.first(where: {
-            book.origin.contains($0.bookSourceUrl) ||
-            $0.bookSourceUrl.contains(book.origin) ||
-            book.bookUrl.hasPrefix($0.bookSourceUrl) ||
-            (!book.originName.isEmpty && $0.bookSourceName.contains(book.originName)) ||
-            (!book.originName.isEmpty && book.originName.contains($0.bookSourceName))
-        }) {
-            return s
-        }
-
-        return sources.first
+    /// 搜索结果自身的来源：只按 origin / 源名 / bookUrlPattern 精确判定。
+    /// 避免换源面板或搜索跳转把结果挂到另一个同站书源上。
+    public func source(forSearchBook item: SearchBook) -> BookSource? {
+        BookSourceResolver.find(searchBook: item, in: sources)
     }
 
     public func updateSource(originalSource: BookSource? = nil, newSource: BookSource) {
@@ -684,6 +759,7 @@ public class BookStore: ObservableObject {
         if bookshelfModified {
             saveBookshelf()
         }
+        SourceLoginService.shared.invalidate(sourceUrl: newSource.bookSourceUrl)
     }
 
     public func updateSource(_ source: BookSource) {
@@ -764,7 +840,7 @@ public class BookStore: ObservableObject {
             BookStore.shared.sources.first { $0.bookSourceUrl == source.bookSourceUrl } ?? source
         }
         guard let loginScript = source.loginUrl, !loginScript.isEmpty else {
-            throw NSError(domain: "BookStore", code: 1, userInfo: [NSLocalizedDescriptionKey: "该书源未配置登录脚本"])
+            throw NSError(domain: "BookStore", code: 1, userInfo: [NSLocalizedDescriptionKey: "这个源没有登录脚本。"])
         }
 
         let credData = (try? JSONSerialization.data(withJSONObject: credentials)) ?? Data()
@@ -846,6 +922,7 @@ public class BookStore: ObservableObject {
                 saveSources()
             }
         }
+        SourceLoginService.shared.invalidate(sourceUrl: source.bookSourceUrl)
 
         return resolvedHeader
     }
@@ -890,6 +967,11 @@ public class BookStore: ObservableObject {
             sources[idx].loginInfo = nil
             saveSources()
         }
+        CookieJar.shared.remove(for: sourceUrl)
+        if let host = CookieJar.shared.lastWrittenHostKey, !host.isEmpty {
+            CookieJar.shared.remove(for: host)
+        }
+        SourceLoginService.shared.invalidate(sourceUrl: sourceUrl)
     }
 
     // MARK: - EPUB & Chapter Storage

@@ -6,6 +6,7 @@ import LegadoCore
 
 public struct WebDAVSyncView: View {
     @ObservedObject var bookStore = BookStore.shared
+    @Environment(\.appTheme) private var theme
 
     @State private var url: String = ""
     @State private var username: String = ""
@@ -52,6 +53,7 @@ public struct WebDAVSyncView: View {
                     .listRowInsets(EdgeInsets(top: 8, leading: 12, bottom: 8, trailing: 12))
                     .listRowBackground(Color.clear)
             }
+            .appThemedRows()
             serverConfigSection
             statusSection
             actionsSection
@@ -79,9 +81,9 @@ public struct WebDAVSyncView: View {
             }
         } message: {
             if let name = selectedRestoreBackupName {
-                Text("将从 WebDAV 下载指定的备份文件 [\(name)] 并与本地数据合并更新。是否继续？")
+                Text("从 WebDAV 下载 [\(name)]，和本地数据合并。继续吗？")
             } else {
-                Text("恢复操作将从 WebDAV 下载最新的 Android 兼容备份包（backup*.zip 或 bookshelf.json），并与当前本地数据合并更新。是否继续？")
+                Text("从 WebDAV 下载最新的备份，和本地数据合并。继续吗？")
             }
         }
         .sheet(isPresented: $showBackupPickerSheet) {
@@ -165,7 +167,7 @@ public struct WebDAVSyncView: View {
             VStack(alignment: .leading, spacing: 8) {
                 Text("快捷填入服务预设")
                     .font(.caption)
-                    .foregroundColor(.secondary)
+                    .foregroundColor(theme.palette.secondaryInk)
                 HStack(spacing: 8) {
                     Button("坚果云") {
                         url = "https://dav.jianguoyun.com/dav/"
@@ -196,8 +198,9 @@ public struct WebDAVSyncView: View {
         } header: {
             Text("WebDAV 服务器设置")
         } footer: {
-            Text("提示：坚果云等服务需在网页端设置 -> 安全设置中生成「应用专用密码」填入。备份将打包为 backupYYYY-MM-DD-设备名称.zip，完全兼容 Android Legado 备份格式。")
+            Text("坚果云这类服务，要先在网页端生成「应用专用密码」再填进来。备份包是 backupYYYY-MM-DD-设备名称.zip，安卓 Legado 也能恢复。")
         }
+        .appThemedRows()
     }
 
     @ViewBuilder
@@ -208,10 +211,10 @@ public struct WebDAVSyncView: View {
                 Spacer()
                 if let date = lastSyncTime {
                     Text(formatDate(date))
-                        .foregroundColor(.secondary)
+                        .foregroundColor(theme.palette.secondaryInk)
                 } else {
                     Text("暂未同步")
-                        .foregroundColor(.secondary)
+                        .foregroundColor(theme.palette.secondaryInk)
                 }
             }
 
@@ -219,16 +222,17 @@ public struct WebDAVSyncView: View {
                 Text("本地书架")
                 Spacer()
                 Text("\(bookStore.bookshelf.count) 本")
-                    .foregroundColor(.secondary)
+                    .foregroundColor(theme.palette.secondaryInk)
             }
 
             HStack {
                 Text("本地书源")
                 Spacer()
                 Text("\(bookStore.sources.count) 个")
-                    .foregroundColor(.secondary)
+                    .foregroundColor(theme.palette.secondaryInk)
             }
         }
+        .appThemedRows()
     }
 
     @ViewBuilder
@@ -298,6 +302,7 @@ public struct WebDAVSyncView: View {
             }
             .disabled(isTesting || isBackingUp || isRestoring || isFetchingBackups || url.isEmpty || username.isEmpty)
         }
+        .appThemedRows()
     }
 
     @ViewBuilder
@@ -323,8 +328,9 @@ public struct WebDAVSyncView: View {
 
             Text("导出：把书架、书源和应用设置打成和安卓一致的 backup*.zip，存到本机「文件」里 —— 不用配 WebDAV 也能备份。导入：支持选取 Android 版 Legado 导出的 backup*.zip（可配合 bookProgress 进度目录），自动恢复书籍、书源与阅读进度。")
                 .font(.caption2)
-                .foregroundColor(.secondary)
+                .foregroundColor(theme.palette.secondaryInk)
         }
+        .appThemedRows()
     }
 
     /// 不出网也备份：直接把 zip 存到「文件」
@@ -362,34 +368,35 @@ public struct WebDAVSyncView: View {
                             HStack {
                                 Image(systemName: "doc.zipper")
                                     .font(.title2)
-                                    .foregroundColor(.accentColor)
+                                    .foregroundColor(theme.palette.accent)
                                     .padding(.trailing, 4)
                                 VStack(alignment: .leading, spacing: 4) {
                                     Text(backup.fileName)
                                         .font(.system(.subheadline, design: .monospaced))
-                                        .foregroundColor(.primary)
+                                        .foregroundColor(theme.palette.ink)
                                     HStack(spacing: 12) {
                                         if let date = backup.lastModified {
                                             Text(formatDate(date))
                                                 .font(.caption2)
-                                                .foregroundColor(.secondary)
+                                                .foregroundColor(theme.palette.secondaryInk)
                                         }
                                         if let size = backup.size {
                                             Text(formatFileSize(size))
                                                 .font(.caption2)
-                                                .foregroundColor(.secondary)
+                                                .foregroundColor(theme.palette.secondaryInk)
                                         }
                                     }
                                 }
                                 Spacer()
                                 Image(systemName: "chevron.right")
                                     .font(.caption)
-                                    .foregroundColor(.secondary)
+                                    .foregroundColor(theme.palette.secondaryInk)
                             }
                             .padding(.vertical, 4)
                         }
                     }
                 }
+                .appThemedRows()
             }
             .appThemedList()
             .navigationTitle("选择云端备份")

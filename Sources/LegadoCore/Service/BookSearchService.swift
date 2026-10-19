@@ -3,13 +3,23 @@ import Foundation
 public class BookSearchService {
     public static let shared = BookSearchService()
 
+    /// 搜完一次请求把实测耗时送回宿主，写回书源 `respondTime`。Core 不认识仓库，
+    /// 和 `JSEngine.variableSink` 一样由 App 层注入。
+    public static var respondTimeSink: ((_ sourceUrl: String, _ milliseconds: Int64) -> Void)?
+
     public init() {}
 
     /// Searches books across a single BookSource
-    public func search(source: BookSource, key: String, page: Int = 1) async throws -> [SearchBook] {
+    public func search(
+        source: BookSource,
+        key: String,
+        page: Int = 1,
+        diagnostics: ((SourceRequestDiagnostic) -> Void)? = nil
+    ) async throws -> [SearchBook] {
         guard let rawSearchUrl = source.searchUrl, !rawSearchUrl.isEmpty else {
             return []
         }
+        try await SourceLoginService.shared.requireLoginIfNeeded(source: source)
 
         // Setup JS engine and render URL template
         let jsEngine = JSEngine(bookSource: source, baseUrl: source.bookSourceUrl)
@@ -76,7 +86,28 @@ public class BookSearchService {
             return []
         }
 
-        let response = try await NetworkClient.shared.request(parsed: parsedReq)
+        let requestStarted = Date()
+        let response: NetworkResponse
+        do {
+            response = try await NetworkClient.shared.request(
+                parsed: parsedReq,
+                timeout: nil,
+                rateKey: source.bookSourceUrl,
+                rateLimit: source.rateLimit
+            )
+        } catch {
+            diagnostics?(SourceRequestDiagnostic(
+                step: "搜索",
+                url: parsedReq.url.absoluteString,
+                elapsedMs: Int64(Date().timeIntervalSince(requestStarted) * 1000),
+                note: "请求失败：\(error.localizedDescription)"
+            ))
+            throw error
+        }
+        let elapsedMs = Int64(Date().timeIntervalSince(requestStarted) * 1000)
+        if response.statusCode >= 200 && response.statusCode < 400 {
+            BookSearchService.respondTimeSink?(source.bookSourceUrl, elapsedMs)
+        }
         LegadoLog.log("[Search] [\(source.bookSourceName)] HTTP \(response.statusCode)，收到 \(response.data.count) 字节")
 
         guard response.statusCode >= 200 && response.statusCode < 400 else {
@@ -98,6 +129,16 @@ public class BookSearchService {
         )
 
         let bookElements = analyzer.getElements(searchRule.bookList)
+        diagnostics?(SourceRequestDiagnostic(
+            step: "搜索",
+            url: parsedReq.url.absoluteString,
+            statusCode: response.statusCode,
+            elapsedMs: elapsedMs,
+            responseBytes: response.data.count,
+            responsePreview: DiagnosticPreview.make(response.bodyString),
+            ruleHits: bookElements.count,
+            note: "解析出 \(bookElements.count) 个候选"
+        ))
         LegadoLog.log("[Search] [\(source.bookSourceName)] 候选条目 \(bookElements.count) 个")
         var searchBooks: [SearchBook] = []
 
@@ -115,7 +156,10 @@ public class BookSearchService {
 
             guard !name.isEmpty, !bookUrl.isEmpty else { continue }
 
-            let coverUrl = itemAnalyzer.getString(searchRule.coverUrl, isUrl: true)
+            let rawCover = itemAnalyzer.getString(searchRule.coverUrl, isUrl: true)
+            let coverUrl = rawCover.isEmpty
+                ? ""
+                : CoverURLResolver.resolve(rawCover, source: source, baseUrl: parsedReq.url.absoluteString)
             let intro = itemAnalyzer.getString(searchRule.intro)
             let kind = itemAnalyzer.getString(searchRule.kind)
             let lastChapter = itemAnalyzer.getString(searchRule.lastChapter)
@@ -146,7 +190,9 @@ public class BookSearchService {
         key: String,
         page: Int = 1
     ) -> AsyncStream<(source: BookSource, books: [SearchBook])> {
-        let enabledSources = sources.filter { $0.enabled != false && $0.searchUrl != nil }
+        let enabledSources = sources
+            .filter { $0.enabled != false && $0.searchUrl != nil }
+            .sorted(by: BookSource.selectionOrder)
         // 脱敏：不记关键词原文，也不列全部书源名
         LegadoLog.log("[Search] 开始多源搜索 page=\(page) 源数=\(enabledSources.count) 关键词长度=\(key.count)")
 

@@ -30,6 +30,8 @@ struct AppThemePalette {
     var divider: Color
     var accent: Color
     var danger: Color
+    var success: Color
+    var warning: Color
     var onAccent: Color
 }
 
@@ -69,6 +71,8 @@ struct AppThemeTokens {
             divider: Color.primary.opacity(0.12),
             accent: .accentColor,
             danger: .red,
+            success: .green,
+            warning: .orange,
             onAccent: .white
         ),
         typography: AppThemeTypography(
@@ -96,6 +100,8 @@ struct AppThemeTokens {
             divider: Color(red: 0.604, green: 0.580, blue: 0.522),
             accent: Color(red: 0.702, green: 0.227, blue: 0.169),
             danger: Color(red: 0.702, green: 0.227, blue: 0.169),
+            success: Color(red: 0.247, green: 0.408, blue: 0.267),
+            warning: Color(red: 0.553, green: 0.373, blue: 0.153),
             onAccent: Color(red: 0.965, green: 0.945, blue: 0.894)
         ),
         typography: AppThemeTypography(
@@ -166,16 +172,27 @@ private struct AppThemedListModifier: ViewModifier {
     @Environment(\.appTheme) private var theme
 
     @ViewBuilder
+    private func styledContent(_ content: Content) -> some View {
+        if theme.showsGrid {
+            content.listStyle(.plain)
+        } else {
+            content
+        }
+    }
+
+    @ViewBuilder
     func body(content: Content) -> some View {
         if #available(iOS 16.0, macOS 13.0, *) {
-            content
+            styledContent(content)
                 .scrollContentBackground(.hidden)
                 .listRowBackground(theme.palette.surface)
                 .background(AppThemeBackdrop())
+                .appThemedPage()
         } else {
-            content
+            styledContent(content)
                 .listRowBackground(theme.palette.surface)
                 .background(AppThemeBackdrop())
+                .appThemedPage()
         }
     }
 }
@@ -183,6 +200,44 @@ private struct AppThemedListModifier: ViewModifier {
 extension View {
     func appThemedList() -> some View {
         modifier(AppThemedListModifier())
+    }
+
+    func appThemedRows() -> some View {
+        modifier(AppThemedRowsModifier())
+    }
+
+    func appThemedPage() -> some View {
+        modifier(AppThemedPageModifier())
+    }
+}
+
+private struct AppThemedRowsModifier: ViewModifier {
+    @Environment(\.appTheme) private var theme
+
+    func body(content: Content) -> some View {
+        content.listRowBackground(theme.palette.surface)
+    }
+}
+
+private struct AppThemedPageModifier: ViewModifier {
+    @Environment(\.appTheme) private var theme
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if #available(iOS 16.0, macOS 13.0, *) {
+            #if os(iOS)
+            content
+                .tint(theme.palette.accent)
+                .toolbarBackground(theme.palette.surface, for: .navigationBar)
+                .toolbarBackground(.visible, for: .navigationBar)
+            #else
+            content
+                .tint(theme.palette.accent)
+            #endif
+        } else {
+            content
+                .tint(theme.palette.accent)
+        }
     }
 }
 

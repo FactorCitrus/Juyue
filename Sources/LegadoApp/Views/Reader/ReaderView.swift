@@ -18,33 +18,55 @@ struct CollapsibleSettingBlock<Content: View>: View {
     let title: String
     let tint: Color
     let initiallyExpanded: Bool
+    let summary: String?
     @ViewBuilder let content: () -> Content
 
     @State private var expanded: Bool
 
     /// initiallyExpanded = true 的块等于不折：进来就把内容铺出来
-    init(title: String, tint: Color, initiallyExpanded: Bool = false, @ViewBuilder content: @escaping () -> Content) {
+    init(
+        title: String,
+        tint: Color,
+        initiallyExpanded: Bool = false,
+        summary: String? = nil,
+        @ViewBuilder content: @escaping () -> Content
+    ) {
         self._expanded = State(initialValue: initiallyExpanded)
         self.title = title
         self.tint = tint
         self.initiallyExpanded = initiallyExpanded
+        self.summary = summary
         self.content = content
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: 12) {
             Button {
                 withAnimation(.easeInOut(duration: 0.18)) { expanded.toggle() }
             } label: {
                 HStack(spacing: 8) {
+                    RoundedRectangle(cornerRadius: 1.5, style: .continuous)
+                        .fill(tint.opacity(0.75))
+                        .frame(width: 2.5, height: 12)
                     Text(title)
                         .font(.system(size: 13, weight: .semibold))
                         .foregroundColor(tint.opacity(0.85))
                     Spacer()
+                    if !expanded, let summary, !summary.isEmpty {
+                        Text(summary)
+                            .font(.system(size: 10, design: .monospaced))
+                            .foregroundColor(tint.opacity(0.55))
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.8)
+                    }
+                    Text(expanded ? "收起" : "展开")
+                        .font(.system(size: 10, design: .monospaced))
+                        .foregroundColor(tint.opacity(0.5))
                     Image(systemName: expanded ? "chevron.up" : "chevron.down")
                         .font(.system(size: 11, weight: .semibold))
                         .foregroundColor(tint.opacity(0.5))
                 }
+                .padding(.vertical, 2)
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
@@ -493,57 +515,106 @@ struct ReaderCommentsSheet: View {
     let chapterURL: String?
 
     @Environment(\.dismiss) private var dismiss
-    @Environment(\.appTheme) private var theme
+    @Environment(\.colorScheme) private var colorScheme
     @State private var target: ReviewTarget?
 
     var body: some View {
-        NavigationView {
-            List {
-                if let chapterURL {
-                    Section {
-                        Button {
-                            target = ReviewTarget(url: chapterURL, title: "本章说")
-                        } label: {
-                            Label("本章说 · 全部评论", systemImage: "text.bubble")
-                        }
-                    }
+        let palette = NieRPalette(colorScheme)
+
+        ZStack {
+            NieRBackdrop(palette: palette)
+            VStack(spacing: 0) {
+                NieRSheetHeader(
+                    palette: palette,
+                    kicker: "CHAPTER NOTES",
+                    title: "段评",
+                    subtitle: chapterTitle.isEmpty ? "\(items.count) PARAGRAPHS" : chapterTitle
+                ) {
+                    dismiss()
                 }
 
-                Section(header: Text("段评 · \(items.count) 段")) {
-                    if items.isEmpty {
-                        Text("本章暂无段评")
-                            .foregroundColor(.secondary)
-                    }
-                    ForEach(items) { item in
-                        Button {
-                            target = ReviewTarget(url: item.url, title: "段评")
-                        } label: {
-                            HStack(alignment: .top, spacing: 10) {
-                                Text(item.excerpt)
-                                    .font(.subheadline)
-                                    .foregroundColor(.primary)
-                                    .lineLimit(2)
-                                    .frame(maxWidth: .infinity, alignment: .leading)
-                                Text(item.count >= 99 ? "99+" : "\(item.count)")
-                                    .font(.caption.bold())
-                                .foregroundColor(theme.palette.onAccent)
-                                    .padding(.horizontal, 7)
-                                    .padding(.vertical, 3)
-                                .background(theme.palette.accent, in: Capsule())
+                ScrollView(.vertical, showsIndicators: false) {
+                    LazyVStack(alignment: .leading, spacing: 14) {
+                        if let chapterURL {
+                            Button {
+                                target = ReviewTarget(url: chapterURL, title: "本章说")
+                            } label: {
+                                NieRPanel(palette: palette, raised: true) {
+                                    HStack(spacing: 10) {
+                                        VStack(alignment: .leading, spacing: 3) {
+                                            Text("CHAPTER")
+                                                .font(.system(size: 9, weight: .semibold, design: .monospaced))
+                                                .tracking(0.8)
+                                                .foregroundColor(palette.accent)
+                                            Text("本章说 · 全部评论")
+                                                .font(.system(size: 15, weight: .semibold))
+                                                .foregroundColor(palette.ink)
+                                        }
+                                        Spacer()
+                                        Image(systemName: "text.bubble")
+                                            .font(.system(size: 14))
+                                            .foregroundColor(palette.accent)
+                                        Image(systemName: "chevron.right")
+                                            .font(.system(size: 10, weight: .semibold))
+                                            .foregroundColor(palette.muted)
+                                    }
+                                }
                             }
+                            .buttonStyle(.plain)
+                            .padding(.horizontal, 16)
+                        }
+
+                        NieRSectionTitle(
+                            palette: palette,
+                            index: "02",
+                            title: "PARAGRAPH NODES",
+                            trailing: "\(items.count)"
+                        )
+                        .padding(.horizontal, 16)
+
+                        if items.isEmpty {
+                            NieRPanel(palette: palette) {
+                                VStack(alignment: .leading, spacing: 5) {
+                                    Text("NO SIGNAL")
+                                        .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                                        .tracking(0.8)
+                                        .foregroundColor(palette.accent)
+                                    Text("本章还没有段评。")
+                                        .font(.system(size: 12))
+                                        .foregroundColor(palette.ink.opacity(0.82))
+                                }
+                            }
+                            .padding(.horizontal, 16)
+                        }
+
+                        ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
+                            Button {
+                                target = ReviewTarget(url: item.url, title: "段评")
+                            } label: {
+                                NieRPanel(palette: palette) {
+                                    HStack(alignment: .top, spacing: 10) {
+                                        Text(String(format: "%02d", index + 1))
+                                            .font(.system(size: 12, weight: .bold, design: .monospaced))
+                                            .foregroundColor(palette.accent)
+                                            .frame(width: 24, alignment: .leading)
+                                        Text(item.excerpt)
+                                            .font(.system(size: 13))
+                                            .foregroundColor(palette.ink)
+                                            .lineLimit(2)
+                                            .frame(maxWidth: .infinity, alignment: .leading)
+                                        NieRBadge(
+                                            palette: palette,
+                                            text: item.count >= 99 ? "99+" : "\(item.count)",
+                                            filled: item.count >= 99
+                                        )
+                                    }
+                                }
+                            }
+                            .buttonStyle(.plain)
+                            .padding(.horizontal, 16)
                         }
                     }
-                }
-            }
-            .appThemedList()
-            .navigationTitle(chapterTitle.isEmpty ? "段评" : chapterTitle)
-            .tint(theme.palette.accent)
-            #if os(iOS)
-            .navigationBarTitleDisplayMode(.inline)
-            #endif
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("关闭") { dismiss() }
+                    .padding(.bottom, 28)
                 }
             }
         }
@@ -563,7 +634,7 @@ private struct NativeCommentListSheet: View {
     let target: ReviewTarget
 
     @Environment(\.dismiss) private var dismiss
-    @Environment(\.appTheme) private var theme
+    @Environment(\.colorScheme) private var colorScheme
     @State private var comments: [ReviewComment] = []
     @State private var total = 0
     @State private var isLoading = true
@@ -578,137 +649,230 @@ private struct NativeCommentListSheet: View {
     @State private var replyHasMore: Set<String> = []
 
     var body: some View {
-        NavigationView {
-            Group {
-                if isLoading {
-                    ProgressView("正在加载评论…")
-                } else if let errorText {
-                    VStack(spacing: 12) {
-                        Text(errorText)
-                            .foregroundColor(.secondary)
-                        Button("重试") { Task { await load(reset: true) } }
-                    }
-                } else if comments.isEmpty {
-                    Text("暂无评论")
-                        .foregroundColor(.secondary)
-                } else {
-                    List {
-                        ForEach(comments) { comment in
-                            VStack(alignment: .leading, spacing: 6) {
-                                HStack(spacing: 6) {
-                                    Text(comment.user?.user_name ?? "匿名")
-                                        .font(.caption.bold())
-                                        .foregroundColor(.secondary)
-                                    Spacer()
-                                    if let likes = comment.like_count, likes > 0 {
-                                        Label("\(likes)", systemImage: "heart")
-                                            .font(.caption2)
-                                            .foregroundColor(.secondary)
-                                    }
-                                }
-                                Text(commentText(comment.content))
-                                    .font(.subheadline)
-                                if let image = comment.image_url, let url = URL(string: image) {
-                                    AsyncImage(url: url) { phase in
-                                        if let image = phase.image {
-                                            image.resizable().scaledToFit()
-                                        } else if phase.error == nil {
-                                            ProgressView().frame(height: 60)
-                                        }
-                                    }
-                                    .frame(maxHeight: 180)
-                                    .clipShape(RoundedRectangle(cornerRadius: 6))
-                                }
-                                HStack(spacing: 10) {
-                                    if let time = comment.create_time {
-                                        Text(time)
-                                    }
-                                    if let replies = comment.reply_count, replies > 0 {
-                                        Button(expandedComments.contains(comment.id)
-                                               ? "收起回复"
-                                               : "\(replies) 回复") {
-                                            toggleReplies(comment)
-                                        }
-                                        .buttonStyle(.plain)
-                                        .foregroundColor(.accentColor)
-                                    }
-                                }
-                                .font(.caption2)
-                                .foregroundColor(.secondary)
+        let palette = NieRPalette(colorScheme)
 
-                                if expandedComments.contains(comment.id) {
-                                    ForEach(replies[comment.id] ?? []) { reply in
-                                        VStack(alignment: .leading, spacing: 2) {
-                                            Text(reply.user?.user_name ?? "匿名")
-                                                .font(.caption2.bold())
-                                                .foregroundColor(.secondary)
-                                            Text(commentText(reply.content))
-                                                .font(.caption)
-                                            if let image = reply.image_url, let url = URL(string: image) {
-                                                AsyncImage(url: url) { phase in
-                                                    if let image = phase.image {
-                                                        image.resizable().scaledToFit()
-                                                    }
-                                                }
-                                                .frame(maxHeight: 120)
-                                                .clipShape(RoundedRectangle(cornerRadius: 6))
-                                            }
-                                        }
-                                        .padding(.leading, 12)
-                                        .padding(.vertical, 2)
-                                    }
-                                    if replyHasMore.contains(comment.id) {
-                                        Button("加载更多回复") {
-                                            Task { await loadReplies(commentID: comment.id, reset: false) }
-                                        }
-                                        .font(.caption2)
-                                        .buttonStyle(.plain)
-                                        .foregroundColor(.accentColor)
-                                        .padding(.leading, 12)
-                                    }
-                                }
-                            }
-                            .padding(.vertical, 3)
+        ZStack {
+            NieRBackdrop(palette: palette)
+            VStack(spacing: 0) {
+                NieRSheetHeader(
+                    palette: palette,
+                    kicker: "REVIEW LOG",
+                    title: target.title,
+                    subtitle: total > 0 ? "\(total) RECORDS · \(sortHot ? "HOT" : "LATEST")" : "NO RECORDS"
+                ) {
+                    dismiss()
+                }
+
+                HStack {
+                    Text(sortHot ? "SORT / HOT" : "SORT / LATEST")
+                        .font(.system(size: 9, weight: .semibold, design: .monospaced))
+                        .tracking(0.8)
+                        .foregroundColor(palette.muted)
+                    Spacer()
+                    Button {
+                        sortHot.toggle()
+                        Task { await load(reset: true) }
+                    } label: {
+                        Text(sortHot ? "最热" : "最新")
+                            .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                            .foregroundColor(palette.accent)
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 4)
+                            .overlay(
+                                Rectangle()
+                                    .stroke(palette.accent.opacity(0.5), lineWidth: 0.6)
+                            )
+                    }
+                    .buttonStyle(.plain)
+                }
+                .padding(.horizontal, 16)
+                .padding(.bottom, 8)
+
+                ScrollView(.vertical, showsIndicators: false) {
+                    LazyVStack(alignment: .leading, spacing: 12) {
+                        if isLoading {
+                            loadingPanel(palette)
+                        } else if let errorText {
+                            messagePanel(palette, title: "SIGNAL LOST", text: errorText, retry: true)
+                        } else if comments.isEmpty {
+                            messagePanel(palette, title: "NO SIGNAL", text: "还没有评论。")
                         }
+
+                        ForEach(Array(comments.enumerated()), id: \.element.id) { index, comment in
+                            commentCard(index: index, comment: comment, palette: palette)
+                        }
+
                         if hasMore {
                             Button {
                                 Task { await load(reset: false) }
                             } label: {
-                                HStack {
+                                HStack(spacing: 8) {
                                     Spacer()
                                     if isLoadingMore {
-                                        ProgressView()
+                                        ProgressView().tint(palette.accent)
                                     } else {
                                         Text("加载更多")
+                                            .font(.system(size: 10, weight: .semibold, design: .monospaced))
                                     }
                                     Spacer()
                                 }
+                                .foregroundColor(palette.accent)
+                                .padding(.vertical, 8)
+                                .overlay(
+                                    Rectangle()
+                                        .stroke(palette.line.opacity(0.7), lineWidth: 0.6)
+                                )
                             }
+                            .buttonStyle(.plain)
                             .disabled(isLoadingMore)
+                            .padding(.horizontal, 16)
                         }
                     }
-                    .listStyle(.plain)
-                    .appThemedList()
-                }
-            }
-            .navigationTitle(total > 0 ? "\(target.title) · \(total)" : target.title)
-            .tint(theme.palette.accent)
-            #if os(iOS)
-            .navigationBarTitleDisplayMode(.inline)
-            #endif
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("关闭") { dismiss() }
-                }
-                ToolbarItem(placement: .primaryAction) {
-                    Button(sortHot ? "最热" : "最新") {
-                        sortHot.toggle()
-                        Task { await load(reset: true) }
-                    }
+                    .padding(.bottom, 28)
                 }
             }
         }
         .task { await load(reset: true) }
+    }
+
+    private func loadingPanel(_ palette: NieRPalette) -> some View {
+        NieRPanel(palette: palette) {
+            HStack(spacing: 10) {
+                ProgressView().tint(palette.accent)
+                Text("正在读取评论…")
+                    .font(.system(size: 11, design: .monospaced))
+                    .foregroundColor(palette.muted)
+            }
+        }
+        .padding(.horizontal, 16)
+    }
+
+    private func messagePanel(
+        _ palette: NieRPalette,
+        title: String,
+        text: String,
+        retry: Bool = false
+    ) -> some View {
+        NieRPanel(palette: palette) {
+            VStack(alignment: .leading, spacing: 8) {
+                Text(title)
+                    .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                    .tracking(0.8)
+                    .foregroundColor(palette.accent)
+                Text(text)
+                    .font(.system(size: 12))
+                    .foregroundColor(palette.ink.opacity(0.82))
+                if retry {
+                    Button("重试") { Task { await load(reset: true) } }
+                        .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                        .foregroundColor(palette.accent)
+                        .buttonStyle(.plain)
+                }
+            }
+        }
+        .padding(.horizontal, 16)
+    }
+
+    private func commentCard(
+        index: Int,
+        comment: ReviewComment,
+        palette: NieRPalette
+    ) -> some View {
+        NieRPanel(palette: palette) {
+            VStack(alignment: .leading, spacing: 7) {
+                HStack(spacing: 8) {
+                    Text(String(format: "%02d", index + 1))
+                        .font(.system(size: 11, weight: .bold, design: .monospaced))
+                        .foregroundColor(palette.accent)
+                    Text(comment.user?.user_name ?? "匿名")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundColor(palette.ink)
+                    Spacer()
+                    if let likes = comment.like_count, likes > 0 {
+                        HStack(spacing: 3) {
+                            Image(systemName: "heart")
+                            Text("\(likes)")
+                        }
+                        .font(.system(size: 9, design: .monospaced))
+                        .foregroundColor(palette.muted)
+                    }
+                }
+
+                Text(commentText(comment.content))
+                    .font(.system(size: 13))
+                    .foregroundColor(palette.ink)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                if let image = comment.image_url, let url = URL(string: image) {
+                    AsyncImage(url: url) { phase in
+                        if let image = phase.image {
+                            image.resizable().scaledToFit()
+                        } else if phase.error == nil {
+                            ProgressView().frame(height: 60)
+                        }
+                    }
+                    .frame(maxHeight: 180)
+                }
+
+                NieRDivider(palette: palette)
+
+                HStack(spacing: 10) {
+                    if let time = comment.create_time {
+                        Text(time)
+                    }
+                    if let replies = comment.reply_count, replies > 0 {
+                        Button(expandedComments.contains(comment.id)
+                               ? "收起回复"
+                               : "\(replies) 回复") {
+                            toggleReplies(comment)
+                        }
+                        .buttonStyle(.plain)
+                        .foregroundColor(palette.accent)
+                    }
+                }
+                .font(.system(size: 9, design: .monospaced))
+                .foregroundColor(palette.muted)
+
+                if expandedComments.contains(comment.id) {
+                    VStack(alignment: .leading, spacing: 8) {
+                        ForEach(replies[comment.id] ?? []) { reply in
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text(reply.user?.user_name ?? "匿名")
+                                    .font(.system(size: 9, weight: .semibold, design: .monospaced))
+                                    .foregroundColor(palette.muted)
+                                Text(commentText(reply.content))
+                                    .font(.system(size: 12))
+                                    .foregroundColor(palette.ink.opacity(0.9))
+                                if let image = reply.image_url, let url = URL(string: image) {
+                                    AsyncImage(url: url) { phase in
+                                        if let image = phase.image {
+                                            image.resizable().scaledToFit()
+                                        }
+                                    }
+                                    .frame(maxHeight: 120)
+                                }
+                            }
+                            .padding(.leading, 10)
+                            .overlay(alignment: .leading) {
+                                Rectangle()
+                                    .fill(palette.line.opacity(0.6))
+                                    .frame(width: 1)
+                            }
+                        }
+                        if replyHasMore.contains(comment.id) {
+                            Button("加载更多回复") {
+                                Task { await loadReplies(commentID: comment.id, reset: false) }
+                            }
+                            .font(.system(size: 9, design: .monospaced))
+                            .buttonStyle(.plain)
+                            .foregroundColor(palette.accent)
+                            .padding(.leading, 10)
+                        }
+                    }
+                }
+            }
+        }
+        .padding(.horizontal, 16)
     }
 
     private func load(reset: Bool) async {
@@ -3382,6 +3546,7 @@ public struct ReaderView: View {
                 }
             }
             .searchable(text: $bookmarkSearchText, prompt: "搜章节名、摘要、备注")
+            .appThemedList()
             .navigationTitle("书签 / 笔记")
             #if os(iOS)
             .navigationBarTitleDisplayMode(.inline)
@@ -4484,17 +4649,43 @@ public struct ReaderView: View {
                 VStack(alignment: .leading, spacing: 14) {
                     switch settingsPanel {
                     case .quick:
-                        settingsBlock {
-                            pageModeRow
-                            sectionDivider
+                        CollapsibleSettingBlock(
+                            title: "阅读模式",
+                            tint: readerConfig.textColor,
+                            initiallyExpanded: true,
+                            summary: readerConfig.pageMode.rawValue
+                        ) { pageModeRow }
+                        CollapsibleSettingBlock(
+                            title: "字号与主题",
+                            tint: readerConfig.textColor,
+                            initiallyExpanded: true,
+                            summary: "\(Int(readerConfig.fontSize)) pt · \(readerConfig.theme.rawValue)"
+                        ) {
                             fontSizeRow
                             themeRow
                         }
-                        CollapsibleSettingBlock(title: "配色", tint: readerConfig.textColor) { colorSection }
-                        backgroundImageSection
-                        CollapsibleSettingBlock(title: "显示", tint: readerConfig.textColor, initiallyExpanded: true) { displaySection }
+                        CollapsibleSettingBlock(
+                            title: "背景图",
+                            tint: readerConfig.textColor,
+                            summary: readerConfig.backgroundImageEnabled ? "已开启" : "关闭"
+                        ) { backgroundImageSection }
+                        CollapsibleSettingBlock(
+                            title: "配色",
+                            tint: readerConfig.textColor,
+                            summary: readerConfig.useCustomColors ? "自定义" : "跟随主题"
+                        ) { colorSection }
+                        CollapsibleSettingBlock(
+                            title: "显示",
+                            tint: readerConfig.textColor,
+                            summary: "亮度 \(Int(readerConfig.brightness * 100))% · 面板 \(Int((readerConfig.panelOpacity * 100).rounded()))%"
+                        ) { displaySection }
                     case .spacing:
-                        settingsBlock { typographySection }
+                        CollapsibleSettingBlock(
+                            title: "字体与正文",
+                            tint: readerConfig.textColor,
+                            initiallyExpanded: true,
+                            summary: readerConfig.font.displayName
+                        ) { typographySection }
                         CollapsibleSettingBlock(title: "正文排版", tint: readerConfig.textColor) { bodyLayoutSection }
                         underlineSection
                         CollapsibleSettingBlock(title: "页边距", tint: readerConfig.textColor) { marginSection }
@@ -4588,57 +4779,95 @@ public struct ReaderView: View {
     }
 
     private var settingsHeader: some View {
-        HStack(spacing: 8) {
-            Text("READER")
-                .font(theme.typography.label)
-                .foregroundColor(theme.palette.secondaryInk)
-                .padding(.horizontal, 8)
-                .padding(.vertical, 5)
-                .overlay(
-                    Rectangle()
-                        .stroke(theme.palette.divider, lineWidth: theme.metrics.borderWidth)
-                )
+        VStack(alignment: .leading, spacing: 9) {
+            HStack(alignment: .center, spacing: 10) {
+                Text("READER")
+                    .font(theme.typography.label)
+                    .foregroundColor(theme.palette.secondaryInk)
+                    .padding(.horizontal, 7)
+                    .padding(.vertical, 4)
+                    .overlay(
+                        Rectangle()
+                            .stroke(theme.palette.divider, lineWidth: theme.metrics.borderWidth)
+                    )
 
-            VStack(alignment: .leading, spacing: 1) {
-                HStack(spacing: 6) {
-                    Text("阅读设置")
-                        .font(theme.typography.title)
-                        .foregroundColor(chromeInk)
-                    Text("SETTINGS / \(settingsPanel.rawValue)")
-                        .font(theme.typography.mono)
+                Text("阅读设置")
+                    .font(theme.typography.title)
+                    .foregroundColor(chromeInk)
+
+                Spacer(minLength: 6)
+
+                // 收起：只留标题这一行，整页露出来看效果
+                Button(action: {
+                    withAnimation(.easeInOut(duration: 0.2)) {
+                        panelCollapsed.toggle()
+                    }
+                }) {
+                    Image(systemName: panelCollapsed ? "chevron.up.circle.fill" : "chevron.down.circle.fill")
+                        .font(.system(size: 18))
                         .foregroundColor(theme.palette.secondaryInk)
                 }
-                // 这行小字带状态：翻页出问题时截一张就能看出来卡在哪
-                Text("\(settingsPanel.rawValue) · \(readerConfig.pageMode.rawValue) · 章 \(currentChapterIndex + 1)/\(chapters.count) · 页 \(currentPageIndex + 1)/\(currentLoadedChapter?.pages.count ?? 0)\(pagerDebugSuffix)\(isSwitchingChapter ? " · 换章中" : "")")
-                    .font(theme.typography.mono)
-                    .foregroundColor(theme.palette.secondaryInk)
-            }
+                .buttonStyle(.plain)
 
-            Spacer()
-
-            // 收起：只留标题这一行，整页露出来看效果
-            Button(action: {
-                withAnimation(.easeInOut(duration: 0.2)) {
-                    panelCollapsed.toggle()
+                Button(action: {
+                    withAnimation(.easeInOut(duration: 0.22)) {
+                        showSettings = false
+                    }
+                }) {
+                    Image(systemName: "xmark.circle.fill")
+                        .font(.system(size: 20))
+                        .foregroundColor(theme.palette.secondaryInk)
                 }
-            }) {
-                Image(systemName: panelCollapsed ? "chevron.up.circle.fill" : "chevron.down.circle.fill")
-                    .font(.system(size: 18))
-                    .foregroundColor(theme.palette.secondaryInk)
+                .buttonStyle(.plain)
             }
-            .buttonStyle(.plain)
 
-            Button(action: {
-                withAnimation(.easeInOut(duration: 0.22)) {
-                    showSettings = false
+            if !panelCollapsed {
+                HStack(spacing: 6) {
+                    settingsHeaderChip("SETTINGS / \(settingsPanel.rawValue)")
+                    settingsHeaderChip(readerConfig.pageMode.rawValue)
+                    settingsHeaderChip("章 \(currentChapterIndex + 1)/\(chapters.count)")
+                    settingsHeaderChip("页 \(currentPageIndex + 1)/\(currentLoadedChapter?.pages.count ?? 0)")
+                    Spacer(minLength: 0)
                 }
-            }) {
-                Image(systemName: "xmark.circle.fill")
-                    .font(.system(size: 20))
-                    .foregroundColor(theme.palette.secondaryInk)
+                .lineLimit(1)
+                .minimumScaleFactor(0.8)
+
+                // 翻页出问题时截一张就能看出来卡在哪，压到最后一行不抢视觉
+                if !pagerDebugSuffix.isEmpty || isSwitchingChapter {
+                    Text(gestureDebugText)
+                        .font(.system(size: 9, design: .monospaced))
+                        .foregroundColor(theme.palette.secondaryInk.opacity(0.55))
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
             }
-            .buttonStyle(.plain)
         }
+    }
+
+    private var gestureDebugText: String {
+        var parts: [String] = []
+        let gestures = pagerDebugSuffix
+            .replacingOccurrences(of: " · 手势 ", with: "")
+            .trimmingCharacters(in: .whitespaces)
+        if !gestures.isEmpty { parts.append("手势 \(gestures)") }
+        if isSwitchingChapter { parts.append("换章中") }
+        return parts.joined(separator: " · ")
+    }
+
+    private func settingsHeaderChip(_ text: String) -> some View {
+        Text(text)
+            .font(.system(size: 10, weight: .medium, design: .monospaced))
+            .foregroundColor(theme.palette.secondaryInk)
+            .padding(.horizontal, 7)
+            .padding(.vertical, 3)
+            .background(
+                Capsule()
+                    .fill(theme.palette.elevated.opacity(effectivePanelLayerOpacity))
+            )
+            .overlay(
+                Capsule()
+                    .stroke(theme.palette.divider, lineWidth: 0.5)
+            )
     }
 
     /// 设置面板的强调色：跟当前主题走
@@ -4737,30 +4966,51 @@ public struct ReaderView: View {
     }
 
     private var settingsStatusStrip: some View {
-        HStack(spacing: 10) {
-            Text("字号 \(Int(readerConfig.fontSize))")
-            Text("行距 \(Int(readerConfig.lineSpacing))")
-            Text(readerConfig.theme.rawValue)
-            Text(readerConfig.pageMode.rawValue)
+        HStack(spacing: 0) {
+            statusMetric("字号", "\(Int(readerConfig.fontSize)) pt")
+            statusMetricDivider
+            statusMetric("行距", "\(Int(readerConfig.lineSpacing)) pt")
+            statusMetricDivider
+            statusMetric("主题", readerConfig.theme.rawValue)
+            statusMetricDivider
+            statusMetric("翻页", readerConfig.pageMode.rawValue)
         }
-        .font(theme.typography.mono)
-        .foregroundColor(theme.palette.secondaryInk)
-        .lineLimit(1)
-        .padding(.horizontal, 10)
-        .padding(.vertical, 7)
+        .padding(.vertical, 8)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(theme.palette.elevated.opacity(effectivePanelLayerOpacity))
         .overlay(
-            Rectangle()
+            RoundedRectangle(cornerRadius: theme.metrics.cornerRadius, style: .continuous)
                 .stroke(theme.palette.divider, lineWidth: theme.metrics.borderWidth)
         )
+        .clipShape(RoundedRectangle(cornerRadius: theme.metrics.cornerRadius, style: .continuous))
+    }
+
+    private func statusMetric(_ title: String, _ value: String) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(title)
+                .font(.system(size: 9, weight: .medium, design: .monospaced))
+                .foregroundColor(theme.palette.secondaryInk.opacity(0.75))
+            Text(value)
+                .font(.system(size: 12, weight: .medium, design: .monospaced))
+                .foregroundColor(theme.palette.ink)
+                .lineLimit(1)
+                .minimumScaleFactor(0.8)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 10)
+    }
+
+    private var statusMetricDivider: some View {
+        Rectangle()
+            .fill(theme.palette.divider.opacity(0.6))
+            .frame(width: 0.5, height: 22)
     }
 
     private func settingsBlock<Content: View>(@ViewBuilder content: () -> Content) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: 12) {
             content()
         }
-        .padding(10)
+        .padding(12)
         .background(theme.palette.elevated.opacity(effectivePanelLayerOpacity))
         .overlay(
             RoundedRectangle(cornerRadius: theme.metrics.cornerRadius, style: .continuous)
@@ -4782,29 +5032,38 @@ public struct ReaderView: View {
 
     /// 亮度调节，放在卡片靠上位置
     private var brightnessRow: some View {
-            HStack(spacing: 10) {
-                Image(systemName: "sun.min")
-                    .font(.system(size: 12))
-                    .foregroundColor(readerConfig.textColor.opacity(0.6))
-                Slider(value: $readerConfig.brightness, in: 0.2...1.0, step: 0.05)
-                    .tint(readerConfig.textColor.opacity(0.65))
+        VStack(alignment: .leading, spacing: 5) {
+            HStack(spacing: 8) {
                 Image(systemName: "sun.max")
-                    .font(.system(size: 13))
-                    .foregroundColor(readerConfig.textColor.opacity(0.6))
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundColor(theme.palette.secondaryInk)
+                Text("屏幕亮度")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundColor(theme.palette.secondaryInk)
+                Spacer()
                 Text("\(Int(readerConfig.brightness * 100))%")
                     .font(.system(size: 11, weight: .medium, design: .monospaced))
-                    .foregroundColor(readerConfig.textColor.opacity(0.6))
-                    .frame(width: 50, alignment: .trailing)
+                    .foregroundColor(theme.palette.secondaryInk)
                     .padding(.vertical, 2)
-                    .padding(.horizontal, 6)
-                    .background(Capsule().fill(readerConfig.textColor.opacity(0.07)))
+                    .padding(.horizontal, 7)
+                    .background(Capsule().fill(theme.palette.elevated.opacity(effectivePanelLayerOpacity)))
             }
+            HStack(spacing: 10) {
+                Image(systemName: "sun.min")
+                    .font(.system(size: 11))
+                    .foregroundColor(theme.palette.secondaryInk.opacity(0.7))
+                Slider(value: $readerConfig.brightness, in: 0.2...1.0, step: 0.05)
+                    .tint(settingsAccent)
+                Image(systemName: "sun.max.fill")
+                    .font(.system(size: 13))
+                    .foregroundColor(theme.palette.secondaryInk.opacity(0.7))
+            }
+        }
     }
 
     /// 显示：亮度 + 自动夜间
     private var displaySection: some View {
         VStack(alignment: .leading, spacing: 8) {
-            sectionDivider
             HStack(spacing: 10) {
                 Text("面板")
                     .font(.system(size: 12, weight: .medium))
@@ -4834,7 +5093,6 @@ public struct ReaderView: View {
 
     private var pageModeRow: some View {
         VStack(alignment: .leading, spacing: 10) {
-            sectionTitle("阅读模式")
             LazyVGrid(
                 columns: Array(repeating: GridItem(.flexible(), spacing: 6), count: 3),
                 spacing: 6
@@ -4881,9 +5139,6 @@ public struct ReaderView: View {
     // MARK: 排版
     private var typographySection: some View {
         VStack(alignment: .leading, spacing: 10) {
-            sectionDivider
-            sectionTitle("排版")
-
             Menu {
                 ForEach(ReaderFont.available) { font in
                     Button(font.displayName) {
@@ -5027,7 +5282,7 @@ public struct ReaderView: View {
                 ColorPicker("下划线颜色", selection: underlineColorBinding, supportsOpacity: true)
                     .font(.system(size: 12))
 
-                Text("线宽与偏移在 Cocoa 文本里没有公开接口，这两项无法实现。")
+                Text("Cocoa 文本接口不支持线宽和偏移，这两项调不了。")
                     .font(.system(size: 10))
                     .foregroundColor(readerConfig.textColor.opacity(0.45))
             }
@@ -5076,9 +5331,6 @@ public struct ReaderView: View {
     // MARK: 阅读背景图
     private var backgroundImageSection: some View {
         VStack(alignment: .leading, spacing: 10) {
-            sectionDivider
-            sectionTitle("背景图")
-
             Toggle(isOn: $readerConfig.backgroundImageEnabled) {
                 Text("用图片做阅读背景")
                     .font(.system(size: 12, weight: .medium))
@@ -5168,8 +5420,6 @@ public struct ReaderView: View {
     // MARK: 自定义配色
     private var colorSection: some View {
         VStack(alignment: .leading, spacing: 10) {
-            sectionDivider
-
             Toggle(isOn: $readerConfig.useCustomColors) {
                 Text("自定义背景与文字颜色")
                     .font(.system(size: 12, weight: .medium))
@@ -5430,15 +5680,24 @@ public struct ReaderView: View {
     }
 
     private var fontSizeRow: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            sectionTitle("字号")
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(alignment: .firstTextBaseline) {
+                sectionTitle("字号")
+                Spacer()
+                Text("\(Int(readerConfig.fontSize)) pt")
+                    .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                    .foregroundColor(settingsAccent)
+                    .padding(.vertical, 2)
+                    .padding(.horizontal, 7)
+                    .background(Capsule().fill(settingsAccent.opacity(0.14)))
+            }
             HStack(spacing: 12) {
                 Text("A-")
                     .font(.system(size: 13, weight: .semibold))
                     .foregroundColor(readerConfig.textColor.opacity(0.8))
 
                 Slider(value: $readerConfig.fontSize, in: 12...32, step: 1)
-                    .accentColor(.accentColor)
+                    .tint(settingsAccent)
                     .onChange(of: readerConfig.fontSize) { _ in
                         recomputePagination()
                     }
@@ -5446,11 +5705,6 @@ public struct ReaderView: View {
                 Text("A+")
                     .font(.system(size: 16, weight: .bold))
                     .foregroundColor(readerConfig.textColor.opacity(0.8))
-
-                Text("\(Int(readerConfig.fontSize)) pt")
-                    .font(.system(size: 12, weight: .medium, design: .monospaced))
-                    .foregroundColor(readerConfig.textColor.opacity(0.7))
-                    .frame(width: 42, alignment: .trailing)
             }
         }
     }
@@ -5459,7 +5713,13 @@ public struct ReaderView: View {
         VStack(alignment: .leading, spacing: 10) {
             sectionDivider
             sectionTitle("主题")
-            HStack(spacing: 8) {
+            LazyVGrid(
+                columns: [
+                    GridItem(.flexible(), spacing: 8),
+                    GridItem(.flexible(), spacing: 8)
+                ],
+                spacing: 8
+            ) {
                 ForEach(ReaderTheme.allCases) { t in
                     themeButton(for: t)
                 }
@@ -5476,32 +5736,37 @@ public struct ReaderView: View {
                 readerConfig.useCustomColors = false
             }
         }) {
-            HStack(spacing: 4) {
+            HStack(spacing: 8) {
                 Circle()
                     .fill(t.backgroundColor)
-                    .frame(width: 12, height: 12)
+                    .frame(width: 14, height: 14)
                     .overlay(
                         Circle()
                             .stroke(readerConfig.textColor.opacity(0.25), lineWidth: 1)
                     )
                 Text(t.rawValue)
-                    .font(.system(size: 11, weight: isSelected ? .semibold : .regular))
+                    .font(.system(size: 12, weight: isSelected ? .semibold : .regular))
                     .lineLimit(1)
+                Spacer(minLength: 0)
+                if isSelected {
+                    Image(systemName: "checkmark")
+                        .font(.system(size: 10, weight: .bold))
+                }
             }
-            .padding(.horizontal, 8)
-            .padding(.vertical, 7)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 9)
             .frame(maxWidth: .infinity)
             .background(
-                RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .fill(isSelected ? Color.accentColor.opacity(0.15) : readerConfig.textColor.opacity(0.05))
+                RoundedRectangle(cornerRadius: theme.metrics.cornerRadius, style: .continuous)
+                    .fill(isSelected ? settingsAccent.opacity(0.16) : theme.palette.elevated.opacity(effectivePanelLayerOpacity))
             )
             .overlay(
-                RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .stroke(isSelected ? Color.accentColor : Color.clear, lineWidth: 1.5)
+                RoundedRectangle(cornerRadius: theme.metrics.cornerRadius, style: .continuous)
+                    .stroke(isSelected ? settingsAccent : theme.palette.divider, lineWidth: theme.metrics.borderWidth)
             )
         }
         .buttonStyle(.plain)
-        .foregroundColor(isSelected ? .accentColor : readerConfig.textColor)
+        .foregroundColor(isSelected ? settingsAccent : readerConfig.textColor)
     }
 
     // MARK: - Data Loading Pipeline
@@ -6344,6 +6609,29 @@ public struct ChapterImageView: View {
         let trimmed = urlString.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
 
+        // data:image 内联图（聚合源常见）：直接解码，不发网络请求
+        if trimmed.hasPrefix("data:image") {
+            if let comma = trimmed.firstIndex(of: ",") {
+                let meta = String(trimmed[trimmed.startIndex..<comma])
+                let payload = String(trimmed[trimmed.index(after: comma)...])
+                if meta.contains("base64"), let data = Data(base64Encoded: payload) {
+                    self.imageData = data
+                    self.isLoading = false
+                    self.loadFailed = false
+                    return
+                }
+                if let decoded = payload.removingPercentEncoding, let data = decoded.data(using: .utf8) {
+                    self.imageData = data
+                    self.isLoading = false
+                    self.loadFailed = false
+                    return
+                }
+            }
+            self.isLoading = false
+            self.loadFailed = true
+            return
+        }
+
         // 1. Check in-memory cache
         if let cached = Self.imageCache.object(forKey: trimmed as NSString) {
             self.imageData = cached as Data
@@ -6506,7 +6794,7 @@ public struct ReaderSearchSheet: View {
                         Image(systemName: "doc.text.magnifyingglass")
                             .font(.system(size: 40))
                             .foregroundColor(.secondary.opacity(0.6))
-                        Text("未找到包含 “\(searchText)” 的内容")
+                        Text("没找到包含 “\(searchText)” 的内容")
                             .font(.subheadline)
                             .foregroundColor(.secondary)
                         Spacer()
@@ -6817,6 +7105,7 @@ struct ReplaceRulesView: View {
                     Text("正文入库前按顺序跑一遍。正则写错的那条会被跳过，不会把整章弄没。改完重新进这一章或点阅读页的「刷新」就生效。")
                 }
             }
+            .appThemedList()
             .navigationTitle("替换净化")
             #if os(iOS)
             .navigationBarTitleDisplayMode(.inline)
@@ -7796,6 +8085,7 @@ struct TransparentNavBar: ViewModifier {
 /// 设置页入口：正文背景图（跟阅读页「界面」面板同一批键）
 struct ReaderBackgroundSettingsView: View {
     @ObservedObject private var config = ReaderConfig.shared
+    @Environment(\.appTheme) private var theme
     @State private var pickedItem: Any?
     @State private var previewImage: UIImage?
     @AppStorage("reader_bg_image_scale") private var scale: Double = 1
@@ -7819,11 +8109,12 @@ struct ReaderBackgroundSettingsView: View {
                 } else {
                     Text(config.backgroundImagePath.isEmpty ? "还没有选图" : "图片读不出来")
                         .font(.caption)
-                        .foregroundColor(.secondary)
+                        .foregroundColor(theme.palette.secondaryInk)
                 }
             } header: {
                 Text("预览")
             }
+            .appThemedRows()
 
             Section {
                 Toggle("用图片做阅读背景", isOn: $config.backgroundImageEnabled)
@@ -7855,6 +8146,7 @@ struct ReaderBackgroundSettingsView: View {
                     }
                 }
             }
+            .appThemedRows()
 
             if !config.backgroundImagePath.isEmpty {
                 Section {
@@ -7862,8 +8154,10 @@ struct ReaderBackgroundSettingsView: View {
                     row("左右位置", value: $offsetX, range: -400...400)
                     row("上下位置", value: $offsetY, range: -400...400)
                 }
+                .appThemedRows()
             }
         }
+        .appThemedList()
         .navigationTitle("正文背景图")
         #if os(iOS)
         .navigationBarTitleDisplayMode(.inline)
@@ -7886,7 +8180,7 @@ struct ReaderBackgroundSettingsView: View {
             ), in: range)
             Text(String(format: "%.\(digits)f", value.wrappedValue))
                 .font(.system(size: 12, design: .rounded))
-                .foregroundColor(.secondary)
+                .foregroundColor(theme.palette.secondaryInk)
                 .frame(width: 48, alignment: .trailing)
         }
     }
@@ -7894,6 +8188,7 @@ struct ReaderBackgroundSettingsView: View {
 
 /// 下拉背景图 / 书签图的选择面板，从阅读页右上角「…」进
 struct ReaderAssetsSheet: View {
+    @Environment(\.appTheme) private var theme
     /// 选完图让阅读页重新读一遍
     let onChanged: () -> Void
 
@@ -7969,6 +8264,7 @@ struct ReaderAssetsSheet: View {
                                  left: $pullBackgroundOffsetX,
                                  up: $pullBackgroundOffsetY)
                     }
+                    .appThemedRows()
 
                     Section(header: Text("书签图"),
                             footer: Text("留空就用默认画出来的绶带。")) {
@@ -7979,12 +8275,14 @@ struct ReaderAssetsSheet: View {
                             height: 80
                         )
                     }
+                    .appThemedRows()
                 } else {
                     Section {
                         Text("需要 iOS 16 及以上才能从相册选图。")
                             .font(.caption)
-                            .foregroundColor(.secondary)
+                            .foregroundColor(theme.palette.secondaryInk)
                     }
+                    .appThemedRows()
                 }
 
                 Section(header: Text("书签位置与尺寸")) {
@@ -8015,7 +8313,9 @@ struct ReaderAssetsSheet: View {
                              up: $bookmarkY,
                              upStep: 10)
                 }
+                .appThemedRows()
         }
+        .appThemedList()
         // 预览钉在顶上：滑到下面的滑块时也看得见调完什么效果
         .safeAreaInset(edge: .top) {
             VStack(spacing: 8) {
@@ -8028,22 +8328,22 @@ struct ReaderAssetsSheet: View {
                     previewModeButton("整张背景", whole: true)
                 }
                 .padding(2)
-                .background(Color.secondary.opacity(0.12), in: Capsule())
+                .background(theme.palette.divider.opacity(0.12), in: Capsule())
                 HStack(spacing: 8) {
                     Text("露出深度")
                         .font(.system(size: 12))
-                        .foregroundColor(.secondary)
+                        .foregroundColor(theme.palette.secondaryInk)
                     Slider(value: $previewPullDepth, in: 40...520, step: 10)
                     Text("\(Int(previewPullDepth))")
                         .font(.system(size: 12, design: .rounded))
-                        .foregroundColor(.secondary)
+                        .foregroundColor(theme.palette.secondaryInk)
                         .frame(width: 40, alignment: .trailing)
                 }
                 Text(previewShowsWholeBackground
                      ? "整图预览只看构图；调位置、缩放请切回「下拉露出」。"
                      : "在预览上直接拖可以移位置，双指捏可以改缩放；拖书签能改书签位置。")
                     .font(.system(size: 11))
-                    .foregroundColor(.secondary)
+                    .foregroundColor(theme.palette.secondaryInk)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
             .padding(.horizontal, 16)
@@ -8082,7 +8382,7 @@ struct ReaderAssetsSheet: View {
                     .scaledToFit()
                     .padding(6)
             } else {
-                Color.secondary.opacity(0.10)
+                theme.palette.divider.opacity(0.10)
             }
 
             previewLabel("整张背景 · 整图")
@@ -8095,7 +8395,7 @@ struct ReaderAssetsSheet: View {
         .clipShape(RoundedRectangle(cornerRadius: 8))
         .overlay(
             RoundedRectangle(cornerRadius: 8)
-                .stroke(Color.secondary.opacity(0.25), lineWidth: 0.5)
+                .stroke(theme.palette.divider.opacity(0.25), lineWidth: 0.5)
         )
     }
 
@@ -8118,7 +8418,7 @@ struct ReaderAssetsSheet: View {
                     .frame(width: visibleSize.width, height: visibleSize.height, alignment: .top)
                     .clipped()
             } else {
-                LinearGradient(colors: [Color.secondary.opacity(0.22), Color.secondary.opacity(0.10)],
+                LinearGradient(colors: [theme.palette.divider.opacity(0.22), theme.palette.divider.opacity(0.10)],
                                startPoint: .top, endPoint: .bottom)
                     .frame(width: visibleSize.width, height: visibleSize.height)
             }
@@ -8156,7 +8456,7 @@ struct ReaderAssetsSheet: View {
         .clipShape(RoundedRectangle(cornerRadius: 8))
         .overlay(
             RoundedRectangle(cornerRadius: 8)
-                .stroke(Color.secondary.opacity(0.25), lineWidth: 0.5)
+                .stroke(theme.palette.divider.opacity(0.25), lineWidth: 0.5)
         )
     }
 
@@ -8221,7 +8521,7 @@ struct ReaderAssetsSheet: View {
     private func previewLabel(_ text: String) -> some View {
         Text(text)
             .font(.system(size: 10, weight: .medium))
-            .foregroundColor(.secondary)
+            .foregroundColor(theme.palette.secondaryInk)
             .padding(.horizontal, 6)
             .padding(.vertical, 2)
             .background(.thinMaterial, in: Capsule())
@@ -8280,7 +8580,7 @@ struct ReaderAssetsSheet: View {
             if let zeroLabel, value.wrappedValue <= 0 {
                 Text(zeroLabel)
                     .font(.caption)
-                    .foregroundColor(.secondary)
+                    .foregroundColor(theme.palette.secondaryInk)
                     .frame(width: 58, alignment: .trailing)
             } else {
                 numberField(value, limit: limit, fractionDigits: fractionDigits)
@@ -8327,7 +8627,7 @@ struct ReaderAssetsSheet: View {
             Image(systemName: systemName)
                 .font(.system(size: 15, weight: .semibold))
                 .frame(width: 44, height: 32)
-                .background(Color.secondary.opacity(0.12), in: RoundedRectangle(cornerRadius: 7))
+                .background(theme.palette.divider.opacity(0.12), in: RoundedRectangle(cornerRadius: 7))
         }
         .buttonStyle(.plain)
         .padding(.leading, 6)

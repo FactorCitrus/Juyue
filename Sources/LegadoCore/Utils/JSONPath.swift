@@ -11,6 +11,17 @@ public enum JSONPath {
         }
         if cleanPath.isEmpty { return json }
 
+        // Fast path for recursive descent such as `$..items[*]` (cleanPath is `.items[*]`).
+        if cleanPath.hasPrefix(".") {
+            let remainder = String(cleanPath.dropFirst())
+            let key = String(remainder.prefix { $0 != "[" && $0 != "." })
+            if !key.isEmpty, let found = findKeyRecursively(key: key, current: json) {
+                let suffix = String(remainder.dropFirst(key.count))
+                let suffixTokens = tokenize(suffix)
+                return traverse(tokens: suffixTokens, current: found)
+            }
+        }
+
         // Tokenize path into keys and array indices: e.g. "content.items[0].title" or "list[*]"
         let tokens = tokenize(cleanPath)
         return traverse(tokens: tokens, current: json)
@@ -50,8 +61,10 @@ public enum JSONPath {
         if token.isEmpty {
             guard let nextToken = remaining.first else { return current }
             let restAfterNext = Array(remaining.dropFirst())
-            if let found = findKeyRecursively(key: nextToken, current: current) {
-                return traverse(tokens: restAfterNext, current: found)
+            let nextTokens = tokenize(nextToken)
+            guard let key = nextTokens.first else { return nil }
+            if let found = findKeyRecursively(key: key, current: current) {
+                return traverse(tokens: Array(nextTokens.dropFirst()) + restAfterNext, current: found)
             }
             return nil
         }
@@ -72,6 +85,16 @@ public enum JSONPath {
                         }
                     }
                     return collected.isEmpty ? nil : collected
+                }
+            } else if indexContent.contains(":") {
+                let parts = indexContent.split(separator: ":", omittingEmptySubsequences: false)
+                if parts.count == 2, let array = current as? [Any] {
+                    let lower = parts[0].isEmpty ? 0 : (Int(parts[0]) ?? 0)
+                    let upper = parts[1].isEmpty ? array.count : (Int(parts[1]) ?? array.count)
+                    let start = max(0, min(array.count, lower < 0 ? array.count + lower : lower))
+                    let end = max(start, min(array.count, upper < 0 ? array.count + upper : upper))
+                    let slice = Array(array[start..<end])
+                    return traverse(tokens: remaining, current: slice)
                 }
             } else if let index = Int(indexContent) {
                 if let array = current as? [Any] {

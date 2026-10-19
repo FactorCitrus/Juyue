@@ -51,6 +51,60 @@ public struct BookSource: Codable, Identifiable, Equatable {
         return true
     }
 
+    /// 安卓 BookSourceType：0 文本、1 音频、2 图片、3 文件、4 视频。
+    public enum Kind: Int, CaseIterable {
+        case text = 0
+        case audio = 1
+        case image = 2
+        case file = 3
+        case video = 4
+
+        public var label: String {
+            switch self {
+            case .text: return "文本"
+            case .audio: return "音频"
+            case .image: return "图片"
+            case .file: return "文件"
+            case .video: return "视频"
+            }
+        }
+    }
+
+    public var kind: Kind {
+        Kind(rawValue: bookSourceType ?? 0) ?? .text
+    }
+
+    /// 选源排序：权重高的先试，权重相同按已知响应时间短的先试。
+    /// 未测过响应时间的源排在已测过的后面，但仍可被选中。
+    public static func selectionOrder(_ lhs: BookSource, _ rhs: BookSource) -> Bool {
+        let lw = lhs.weight ?? 0
+        let rw = rhs.weight ?? 0
+        if lw != rw { return lw > rw }
+
+        let lt = lhs.respondTime ?? Int64.max
+        let rt = rhs.respondTime ?? Int64.max
+        if lt != rt { return lt < rt }
+
+        let lo = lhs.customOrder ?? 0
+        let ro = rhs.customOrder ?? 0
+        if lo != ro { return lo > ro }
+        return lhs.bookSourceName.localizedStandardCompare(rhs.bookSourceName) == .orderedAscending
+    }
+
+    /// `bookUrlPattern` 是正则，安卓宿主用它判断某个网址是否属于这个书源。
+    public func matchesBookUrl(_ url: String) -> Bool {
+        let pattern = (bookUrlPattern ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !pattern.isEmpty, !url.isEmpty else { return false }
+        guard let regex = try? NSRegularExpression(pattern: pattern) else { return false }
+        let range = NSRange(location: 0, length: (url as NSString).length)
+        return regex.firstMatch(in: url, range: range) != nil
+    }
+
+    /// `concurrentRate` 的 `n/windowMs` 形式。返回 nil 表示不限制。
+    public var rateLimit: SourceRateLimit? {
+        SourceRateLimit.parse(concurrentRate)
+    }
+
     public enum CodingKeys: String, CodingKey {
         case bookSourceUrl
         case bookSourceName

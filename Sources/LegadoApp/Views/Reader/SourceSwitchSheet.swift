@@ -10,6 +10,7 @@ public struct SourceSwitchSheet: View {
     let onSelect: (BookSource, SearchBook) -> Void
 
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.colorScheme) private var colorScheme
     @ObservedObject private var bookStore = BookStore.shared
 
     /// 匹配口径与展示偏好记住，下次换源沿用；关键词、限定源是临时的
@@ -63,181 +64,54 @@ public struct SourceSwitchSheet: View {
     }
 
     public var body: some View {
-        // A NavigationView here turns the sheet into a sidebar + empty detail pane on
-        // macOS, which renders as a black panel with an unusable list. Use one column.
-        VStack(spacing: 0) {
-            HStack(spacing: 8) {
-                Text("换源")
-                    .font(.headline)
-                Spacer()
-                Button("关闭") {
+        let palette = NieRPalette(colorScheme)
+
+        ZStack {
+            NieRBackdrop(palette: palette)
+
+            VStack(spacing: 0) {
+                NieRSheetHeader(
+                    palette: palette,
+                    kicker: "SOURCE TRANSFER",
+                    title: "换源",
+                    subtitle: "\(isSearching ? "SCANNING" : "READY") · \(results.count) NODES"
+                ) {
                     searchTask?.cancel()
                     dismiss()
                 }
-            }
-            .padding(.horizontal, 14)
-            .padding(.vertical, 10)
 
-            Divider()
+                ScrollView(.vertical, showsIndicators: false) {
+                    LazyVStack(alignment: .leading, spacing: 14) {
+                        targetPanel(palette)
+                        searchPanel(palette)
 
-            List {
-                Section {
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text(book.name)
-                            .font(.headline)
-                        Text("当前书源：\(book.originName.isEmpty ? "未知" : book.originName)")
-                            .font(.caption)
-                            .foregroundColor(.secondary)
-                        if !book.author.isEmpty {
-                            Text("作者：\(book.author)")
-                                .font(.caption)
-                                .foregroundColor(.secondary)
-                        }
-                    }
-                }
-
-                Section {
-                    DisclosureGroup(isExpanded: $showSearchOptions) {
-                        // 选中的字段是 AND：书名和作者都开，就两个都要中，同名不同作者的书不会混进来
-                        Toggle("匹配书名", isOn: $matchTitle)
-                        Toggle("匹配作者", isOn: $matchAuthor)
-                        Toggle("精确匹配", isOn: $exactMatch)
-                        if !matchTitle && !matchAuthor {
-                            Text("至少选一个匹配字段，否则没法判断是不是同一本书。")
-                                .font(.caption)
-                                .foregroundColor(.orange)
+                        if isSearching {
+                            scanningPanel(palette)
                         }
 
-                        HStack {
-                            Text("关键词")
-                                .font(.subheadline)
-                                .foregroundColor(.secondary)
-                                .frame(width: 52, alignment: .leading)
-                            PlaceholderField(placeholder: "要搜的内容", text: $keyword)
-                            Button("搜索") { startSearch() }
-                                .buttonStyle(.borderedProminent)
-                                .controlSize(.small)
-                                .disabled(keyword.trimmingCharacters(in: .whitespaces).isEmpty || (!matchTitle && !matchAuthor))
+                        if let errorMessage {
+                            messagePanel(palette, title: "ERROR", text: errorMessage)
                         }
 
-                        HStack {
-                            Text("限定源")
-                                .font(.subheadline)
-                                .foregroundColor(.secondary)
-                                .frame(width: 52, alignment: .leading)
-                            PlaceholderField(placeholder: "只搜名称 / 分组里含这几个字的源", text: $sourceFilter)
-                        }
+                        if !results.isEmpty {
+                            NieRSectionTitle(
+                                palette: palette,
+                                index: "02",
+                                title: "AVAILABLE NODES",
+                                trailing: "\(results.count)"
+                            )
+                            .padding(.horizontal, 16)
 
-                        Toggle("显示书籍详情", isOn: $showDetail)
-                    } label: {
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text("搜索条件")
-                            // 收起时也得看得出现在是按什么口径搜的
-                            Text("\(criteriaText) · 关键词「\(keyword)」")
-                                .font(.caption)
-                                .foregroundColor(.secondary)
-                                .lineLimit(1)
-                        }
-                    }
-                }
-
-                if isSearching {
-                    Section {
-                        HStack {
-                            ProgressView()
-                            Text("正在搜索其他书源…（\(finishedSources)/\(totalSources)）")
-                                .font(.caption)
-                                .foregroundColor(.secondary)
-                        }
-                    }
-                }
-
-                if let errorMessage {
-                    Section {
-                        Text(errorMessage)
-                            .font(.caption)
-                            .foregroundColor(.red)
-                    }
-                }
-
-                if !results.isEmpty {
-                    Section(header: Text("可用书源 (\(results.count))")) {
-                        ForEach(results, id: \.book.id) { item in
-                            Button {
-                                onSelect(item.source, item.book)
-                                dismiss()
-                            } label: {
-                                VStack(alignment: .leading, spacing: 4) {
-                                    HStack {
-                                        Text(item.book.name)
-                                            .font(.subheadline.weight(.medium))
-                                            .foregroundColor(.primary)
-                                            .lineLimit(2)
-                                        Spacer()
-                                        // 只有「现在这本、在当前源上」才算「当前」，同一个源里的别的书不算
-                                        if item.source.bookSourceUrl == currentSourceUrl,
-                                           item.book.bookUrl == book.bookUrl {
-                                            Text("当前")
-                                                .font(.caption2)
-                                                .padding(.horizontal, 6)
-                                                .padding(.vertical, 2)
-                                                .background(Color.accentColor.opacity(0.15))
-                                                .cornerRadius(4)
-                                        }
-                                    }
-
-                                    Text("来源：\(item.source.bookSourceName)")
-                                        .font(.caption)
-                                        .foregroundColor(.secondary)
-
-                                    if showDetail {
-                                        if !item.book.author.isEmpty {
-                                            Text("作者：\(item.book.author)")
-                                                .font(.caption)
-                                                .foregroundColor(.secondary)
-                                        }
-                                        let meta = [item.book.kind, item.book.wordCount]
-                                            .compactMap { $0?.trimmingCharacters(in: .whitespaces) }
-                                            .filter { !$0.isEmpty }
-                                        if !meta.isEmpty {
-                                            Text(meta.joined(separator: " · "))
-                                                .font(.caption2)
-                                                .foregroundColor(.secondary)
-                                        }
-                                        if let latest = item.book.latestChapterTitle, !latest.isEmpty {
-                                            Text("最新：\(latest)")
-                                                .font(.caption2)
-                                                .foregroundColor(.secondary)
-                                                .lineLimit(1)
-                                        }
-                                        if let intro = item.book.intro, !intro.isEmpty {
-                                            Text(intro)
-                                                .font(.caption2)
-                                                .foregroundColor(.secondary)
-                                                .lineLimit(1)
-                                        }
-                                    }
-                                }
+                            ForEach(Array(results.enumerated()), id: \.element.book.id) { index, item in
+                                resultCard(index: index, item: item, palette: palette)
                             }
+                        } else if !isSearching {
+                            emptyPanel(palette)
                         }
                     }
-                } else if !isSearching {
-                    Section {
-                        if rawResults.isEmpty {
-                            Text("没有在其他书源找到这本书。换个匹配方式或关键词再试。")
-                                .font(.caption)
-                                .foregroundColor(.secondary)
-                        } else {
-                            Text("搜到 \(rawResults.count) 条，但都不符合当前口径（\(criteriaText)）。放开字段或关掉精确匹配再试。")
-                                .font(.caption)
-                                .foregroundColor(.secondary)
-                        }
-                    }
+                    .padding(.bottom, 28)
                 }
             }
-            #if os(iOS)
-            .listStyle(.insetGrouped)
-            #endif
         }
         #if os(macOS)
         .frame(minWidth: 520, minHeight: 560)
@@ -247,6 +121,281 @@ public struct SourceSwitchSheet: View {
         }
         .onDisappear {
             searchTask?.cancel()
+        }
+    }
+
+    private func targetPanel(_ palette: NieRPalette) -> some View {
+        NieRPanel(palette: palette, raised: true) {
+            VStack(alignment: .leading, spacing: 7) {
+                HStack {
+                    Text("TARGET / 目标书籍")
+                        .font(.system(size: 9, weight: .semibold, design: .monospaced))
+                        .tracking(0.8)
+                        .foregroundColor(palette.accent)
+                    Spacer()
+                    Text("BOOK")
+                        .font(.system(size: 9, design: .monospaced))
+                        .foregroundColor(palette.muted)
+                }
+                Text(book.name)
+                    .font(.system(size: 18, weight: .bold))
+                    .foregroundColor(palette.ink)
+                    .lineLimit(2)
+                HStack(spacing: 10) {
+                    Text(book.originName.isEmpty ? "未知来源" : book.originName)
+                    if !book.author.isEmpty {
+                        Text("作者 \(cleanAuthor(book.author))")
+                    }
+                }
+                .font(.system(size: 10, design: .monospaced))
+                .foregroundColor(palette.muted)
+                .lineLimit(1)
+            }
+        }
+        .padding(.horizontal, 16)
+    }
+
+    private func searchPanel(_ palette: NieRPalette) -> some View {
+        NieRPanel(palette: palette) {
+            VStack(alignment: .leading, spacing: 10) {
+                Button {
+                    withAnimation(.easeInOut(duration: 0.16)) {
+                        showSearchOptions.toggle()
+                    }
+                } label: {
+                    HStack(spacing: 8) {
+                        Text("01")
+                            .font(.system(size: 9, weight: .semibold, design: .monospaced))
+                            .foregroundColor(palette.accent)
+                        Text("PARAM / 搜索条件")
+                            .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                            .tracking(0.6)
+                            .foregroundColor(palette.muted)
+                        Spacer()
+                        Image(systemName: showSearchOptions ? "chevron.up" : "chevron.down")
+                            .font(.system(size: 10, weight: .semibold))
+                            .foregroundColor(palette.accent)
+                    }
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+
+                Text("\(criteriaText) · 「\(keyword)」")
+                    .font(.system(size: 11, design: .monospaced))
+                    .foregroundColor(palette.ink)
+                    .lineLimit(1)
+
+                if showSearchOptions {
+                    NieRDivider(palette: palette)
+                    toggleRow("匹配书名", isOn: $matchTitle, palette: palette)
+                    toggleRow("匹配作者", isOn: $matchAuthor, palette: palette)
+                    toggleRow("精确匹配", isOn: $exactMatch, palette: palette)
+
+                    if !matchTitle && !matchAuthor {
+                        Text("至少选一个匹配条件。")
+                            .font(.system(size: 10, design: .monospaced))
+                            .foregroundColor(palette.accent)
+                    }
+
+                    NieRDivider(palette: palette)
+                    HStack(spacing: 8) {
+                        nierField("关键词", text: $keyword, palette: palette)
+                        Button("搜索") { startSearch() }
+                            .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                            .foregroundColor(palette.background)
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 7)
+                            .background(palette.accent)
+                            .disabled(keyword.trimmingCharacters(in: .whitespaces).isEmpty || (!matchTitle && !matchAuthor))
+                    }
+                    nierField("限定源", text: $sourceFilter, palette: palette)
+                    toggleRow("显示书籍详情", isOn: $showDetail, palette: palette)
+                }
+            }
+        }
+        .padding(.horizontal, 16)
+    }
+
+    private func scanningPanel(_ palette: NieRPalette) -> some View {
+        NieRPanel(palette: palette) {
+            VStack(alignment: .leading, spacing: 8) {
+                HStack {
+                    Text("SCANNING")
+                        .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                        .tracking(0.8)
+                        .foregroundColor(palette.accent)
+                    Spacer()
+                    Text("\(finishedSources) / \(totalSources)")
+                        .font(.system(size: 10, design: .monospaced))
+                        .foregroundColor(palette.muted)
+                }
+                NieRScanBar(
+                    palette: palette,
+                    progress: totalSources > 0 ? Double(finishedSources) / Double(totalSources) : 0
+                )
+            }
+        }
+        .padding(.horizontal, 16)
+    }
+
+    private func resultCard(
+        index: Int,
+        item: (source: BookSource, book: SearchBook),
+        palette: NieRPalette
+    ) -> some View {
+        let isCurrent = item.source.bookSourceUrl == currentSourceUrl
+            && item.book.bookUrl == book.bookUrl
+
+        return Button {
+            onSelect(item.source, item.book)
+            dismiss()
+        } label: {
+            NieRPanel(palette: palette, raised: isCurrent) {
+                HStack(alignment: .top, spacing: 10) {
+                    VStack(spacing: 4) {
+                        Text(String(format: "%02d", index + 1))
+                            .font(.system(size: 12, weight: .bold, design: .monospaced))
+                            .foregroundColor(palette.accent)
+                        Rectangle()
+                            .fill(isCurrent ? palette.accent : palette.line.opacity(0.5))
+                            .frame(width: 1, height: 28)
+                    }
+
+                    VStack(alignment: .leading, spacing: 5) {
+                        HStack(alignment: .firstTextBaseline, spacing: 8) {
+                            Text(item.book.name)
+                                .font(.system(size: 15, weight: .semibold))
+                                .foregroundColor(palette.ink)
+                                .lineLimit(2)
+                            Spacer(minLength: 0)
+                            if isCurrent {
+                                NieRBadge(palette: palette, text: "ACTIVE", filled: true)
+                            }
+                        }
+
+                        Text("NODE · \(item.source.bookSourceName)")
+                            .font(.system(size: 10, design: .monospaced))
+                            .foregroundColor(palette.muted)
+                            .lineLimit(1)
+
+                        if showDetail {
+                            if !item.book.author.isEmpty {
+                                Text("AUTHOR · \(cleanAuthor(item.book.author))")
+                                    .font(.system(size: 10, design: .monospaced))
+                                    .foregroundColor(palette.muted)
+                                    .lineLimit(1)
+                            }
+                            let meta = cleanMeta([item.book.kind, item.book.wordCount])
+                            if !meta.isEmpty {
+                                Text(meta.joined(separator: " · "))
+                                    .font(.system(size: 10, design: .monospaced))
+                                    .foregroundColor(palette.muted)
+                                    .lineLimit(1)
+                            }
+                            if let latest = item.book.latestChapterTitle?.trimmingCharacters(in: .whitespacesAndNewlines),
+                               !latest.isEmpty {
+                                Text("LATEST · \(latest)")
+                                    .font(.system(size: 10, design: .monospaced))
+                                    .foregroundColor(palette.muted)
+                                    .lineLimit(1)
+                            }
+                            if let intro = item.book.intro, !intro.isEmpty {
+                                Text(intro)
+                                    .font(.system(size: 11))
+                                    .foregroundColor(palette.muted)
+                                    .lineLimit(2)
+                            }
+                        }
+                    }
+
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundColor(palette.accent.opacity(0.7))
+                        .padding(.top, 4)
+                }
+            }
+        }
+        .buttonStyle(.plain)
+        .padding(.horizontal, 16)
+    }
+
+    private func emptyPanel(_ palette: NieRPalette) -> some View {
+        messagePanel(
+            palette,
+            title: "NO SIGNAL",
+            text: rawResults.isEmpty
+                ? "没有在其他书源找到这本书。换个匹配方式或关键词再试。"
+                : "搜到 \(rawResults.count) 条，但都不符合当前条件。放宽条件或关掉精确匹配再试。"
+        )
+    }
+
+    private func messagePanel(_ palette: NieRPalette, title: String, text: String) -> some View {
+        NieRPanel(palette: palette) {
+            VStack(alignment: .leading, spacing: 7) {
+                Text(title)
+                    .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                    .tracking(0.8)
+                    .foregroundColor(palette.accent)
+                Text(text)
+                    .font(.system(size: 12))
+                    .foregroundColor(palette.ink.opacity(0.82))
+            }
+        }
+        .padding(.horizontal, 16)
+    }
+
+    private func nierField(_ placeholder: String, text: Binding<String>, palette: NieRPalette) -> some View {
+        ZStack(alignment: .leading) {
+            if text.wrappedValue.isEmpty {
+                Text(placeholder)
+                    .font(.system(size: 11, design: .monospaced))
+                    .foregroundColor(palette.muted.opacity(0.7))
+                    .padding(.horizontal, 8)
+            }
+            TextField("", text: text)
+                .textFieldStyle(.plain)
+                .font(.system(size: 11, design: .monospaced))
+                .foregroundColor(palette.ink)
+                #if os(iOS)
+                .autocapitalization(.none)
+                .disableAutocorrection(true)
+                #endif
+                .padding(.horizontal, 8)
+                .padding(.vertical, 7)
+        }
+        .background(palette.background.opacity(0.7))
+        .overlay(
+            Rectangle()
+                .stroke(palette.line.opacity(0.7), lineWidth: 0.6)
+        )
+    }
+
+    private func toggleRow(_ title: String, isOn: Binding<Bool>, palette: NieRPalette) -> some View {
+        Toggle(isOn: isOn) {
+            Text(title)
+                .font(.system(size: 12))
+                .foregroundColor(palette.ink)
+        }
+        .tint(palette.accent)
+    }
+
+    private func cleanAuthor(_ raw: String) -> String {
+        var value = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        for prefix in ["作 者：", "作 者:", "作者：", "作者:"] where value.hasPrefix(prefix) {
+            value.removeFirst(prefix.count)
+            break
+        }
+        return value.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private func cleanMeta(_ parts: [String?]) -> [String] {
+        parts.compactMap { raw in
+            guard let raw else { return nil }
+            var value = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            while let first = value.first, ",，、;；:： ".contains(first) {
+                value.removeFirst()
+            }
+            return value.isEmpty ? nil : value
         }
     }
 
@@ -264,7 +413,7 @@ public struct SourceSwitchSheet: View {
         }
         guard matchTitle || matchAuthor else {
             isSearching = false
-            errorMessage = "先选一个匹配字段。"
+            errorMessage = "先选一个匹配条件。"
             return
         }
 

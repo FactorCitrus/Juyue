@@ -78,6 +78,16 @@ public class RuleAnalyzer {
             return ""
         }
 
+        // 安卓语法的 @json: 明确取 JSONPath；和 $.xxx 等价，但优先级更高
+        if rule.hasPrefix("@json:"), let json = parsedJson {
+            let path = String(rule.dropFirst(6)).trimmingCharacters(in: .whitespaces)
+            if let value = JSONPath.evaluate(path: path, json: json) {
+                let text = value is String ? (value as? String ?? "") : "\(value)"
+                return isUrl ? resolveUrl(text) : text
+            }
+            return ""
+        }
+
         // Handle template expressions {{...}}
         if rule.contains("{{") && rule.contains("}}") {
             let expanded = evaluateTemplate(rule)
@@ -251,6 +261,15 @@ public class RuleAnalyzer {
 
     public func getElements(_ rule: String?) -> [Any] {
         guard let rule = rule?.trimmingCharacters(in: .whitespacesAndNewlines), !rule.isEmpty else {
+            return []
+        }
+
+        if rule.hasPrefix("@json:"), let json = parsedJson {
+            let path = String(rule.dropFirst(6)).trimmingCharacters(in: .whitespaces)
+            if let evaluated = JSONPath.evaluate(path: path, json: json) {
+                if let array = evaluated as? [Any] { return array }
+                if let dict = evaluated as? [String: Any] { return [dict] }
+            }
             return []
         }
 

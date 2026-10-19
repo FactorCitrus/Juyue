@@ -37,7 +37,7 @@ public struct SearchBookView: View {
                 HStack(spacing: 7) {
                     Image(systemName: "magnifyingglass")
                         .font(.subheadline)
-                        .foregroundColor(.secondary)
+                        .foregroundColor(theme.palette.secondaryInk)
                     PlaceholderField(placeholder: "搜索书名或作者…", text: $viewModel.searchQuery) {
                         viewModel.startSearch()
                     }
@@ -47,7 +47,7 @@ public struct SearchBookView: View {
                             viewModel.cancelAndReset()
                         } label: {
                             Image(systemName: "xmark.circle.fill")
-                                .foregroundColor(.secondary)
+                                .foregroundColor(theme.palette.secondaryInk)
                         }
                         .buttonStyle(.plain)
                     }
@@ -74,14 +74,14 @@ public struct SearchBookView: View {
                     HStack(alignment: .firstTextBaseline, spacing: 8) {
                         Image(systemName: showOptions ? "chevron.down" : "chevron.right")
                             .font(.caption.weight(.semibold))
-                            .foregroundColor(.secondary)
+                            .foregroundColor(theme.palette.secondaryInk)
                         VStack(alignment: .leading, spacing: 3) {
                             Text("范围与匹配")
                                 .font(.subheadline.weight(.medium))
                             // 摘要单独一行，收起时也知道现在按什么口径搜
                             Text(viewModel.optionsSummary)
                                 .font(.caption)
-                                .foregroundColor(.secondary)
+                                .foregroundColor(theme.palette.secondaryInk)
                                 .lineLimit(2)
                                 .fixedSize(horizontal: false, vertical: true)
                         }
@@ -95,11 +95,11 @@ public struct SearchBookView: View {
                     Divider()
 
                     VStack(alignment: .leading, spacing: 8) {
-                        Text("匹配字段")
+                        Text("匹配条件")
                             .font(.caption)
-                            .foregroundColor(.secondary)
+                            .foregroundColor(theme.palette.secondaryInk)
 
-                        Picker("匹配字段", selection: $viewModel.matchField) {
+                        Picker("匹配条件", selection: $viewModel.matchField) {
                             Text("书名").tag(SourceMatchRules.SearchField.title)
                             Text("作者").tag(SourceMatchRules.SearchField.author)
                             Text("书名或作者").tag(SourceMatchRules.SearchField.either)
@@ -115,11 +115,11 @@ public struct SearchBookView: View {
                     VStack(alignment: .leading, spacing: 10) {
                         Text("搜索范围")
                             .font(.caption)
-                            .foregroundColor(.secondary)
+                            .foregroundColor(theme.palette.secondaryInk)
                         HStack {
                             Text("分组")
                                 .font(.subheadline)
-                                .foregroundColor(.secondary)
+                                .foregroundColor(theme.palette.secondaryInk)
                                 .frame(width: 40, alignment: .leading)
                             Menu(viewModel.groupFilter ?? "全部分组") {
                                 Button("全部分组") {
@@ -141,7 +141,7 @@ public struct SearchBookView: View {
                         HStack {
                             Text("限定源")
                                 .font(.subheadline)
-                                .foregroundColor(.secondary)
+                                .foregroundColor(theme.palette.secondaryInk)
                                 .frame(width: 52, alignment: .leading)
                             PlaceholderField(placeholder: "源名 / 分组含这几个字",
                                              text: $viewModel.sourceNameFilter) {
@@ -155,7 +155,7 @@ public struct SearchBookView: View {
 
                         Text("范围内 \(viewModel.availableSources.count) 个源")
                             .font(.caption2)
-                            .foregroundColor(.secondary)
+                            .foregroundColor(theme.palette.secondaryInk)
                     }
                 }
             }
@@ -204,7 +204,7 @@ public struct SearchBookView: View {
                     ProgressView()
                     Text("正在搜索全网书籍 (第 1 页)...")
                         .font(.subheadline)
-                        .foregroundColor(.secondary)
+                        .foregroundColor(theme.palette.secondaryInk)
                 }
                 Spacer()
             } else if viewModel.searchResults.isEmpty && !viewModel.searchQuery.isEmpty && !viewModel.isSearching {
@@ -212,15 +212,15 @@ public struct SearchBookView: View {
                 VStack(spacing: 8) {
                     Image(systemName: "magnifyingglass")
                         .font(.largeTitle)
-                        .foregroundColor(.secondary.opacity(0.6))
-                    Text("未找到相关书籍")
+                        .foregroundColor(theme.palette.secondaryInk.opacity(0.6))
+                    Text("没找到相关书籍")
                         .font(.headline)
-                        .foregroundColor(.secondary)
+                        .foregroundColor(theme.palette.secondaryInk)
                     Text(viewModel.hiddenByFilterCount > 0
                          ? "搜到 \(viewModel.hiddenByFilterCount) 条，但都不符合当前匹配口径"
                          : "可尝试切换其他书源或更换关键词")
                         .font(.caption)
-                        .foregroundColor(.secondary)
+                        .foregroundColor(theme.palette.secondaryInk)
                 }
                 Spacer()
             } else if viewModel.searchResults.isEmpty && viewModel.searchQuery.isEmpty {
@@ -229,10 +229,10 @@ public struct SearchBookView: View {
                     VStack(spacing: 8) {
                         Image(systemName: "books.vertical")
                             .font(.system(size: 40))
-                            .foregroundColor(.secondary.opacity(0.5))
+                            .foregroundColor(theme.palette.secondaryInk.opacity(0.5))
                         Text("输入关键词开启全网搜索")
                             .font(.subheadline)
-                            .foregroundColor(.secondary)
+                            .foregroundColor(theme.palette.secondaryInk)
                     }
                     Spacer()
                 } else {
@@ -240,9 +240,9 @@ public struct SearchBookView: View {
                 }
             } else {
                 if viewModel.hiddenByFilterCount > 0 {
-                    Text("已按当前口径过滤掉 \(viewModel.hiddenByFilterCount) 条（展开「范围与匹配」可放宽）")
+                    Text("按当前条件过滤掉 \(viewModel.hiddenByFilterCount) 条（展开「范围与匹配」可放宽）")
                         .font(.caption2)
-                        .foregroundColor(.secondary)
+                        .foregroundColor(theme.palette.secondaryInk)
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .padding(.horizontal)
                         .padding(.top, 6)
@@ -266,6 +266,7 @@ public struct SearchBookView: View {
                         footerView
                     }
                 }
+                .appThemedList()
                 .listStyle(.plain)
             }
         }
@@ -283,12 +284,7 @@ public struct SearchBookView: View {
                 ),
                 destination: {
                     if let item = selectedDetailBook {
-                        let source = BookStore.shared.sources.first(where: {
-                            $0.bookSourceUrl == item.origin ||
-                            $0.bookSourceName == item.originName ||
-                            item.origin.contains($0.bookSourceUrl) ||
-                            $0.bookSourceUrl.contains(item.origin)
-                        })
+                        let source = BookStore.shared.source(forSearchBook: item)
                         BookDetailView(searchBook: item, source: source)
                     } else {
                         EmptyView()
@@ -311,7 +307,7 @@ public struct SearchBookView: View {
                 ProgressView()
                 Text("正在加载第 \(viewModel.currentPage + 1) 页...")
                     .font(.footnote)
-                    .foregroundColor(.secondary)
+                    .foregroundColor(theme.palette.secondaryInk)
                 Spacer()
             }
             .padding(.vertical, 10)
@@ -326,7 +322,7 @@ public struct SearchBookView: View {
                     Spacer()
                 }
                 .font(.footnote)
-                .foregroundColor(.accentColor)
+                .foregroundColor(theme.palette.accent)
                 .padding(.vertical, 8)
             }
             .buttonStyle(.plain)
@@ -335,7 +331,7 @@ public struct SearchBookView: View {
                 Spacer()
                 Text("— 已加载全部 \(viewModel.searchResults.count) 本书籍 —")
                     .font(.caption2)
-                    .foregroundColor(.secondary)
+                    .foregroundColor(theme.palette.secondaryInk)
                 Spacer()
             }
             .padding(.vertical, 12)
@@ -348,7 +344,7 @@ public struct SearchBookView: View {
             HStack(spacing: 8) {
                 Text("最近")
                     .font(.caption)
-                    .foregroundColor(.secondary)
+                    .foregroundColor(theme.palette.secondaryInk)
                 ForEach(Array(viewModel.history.prefix(10)), id: \.self) { keyword in
                     Button {
                         viewModel.searchQuery = keyword
@@ -356,7 +352,7 @@ public struct SearchBookView: View {
                     } label: {
                         Text(keyword)
                             .font(.caption)
-                            .foregroundColor(.primary)
+                            .foregroundColor(theme.palette.ink)
                             .padding(.horizontal, 10)
                             .padding(.vertical, 5)
                             .background(Capsule().fill(theme.palette.elevated))
@@ -368,7 +364,7 @@ public struct SearchBookView: View {
                 } label: {
                     Image(systemName: "xmark.circle")
                         .font(.caption)
-                        .foregroundColor(.secondary)
+                        .foregroundColor(theme.palette.secondaryInk)
                 }
                 .buttonStyle(.plain)
             }
@@ -395,15 +391,16 @@ public struct SearchBookView: View {
                     } label: {
                         HStack {
                             Image(systemName: "clock.arrow.circlepath")
-                                .foregroundColor(.secondary)
+                                .foregroundColor(theme.palette.secondaryInk)
                             Text(keyword)
-                                .foregroundColor(.primary)
+                                .foregroundColor(theme.palette.ink)
                             Spacer()
                         }
                     }
                 }
             }
         }
+        .appThemedList()
         .listStyle(.plain)
     }
 }
@@ -425,7 +422,7 @@ struct PlaceholderField: View {
             if text.isEmpty {
                 Text(placeholder)
                     .font(.subheadline)
-                    .foregroundColor(.secondary)
+                    .foregroundColor(theme.palette.secondaryInk)
                     .allowsHitTesting(false)
             }
             TextField("", text: $text)
@@ -512,7 +509,7 @@ public struct SearchResultRow: View {
                     if !item.author.isEmpty && item.author != "未知作者" {
                         Text(item.author)
                             .font(.subheadline)
-                            .foregroundColor(.secondary)
+                            .foregroundColor(theme.palette.secondaryInk)
                             .lineLimit(1)
                     }
 
@@ -521,28 +518,28 @@ public struct SearchResultRow: View {
                         .padding(.horizontal, 5)
                         .padding(.vertical, 2)
                         .background(theme.palette.accent.opacity(0.12))
-                        .foregroundColor(.accentColor)
+                        .foregroundColor(theme.palette.accent)
                         .cornerRadius(4)
                 }
 
                 if let kind = item.kind, !kind.isEmpty {
                     Text(kind.replacingOccurrences(of: ",", with: " · "))
                         .font(.caption2)
-                        .foregroundColor(.secondary)
+                        .foregroundColor(theme.palette.secondaryInk)
                         .lineLimit(1)
                 }
 
                 if let intro = cleanIntro, !intro.isEmpty, !intro.hasPrefix("源站：") {
                     Text(intro)
                         .font(.caption2)
-                        .foregroundColor(.secondary.opacity(0.8))
+                        .foregroundColor(theme.palette.secondaryInk.opacity(0.8))
                         .lineLimit(2)
                 }
 
                 if let latest = item.latestChapterTitle, !latest.isEmpty {
                     Text("最新: \(latest)")
                         .font(.caption2)
-                        .foregroundColor(.secondary)
+                        .foregroundColor(theme.palette.secondaryInk)
                         .lineLimit(1)
                 }
             }
@@ -552,7 +549,7 @@ public struct SearchResultRow: View {
             // Chevron indicating navigation into detail page
             Image(systemName: "chevron.right")
                 .font(.system(size: 14, weight: .semibold))
-                .foregroundColor(.secondary.opacity(0.5))
+                .foregroundColor(theme.palette.secondaryInk.opacity(0.5))
         }
         .padding(.vertical, 4)
     }
@@ -563,7 +560,7 @@ public struct SearchResultRow: View {
             .frame(width: 52, height: 72)
             .overlay(
                 Image(systemName: "book.closed")
-                    .foregroundColor(.accentColor)
+                    .foregroundColor(theme.palette.accent)
             )
     }
 }

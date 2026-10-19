@@ -94,6 +94,7 @@ public struct ExploreBookListView: View {
                         .padding(.vertical, 8)
                     }
                 }
+                .appThemedList()
                 #if os(iOS)
                 .listStyle(.plain)
                 #endif

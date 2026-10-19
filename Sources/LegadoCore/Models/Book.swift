@@ -30,6 +30,8 @@ public struct Book: Codable, Identifiable, Equatable {
     public var variable: String?
     /// 这本书用不用替换净化。nil = 跟随全局设置（安卓那边是 `book.readConfig.useReplaceRule`）
     public var useReplaceRule: Bool?
+    /// 书架手动排序位次。nil = 仍按最近阅读时间排；拖拽换位后所有书都会写入序位。
+    public var shelfOrder: Int?
 
     public init(
         bookUrl: String,
@@ -51,7 +53,8 @@ public struct Book: Codable, Identifiable, Equatable {
         lastCheckTime: Int64 = Int64(Date().timeIntervalSince1970 * 1000),
         groupId: UUID? = nil,
         variable: String? = nil,
-        useReplaceRule: Bool? = nil
+        useReplaceRule: Bool? = nil,
+        shelfOrder: Int? = nil
     ) {
         self.bookUrl = bookUrl
         self.name = name
@@ -73,6 +76,7 @@ public struct Book: Codable, Identifiable, Equatable {
         self.groupId = groupId
         self.variable = variable
         self.useReplaceRule = useReplaceRule
+        self.shelfOrder = shelfOrder
     }
 
     enum CodingKeys: String, CodingKey {
@@ -80,7 +84,7 @@ public struct Book: Codable, Identifiable, Equatable {
         case origin, originName, tocUrl, wordCount, latestChapterTitle
         case durChapterTitle, durChapterIndex, durChapterPos, durChapterTime, totalChapterNum, lastCheckTime
         case groupId
-        case variable, useReplaceRule
+        case variable, useReplaceRule, shelfOrder
     }
 
     public init(from decoder: Decoder) throws {
@@ -105,6 +109,7 @@ public struct Book: Codable, Identifiable, Equatable {
         self.groupId = try? container.decodeIfPresent(UUID.self, forKey: .groupId)
         self.variable = try? container.decodeIfPresent(String.self, forKey: .variable)
         self.useReplaceRule = try? container.decodeIfPresent(Bool.self, forKey: .useReplaceRule)
+        self.shelfOrder = try? container.decodeIfPresent(Int.self, forKey: .shelfOrder)
     }
 }
 

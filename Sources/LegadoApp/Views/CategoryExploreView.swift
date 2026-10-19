@@ -29,6 +29,9 @@ public struct CategoryExploreView: View {
     @State private var showAllCategoriesSheet: Bool = false
     @State private var showAllSourcesSheet: Bool = false
     @State private var showLoginSheet: Bool = false
+    @State private var exploreFilters: [ExploreFilter] = []
+    @State private var filterValues: [String: String] = [:]
+    @State private var showFilterSheet: Bool = false
     @State private var sourceFilterText: String = ""
     @State private var selectedBookForDetail: SearchBook? = nil
 
@@ -70,14 +73,22 @@ public struct CategoryExploreView: View {
                 if availableSources.isEmpty {
                     emptySourcesView
                 } else {
+                    exploreHeader
+
                     // Level 1: Book Source Switcher (Fast Pill Selector)
                     if availableSources.count > 1 {
+                        barLabel("SOURCE / 书源", trailing: "\(availableSources.count)")
                         sourceSwitcherBar
                     }
 
                     // Level 2: Preset Category Quick Bar
                     if !actionableCategories.isEmpty {
+                        barLabel("CATEGORY / 分类", trailing: "\(actionableCategories.count)")
                         categoryQuickBar
+                    }
+
+                    if !exploreFilters.isEmpty {
+                        filterBar
                     }
 
                     Divider()
@@ -90,6 +101,7 @@ public struct CategoryExploreView: View {
             .navigationTitle("分类")
             #if os(iOS)
             .navigationBarTitleDisplayMode(.inline)
+            .navigationBarHidden(true)
             #endif
             .toolbar {
                 ToolbarItem(placement: .primaryAction) {
@@ -112,6 +124,13 @@ public struct CategoryExploreView: View {
             .sheet(isPresented: $showLoginSheet) {
                 if let src = currentSource {
                     SourceLoginSheet(source: src)
+                }
+            }
+            .sheet(isPresented: $showFilterSheet) {
+                ExploreFilterSheet(filters: exploreFilters, values: $filterValues) {
+                    if let cat = selectedCategory {
+                        loadBooks(for: cat, page: 1)
+                    }
                 }
             }
             .onChange(of: showLoginSheet) { showing in
@@ -154,6 +173,64 @@ public struct CategoryExploreView: View {
     }
 
     // MARK: - Level 1: Source Switcher Bar
+    private var exploreHeader: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text("EXPLORE / SOURCES")
+                    .font(theme.typography.label)
+                    .foregroundColor(theme.palette.secondaryInk)
+                Spacer()
+                Text("\(availableSources.count) SOURCES")
+                    .font(theme.typography.mono)
+                    .foregroundColor(theme.palette.secondaryInk)
+            }
+
+            HStack(alignment: .center) {
+                Text("分类")
+                    .font(.system(size: 30, weight: .bold))
+                    .foregroundColor(theme.palette.ink)
+                Spacer()
+                NavigationLink {
+                    SearchBookView()
+                } label: {
+                    Image(systemName: "magnifyingglass")
+                        .font(.system(size: 17, weight: .medium))
+                        .foregroundColor(theme.palette.accent)
+                }
+                .buttonStyle(.plain)
+            }
+
+            HStack(spacing: 0) {
+                Rectangle()
+                    .fill(theme.palette.accent)
+                    .frame(width: 24, height: 2)
+                Rectangle()
+                    .fill(theme.palette.divider.opacity(0.9))
+                    .frame(height: 0.5)
+                Rectangle()
+                    .fill(theme.palette.ink.opacity(0.75))
+                    .frame(width: 4, height: 4)
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.top, 8)
+        .padding(.bottom, 4)
+    }
+
+    private func barLabel(_ title: String, trailing: String) -> some View {
+        HStack {
+            Text(title)
+                .font(theme.typography.label)
+                .foregroundColor(theme.palette.secondaryInk)
+            Spacer()
+            Text(trailing)
+                .font(theme.typography.mono)
+                .foregroundColor(theme.palette.secondaryInk)
+        }
+        .padding(.horizontal, 16)
+        .padding(.top, 6)
+    }
+
     /// 内联只画当前源 + 前面几个：可用书源有上千个，全塞进 HStack
     /// 一帧里建完按钮，点进分类就会卡一下
     private var inlineSources: [BookSource] {
@@ -254,6 +331,7 @@ public struct CategoryExploreView: View {
                     }
                 }
             }
+            .appThemedList()
             .searchable(text: $sourceFilterText, prompt: "搜书源名")
             .navigationTitle("全部书源 (\(availableSources.count))")
             #if os(iOS)
@@ -316,6 +394,58 @@ public struct CategoryExploreView: View {
 
     private var barBackgroundColor: Color {
         theme.palette.surface
+    }
+
+    // MARK: - 发现筛选（exploreScreen）
+
+    /// 选中的筛选项作为查询参数追加到分类 URL。点开面板才修改，应用后重拉第一页。
+    private var filterBar: some View {
+        HStack(spacing: 8) {
+            Button {
+                showFilterSheet = true
+            } label: {
+                HStack(spacing: 5) {
+                    Image(systemName: "line.3.horizontal.decrease.circle")
+                    Text("筛选")
+                    let active = filterValues.values.filter { !$0.isEmpty }.count
+                    if active > 0 {
+                        Text("\(active)")
+                            .font(.system(size: 10, weight: .bold))
+                            .padding(.horizontal, 5)
+                            .padding(.vertical, 1)
+                            .background(theme.palette.accent)
+                            .foregroundColor(theme.palette.onAccent)
+                            .clipShape(Capsule())
+                    }
+                }
+                .font(.system(size: 12, weight: .medium))
+                .foregroundColor(theme.palette.accent)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 5)
+                .background(theme.palette.accent.opacity(0.12))
+                .cornerRadius(theme.metrics.cornerRadius)
+            }
+            .buttonStyle(.plain)
+
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 6) {
+                    ForEach(exploreFilters) { filter in
+                        if let value = filterValues[filter.name], !value.isEmpty {
+                            Text("\(filter.name)：\(value)")
+                                .font(.system(size: 11))
+                                .foregroundColor(theme.palette.secondaryInk)
+                                .padding(.horizontal, 8)
+                                .padding(.vertical, 3)
+                                .background(theme.palette.elevated)
+                                .cornerRadius(theme.metrics.cornerRadius + 2)
+                        }
+                    }
+                }
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 6)
+        .background(barBackgroundColor)
     }
 
     // MARK: - Level 3: Main Book Content Stream
@@ -384,15 +514,17 @@ public struct CategoryExploreView: View {
                 Image(systemName: "books.vertical")
                     .font(.largeTitle)
                     .foregroundColor(.secondary.opacity(0.6))
-                Text("该分类暂无书籍")
+                Text("这个分类还没有书")
                     .font(.headline)
                     .foregroundColor(.secondary)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else {
             List {
-                ForEach(books) { book in
-                    SearchResultRow(item: book)
+                ForEach(Array(books.enumerated()), id: \.element.id) { index, book in
+                    categoryRow(book, index: index)
+                        .listRowSeparator(.hidden)
+                        .listRowBackground(theme.palette.surface)
                         .contentShape(Rectangle())
                         .onTapGesture {
                             selectedBookForDetail = book
@@ -425,12 +557,85 @@ public struct CategoryExploreView: View {
                     .padding(.vertical, 8)
                 }
             }
+            .appThemedList()
             #if os(iOS)
             .listStyle(.plain)
             #endif
             .refreshable {
                 await refresh()
             }
+        }
+    }
+
+    private func categoryRow(_ book: SearchBook, index: Int) -> some View {
+        HStack(alignment: .top, spacing: 12) {
+            Text(String(format: "%02d", index + 1))
+                .font(theme.typography.mono)
+                .foregroundColor(theme.palette.secondaryInk)
+                .padding(.top, 4)
+
+            Group {
+                if book.coverUrl != nil {
+                    BookCoverImage(
+                        urlString: book.coverUrl,
+                        placeholderOverride: AnyView(categoryCoverPlaceholder)
+                    )
+                } else {
+                    categoryCoverPlaceholder
+                }
+            }
+            .frame(width: 46, height: 62)
+            .clipped()
+            .clipShape(RoundedRectangle(cornerRadius: max(4, theme.metrics.cornerRadius - 3), style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: max(4, theme.metrics.cornerRadius - 3), style: .continuous)
+                    .stroke(theme.palette.divider.opacity(0.5), lineWidth: theme.metrics.borderWidth)
+            )
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text(book.name)
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundColor(theme.palette.ink)
+                    .lineLimit(2)
+
+                if !book.author.isEmpty {
+                    Text(book.author)
+                        .font(theme.typography.mono)
+                        .foregroundColor(theme.palette.secondaryInk)
+                        .lineLimit(1)
+                }
+
+                if let intro = book.intro, !intro.isEmpty {
+                    Text(intro)
+                        .font(.caption2)
+                        .foregroundColor(theme.palette.secondaryInk)
+                        .lineLimit(1)
+                }
+            }
+
+            Spacer(minLength: 4)
+
+            Image(systemName: "chevron.right")
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundColor(theme.palette.secondaryInk.opacity(0.6))
+                .padding(.top, 6)
+        }
+        .padding(.vertical, 8)
+        .padding(.horizontal, 16)
+        .overlay(alignment: .bottom) {
+            Rectangle()
+                .fill(theme.palette.divider.opacity(0.45))
+                .frame(height: 0.5)
+                .padding(.leading, 74)
+        }
+    }
+
+    private var categoryCoverPlaceholder: some View {
+        ZStack {
+            theme.palette.elevated
+            Image(systemName: "book.closed")
+                .font(.system(size: 14))
+                .foregroundColor(theme.palette.secondaryInk)
         }
     }
 
@@ -530,6 +735,8 @@ public struct CategoryExploreView: View {
         selectedSourceUrl = source.bookSourceUrl
         books = []
         selectedCategory = nil
+        exploreFilters = []
+        filterValues = [:]
         loadCategories(for: source)
     }
 
@@ -537,8 +744,17 @@ public struct CategoryExploreView: View {
         // 解析要跑书源 JS，手机上几秒，放后台线程；BookExploreService 里有缓存
         Task.detached(priority: .userInitiated) {
             let cats = BookExploreService.shared.parseExploreCategories(source: source)
+            let filters = BookExploreService.shared.parseExploreFilters(source: source)
             await MainActor.run {
                 self.categories = cats
+                self.exploreFilters = filters
+                var defaults: [String: String] = [:]
+                for filter in filters {
+                    if !filter.defaultValue.isEmpty {
+                        defaults[filter.name] = filter.defaultValue
+                    }
+                }
+                self.filterValues = defaults
 
                 // Prefer selecting "全部" as initial category so public books load immediately; presets like 阅读历史 remain available in the top bar
                 if let allCategory = cats.first(where: { $0.title == "全部" && !($0.url ?? "").isEmpty }) {
@@ -591,7 +807,12 @@ public struct CategoryExploreView: View {
 
         Task {
             do {
-                let fetched = try await BookExploreService.shared.fetchExploreBooks(source: src, categoryUrl: rawUrl, page: page)
+                let fetched = try await BookExploreService.shared.fetchExploreBooks(
+                    source: src,
+                    categoryUrl: rawUrl,
+                    page: page,
+                    filters: filterValues
+                )
                 await MainActor.run {
                     self.currentPage = page
                     self.books = fetched
@@ -601,7 +822,7 @@ public struct CategoryExploreView: View {
             } catch {
                 await MainActor.run {
                     if error.localizedDescription.contains("403") {
-                        self.errorMessage = "请先在书源管理中登录该书源账号以同步查看「\(category.title)」"
+                        self.errorMessage = "「\(category.title)」要登录才能看，先去书源里登录。"
                     } else {
                         self.errorMessage = error.localizedDescription
                     }
@@ -618,7 +839,12 @@ public struct CategoryExploreView: View {
 
         Task {
             do {
-                let fetched = try await BookExploreService.shared.fetchExploreBooks(source: src, categoryUrl: rawUrl, page: nextPage)
+                let fetched = try await BookExploreService.shared.fetchExploreBooks(
+                    source: src,
+                    categoryUrl: rawUrl,
+                    page: nextPage,
+                    filters: filterValues
+                )
                 await MainActor.run {
                     self.currentPage = nextPage
                     if fetched.isEmpty {
@@ -645,7 +871,12 @@ public struct CategoryExploreView: View {
     private func refresh() async {
         guard let src = currentSource, let cat = selectedCategory, let rawUrl = cat.url, !rawUrl.isEmpty else { return }
         do {
-            let fetched = try await BookExploreService.shared.fetchExploreBooks(source: src, categoryUrl: rawUrl, page: 1)
+            let fetched = try await BookExploreService.shared.fetchExploreBooks(
+                source: src,
+                categoryUrl: rawUrl,
+                page: 1,
+                filters: filterValues
+            )
             await MainActor.run {
                 self.currentPage = 1
                 self.books = fetched

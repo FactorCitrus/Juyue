@@ -27,6 +27,7 @@ public class BookExploreService {
     /// 分类解析缓存。解析要跑一遍书源 JS（聚合源的 jsLib 三万字符），手机上几秒。
     /// 缓存键是 bookSourceUrl，值里带 exploreUrl 和源变量做签名，源一变就失效。
     private var categoryCache: [String: (signature: String, value: [ExploreCategory])] = [:]
+    private var filterCache: [String: (signature: String, value: [ExploreFilter])] = [:]
     private let categoryLock = NSLock()
 
     public func parseExploreCategories(source: BookSource) -> [ExploreCategory] {
@@ -51,6 +52,39 @@ public class BookExploreService {
     /// 执行动作类分类：脚本弹浏览器或弹提示，没有书可抓。
     public func runActionCategory(source: BookSource, categoryUrl: String) async {
         _ = try? await fetchExploreBooks(source: source, categoryUrl: categoryUrl, page: 1)
+    }
+
+    /// 解析 `exploreScreen`。有的源把它写成 `<js>`，先执行脚本再按 JSON 解析。
+    public func parseExploreFilters(source: BookSource) -> [ExploreFilter] {
+        let signature = source.exploreScreen ?? ""
+        let key = source.bookSourceUrl
+
+        categoryLock.lock()
+        if let cached = filterCache[key], cached.signature == signature {
+            categoryLock.unlock()
+            return cached.value
+        }
+        categoryLock.unlock()
+
+        var raw = signature
+        if raw.contains("<js>") || raw.hasPrefix("@js:") {
+            let engine = JSEngine(bookSource: source, baseUrl: source.bookSourceUrl)
+            if let value = engine.eval(script: JSEngine.unwrapJsScript(raw)) {
+                if let text = value as? String {
+                    raw = text
+                } else if let array = value as? [[String: Any]],
+                          let data = try? JSONSerialization.data(withJSONObject: array),
+                          let text = String(data: data, encoding: .utf8) {
+                    raw = text
+                }
+            }
+        }
+        let result = ExploreScreenParser.parse(raw)
+
+        categoryLock.lock()
+        filterCache[key] = (signature, result)
+        categoryLock.unlock()
+        return result
     }
 
     /// Parses the categories configured in a BookSource's `exploreUrl`
@@ -121,12 +155,22 @@ public class BookExploreService {
     }
 
     /// Fetches books from a given category URL of a BookSource
-    public func fetchExploreBooks(source: BookSource, categoryUrl: String, page: Int = 1) async throws -> [SearchBook] {
+    public func fetchExploreBooks(
+        source: BookSource,
+        categoryUrl: String,
+        page: Int = 1,
+        filters: [String: String] = [:]
+    ) async throws -> [SearchBook] {
+        try await SourceLoginService.shared.requireLoginIfNeeded(source: source)
         var renderedUrl = categoryUrl
         let jsEngine = JSEngine(bookSource: source, baseUrl: source.bookSourceUrl)
         jsEngine.context.setObject(page, forKeyedSubscript: "page" as NSString)
         jsEngine.context.setObject(page, forKeyedSubscript: "searchPage" as NSString)
         jsEngine.context.setObject(source.bookSourceUrl, forKeyedSubscript: "baseUrl" as NSString)
+        jsEngine.context.setObject(filters, forKeyedSubscript: "screen" as NSString)
+        for (name, value) in filters {
+            jsEngine.context.setObject(value, forKeyedSubscript: name as NSString)
+        }
 
         renderedUrl = renderedUrl
             .replacingOccurrences(of: "{{page}}", with: "\(page)")
@@ -134,8 +178,12 @@ public class BookExploreService {
             .replacingOccurrences(of: "{{page-1}}", with: "\(page - 1)")
 
         if renderedUrl.contains("{{") && renderedUrl.contains("}}") {
-            renderedUrl = jsEngine.renderTemplate(renderedUrl, variables: ["page": page])
+            var variables: [String: Any] = ["page": page, "screen": filters]
+            for (name, value) in filters { variables[name] = value }
+            renderedUrl = jsEngine.renderTemplate(renderedUrl, variables: variables)
         }
+
+        renderedUrl = Self.applying(filters: filters, to: renderedUrl)
 
         // 有些分类条目是「点一下执行脚本」，例如大灰狼的「登录番茄」，url 就是
         // `{{java.startBrowser("https://fanqienovel.com/","番茄登录");}}`。
@@ -152,7 +200,12 @@ public class BookExploreService {
             throw NSError(domain: "Legado", code: -1, userInfo: [NSLocalizedDescriptionKey: "无法解析分类网址: \(categoryUrl)"])
         }
 
-        let response = try await NetworkClient.shared.request(parsed: parsedReq)
+        let response = try await NetworkClient.shared.request(
+            parsed: parsedReq,
+            timeout: nil,
+            rateKey: source.bookSourceUrl,
+            rateLimit: source.rateLimit
+        )
         guard (200..<400).contains(response.statusCode) else {
             throw NSError(domain: "Legado", code: response.statusCode, userInfo: [NSLocalizedDescriptionKey: "服务器响应错误: HTTP \(response.statusCode)"])
         }
@@ -191,7 +244,10 @@ public class BookExploreService {
 
             guard !name.isEmpty, !bookUrl.isEmpty else { continue }
 
-            let coverUrl = itemAnalyzer.getString(coverUrlRule, isUrl: true)
+            let rawCover = itemAnalyzer.getString(coverUrlRule, isUrl: true)
+            let coverUrl = rawCover.isEmpty
+                ? ""
+                : CoverURLResolver.resolve(rawCover, source: source, baseUrl: parsedReq.url.absoluteString)
             let intro = itemAnalyzer.getString(introRule)
             let kind = itemAnalyzer.getString(kindRule)
             let lastChapter = itemAnalyzer.getString(lastChapterRule)
@@ -216,5 +272,29 @@ public class BookExploreService {
         }
 
         return books
+    }
+
+    /// 筛选值按查询参数追加到分类 URL。`url,{json options}` 的请求选项要留在末尾。
+    public static func applying(filters: [String: String], to rawURL: String) -> String {
+        guard !filters.isEmpty else { return rawURL }
+
+        var urlPart = rawURL
+        var optionsPart = ""
+        if let comma = rawURL.firstIndex(of: ","),
+           rawURL[rawURL.index(after: comma)...].trimmingCharacters(in: .whitespaces).hasPrefix("{") {
+            urlPart = String(rawURL[..<comma]).trimmingCharacters(in: .whitespaces)
+            optionsPart = String(rawURL[comma...])
+        }
+        guard !urlPart.isEmpty, !urlPart.hasPrefix("{") else { return rawURL }
+
+        var components = URLComponents(string: urlPart)
+        var items = components?.queryItems ?? []
+        for (name, value) in filters where !name.isEmpty && !value.isEmpty {
+            items.removeAll { $0.name == name }
+            items.append(URLQueryItem(name: name, value: value))
+        }
+        components?.queryItems = items.isEmpty ? nil : items
+        let result = components?.string ?? urlPart
+        return result + optionsPart
     }
 }

@@ -45,6 +45,7 @@ struct RuleFieldSpec<Rule> {
 
 /// 一行规则的输入框：上行中文名 + 右侧键名，下面是输入框
 struct RuleFieldRow: View {
+    @Environment(\.appTheme) private var theme
     let label: String
     let key: String
     let hint: String?
@@ -59,7 +60,7 @@ struct RuleFieldRow: View {
                 Spacer()
                 Text(key)
                     .font(.system(size: 10, design: .monospaced))
-                    .foregroundColor(.secondary)
+                    .foregroundColor(theme.palette.secondaryInk)
             }
 
             if multiline {
@@ -68,7 +69,7 @@ struct RuleFieldRow: View {
                     .font(.system(.caption, design: .monospaced))
                     .overlay(
                         RoundedRectangle(cornerRadius: 6)
-                            .stroke(Color.secondary.opacity(0.25))
+                            .stroke(theme.palette.divider.opacity(0.25))
                     )
             } else {
                 TextField(hint ?? key, text: $value)
@@ -111,7 +112,9 @@ struct RuleEditorPage<Rule>: View {
                     Text(footer).font(.caption2)
                 }
             }
+            .appThemedRows()
         }
+        .appThemedList()
         .navigationTitle(title)
         #if os(iOS)
         .navigationBarTitleDisplayMode(.inline)
@@ -124,6 +127,7 @@ struct RuleEditorPage<Rule>: View {
 public struct EditSourceSheet: View {
     @ObservedObject var bookStore = BookStore.shared
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.appTheme) private var theme
 
     let originalSource: BookSource
     @State private var draft: BookSource
@@ -156,6 +160,7 @@ public struct EditSourceSheet: View {
                     NavigationLink("源信息与开关") { BasicInfoEditor(source: $draft) }
                     NavigationLink("登录配置") { LoginEditor(source: $draft) }
                 }
+                .appThemedRows()
 
                 Section(header: Text("规则")) {
                     NavigationLink("搜索规则") { SearchRuleEditor(source: $draft) }
@@ -165,6 +170,7 @@ public struct EditSourceSheet: View {
                     NavigationLink("正文规则") { ContentRuleEditor(source: $draft) }
                     NavigationLink("书评规则") { ReviewRuleEditor(source: $draft) }
                 }
+                .appThemedRows()
 
                 Section {
                     NavigationLink("配置测试") { SourceTestView(source: draft) }
@@ -172,19 +178,23 @@ public struct EditSourceSheet: View {
                     Text("用当前编辑中的规则跑一遍搜索 / 详情 / 目录 / 正文，不用先保存。")
                         .font(.caption2)
                 }
+                .appThemedRows()
 
                 Section(header: Text("整段 JSON")) {
                     NavigationLink("源码编辑") { rawJSONEditor }
                 }
+                .appThemedRows()
 
                 if let saveError {
                     Section {
                         Text(saveError)
                             .font(.caption)
-                            .foregroundColor(.red)
+                            .foregroundColor(theme.palette.danger)
                     }
+                    .appThemedRows()
                 }
             }
+            .appThemedList()
             .navigationTitle("编辑书源")
             #if os(iOS)
             .navigationBarTitleDisplayMode(.inline)
@@ -214,13 +224,15 @@ public struct EditSourceSheet: View {
                     .disableAutocorrection(true)
                     #endif
             } footer: {
-                Text("按 JSON 解析后覆盖上面所有表单字段。").font(.caption2)
+                Text("导入 JSON 后，会覆盖上面的表单。").font(.caption2)
             }
+            .appThemedRows()
 
             if let rawError {
                 Section {
-                    Text(rawError).font(.caption).foregroundColor(.red)
+                    Text(rawError).font(.caption).foregroundColor(theme.palette.danger)
                 }
+                .appThemedRows()
             }
 
             Section {
@@ -244,7 +256,9 @@ public struct EditSourceSheet: View {
                     Label("按当前表单重写源码", systemImage: "arrow.uturn.backward")
                 }
             }
+            .appThemedRows()
         }
+        .appThemedList()
         .navigationTitle("书源源码")
         #if os(iOS)
         .navigationBarTitleDisplayMode(.inline)
@@ -358,11 +372,13 @@ struct BasicInfoEditor: View {
                     set: { source.customButton = $0 }
                 ))
             }
+            .appThemedRows()
 
             Section(header: Text("请求")) {
                 RuleFieldRow(label: "请求头", key: "header", hint: "JSON 格式的自定义请求头", multiline: true,
                              value: optionalText($source.header))
             }
+            .appThemedRows()
 
             Section(header: Text("脚本")) {
                 RuleFieldRow(label: "JS 库", key: "jsLib", hint: "书源自带的助手函数", multiline: true,
@@ -372,7 +388,9 @@ struct BasicInfoEditor: View {
                 RuleFieldRow(label: "源变量", key: "variable", hint: "JSON 格式的源变量", multiline: true,
                              value: optionalText($source.variable))
             }
+            .appThemedRows()
         }
+        .appThemedList()
         .navigationTitle("基本信息")
         #if os(iOS)
         .navigationBarTitleDisplayMode(.inline)
@@ -398,7 +416,9 @@ struct LoginEditor: View {
                 Text("保存后，书源登录面板里的脚本按钮就是跑这里的 loginUi。")
                     .font(.caption2)
             }
+            .appThemedRows()
         }
+        .appThemedList()
         .navigationTitle("登录配置")
         #if os(iOS)
         .navigationBarTitleDisplayMode(.inline)
@@ -541,6 +561,7 @@ struct ContentRuleEditor: View {
 }
 
 struct ReviewRuleEditor: View {
+    @Environment(\.appTheme) private var theme
     @Binding var source: BookSource
 
     private var rule: Binding<ReviewRule> {
@@ -574,7 +595,7 @@ struct ReviewRuleEditor: View {
             VStack(alignment: .leading, spacing: 6) {
                 Text("内联热评")
                     .font(.caption.bold())
-                    .foregroundColor(.secondary)
+                    .foregroundColor(theme.palette.secondaryInk)
                 RuleFieldRow(label: "热评 URL", key: "inlineHotReview.urlRule", hint: "从段评 URL 派生热评请求", multiline: false,
                              value: optionalText(hot.urlRule))
                 RuleFieldRow(label: "热评列表", key: "inlineHotReview.listRule", hint: "热评列表提取规则", multiline: false,
@@ -583,7 +604,7 @@ struct ReviewRuleEditor: View {
                              value: optionalText(hot.contentRule))
             }
             .padding(12)
-            .background(Color.secondary.opacity(0.08))
+            .background(theme.palette.divider.opacity(0.08))
         }
     }
 }
@@ -594,12 +615,13 @@ func urlBar(title: String, key: String, text: Binding<String>, multi: Bool) -> s
     RuleFieldRow(label: title, key: key, hint: title, multiline: multi, value: text)
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
-        .background(Color.secondary.opacity(0.08))
+        .background(AppThemeManager.shared.theme.palette.divider.opacity(0.08))
 }
 
 // MARK: - 配置测试
 
 struct SourceTestView: View {
+    @Environment(\.appTheme) private var theme
     let source: BookSource
 
     enum Mode: String, CaseIterable, Identifiable {
@@ -646,8 +668,9 @@ struct SourceTestView: View {
                 .pickerStyle(.segmented)
                 Text("测试链路：\(chain)")
                     .font(.caption2)
-                    .foregroundColor(.secondary)
+                    .foregroundColor(theme.palette.secondaryInk)
             }
+            .appThemedRows()
 
             Section(header: Text("关键词 / URL")) {
                 TextField(placeholder, text: $input)
@@ -668,13 +691,16 @@ struct SourceTestView: View {
                         .disabled(running || input.trimmingCharacters(in: .whitespaces).isEmpty)
                 }
             }
+            .appThemedRows()
 
             Section(header: Text("结果")) {
                 Text(log.isEmpty ? "还没开始测。" : log)
                     .font(.system(size: 11, design: .monospaced))
                     .textSelection(.enabled)
             }
+            .appThemedRows()
         }
+        .appThemedList()
         .navigationTitle("配置测试")
         #if os(iOS)
         .navigationBarTitleDisplayMode(.inline)

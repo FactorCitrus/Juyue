@@ -38,9 +38,29 @@ public class SearchViewModel: ObservableObject {
     public var searchResults: [SearchBook] {
         let key = lastQuery.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !key.isEmpty else { return allResults }
-        return allResults.filter {
+        let filtered = allResults.filter {
             SourceMatchRules.matchesKeyword($0, keyword: key, field: matchField, exact: exactMatch)
         }
+        // 多源结果按书源 weight 降序、实测 respondTime 升序排；同源内保持原顺序。
+        let rank = sourceRankMap()
+        return filtered.enumerated().sorted { lhs, rhs in
+            let l = rank[lhs.element.origin] ?? rank[lhs.element.originName] ?? (weight: 0, respond: Int64.max, order: lhs.offset)
+            let r = rank[rhs.element.origin] ?? rank[rhs.element.originName] ?? (weight: 0, respond: Int64.max, order: rhs.offset)
+            if l.weight != r.weight { return l.weight > r.weight }
+            if l.respond != r.respond { return l.respond < r.respond }
+            return l.order < r.order
+        }.map(\.element)
+    }
+
+    /// 书源排序键：origin URL 为主键，源名做兼容键。
+    private func sourceRankMap() -> [String: (weight: Int, respond: Int64, order: Int)] {
+        var map: [String: (weight: Int, respond: Int64, order: Int)] = [:]
+        for (index, source) in BookStore.shared.sources.enumerated() {
+            let value = (source.weight ?? 0, source.respondTime ?? Int64.max, index)
+            map[source.bookSourceUrl] = value
+            map[source.bookSourceName] = value
+        }
+        return map
     }
 
     /// 有多少条被匹配口径挡掉了（给个提示，免得以为源不行）

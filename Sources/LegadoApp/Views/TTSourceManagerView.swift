@@ -5,6 +5,7 @@ import LegadoCore
 
 /// 听书引擎管理：系统语音 + 导入的在线语音源。
 public struct TTSourceManagerView: View {
+    @Environment(\.appTheme) private var theme
     @State private var sources: [HttpTTS] = []
     @State private var activeSourceId: Int64? = TTSourceSelection.activeId
     @State private var showImportSheet = false
@@ -22,19 +23,21 @@ public struct TTSourceManagerView: View {
                         Text("音色与朗读参数")
                         Text("多角色音色、语速、分段、试听、百度语音授权")
                             .font(.caption2)
-                            .foregroundColor(.secondary)
+                            .foregroundColor(theme.palette.secondaryInk)
                     }
                 }
             }
+            .appThemedRows()
 
             Section(header: Text("当前引擎")) {
                 HStack {
                     Text("使用中")
                     Spacer()
                     Text(TTSourceSelection.displayName(in: sources))
-                        .foregroundColor(.secondary)
+                        .foregroundColor(theme.palette.secondaryInk)
                 }
             }
+            .appThemedRows()
 
             Section(header: Text("引擎列表")) {
                 Button {
@@ -43,14 +46,14 @@ public struct TTSourceManagerView: View {
                 } label: {
                     HStack {
                         VStack(alignment: .leading, spacing: 2) {
-                            Text("系统语音").foregroundColor(.primary)
+                            Text("系统语音").foregroundColor(theme.palette.ink)
                             Text("iOS 内置 AVSpeechSynthesizer，离线可用")
                                 .font(.caption)
-                                .foregroundColor(.secondary)
+                                .foregroundColor(theme.palette.secondaryInk)
                         }
                         Spacer()
                         if activeSourceId == nil {
-                            Image(systemName: "checkmark").foregroundColor(.accentColor)
+                            Image(systemName: "checkmark").foregroundColor(theme.palette.accent)
                         }
                     }
                 }
@@ -62,14 +65,14 @@ public struct TTSourceManagerView: View {
                     } label: {
                         HStack {
                             VStack(alignment: .leading, spacing: 2) {
-                                Text(source.name).foregroundColor(.primary)
+                                Text(source.name).foregroundColor(theme.palette.ink)
                                 Text(host(of: source.url))
                                     .font(.caption)
-                                    .foregroundColor(.secondary)
+                                    .foregroundColor(theme.palette.secondaryInk)
                             }
                             Spacer()
                             if activeSourceId == source.id {
-                                Image(systemName: "checkmark").foregroundColor(.accentColor)
+                                Image(systemName: "checkmark").foregroundColor(theme.palette.accent)
                             }
                         }
                     }
@@ -82,6 +85,7 @@ public struct TTSourceManagerView: View {
                     }
                 }
             }
+            .appThemedRows()
 
             Section {
                 Button {
@@ -99,18 +103,22 @@ public struct TTSourceManagerView: View {
             } footer: {
                 Text("支持阅读（Legado）的 httpTTS 格式，单条对象或数组都行。")
             }
+            .appThemedRows()
 
             if let statusMessage {
                 Section {
-                    Text(statusMessage).font(.caption).foregroundColor(.green)
+                    Text(statusMessage).font(.caption).foregroundColor(theme.palette.success)
                 }
+                .appThemedRows()
             }
             if let errorMessage {
                 Section {
-                    Text(errorMessage).font(.caption).foregroundColor(.red)
+                    Text(errorMessage).font(.caption).foregroundColor(theme.palette.danger)
                 }
+                .appThemedRows()
             }
         }
+        .appThemedList()
         .navigationTitle("朗读引擎")
         .task { reload() }
         .sheet(isPresented: $showImportSheet) {
@@ -120,14 +128,17 @@ public struct TTSourceManagerView: View {
                         .font(.system(.footnote, design: .monospaced))
                         .overlay(
                             RoundedRectangle(cornerRadius: 8)
-                                .stroke(Color.secondary.opacity(0.3))
+                                .stroke(theme.palette.divider.opacity(0.3))
                         )
                         .padding(.horizontal)
                     Text("把语音源 JSON 粘在这里，比如 {\"name\":\"有道\",\"url\":\"https://dict.youdao.com/dictvoice?audio={{java.encodeURI(speakText)}}&le=zh\",\"contentType\":\"audio/mpeg\"}")
                         .font(.caption2)
-                        .foregroundColor(.secondary)
+                        .foregroundColor(theme.palette.secondaryInk)
                         .padding(.horizontal)
                 }
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+                .background(AppThemeBackdrop())
+                .appThemedPage()
                 .navigationTitle("导入语音源")
                 #if os(iOS)
                 .navigationBarTitleDisplayMode(.inline)

@@ -4,6 +4,144 @@ import CoreText
 
 final class LegadoCoreTests: XCTestCase {
 
+    func testBookSourceSelectionOrderAndUrlPattern() throws {
+        var heavy = BookSource(bookSourceUrl: "https://a.example", bookSourceName: "A")
+        heavy.weight = 10
+        heavy.respondTime = 900
+        heavy.bookUrlPattern = #"https://a\.example/book/\d+"#
+
+        var light = BookSource(bookSourceUrl: "https://b.example", bookSourceName: "B")
+        light.weight = 1
+        light.respondTime = 100
+
+        var sameWeightFast = BookSource(bookSourceUrl: "https://c.example", bookSourceName: "C")
+        sameWeightFast.weight = 10
+        sameWeightFast.respondTime = 100
+
+        let ordered = [light, heavy, sameWeightFast].sorted(by: BookSource.selectionOrder)
+        XCTAssertEqual(ordered.map(\.bookSourceName), ["C", "A", "B"])
+        XCTAssertTrue(heavy.matchesBookUrl("https://a.example/book/123"))
+        XCTAssertFalse(heavy.matchesBookUrl("https://a.example/book/abc"))
+    }
+
+    func testSourceRateLimitParsing() throws {
+        XCTAssertEqual(SourceRateLimit.parse("1/1000"), SourceRateLimit(count: 1, windowMs: 1000))
+        XCTAssertEqual(SourceRateLimit.parse("3/500"), SourceRateLimit(count: 3, windowMs: 500))
+        XCTAssertNil(SourceRateLimit.parse(nil))
+        XCTAssertNil(SourceRateLimit.parse(""))
+        XCTAssertNil(SourceRateLimit.parse("1"))
+        XCTAssertNil(SourceRateLimit.parse("0/1000"))
+    }
+
+    func testSourceRateLimiterEnforcesWindow() async throws {
+        let limiter = SourceRateLimiter()
+        let limit = SourceRateLimit(count: 2, windowMs: 250)
+        let start = Date()
+        await limiter.acquire(key: "test", limit: limit)
+        await limiter.acquire(key: "test", limit: limit)
+        await limiter.acquire(key: "test", limit: limit)
+        let elapsed = Date().timeIntervalSince(start)
+        XCTAssertGreaterThanOrEqual(elapsed, 0.20)
+    }
+
+    func testBookSourceKindAndCoverDecode() throws {
+        var source = BookSource(bookSourceUrl: "https://img.example", bookSourceName: "图源")
+        source.bookSourceType = 2
+        XCTAssertEqual(source.kind, .image)
+        source.bookSourceType = nil
+        XCTAssertEqual(source.kind, .text)
+
+        let base64 = CryptoUtils.base64Encode("https://img.example/real.jpg")
+        source.coverDecodeJs = "java.base64Decode(result)"
+        let decoded = CoverURLResolver.resolve(base64, source: source)
+        XCTAssertEqual(decoded, "https://img.example/real.jpg")
+    }
+
+    func testMediaContentParser() throws {
+        let html = """
+        <div><img src="https://img.example/1.jpg"></div>
+        <div><img data-src="/2.jpg"></div>
+        """
+        let cleaned = BookContentService.cleanHtml(html, baseUrl: "https://img.example/chapter/1")
+        let images = MediaContentParser.imageURLs(from: cleaned)
+        XCTAssertEqual(images, ["https://img.example/1.jpg", "https://img.example/2.jpg"])
+
+        let json = #"{"data":{"playUrl":"https://media.example/a.m3u8","cover":"https://media.example/c.jpg"}}"#
+        let urls = MediaContentParser.mediaURLs(from: json)
+        XCTAssertTrue(urls.contains("https://media.example/a.m3u8"))
+        XCTAssertTrue(urls.contains("https://media.example/c.jpg") == false)
+        XCTAssertTrue(MediaContentParser.isMediaURL("https://media.example/a.m3u8"))
+
+        let imageJSON = #"{"images":["https://img.example/a.jpg","https://img.example/b.jpg"]}"#
+        let imageURLs = MediaContentParser.mediaURLs(from: imageJSON)
+        XCTAssertEqual(imageURLs, ["https://img.example/a.jpg", "https://img.example/b.jpg"])
+    }
+
+    func testExploreScreenParsingAndQueryApplication() throws {
+        let raw = #"[{"name":"排序","value":"最热","type":"select","options":["最热","最新"]},{"name":"状态","value":"","type":"select","options":[{"name":"完结","value":"full"}]},{"name":"关键词","type":"text"}]"#
+        let filters = ExploreScreenParser.parse(raw)
+        XCTAssertEqual(filters.count, 3)
+        XCTAssertEqual(filters[0].defaultValue, "最热")
+        XCTAssertEqual(filters[0].options.map(\.value), ["最热", "最新"])
+        XCTAssertEqual(filters[1].options.first?.value, "full")
+        XCTAssertFalse(filters[2].isSelect)
+
+        let url = BookExploreService.applying(
+            filters: ["排序": "最新", "关键词": "剑来"],
+            to: "https://example.com/list?page=2"
+        )
+        XCTAssertTrue(url.contains("page=2"))
+        XCTAssertTrue(url.contains("%E6%8E%92%E5%BA%8F=%E6%9C%80%E6%96%B0") || url.contains("排序=最新"))
+        XCTAssertTrue(url.contains("%E5%85%B3%E9%94%AE%E8%AF%8D=%E5%89%91%E6%9D%A5") || url.contains("关键词=剑来"))
+
+        let withOptions = BookExploreService.applying(
+            filters: ["排序": "最新"],
+            to: #"https://example.com/list,{"method":"POST"}"#
+        )
+        XCTAssertTrue(withOptions.hasSuffix(#",{"method":"POST"}"#))
+    }
+
+    func testLoginCheckScriptStates() async throws {
+        var source = BookSource(bookSourceUrl: "https://login.example", bookSourceName: "登录源")
+        source.loginCheckJs = "true"
+        var report = await SourceLoginService.shared.check(source: source, force: true)
+        XCTAssertEqual(report.state, .loggedIn)
+
+        source.loginCheckJs = "false"
+        report = await SourceLoginService.shared.check(source: source, force: true)
+        XCTAssertEqual(report.state, .loggedOut)
+
+        source.loginCheckJs = "throw new Error('boom')"
+        report = await SourceLoginService.shared.check(source: source, force: true)
+        XCTAssertEqual(report.state, .unknown)
+    }
+
+    func testBookSourceResolverDoesNotCrossMatchGenericPattern() throws {
+        var manga = BookSource(bookSourceUrl: "https://www.rumanhua.com", bookSourceName: "漫画源")
+        manga.bookSourceType = 2
+        manga.bookUrlPattern = #"https?:\/\/[^\/]+\/[^\/]+\/"#
+
+        let text = BookSource(bookSourceUrl: "https://text.example", bookSourceName: "文本源")
+        let empty = BookSource(bookSourceUrl: "", bookSourceName: "")
+        let lostOrigin = Book(
+            bookUrl: "https://www.shuke8.cc/mrby/",
+            name: "末日边缘",
+            author: "冰火六重天",
+            origin: "https://www.shuke8.cc",
+            originName: "书客吧"
+        )
+        XCTAssertNil(BookSourceResolver.find(book: lostOrigin, in: [manga, text, empty]))
+
+        let sameHost = Book(
+            bookUrl: "https://www.rumanhua.com/comic/1/",
+            name: "漫画",
+            author: "",
+            origin: "https://www.rumanhua.com",
+            originName: "漫画源"
+        )
+        XCTAssertEqual(BookSourceResolver.find(book: sameHost, in: [manga, text])?.bookSourceName, "漫画源")
+    }
+
     func testCryptoUtils() throws {
         let md5 = CryptoUtils.md5("hello world")
         XCTAssertEqual(md5, "5eb63bbbe01eeed093cb22bb8f5acdc3")
@@ -55,6 +193,31 @@ final class LegadoCoreTests: XCTestCase {
 
         let chapters = JSONPath.evaluate(path: "$.data.chapters[*].name", json: json) as? [String]
         XCTAssertEqual(chapters, ["Chapter 1", "Chapter 2"])
+    }
+
+    func testSubscribeSourceSingleUrlWebPage() throws {
+        let json = """
+        [{
+          "sourceName": "XH发布页",
+          "sourceUrl": "https://qyyuapi.com",
+          "singleUrl": true,
+          "enableJs": true,
+          "enabledCookieJar": true,
+          "header": "<js>eval(String(getJs()));</js>",
+          "ruleArticles": null
+        }]
+        """
+        let sources = try SubscribeSourceService.decodeSources(from: json)
+        XCTAssertEqual(sources.count, 1)
+        XCTAssertTrue(sources[0].usesDirectWebPage)
+        XCTAssertTrue(sources[0].enableJs ?? false)
+        XCTAssertTrue(sources[0].enabledCookieJar ?? false)
+        XCTAssertTrue(sources[0].staticRequestHeaders.isEmpty)
+
+        let encoded = try JSONEncoder().encode(sources[0])
+        let decoded = try JSONDecoder().decode(SubscribeSource.self, from: encoded)
+        XCTAssertTrue(decoded.usesDirectWebPage)
+        XCTAssertTrue(decoded.enabledCookieJar ?? false)
     }
 
     func testHtmlRuleAnalyzer() throws {

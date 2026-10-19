@@ -66,6 +66,15 @@ public struct BookDetailView: View {
         bookStore.bookshelf.first(where: { $0.bookUrl == currentBook.bookUrl }) ?? currentBook
     }
 
+    /// 详情页统一用同一份源判定：显式传入优先，否则按 origin / bookUrlPattern 找。
+    private var resolvedSource: BookSource? {
+        source ?? bookStore.findSource(for: currentBook)
+    }
+
+    private var sourceKind: BookSource.Kind {
+        resolvedSource?.kind ?? .text
+    }
+
     private var tags: [String] {
         guard let kind = currentBook.kind, !kind.isEmpty else { return [] }
         return kind
@@ -156,7 +165,7 @@ public struct BookDetailView: View {
 
                         Button {
                             let all = chapters.indices.map { $0 }
-                            ChapterDownloadManager.shared.start(book: currentBook, chapters: chapters, source: source ?? bookStore.findSource(for: currentBook), indices: all)
+                            ChapterDownloadManager.shared.start(book: currentBook, chapters: chapters, source: resolvedSource, indices: all)
                             actionAlertMessage = "已加入下载队列（全本 \(chapters.count) 章）"
                             showActionAlert = true
                         } label: {
@@ -166,7 +175,7 @@ public struct BookDetailView: View {
                         Button {
                             let start = min(currentBook.durChapterIndex, max(0, chapters.count - 1))
                             let rest = (start..<chapters.count).map { $0 }
-                            ChapterDownloadManager.shared.start(book: currentBook, chapters: chapters, source: source ?? bookStore.findSource(for: currentBook), indices: rest)
+                            ChapterDownloadManager.shared.start(book: currentBook, chapters: chapters, source: resolvedSource, indices: rest)
                             actionAlertMessage = "已加入下载队列（未读 \(rest.count) 章）"
                             showActionAlert = true
                         } label: {
@@ -273,11 +282,30 @@ public struct BookDetailView: View {
     @ViewBuilder
     private var readerCoverView: some View {
         let activeBook = isInBookshelf ? currentBookshelfBook : currentBook
-        let resolvedSource = source ?? bookStore.findSource(for: activeBook)
+        let resolved = source ?? bookStore.findSource(for: activeBook)
+        let mediaChapters = chapters.isEmpty
+            ? [BookChapter(
+                bookUrl: activeBook.bookUrl,
+                url: activeBook.tocUrl.isEmpty ? activeBook.bookUrl : activeBook.tocUrl,
+                title: activeBook.name,
+                index: 0
+            )]
+            : chapters
         NavigationView {
-            ReaderView(book: activeBook, source: resolvedSource, initialChapterIndex: selectedChapterIndex, onDismiss: {
-                isReading = false
-            })
+            if let resolved, resolved.kind != .text {
+                MediaBookReaderView(
+                    book: activeBook,
+                    source: resolved,
+                    chapters: mediaChapters,
+                    initialChapterIndex: selectedChapterIndex
+                ) {
+                    isReading = false
+                }
+            } else {
+                ReaderView(book: activeBook, source: resolved, initialChapterIndex: selectedChapterIndex, onDismiss: {
+                    isReading = false
+                })
+            }
         }
     }
 
@@ -373,6 +401,16 @@ public struct BookDetailView: View {
                         .background(theme.palette.accent.opacity(0.15))
                         .foregroundColor(theme.palette.accent)
                         .cornerRadius(theme.metrics.cornerRadius + 4)
+
+                    if sourceKind != .text {
+                        Label(sourceKind.label, systemImage: typeIcon)
+                            .font(.caption2.bold())
+                            .padding(.horizontal, 7)
+                            .padding(.vertical, 3)
+                            .background(Color.orange.opacity(0.15))
+                            .foregroundColor(.orange)
+                            .cornerRadius(theme.metrics.cornerRadius + 4)
+                    }
 
                     if let wordCount = currentBook.wordCount, !wordCount.isEmpty {
                         Text(wordCount)
@@ -563,12 +601,16 @@ public struct BookDetailView: View {
 
             // Read Now Button
             Button(action: {
-                selectedChapterIndex = currentBookshelfBook.durChapterIndex
-                isReading = true
+                if resolvedSource == nil && currentBook.origin != "local" {
+                    showSourceSwitch = true
+                } else {
+                    selectedChapterIndex = currentBookshelfBook.durChapterIndex
+                    isReading = true
+                }
             }) {
                 HStack(spacing: 6) {
-                    Image(systemName: "book.fill")
-                    Text(currentBookshelfBook.durChapterIndex > 0 ? "继续阅读" : "立即阅读")
+                    Image(systemName: sourceKind == .text ? "book.fill" : typeIcon)
+                    Text(readButtonTitle)
                 }
                 .font(.subheadline.bold())
                 .foregroundColor(theme.palette.onAccent)
@@ -585,6 +627,30 @@ public struct BookDetailView: View {
             theme.palette.surface
             .shadow(color: Color.black.opacity(0.06), radius: 4, x: 0, y: -2)
         )
+    }
+
+    private var typeIcon: String {
+        switch sourceKind {
+        case .text: return "book.fill"
+        case .audio: return "headphones"
+        case .image: return "photo"
+        case .file: return "doc"
+        case .video: return "play.rectangle"
+        }
+    }
+
+    private var readButtonTitle: String {
+        if resolvedSource == nil && currentBook.origin != "local" {
+            return "选择书源"
+        }
+        let continued = currentBookshelfBook.durChapterIndex > 0
+        switch sourceKind {
+        case .text: return continued ? "继续阅读" : "立即阅读"
+        case .audio: return continued ? "继续播放" : "播放音频"
+        case .image: return continued ? "继续看图" : "查看图片"
+        case .file: return "打开文件"
+        case .video: return continued ? "继续播放" : "播放视频"
+        }
     }
 
     // MARK: - Helper Actions
@@ -615,9 +681,10 @@ public struct BookDetailView: View {
             }
         }
 
-        let resolvedSource = source ?? bookStore.findSource(for: currentBook)
-
-        guard let src = resolvedSource else { return }
+        guard let src = resolvedSource else {
+            errorMessage = "找不到这本书的书源。可能源被删了，换个源试试。"
+            return
+        }
 
         isLoadingDetails = true
         errorMessage = nil
@@ -647,6 +714,7 @@ public struct BookDetailView: View {
 
 struct ChapterListView: View {
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.appTheme) private var theme
     let chapters: [BookChapter]
     let currentChapterIndex: Int
     let onSelectChapter: (Int) -> Void
@@ -676,7 +744,7 @@ struct ChapterListView: View {
                 }
             }
             .padding(8)
-            .background(Color.secondary.opacity(0.12))
+            .background(theme.palette.elevated)
             .cornerRadius(8)
             .padding(.horizontal)
             .padding(.top, 8)
@@ -708,6 +776,7 @@ struct ChapterListView: View {
                 .buttonStyle(.plain)
             }
             .listStyle(.plain)
+            .appThemedList()
         }
         .navigationTitle("目录 (\(chapters.count) 章)")
         #if os(iOS)
@@ -826,6 +895,7 @@ struct BookCoverPickerSheet: View {
                     }
                 }
             }
+            .appThemedList()
             .navigationTitle("换封面")
             #if os(iOS)
             .navigationBarTitleDisplayMode(.inline)
@@ -850,6 +920,8 @@ struct BookCoverPickerSheet: View {
 struct BookCoverImage: View {
     let urlString: String?
     var contentMode: ContentMode = .fill
+    /// 书架等场景可以换成自己的默认封面
+    var placeholderOverride: AnyView? = nil
 
     @State private var localImage: Image?
 
@@ -882,11 +954,17 @@ struct BookCoverImage: View {
     }
 
     private var placeholder: some View {
-        ZStack {
-            Color.gray.opacity(0.16)
-            Image(systemName: "book.closed")
-                .font(.title3)
-                .foregroundColor(.secondary)
+        Group {
+            if let placeholderOverride {
+                placeholderOverride
+            } else {
+                ZStack {
+                    Color.gray.opacity(0.16)
+                    Image(systemName: "book.closed")
+                        .font(.title3)
+                        .foregroundColor(.secondary)
+                }
+            }
         }
     }
 

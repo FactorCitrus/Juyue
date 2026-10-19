@@ -3,18 +3,28 @@ import UniformTypeIdentifiers
 #if os(iOS)
 import UIKit
 #endif
+#if canImport(AppKit)
+import AppKit
+#endif
 #if canImport(LegadoCore)
 import LegadoCore
 #endif
 
 public struct SourceManagerView: View {
     @ObservedObject var bookStore = BookStore.shared
+    @Environment(\.appTheme) private var theme
 
     @State private var showImportSheet: Bool = false
     /// 书源导出（存到「文件」）
     @State private var showSourceExporter: Bool = false
     @State private var sourceExportDocument: ExportedFile?
     @State private var sourceExportName: String = "bookSource.json"
+    @State private var exportingCount: Int = 0
+    @State private var showExportPicker = false
+    @State private var exportSelectedURLs: Set<String> = []
+    @State private var importEntries: [BookStore.SourceImportEntry] = []
+    @State private var showImportPreview = false
+    @State private var shareItem: SourceShareItem? = nil
     @State private var selectedSourceForLogin: BookSource? = nil
     @State private var selectedSourceForEdit: BookSource? = nil
     @State private var selectedSourceForSearch: BookSource? = nil
@@ -32,6 +42,7 @@ public struct SourceManagerView: View {
     /// 正在改分组的书源
     @State private var groupEditTarget: BookSource?
     @State private var groupEditText: String = ""
+    @State private var showGroupManager = false
 
     public init() {}
 
@@ -117,6 +128,7 @@ public struct SourceManagerView: View {
                     .listRowInsets(EdgeInsets(top: 8, leading: 12, bottom: 8, trailing: 12))
                     .listRowBackground(Color.clear)
             }
+            .appThemedRows()
 
             Section(header: Text("工具")) {
                 NavigationLink(destination: SourceCheckView()) {
@@ -125,20 +137,21 @@ public struct SourceManagerView: View {
                         Spacer()
                         Text("逐个检测书源可用性")
                             .font(.caption)
-                            .foregroundColor(.secondary)
+                            .foregroundColor(theme.palette.secondaryInk)
                     }
                 }
             }
+            .appThemedRows()
 
             Section(header: Text("筛选")) {
                 HStack {
                     Text("显示 \(filteredSources.count) / 共 \(bookStore.sources.count)")
                         .font(.caption)
-                        .foregroundColor(.secondary)
+                        .foregroundColor(theme.palette.secondaryInk)
                     Spacer()
                     Text("可用 \(bookStore.sources.filter { $0.enabled != false }.count)")
                         .font(.caption)
-                        .foregroundColor(.secondary)
+                        .foregroundColor(theme.palette.secondaryInk)
                 }
 
                 Menu {
@@ -151,10 +164,10 @@ public struct SourceManagerView: View {
                         Text("分组")
                         Spacer()
                         Text(selectedGroup ?? "全部")
-                            .foregroundColor(.secondary)
+                            .foregroundColor(theme.palette.secondaryInk)
                         Image(systemName: "chevron.right")
                             .font(.caption)
-                            .foregroundColor(.secondary)
+                            .foregroundColor(theme.palette.secondaryInk)
                     }
                 }
 
@@ -167,10 +180,10 @@ public struct SourceManagerView: View {
                         Text("排序")
                         Spacer()
                         Text(sortMode.rawValue)
-                            .foregroundColor(.secondary)
+                            .foregroundColor(theme.palette.secondaryInk)
                         Image(systemName: "chevron.right")
                             .font(.caption)
-                            .foregroundColor(.secondary)
+                            .foregroundColor(theme.palette.secondaryInk)
                     }
                 }
 
@@ -190,13 +203,28 @@ public struct SourceManagerView: View {
                         Text("批量操作")
                         Spacer()
                         Text("作用于上面 \(filteredSources.count) 个")
-                            .foregroundColor(.secondary)
+                            .foregroundColor(theme.palette.secondaryInk)
                         Image(systemName: "chevron.right")
                             .font(.caption)
-                            .foregroundColor(.secondary)
+                            .foregroundColor(theme.palette.secondaryInk)
+                    }
+                }
+
+                Button {
+                    showGroupManager = true
+                } label: {
+                    HStack {
+                        Label("分组管理", systemImage: "folder.badge.gearshape")
+                        Spacer()
+                        Text("\(allGroups.count) 个分组")
+                            .foregroundColor(theme.palette.secondaryInk)
+                        Image(systemName: "chevron.right")
+                            .font(.caption)
+                            .foregroundColor(theme.palette.secondaryInk)
                     }
                 }
             }
+            .appThemedRows()
 
             Section(header: Text("已导入书源")) {
                     ForEach(filteredSources) { source in
@@ -245,6 +273,38 @@ public struct SourceManagerView: View {
                                 Label("刷新", systemImage: "arrow.clockwise")
                             }
 
+                            Button {
+                                copySourceJSON(source)
+                            } label: {
+                                Label("复制 JSON", systemImage: "doc.on.doc")
+                            }
+
+                            Button {
+                                shareSource(source)
+                            } label: {
+                                Label("分享书源", systemImage: "square.and.arrow.up")
+                            }
+
+                            Button {
+                                exportSources([source], namePrefix: "bookSource-single")
+                            } label: {
+                                Label("导出这个书源", systemImage: "tray.and.arrow.down")
+                            }
+
+                            Button {
+                                clearVariable(source)
+                            } label: {
+                                Label("清空变量", systemImage: "eraser")
+                            }
+
+                            if source.loginUi != nil || source.loginUrl != nil {
+                                Button(role: .destructive) {
+                                    resetLoginState(source)
+                                } label: {
+                                    Label("重置登录态", systemImage: "person.crop.circle.badge.xmark")
+                                }
+                            }
+
                             Button(role: .destructive) {
                                 bookStore.deleteSource(sourceUrl: source.bookSourceUrl)
                             } label: {
@@ -254,6 +314,7 @@ public struct SourceManagerView: View {
                     }
                     .onDelete(perform: deleteSources)
                 }
+            .appThemedRows()
             }
             .searchable(text: $searchText, prompt: "搜书源名 / 网址 / 分组")
 #if os(iOS)
@@ -270,7 +331,18 @@ public struct SourceManagerView: View {
                     }
                 }
                 ToolbarItem(placement: .primaryAction) {
-                    Button(action: { exportSources() }) {
+                    Menu {
+                        Button("导出全部（\(bookStore.sources.count)）") {
+                            exportSources(bookStore.sources)
+                        }
+                        Button("导出当前筛选（\(filteredSources.count)）") {
+                            exportSources(filteredSources)
+                        }
+                        Button("选择书源导出…") {
+                            exportSelectedURLs = []
+                            showExportPicker = true
+                        }
+                    } label: {
                         Image(systemName: "square.and.arrow.up")
                     }
                 }
@@ -291,6 +363,28 @@ public struct SourceManagerView: View {
                 NavigationView {
                     SearchBookView()
                 }
+            }
+            .sheet(isPresented: $showGroupManager) {
+                SourceGroupManagerView()
+            }
+            .sheet(isPresented: $showImportPreview) {
+                SourceImportPreviewView(entries: importEntries) { overwrite in
+                    let result = bookStore.applyImport(entries: importEntries, overwriteConflicts: overwrite)
+                    importEntries = []
+                    alertMessage = "导入完成：新增 \(result.added)，更新 \(result.updated)，同名保留 \(result.conflictsAdded)"
+                    showAlert = true
+                }
+            }
+            .sheet(isPresented: $showExportPicker) {
+                exportPickerSheet
+            }
+            .sheet(item: $shareItem) { item in
+                #if os(iOS)
+                SourceShareSheet(items: [item.url])
+                #else
+                Text("当前平台请使用文件导出")
+                    .padding()
+                #endif
             }
             .alert(alertMessage ?? "", isPresented: $showAlert) {
                 Button("确定", role: .cancel) {}
@@ -316,7 +410,7 @@ public struct SourceManagerView: View {
             ) { result in
                 switch result {
                 case .success:
-                    alertMessage = "已导出 \(bookStore.sources.count) 个书源"
+                    alertMessage = "已导出 \(exportingCount) 个书源"
                 case .failure(let error):
                     alertMessage = "导出失败: \(error.localizedDescription)"
                 }
@@ -325,24 +419,150 @@ public struct SourceManagerView: View {
     }
 
     /// 导出全部书源成 JSON（和导入同一套格式，导回来能直接用）
-    private func exportSources() {
+    private func exportSources(_ list: [BookSource], namePrefix: String = "bookSource") {
+        guard !list.isEmpty else {
+            alertMessage = "没有可导出的书源"
+            showAlert = true
+            return
+        }
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .withoutEscapingSlashes]
-        guard let data = try? encoder.encode(bookStore.sources) else {
+        guard let data = try? encoder.encode(list) else {
             alertMessage = "导出失败：书源编码出错"
             showAlert = true
             return
         }
+        exportingCount = list.count
         let formatter = DateFormatter()
         formatter.dateFormat = "yyyyMMdd"
-        sourceExportName = "bookSource-\(formatter.string(from: Date())).json"
+        sourceExportName = "\(namePrefix)-\(formatter.string(from: Date())).json"
         sourceExportDocument = ExportedFile(data: data)
         showSourceExporter = true
     }
 
+    private var exportPickerSheet: some View {
+        NavigationView {
+            List {
+                ForEach(filteredSources) { source in
+                    Button {
+                        if exportSelectedURLs.contains(source.bookSourceUrl) {
+                            exportSelectedURLs.remove(source.bookSourceUrl)
+                        } else {
+                            exportSelectedURLs.insert(source.bookSourceUrl)
+                        }
+                    } label: {
+                        HStack {
+                            Image(systemName: exportSelectedURLs.contains(source.bookSourceUrl)
+                                  ? "checkmark.circle.fill" : "circle")
+                                .foregroundColor(exportSelectedURLs.contains(source.bookSourceUrl) ? .accentColor : .secondary)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(source.bookSourceName)
+                                    .foregroundColor(.primary)
+                                Text(source.bookSourceUrl)
+                                    .font(.caption2)
+                                    .foregroundColor(.secondary)
+                                    .lineLimit(1)
+                            }
+                        }
+                    }
+                }
+            }
+            .navigationTitle("选择书源导出（\(exportSelectedURLs.count)）")
+            #if os(iOS)
+            .navigationBarTitleDisplayMode(.inline)
+            #endif
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("取消") { showExportPicker = false }
+                }
+                ToolbarItem(placement: .primaryAction) {
+                    HStack {
+                        Button("全选") {
+                            exportSelectedURLs = Set(filteredSources.map(\.bookSourceUrl))
+                        }
+                        Button("导出") {
+                            let selected = filteredSources.filter { exportSelectedURLs.contains($0.bookSourceUrl) }
+                            showExportPicker = false
+                            exportSources(selected, namePrefix: "selected-bookSource")
+                        }
+                        .disabled(exportSelectedURLs.isEmpty)
+                    }
+                }
+            }
+        }
+    }
+
+    private func copySourceJSON(_ source: BookSource) {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .withoutEscapingSlashes]
+        guard let data = try? encoder.encode([source]),
+              let text = String(data: data, encoding: .utf8) else { return }
+        #if os(iOS)
+        UIPasteboard.general.string = text
+        #elseif canImport(AppKit)
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(text, forType: .string)
+        #endif
+        alertMessage = "已复制「\(source.bookSourceName)」的 JSON"
+        showAlert = true
+    }
+
+    private func shareSource(_ source: BookSource) {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .withoutEscapingSlashes]
+        guard let data = try? encoder.encode([source]) else { return }
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("SourceShare", isDirectory: true)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let safeName = source.bookSourceName.replacingOccurrences(of: "/", with: "_")
+        let url = dir.appendingPathComponent("\(safeName)-bookSource.json")
+        do {
+            try data.write(to: url, options: .atomic)
+            shareItem = SourceShareItem(url: url)
+        } catch {
+            alertMessage = "生成分享文件失败：\(error.localizedDescription)"
+            showAlert = true
+        }
+    }
+
+    private func resetLoginState(_ source: BookSource) {
+        bookStore.logoutSource(sourceUrl: source.bookSourceUrl)
+        alertMessage = "已清除「\(source.bookSourceName)」的登录 Header 与 Cookie"
+        showAlert = true
+    }
+
+    private func clearVariable(_ source: BookSource) {
+        var updated = source
+        updated.variable = nil
+        bookStore.updateSource(updated)
+        alertMessage = "已清空「\(source.bookSourceName)」的书源变量"
+        showAlert = true
+    }
+
+    /// 预览导入计划；返回是否成功解析。
+    @discardableResult
+    private func prepareImport(_ json: String) -> [BookStore.SourceImportEntry]? {
+        do {
+            let entries = try bookStore.planImportSources(json: json)
+            guard !entries.isEmpty else {
+                alertMessage = "未发现有效书源"
+                showAlert = true
+                return nil
+            }
+            importEntries = entries
+            showImportSheet = false
+            DispatchQueue.main.async { showImportPreview = true }
+            return entries
+        } catch {
+            alertMessage = "导入失败：JSON 格式错误"
+            showAlert = true
+            return nil
+        }
+    }
+
     /// 选完文件之后的导入流程
     private func handlePickedSourceFiles(_ urls: [URL]) {
-        var totalCount = 0
+        var entries: [BookStore.SourceImportEntry] = []
+        var seen = Set<String>()
         var errorCount = 0
         for url in urls {
             let canAccess = url.startAccessingSecurityScopedResource()
@@ -357,8 +577,10 @@ public struct SourceManagerView: View {
                 if let str = String(data: data, encoding: .utf8)
                     ?? String(data: data, encoding: gb18030)
                     ?? String(data: data, encoding: .unicode) {
-                    let count = try bookStore.importSources(json: str)
-                    totalCount += count
+                    let plan = try bookStore.planImportSources(json: str)
+                    for entry in plan where seen.insert(entry.incoming.bookSourceUrl).inserted {
+                        entries.append(entry)
+                    }
                 } else {
                     errorCount += 1
                 }
@@ -366,14 +588,15 @@ public struct SourceManagerView: View {
                 errorCount += 1
             }
         }
-        AppLog.write("[书源] 文件导入：\(urls.count) 个文件，解析 \(totalCount) 条，失败 \(errorCount) 个")
-        showImportSheet = false
-        if totalCount > 0 {
-            alertMessage = "成功导入 \(totalCount) 个书源！" + (errorCount > 0 ? " (\(errorCount)个文件解析失败)" : "")
+        AppLog.write("[书源] 文件导入预览：\(urls.count) 个文件，解析 \(entries.count) 条，失败 \(errorCount) 个")
+        if !entries.isEmpty {
+            importEntries = entries
+            showImportSheet = false
+            DispatchQueue.main.async { showImportPreview = true }
         } else {
             alertMessage = errorCount > 0 ? "导入失败：未能成功解析书源文件" : "未在文件中发现有效书源"
+            showAlert = true
         }
-        showAlert = true
     }
 
 #if os(iOS)
@@ -446,14 +669,14 @@ enum SourceDocumentPicker {
                 }
                 Text(source.bookSourceUrl)
                     .font(.caption)
-                    .foregroundColor(.secondary)
+                    .foregroundColor(theme.palette.secondaryInk)
                     .lineLimit(1)
                 if let group = source.bookSourceGroup, !group.isEmpty {
                     Text(group)
                         .font(.caption2)
                         .padding(.horizontal, 5)
                         .padding(.vertical, 1)
-                        .background(Color.secondary.opacity(0.12))
+                        .background(theme.palette.divider.opacity(0.12))
                         .cornerRadius(4)
                 }
             }
@@ -480,8 +703,8 @@ enum SourceDocumentPicker {
             .font(.system(size: 11, weight: .medium))
             .padding(.horizontal, 6)
             .padding(.vertical, 3)
-            .background(source.isLogged ? Color.green.opacity(0.15) : Color.blue.opacity(0.15))
-            .foregroundColor(source.isLogged ? .green : .blue)
+            .background(source.isLogged ? theme.palette.success.opacity(0.15) : theme.palette.accent.opacity(0.12))
+            .foregroundColor(source.isLogged ? theme.palette.success : theme.palette.accent)
             .cornerRadius(6)
         }
         .buttonStyle(.plain)
@@ -520,8 +743,9 @@ enum SourceDocumentPicker {
                         #endif
                     Text("留空 = 不分组")
                         .font(.caption2)
-                        .foregroundColor(.secondary)
+                        .foregroundColor(theme.palette.secondaryInk)
                 }
+                .appThemedRows()
 
                 if !allGroups.isEmpty {
                     Section(header: Text("已有分类（点一下切换）")) {
@@ -539,8 +763,10 @@ enum SourceDocumentPicker {
                             }
                         }
                     }
+                    .appThemedRows()
                 }
             }
+            .appThemedList()
             .navigationTitle("编辑分类")
             #if os(iOS)
             .navigationBarTitleDisplayMode(.inline)
@@ -589,6 +815,7 @@ enum SourceDocumentPicker {
                         Label("从本地文件导入 (.json)", systemImage: "doc.badge.plus")
                     }
                 }
+                .appThemedRows()
 
                 Section(header: Text("网络导入 (JSON URL)")) {
                     TextField("输入书源网址 (https://...)", text: $importUrl)
@@ -601,6 +828,7 @@ enum SourceDocumentPicker {
                     }
                     .disabled(importUrl.trimmingCharacters(in: .whitespaces).isEmpty)
                 }
+                .appThemedRows()
 
                 Section(header: Text("剪贴板 / 本地文本导入")) {
                     TextEditor(text: $importText)
@@ -610,6 +838,7 @@ enum SourceDocumentPicker {
                     }
                     .disabled(importText.trimmingCharacters(in: .whitespaces).isEmpty)
                 }
+                .appThemedRows()
             }
             .appThemedList()
             .navigationTitle("导入书源")
@@ -625,16 +854,8 @@ enum SourceDocumentPicker {
     }
 
     private func importFromText() {
-        do {
-            let count = try bookStore.importSources(json: importText)
-            AppLog.write("[书源] 文本导入：解析 \(count) 条")
-            showImportSheet = false
+        if prepareImport(importText) != nil {
             importText = ""
-            alertMessage = "成功导入 \(count) 个书源！"
-            showAlert = true
-        } catch {
-            alertMessage = "导入失败: JSON 格式错误"
-            showAlert = true
         }
     }
 
@@ -657,16 +878,9 @@ enum SourceDocumentPicker {
                 }
 
                 await MainActor.run {
-                    do {
-                        let count = try bookStore.importSources(json: jsonStr)
-                        AppLog.write("[书源] 网络导入：host=\(url.host ?? "-") 解析 \(count) 条")
-                        showImportSheet = false
+                    AppLog.write("[书源] 网络导入预览：host=\(url.host ?? "-")")
+                    if prepareImport(jsonStr) != nil {
                         importUrl = ""
-                        alertMessage = "成功从网络导入 \(count) 个书源！"
-                        showAlert = true
-                    } catch {
-                        alertMessage = "书源格式解析失败: \(error.localizedDescription)"
-                        showAlert = true
                     }
                 }
             } catch {
@@ -682,6 +896,7 @@ enum SourceDocumentPicker {
 public struct SourceLoginSheet: View {
     let source: BookSource
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.appTheme) private var theme
     @State private var loginMode: String
     @State private var fields: [LoginField] = []
     @State private var fieldValues: [String: String] = [:]
@@ -740,17 +955,18 @@ public struct SourceLoginSheet: View {
                         .font(.headline)
                     Text(source.bookSourceUrl)
                         .font(.caption)
-                        .foregroundColor(.secondary)
+                        .foregroundColor(theme.palette.secondaryInk)
                     if source.isLogged {
                         HStack {
                             Image(systemName: "checkmark.circle.fill")
-                                .foregroundColor(.green)
-                            Text("当前状态：已登录")
-                                .foregroundColor(.green)
+                                .foregroundColor(theme.palette.success)
+                            Text("已登录")
+                                .foregroundColor(theme.palette.success)
                                 .font(.subheadline)
                         }
                     }
                 }
+                .appThemedRows()
 
                 Section(header: Text("登录模式切换")) {
                     Picker("登录模式", selection: $loginMode) {
@@ -759,12 +975,13 @@ public struct SourceLoginSheet: View {
                     }
                     .pickerStyle(.segmented)
                 }
+                .appThemedRows()
 
                 Section(header: Text("账号登录表单")) {
                     if fields.isEmpty {
-                        Text("该书源无需配置字段，直接点击下方按钮执行登录脚本")
+                        Text("这个源不用填账号，点下面的按钮登录。")
                             .font(.caption)
-                            .foregroundColor(.secondary)
+                            .foregroundColor(theme.palette.secondaryInk)
                     } else {
                         ForEach(fields) { field in
                             if field.type == "password" {
@@ -785,6 +1002,7 @@ public struct SourceLoginSheet: View {
                         }
                     }
                 }
+                .appThemedRows()
 
                 if !loginButtons.isEmpty {
                     Section(header: Text("脚本按钮")) {
@@ -811,22 +1029,25 @@ public struct SourceLoginSheet: View {
                             }
                         }
                     }
+                    .appThemedRows()
                 }
 
                 if let err = errorMessage {
                     Section {
                         Text(err)
-                            .foregroundColor(.red)
+                            .foregroundColor(theme.palette.danger)
                             .font(.subheadline)
                     }
+                    .appThemedRows()
                 }
 
                 if let succ = successMessage {
                     Section {
                         Text(succ)
-                            .foregroundColor(.green)
+                            .foregroundColor(theme.palette.success)
                             .font(.subheadline)
                     }
+                    .appThemedRows()
                 }
 
                 Section {
@@ -837,7 +1058,7 @@ public struct SourceLoginSheet: View {
                             HStack {
                                 Spacer()
                                 ProgressView()
-                                Text("正在执行登录...").padding(.leading, 8)
+                                Text("正在登录…").padding(.leading, 8)
                                 Spacer()
                             }
                         } else {
@@ -858,6 +1079,7 @@ public struct SourceLoginSheet: View {
                         }
                     }
                 }
+                .appThemedRows()
             }
             .appThemedList()
             .navigationTitle("书源登录")
@@ -990,5 +1212,179 @@ public struct SourceLoginSheet: View {
                 }
             }
         }
+    }
+}
+
+/// 分组不是独立实体，而是书源里的逗号串。这里统一做重命名和删除。
+struct SourceGroupManagerView: View {
+    @ObservedObject private var store = BookStore.shared
+    @Environment(\.dismiss) private var dismiss
+    @Environment(\.appTheme) private var theme
+
+    @State private var renameTarget: GroupName?
+    @State private var renameText = ""
+    @State private var deleteTarget: GroupName?
+    @State private var message: String?
+
+    private struct GroupName: Identifiable {
+        let value: String
+        var id: String { value }
+    }
+
+    private var groups: [String] {
+        var set = Set<String>()
+        for source in store.sources {
+            for group in Self.splitGroups(source.bookSourceGroup) {
+                set.insert(group)
+            }
+        }
+        return set.sorted { $0.localizedStandardCompare($1) == .orderedAscending }
+    }
+
+    private var ungroupedCount: Int {
+        store.sources.filter { Self.splitGroups($0.bookSourceGroup).isEmpty }.count
+    }
+
+    var body: some View {
+        NavigationView {
+            List {
+                Section(header: Text("分组（\(groups.count)）")) {
+                    if groups.isEmpty {
+                        Text("还没有分组。先在书源里编辑分类，或到校验页按结果分组。")
+                            .font(.footnote)
+                            .foregroundColor(theme.palette.secondaryInk)
+                    }
+                    ForEach(groups, id: \.self) { group in
+                        HStack {
+                            Text(group)
+                            Spacer()
+                            Text("\(count(for: group)) 个")
+                                .font(.caption)
+                                .foregroundColor(theme.palette.secondaryInk)
+                            Menu {
+                                Button("重命名") {
+                                    renameText = group
+                                    renameTarget = GroupName(value: group)
+                                }
+                                Button(role: .destructive) {
+                                    deleteTarget = GroupName(value: group)
+                                } label: {
+                                    Text("删除分组")
+                                }
+                            } label: {
+                                Image(systemName: "ellipsis.circle")
+                                    .foregroundColor(theme.palette.accent)
+                            }
+                        }
+                    }
+                }
+                .appThemedRows()
+
+                Section {
+                    HStack {
+                        Label("未分组", systemImage: "tray")
+                        Spacer()
+                        Text("\(ungroupedCount) 个")
+                            .font(.caption)
+                            .foregroundColor(theme.palette.secondaryInk)
+                    }
+                }
+                .appThemedRows()
+            }
+            .appThemedList()
+            .navigationTitle("分组管理")
+            #if os(iOS)
+            .navigationBarTitleDisplayMode(.inline)
+            #endif
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("关闭") { dismiss() }
+                }
+            }
+            .sheet(item: $renameTarget) { target in
+                NavigationView {
+                    Form {
+                        Section(header: Text("重命名「\(target.value)」")) {
+                            TextField("新的分组名", text: $renameText)
+                        }
+                        .appThemedRows()
+                    }
+                    .appThemedList()
+                    .navigationTitle("重命名分组")
+                    #if os(iOS)
+                    .navigationBarTitleDisplayMode(.inline)
+                    #endif
+                    .toolbar {
+                        ToolbarItem(placement: .cancellationAction) {
+                            Button("取消") { renameTarget = nil }
+                        }
+                        ToolbarItem(placement: .confirmationAction) {
+                            Button("保存") { rename(target) }
+                                .disabled(renameText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                        }
+                    }
+                }
+            }
+            .alert("删除分组", isPresented: Binding(
+                get: { deleteTarget != nil },
+                set: { if !$0 { deleteTarget = nil } }
+            )) {
+                Button("取消", role: .cancel) { deleteTarget = nil }
+                Button("删除", role: .destructive) {
+                    if let target = deleteTarget { delete(target) }
+                }
+            } message: {
+                Text("只会从书源上移除这个分组名，不删除书源。")
+            }
+            .alert("分组", isPresented: Binding(
+                get: { message != nil },
+                set: { if !$0 { message = nil } }
+            )) {
+                Button("好", role: .cancel) {}
+            } message: {
+                Text(message ?? "")
+            }
+        }
+    }
+
+    private func count(for group: String) -> Int {
+        store.sources.filter { Self.splitGroups($0.bookSourceGroup).contains(group) }.count
+    }
+
+    private func rename(_ target: GroupName) {
+        let newName = renameText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !newName.isEmpty, newName != target.value else {
+            renameTarget = nil
+            return
+        }
+        for source in store.sources {
+            var groups = Self.splitGroups(source.bookSourceGroup)
+            guard let index = groups.firstIndex(of: target.value) else { continue }
+            groups[index] = newName
+            store.setSourceGroup(sourceUrl: source.bookSourceUrl, group: groups.joined(separator: ","))
+        }
+        message = "已把「\(target.value)」重命名为「\(newName)」。"
+        renameTarget = nil
+    }
+
+    private func delete(_ target: GroupName) {
+        for source in store.sources {
+            var groups = Self.splitGroups(source.bookSourceGroup)
+            guard groups.contains(target.value) else { continue }
+            groups.removeAll { $0 == target.value }
+            store.setSourceGroup(
+                sourceUrl: source.bookSourceUrl,
+                group: groups.isEmpty ? nil : groups.joined(separator: ",")
+            )
+        }
+        message = "已删除分组「\(target.value)」。"
+        deleteTarget = nil
+    }
+
+    private static func splitGroups(_ raw: String?) -> [String] {
+        guard let raw, !raw.isEmpty else { return [] }
+        return raw.components(separatedBy: CharacterSet(charactersIn: ",，、;； "))
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
     }
 }

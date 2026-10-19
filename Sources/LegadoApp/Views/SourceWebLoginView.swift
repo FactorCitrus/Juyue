@@ -7,6 +7,7 @@ import LegadoCore
 public struct SourceWebLoginView: View {
     @ObservedObject var bookStore = BookStore.shared
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.appTheme) private var theme
 
     let source: BookSource
     let onLoginCompleted: ((BookSource) -> Void)?
@@ -87,12 +88,12 @@ public struct SourceWebLoginView: View {
         VStack(spacing: 8) {
             Image(systemName: "globe")
                 .font(.system(size: 30))
-                .foregroundColor(.secondary)
+                .foregroundColor(theme.palette.secondaryInk)
             Text("这个书源没有可直接打开的网页登录地址")
                 .font(.subheadline.weight(.medium))
             Text("它的 loginUrl 是一段脚本、bookSourceUrl 也不是网址。\n上面地址栏里是从脚本里扒出来的主机，填上真实登录页地址点「打开」即可；也可以直接「手动粘贴 Cookie」，或者回上一页走「表单脚本登录」。")
                 .font(.caption)
-                .foregroundColor(.secondary)
+                .foregroundColor(theme.palette.secondaryInk)
                 .multilineTextAlignment(.center)
                 .padding(.horizontal, 24)
         }
@@ -110,7 +111,7 @@ public struct SourceWebLoginView: View {
                             .scaleEffect(0.7)
                     } else {
                         Image(systemName: "lock.shield.fill")
-                            .foregroundColor(.green)
+                            .foregroundColor(theme.palette.success)
                             .font(.caption)
                     }
 
@@ -150,14 +151,14 @@ public struct SourceWebLoginView: View {
                             .font(.system(size: 10, weight: .bold))
                             .padding(.horizontal, 6)
                             .padding(.vertical, 2)
-                            .background(Color.green.opacity(0.15))
-                            .foregroundColor(.green)
+                            .background(theme.palette.success.opacity(0.15))
+                            .foregroundColor(theme.palette.success)
                             .cornerRadius(4)
                     }
                 }
                 .padding(.horizontal, 12)
                 .padding(.vertical, 6)
-                .background(Color.secondary.opacity(0.08))
+                .background(theme.palette.elevated)
 
                 Divider()
 
@@ -260,7 +261,7 @@ public struct SourceWebLoginView: View {
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 8)
-        .background(Color.secondary.opacity(0.05))
+        .background(theme.palette.divider.opacity(0.05))
     }
 
     // MARK: - Manual Cookie Input Sheet
@@ -272,10 +273,11 @@ public struct SourceWebLoginView: View {
                     TextEditor(text: $manualCookieInput)
                         .frame(minHeight: 140)
                         .font(.system(.caption, design: .monospaced))
-                    Text("提示：若网页已在 Safari/电脑端登录，可直接从浏览器控制台复制 Cookie 填入（如：ews_key=...; ews_token=...; PHPSESSID=...）。")
+                    Text("如果已经在 Safari 或电脑上登录过，可以直接把浏览器的 Cookie 复制过来（如 ews_key=...; ews_token=...; PHPSESSID=...）。")
                         .font(.caption2)
-                        .foregroundColor(.secondary)
+                        .foregroundColor(theme.palette.secondaryInk)
                 }
+                .appThemedRows()
 
                 Section {
                     Button("保存并应用此 Cookie") {
@@ -283,7 +285,9 @@ public struct SourceWebLoginView: View {
                     }
                     .disabled(manualCookieInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 }
+                .appThemedRows()
             }
+            .appThemedList()
             .navigationTitle("手动填入 Cookie")
             #if os(iOS)
             .navigationBarTitleDisplayMode(.inline)

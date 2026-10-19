@@ -77,7 +77,7 @@ public enum HttpTTSImportError: Error, LocalizedError {
         case .missingRequiredField(let index):
             return "第 \(index + 1) 条语音源缺少 name 或 url"
         case .noValidSource:
-            return "没有解析出任何可用的语音源"
+            return "没找到可用的语音源"
         }
     }
 }

@@ -133,7 +133,16 @@ public class NetworkClient {
     }
 
     /// 带超时的异步请求，用于目录分页这类批量抓取，避免单页卡住整轮。
-    public func request(parsed: ParsedRequest, timeout: TimeInterval?) async throws -> NetworkResponse {
+    /// `rateKey` / `rateLimit` 来自书源的 concurrentRate，请求发起前先占限速窗口。
+    public func request(
+        parsed: ParsedRequest,
+        timeout: TimeInterval?,
+        rateKey: String? = nil,
+        rateLimit: SourceRateLimit? = nil
+    ) async throws -> NetworkResponse {
+        if let rateKey, let rateLimit {
+            await SourceRateLimiter.shared.acquire(key: rateKey, limit: rateLimit)
+        }
         var req = URLRequest(url: parsed.url)
         req.httpMethod = parsed.method
         req.httpBody = parsed.body
@@ -160,7 +169,15 @@ public class NetworkClient {
     }
 
     /// Performs a synchronous HTTP request (useful for JS rule evaluation)
-    public func requestSync(parsed: ParsedRequest, timeout: TimeInterval = 15.0) -> NetworkResponse? {
+    public func requestSync(
+        parsed: ParsedRequest,
+        timeout: TimeInterval = 15.0,
+        rateKey: String? = nil,
+        rateLimit: SourceRateLimit? = nil
+    ) -> NetworkResponse? {
+        if let rateKey, let rateLimit {
+            SourceRateLimiter.shared.acquireSync(key: rateKey, limit: rateLimit)
+        }
         var req = URLRequest(url: parsed.url)
         req.httpMethod = parsed.method
         req.httpBody = parsed.body

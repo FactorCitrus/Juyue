@@ -7,6 +7,7 @@ import LegadoCore
 
 /// 听书设置：选引擎、调语速、调分段长度、试听。
 public struct TTSSettingsSheet: View {
+    @Environment(\.appTheme) private var theme
     @ObservedObject private var audio = AudioBookService.shared
     @Environment(\.dismiss) private var dismiss
 
@@ -39,6 +40,7 @@ public struct TTSSettingsSheet: View {
                         .listRowInsets(EdgeInsets(top: 8, leading: 12, bottom: 8, trailing: 12))
                         .listRowBackground(Color.clear)
                 }
+                .appThemedRows()
                 Section(header: Text("引擎")) {
                     engineRow(name: "系统语音", subtitle: "iOS 内置，离线可用", selected: activeId == nil) {
                         select(nil)
@@ -56,7 +58,7 @@ public struct TTSSettingsSheet: View {
 
                     Text(systemVoiceHint)
                         .font(.caption2)
-                        .foregroundColor(.secondary)
+                        .foregroundColor(theme.palette.secondaryInk)
 
                     #if os(iOS)
                     ForEach(baiduVoices) { voice in
@@ -94,6 +96,7 @@ public struct TTSSettingsSheet: View {
                         Label("管理 / 导入语音源", systemImage: "square.and.arrow.down")
                     }
                 }
+                .appThemedRows()
 
                 #if os(iOS)
                 Section(header: Text("百度离线引擎")) {
@@ -138,25 +141,26 @@ public struct TTSSettingsSheet: View {
                     if let importMessage {
                         Text(importMessage)
                             .font(.caption2)
-                            .foregroundColor(.secondary)
+                            .foregroundColor(theme.palette.secondaryInk)
                     }
 
                     ForEach(diagLines, id: \.self) { line in
                         Text(line)
                             .font(.system(.caption2, design: .monospaced))
-                            .foregroundColor(.secondary)
+                            .foregroundColor(theme.palette.secondaryInk)
                     }
 
                     if let error = baidu.lastError {
                         Text(error)
                             .font(.caption2)
-                            .foregroundColor(.red)
+                            .foregroundColor(theme.palette.danger)
                     }
 
                     Text("首次激活要联网，SDK 会拿 APP ID + 序列号换授权文件，之后可以断网用。")
                         .font(.caption2)
-                        .foregroundColor(.secondary)
+                        .foregroundColor(theme.palette.secondaryInk)
                 }
+                .appThemedRows()
 
                 Section(header: Text("百度在线引擎")) {
                     HStack {
@@ -190,13 +194,14 @@ public struct TTSSettingsSheet: View {
                     if let error = baiduOnline.lastError {
                         Text(error)
                             .font(.caption2)
-                            .foregroundColor(.red)
+                            .foregroundColor(theme.palette.danger)
                     }
 
                     Text("在线合成走网络，不吃序列号。access_token 有效期 30 天，过期自动重取。精品音色要在控制台开通过才能用。")
                         .font(.caption2)
-                        .foregroundColor(.secondary)
+                        .foregroundColor(theme.palette.secondaryInk)
                 }
+                .appThemedRows()
                 #endif
 
                 #if os(iOS)
@@ -206,12 +211,13 @@ public struct TTSSettingsSheet: View {
                             Text("百度语音授权")
                             Text(BaiduCredentials.hasCustomValues ? "用的是自己填的凭据" : "用的 App 内置默认凭据")
                                 .font(.caption2)
-                                .foregroundColor(.secondary)
+                                .foregroundColor(theme.palette.secondaryInk)
                         }
                     }
                 } footer: {
                     Text("APP ID / API Key / Secret Key / 离线序列号。填了就以填的为准，留空回落到内置默认。")
                 }
+                .appThemedRows()
                 #endif
 
                 Section(header: Text("语速")) {
@@ -233,6 +239,7 @@ public struct TTSSettingsSheet: View {
                     }
                     .font(.footnote)
                 }
+                .appThemedRows()
 
                 Section(header: Text("分段")) {
                     HStack {
@@ -250,8 +257,9 @@ public struct TTSSettingsSheet: View {
                     }
                     Text("在线语音源会按这个长度切段再合成。太长容易超时或被服务器截断。")
                         .font(.caption)
-                        .foregroundColor(.secondary)
+                        .foregroundColor(theme.palette.secondaryInk)
                 }
+                .appThemedRows()
 
                 Section {
                     Toggle("按角色换音色", isOn: $cast.enabled)
@@ -272,7 +280,7 @@ public struct TTSSettingsSheet: View {
                                 Text(role.name.isEmpty ? "（未命名角色）" : role.name)
                                 Text("\(role.match.rawValue) · \(role.engine.rawValue) · \(castVoiceLabel(role))")
                                     .font(.caption2)
-                                    .foregroundColor(.secondary)
+                                    .foregroundColor(theme.palette.secondaryInk)
                             }
                         }
                     }
@@ -290,6 +298,7 @@ public struct TTSSettingsSheet: View {
                 } footer: {
                     Text("打开后按段落切分：引号里的对话走「对话」角色，正文走旁白，命名角色按关键词命中。逐段换音色只支持系统语音和百度在线；HTTP 语音源仍是整章一个音色。")
                 }
+                .appThemedRows()
 
                 Section {
                     Button {
@@ -308,6 +317,7 @@ public struct TTSSettingsSheet: View {
                 } footer: {
                     Text("当前：\(audio.currentEngineName)")
                 }
+                .appThemedRows()
             }
             .appThemedList()
             .navigationTitle("听书设置")
@@ -363,15 +373,15 @@ public struct TTSSettingsSheet: View {
         Button(action: action) {
             HStack {
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(name).foregroundColor(.primary)
+                    Text(name).foregroundColor(theme.palette.ink)
                     Text(subtitle)
                         .font(.caption)
-                        .foregroundColor(.secondary)
+                        .foregroundColor(theme.palette.secondaryInk)
                         .lineLimit(1)
                 }
                 Spacer()
                 if selected {
-                    Image(systemName: "checkmark").foregroundColor(.accentColor)
+                    Image(systemName: "checkmark").foregroundColor(theme.palette.accent)
                 }
             }
         }
@@ -470,6 +480,7 @@ public struct TTSSettingsSheet: View {
 #if os(iOS)
 /// 自备音色管理：多选、批量删。
 struct BaiduVoiceManagerSheet: View {
+    @Environment(\.appTheme) private var theme
     @Environment(\.dismiss) private var dismiss
 
     @State private var voices: [BaiduOfflineTTS.Voice] = BaiduOfflineTTS.userVoices
@@ -485,7 +496,7 @@ struct BaiduVoiceManagerSheet: View {
                 if voices.isEmpty {
                     Text("还没有导进来的音色。用「导入音库包（zip）」加。")
                         .font(.footnote)
-                        .foregroundColor(.secondary)
+                        .foregroundColor(theme.palette.secondaryInk)
                 }
                 ForEach(voices) { voice in
                     HStack(spacing: 10) {
@@ -497,7 +508,7 @@ struct BaiduVoiceManagerSheet: View {
                             Text(voice.name)
                             Text(voice.note)
                                 .font(.caption)
-                                .foregroundColor(.secondary)
+                                .foregroundColor(theme.palette.secondaryInk)
                         }
                     }
                     .contentShape(Rectangle())
@@ -561,6 +572,7 @@ struct BaiduVoiceManagerSheet: View {
 
 /// 单条角色音色的编辑页
 struct TTSCastRoleEditor: View {
+    @Environment(\.appTheme) private var theme
     @Binding var role: TTSCastRole
 
     var body: some View {
@@ -581,6 +593,7 @@ struct TTSCastRoleEditor: View {
 
                 Toggle("启用这条", isOn: $role.enabled)
             }
+            .appThemedRows()
 
             Section {
                 Picker("引擎", selection: $role.engine) {
@@ -611,7 +624,7 @@ struct TTSCastRoleEditor: View {
                     #else
                     Text("百度在线发音人只在 iOS 上可用。")
                         .font(.caption)
-                        .foregroundColor(.secondary)
+                        .foregroundColor(theme.palette.secondaryInk)
                     #endif
                 }
             } header: {
@@ -619,6 +632,7 @@ struct TTSCastRoleEditor: View {
             } footer: {
                 Text("选「跟随全局设置」就用听书设置里当前选的那个音色。")
             }
+            .appThemedRows()
         }
         .appThemedList()
         .navigationTitle(role.name.isEmpty ? "角色" : role.name)
@@ -630,6 +644,7 @@ struct TTSCastRoleEditor: View {
 
 /// 填自己的百度语音凭据：填了覆盖内置默认值，留空回落默认
 struct BaiduCredentialView: View {
+    @Environment(\.appTheme) private var theme
     @State private var appId = ""
     @State private var apiKey = ""
     @State private var secretKey = ""
@@ -646,6 +661,7 @@ struct BaiduCredentialView: View {
                 TextField("Secret Key（在线用）", text: $secretKey)
                     .autocorrectionDisabled()
             }
+            .appThemedRows()
 
             Section(header: Text("离线序列号（一行一条）")) {
                 TextEditor(text: $serials)
@@ -653,6 +669,7 @@ struct BaiduCredentialView: View {
                     .font(.system(.caption, design: .monospaced))
                     .autocorrectionDisabled()
             }
+            .appThemedRows()
 
             Section {
                 Button {
@@ -673,11 +690,12 @@ struct BaiduCredentialView: View {
                 if let savedHint {
                     Text(savedHint)
                         .font(.caption)
-                        .foregroundColor(.secondary)
+                        .foregroundColor(theme.palette.secondaryInk)
                 }
             } footer: {
                 Text("内置默认值是打包时带的那份。公开仓库里默认值为空，需要在这里填自己的 APP ID、API Key、Secret Key 和离线序列号；离线引擎要求序列号与 APP ID 配套。")
             }
+            .appThemedRows()
         }
         .appThemedList()
         .navigationTitle("百度语音授权")
