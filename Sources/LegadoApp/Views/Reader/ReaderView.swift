@@ -480,6 +480,52 @@ public struct LoadedChapter: Identifiable {
     public var pages: [[ContentBlock]] = []
 }
 
+/// 热评卡片：滚动、分页、仿真共用。文字和可选插图都在这里画。
+struct GodReviewCardView: View {
+    let text: String
+    let imageURL: String?
+    let referer: String?
+    let onTap: () -> Void
+
+    private var displayText: String {
+        text
+            .replacingOccurrences(of: "热评 · ", with: "")
+            .replacingOccurrences(of: "神评 · ", with: "")
+    }
+
+    var body: some View {
+        Button(action: onTap) {
+            VStack(alignment: .leading, spacing: 8) {
+                HStack(alignment: .top, spacing: 9) {
+                    Text("热评")
+                        .font(.system(size: 11, weight: .bold))
+                        .foregroundColor(.white)
+                        .padding(.horizontal, 7)
+                        .padding(.vertical, 4)
+                        .background(Color.orange, in: RoundedRectangle(cornerRadius: 6))
+                    if !displayText.isEmpty, displayText != "热评" {
+                        Text(displayText)
+                            .font(.subheadline)
+                            .foregroundColor(.primary)
+                            .multilineTextAlignment(.leading)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                }
+                if let imageURL, !imageURL.isEmpty {
+                    ChapterImageView(urlString: imageURL, referer: referer)
+                        .frame(maxHeight: 240)
+                        .clipShape(RoundedRectangle(cornerRadius: 8))
+                        .allowsHitTesting(false)
+                }
+            }
+            .padding(11)
+            .background(RoundedRectangle(cornerRadius: 10).fill(Color.orange.opacity(0.10)))
+            .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.orange.opacity(0.22), lineWidth: 0.5))
+        }
+        .buttonStyle(.plain)
+    }
+}
+
 public struct ReaderCommentItem: Identifiable {
     public let id: Int
     public let excerpt: String
@@ -2232,7 +2278,18 @@ public struct ReaderView: View {
                         }
 
                         // Page Content
-                        if pageBlocks.first?.isImage == true, let urlStr = pageBlocks.first?.imageUrl {
+                        if let block = pageBlocks.first, block.commentCount == -2 {
+                            GodReviewCardView(
+                                text: block.text,
+                                imageURL: block.imageUrl,
+                                referer: effectiveSource?.bookSourceUrl
+                            ) {
+                                if let url = block.commentURL {
+                                    directCommentTarget = ReviewTarget(url: url, title: "段评")
+                                }
+                            }
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                        } else if pageBlocks.first?.isImage == true, let urlStr = pageBlocks.first?.imageUrl {
                             ChapterImageView(urlString: urlStr, referer: effectiveSource?.bookSourceUrl)
                         } else {
                             let lines = pageBlocks.map { $0.text }
@@ -3710,42 +3767,15 @@ public struct ReaderView: View {
 
     /// 热评：源里的 SVG / 图片卡片换成原生样式，文字和插图都保留。
     private func godReviewCard(_ block: ContentBlock) -> some View {
-        let text = block.text
-            .replacingOccurrences(of: "热评 · ", with: "")
-            .replacingOccurrences(of: "神评 · ", with: "")
-        return Button {
+        GodReviewCardView(
+            text: block.text,
+            imageURL: block.imageUrl,
+            referer: effectiveSource?.bookSourceUrl
+        ) {
             if let url = block.commentURL {
                 directCommentTarget = ReviewTarget(url: url, title: "段评")
             }
-        } label: {
-            VStack(alignment: .leading, spacing: 8) {
-                HStack(alignment: .top, spacing: 9) {
-                    Text("热评")
-                        .font(.system(size: 11, weight: .bold))
-                        .foregroundColor(.white)
-                        .padding(.horizontal, 7)
-                        .padding(.vertical, 4)
-                        .background(Color.orange, in: RoundedRectangle(cornerRadius: 6))
-                    if !text.isEmpty, text != "热评" {
-                        Text(text)
-                            .font(.subheadline)
-                            .foregroundColor(.primary)
-                            .multilineTextAlignment(.leading)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                    }
-                }
-                if let imageURL = block.imageUrl, !imageURL.isEmpty {
-                    ChapterImageView(urlString: imageURL, referer: effectiveSource?.bookSourceUrl)
-                        .frame(maxHeight: 240)
-                        .clipShape(RoundedRectangle(cornerRadius: 8))
-                        .allowsHitTesting(false)
-                }
-            }
-            .padding(11)
-            .background(RoundedRectangle(cornerRadius: 10).fill(Color.orange.opacity(0.10)))
-            .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.orange.opacity(0.22), lineWidth: 0.5))
         }
-        .buttonStyle(.plain)
     }
 
     /// 段评数量气泡，贴在段落右下角。
@@ -6303,6 +6333,16 @@ public struct ReaderView: View {
         var blockIdCounter = 10000
 
         for block in blocks {
+            if block.commentCount == -2 {
+                if !currentPageLines.isEmpty {
+                    pages.append(buildPageBlocks(from: currentPageLines, startingId: &blockIdCounter))
+                    currentPageLines = []
+                }
+                pages.append([block])
+                currentPageHeight = 0
+                maxHeightForCurrentPage = normalHeight
+                continue
+            }
             if block.isImage {
                 if !currentPageLines.isEmpty {
                     pages.append(buildPageBlocks(from: currentPageLines, startingId: &blockIdCounter))
