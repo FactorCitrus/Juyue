@@ -459,6 +459,40 @@ public struct SettingsView: View {
             .listRowInsets(EdgeInsets(top: 10, leading: 16, bottom: 2, trailing: 16))
     }
 
+    private func chipPicker<Option: Hashable>(
+        selection: Binding<Option>,
+        options: [(Option, String)],
+        columns: Int
+    ) -> some View {
+        LazyVGrid(
+            columns: Array(repeating: GridItem(.flexible(), spacing: 6), count: max(1, columns)),
+            spacing: 6
+        ) {
+            ForEach(Array(options.enumerated()), id: \.offset) { _, item in
+                let isSelected = selection.wrappedValue == item.0
+                Button {
+                    selection.wrappedValue = item.0
+                } label: {
+                    Text(item.1)
+                        .font(.system(size: 12, weight: isSelected ? .semibold : .regular))
+                        .foregroundColor(isSelected ? theme.palette.onAccent : theme.palette.ink)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 9)
+                        .background(
+                            RoundedRectangle(cornerRadius: theme.metrics.cornerRadius, style: .continuous)
+                                .fill(isSelected ? theme.palette.accent : theme.palette.elevated)
+                        )
+                        .overlay(
+                            RoundedRectangle(cornerRadius: theme.metrics.cornerRadius, style: .continuous)
+                                .stroke(isSelected ? theme.palette.accent : theme.palette.divider,
+                                        lineWidth: theme.metrics.borderWidth)
+                        )
+                }
+                .buttonStyle(.plain)
+            }
+        }
+    }
+
     @ViewBuilder
     private var readBoard: some View {
         subheader("排版")
@@ -517,11 +551,11 @@ public struct SettingsView: View {
 
         subheader("背景")
 
-        Picker("阅读背景主题", selection: $readerConfig.theme) {
-            ForEach(ReaderTheme.allCases) { theme in
-                Text(theme.rawValue).tag(theme)
-            }
-        }
+        chipPicker(
+            selection: $readerConfig.theme,
+            options: ReaderTheme.allCases.map { ($0, $0.rawValue) },
+            columns: 2
+        )
 
         VStack(alignment: .leading, spacing: 6) {
             Text("排版预览")
@@ -654,11 +688,11 @@ public struct SettingsView: View {
 
         subheader("书架角标")
 
-        Picker("显示方式", selection: $shelfConfig.badgeStyle) {
-            ForEach(BookshelfBadgeStyle.allCases) { style in
-                Text(style.rawValue).tag(style)
-            }
-        }
+        chipPicker(
+            selection: $shelfConfig.badgeStyle,
+            options: BookshelfBadgeStyle.allCases.map { ($0, $0.rawValue) },
+            columns: 3
+        )
 
         if shelfConfig.badgeStyle == .count {
             Stepper(value: $shelfConfig.badgeCap, in: 0...999, step: 5) {
@@ -674,11 +708,11 @@ public struct SettingsView: View {
         if shelfConfig.badgeStyle != .hidden {
             ColorPicker("角标颜色", selection: badgeColorBinding, supportsOpacity: false)
 
-            Picker("位置", selection: $shelfConfig.badgeCorner) {
-                ForEach(BookshelfBadgeCorner.allCases) { corner in
-                    Text(corner.rawValue).tag(corner)
-                }
-            }
+            chipPicker(
+                selection: $shelfConfig.badgeCorner,
+                options: BookshelfBadgeCorner.allCases.map { ($0, $0.rawValue) },
+                columns: 2
+            )
 
             VStack(alignment: .leading, spacing: 2) {
                 HStack {
