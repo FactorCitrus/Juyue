@@ -74,6 +74,7 @@ public class BookshelfConfig: ObservableObject {
 
 public struct BookshelfView: View {
     @ObservedObject var bookStore = BookStore.shared
+    @Environment(\.appTheme) private var theme
     @State private var selectedBook: Book? = nil
     @State private var navigateToDetailBook: Book? = nil
     @State private var isSearchActive: Bool = false
@@ -83,6 +84,9 @@ public struct BookshelfView: View {
     @State private var newGroupName: String = ""
     @State private var importErrorMessage: String? = nil
     @State private var showImportAlert: Bool = false
+    @State private var isOrganizing = false
+    @State private var selectedBookIDs: Set<String> = []
+    @State private var showDeleteSelectedAlert = false
 
     public init() {}
 
@@ -129,11 +133,318 @@ public struct BookshelfView: View {
                 .font(.system(size: 13, weight: isSelected ? .semibold : .regular))
                 .padding(.horizontal, 12)
                 .padding(.vertical, 6)
-                .background(isSelected ? Color.accentColor.opacity(0.85) : Color.secondary.opacity(0.12))
-                .foregroundColor(isSelected ? .white : .primary)
-                .cornerRadius(14)
+                .background(isSelected ? theme.palette.accent : theme.palette.surface.opacity(0.88))
+                .foregroundColor(isSelected ? theme.palette.onAccent : theme.palette.ink)
+                .overlay(
+                    RoundedRectangle(cornerRadius: theme.metrics.cornerRadius, style: .continuous)
+                        .stroke(isSelected ? theme.palette.accent : theme.palette.divider,
+                                lineWidth: theme.metrics.borderWidth)
+                )
+                .cornerRadius(theme.metrics.cornerRadius)
         }
         .buttonStyle(.plain)
+    }
+
+    private var bookshelfHeader: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text("ARCHIVE / LIBRARY")
+                    .font(theme.typography.label)
+                Spacer()
+                Text("SYS.READY")
+                    .font(theme.typography.mono)
+            }
+            .foregroundColor(theme.palette.secondaryInk)
+
+            HStack(alignment: .firstTextBaseline) {
+                Text("档案库")
+                    .font(theme.typography.title)
+                    .foregroundColor(theme.palette.ink)
+                Spacer()
+                Text("\(bookStore.bookshelf.count) BOOKS")
+                    .font(theme.typography.mono)
+                    .foregroundColor(theme.palette.secondaryInk)
+            }
+
+            Text("\(bookStore.groups.count) GROUPS · \(readingBookCount) IN PROGRESS")
+                .font(theme.typography.mono)
+                .foregroundColor(theme.palette.secondaryInk)
+        }
+        .padding(14)
+        .background(
+            LinearGradient(
+                colors: [theme.palette.elevated.opacity(0.9), theme.palette.surface],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
+        )
+        .overlay(alignment: .leading) {
+            Rectangle()
+                .fill(theme.palette.accent)
+                .frame(width: 3)
+        }
+        .overlay(alignment: .trailing) {
+            Text(String(format: "%03d", bookStore.bookshelf.count))
+                .font(.system(size: 58, weight: .bold, design: .monospaced))
+                .foregroundColor(theme.palette.ink.opacity(0.035))
+                .padding(.trailing, 10)
+        }
+        .overlay(
+            Rectangle()
+                .stroke(theme.palette.divider.opacity(0.85), lineWidth: theme.metrics.borderWidth)
+        )
+        .clipShape(RoundedRectangle(cornerRadius: theme.metrics.cornerRadius, style: .continuous))
+        .shadow(color: .black.opacity(0.05), radius: 10, y: 5)
+        .padding(.horizontal, 16)
+        .padding(.top, 8)
+    }
+
+    private var readingBookCount: Int {
+        bookStore.bookshelf.filter {
+            $0.durChapterIndex > 0 || !($0.durChapterTitle ?? "").isEmpty
+        }.count
+    }
+
+    private var organizerBar: some View {
+        HStack(spacing: 10) {
+            Button(allVisibleSelected ? "取消全选" : "全选") {
+                if allVisibleSelected {
+                    selectedBookIDs.removeAll()
+                } else {
+                    selectedBookIDs = Set(displayedBooks.map(\.bookUrl))
+                }
+            }
+
+            Menu {
+                Button("未分组") {
+                    for url in selectedBookIDs {
+                        if let book = bookStore.bookshelf.first(where: { $0.bookUrl == url }) {
+                            bookStore.assign(book, toGroup: nil)
+                        }
+                    }
+                }
+                ForEach(bookStore.groups) { group in
+                    Button(group.name) {
+                        for url in selectedBookIDs {
+                            if let book = bookStore.bookshelf.first(where: { $0.bookUrl == url }) {
+                                bookStore.assign(book, toGroup: group.id)
+                            }
+                        }
+                    }
+                }
+            } label: {
+                Label("分组", systemImage: "folder")
+            }
+            .disabled(selectedBookIDs.isEmpty)
+
+            Button(role: .destructive) {
+                showDeleteSelectedAlert = true
+            } label: {
+                Label("删除", systemImage: "trash")
+            }
+            .disabled(selectedBookIDs.isEmpty)
+
+            Spacer()
+
+            Text("\(selectedBookIDs.count) 本")
+                .font(theme.typography.mono)
+                .foregroundColor(theme.palette.secondaryInk)
+
+            Button("完成") {
+                withAnimation(.easeInOut(duration: 0.18)) {
+                    isOrganizing = false
+                    selectedBookIDs.removeAll()
+                }
+            }
+        }
+        .font(.system(size: 13, weight: .medium))
+        .padding(.horizontal, 16)
+        .padding(.vertical, 10)
+        .background(theme.palette.surface)
+        .overlay(alignment: .top) {
+            Rectangle()
+                .fill(theme.palette.divider)
+                .frame(height: 1)
+        }
+    }
+
+    private var allVisibleSelected: Bool {
+        !displayedBooks.isEmpty && displayedBooks.allSatisfy { selectedBookIDs.contains($0.bookUrl) }
+    }
+
+    private var bookshelfGrid: some View {
+        ScrollView {
+            LazyVGrid(
+                columns: [
+                    GridItem(.flexible(), spacing: 12),
+                    GridItem(.flexible(), spacing: 12)
+                ],
+                spacing: 12
+            ) {
+                ForEach(Array(displayedBooks.enumerated()), id: \.element.id) { index, book in
+                    bookshelfCard(book, index: index)
+                }
+            }
+            .padding(.horizontal, 16)
+            .padding(.top, 8)
+            .padding(.bottom, 110)
+        }
+        .refreshable {
+            await bookStore.refreshAllBooks()
+        }
+    }
+
+    private func bookshelfCard(_ book: Book, index: Int) -> some View {
+        let isSelected = selectedBookIDs.contains(book.bookUrl)
+        return Button {
+            if isOrganizing {
+                if isSelected {
+                    selectedBookIDs.remove(book.bookUrl)
+                } else {
+                    selectedBookIDs.insert(book.bookUrl)
+                }
+            } else {
+                selectedBook = book
+            }
+        } label: {
+            VStack(alignment: .leading, spacing: 8) {
+                ZStack(alignment: .topLeading) {
+                    Group {
+                        if book.coverUrl != nil {
+                            BookCoverImage(urlString: book.coverUrl)
+                        } else {
+                            RoundedRectangle(cornerRadius: theme.metrics.cornerRadius)
+                                .fill(
+                                    LinearGradient(
+                                        colors: [theme.palette.elevated, theme.palette.surface],
+                                        startPoint: .topLeading,
+                                        endPoint: .bottomTrailing
+                                    )
+                                )
+                                .overlay(
+                                    Image(systemName: "book.closed.fill")
+                                        .font(.title2)
+                                        .foregroundColor(theme.palette.accent.opacity(0.65))
+                                )
+                        }
+                    }
+                    .frame(maxWidth: .infinity)
+                    .frame(height: 150)
+                    .clipped()
+                    .overlay(
+                        LinearGradient(
+                            colors: [
+                                theme.palette.background.opacity(0.08),
+                                .clear,
+                                theme.palette.background.opacity(0.10)
+                            ],
+                            startPoint: .top,
+                            endPoint: .bottom
+                        )
+                    )
+                    .overlay(alignment: .bottom) {
+                        LinearGradient(
+                            colors: [.clear, theme.palette.surface.opacity(0.88)],
+                            startPoint: .top,
+                            endPoint: .bottom
+                        )
+                        .frame(height: 42)
+                    }
+
+                    if isOrganizing {
+                        Image(systemName: isSelected ? "checkmark.square.fill" : "square")
+                            .font(.system(size: 20, weight: .semibold))
+                            .foregroundColor(isSelected ? theme.palette.accent : theme.palette.secondaryInk)
+                            .padding(8)
+                            .frame(maxWidth: .infinity, alignment: .trailing)
+                    }
+                }
+
+                HStack(spacing: 6) {
+                    Text(String(format: "ARCHIVE %02d", index + 1))
+                        .font(theme.typography.mono)
+                        .foregroundColor(theme.palette.secondaryInk)
+                    Spacer()
+                    if let group = bookStore.groups.first(where: { $0.id == book.groupId }) {
+                        Text(group.name)
+                            .font(theme.typography.mono)
+                            .foregroundColor(theme.palette.accent)
+                            .lineLimit(1)
+                    }
+                }
+
+                Text(book.name)
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundColor(theme.palette.ink)
+                    .lineLimit(2)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+
+                if !book.author.isEmpty && book.author != "未知作者" {
+                    Text(book.author)
+                        .font(theme.typography.mono)
+                        .foregroundColor(theme.palette.secondaryInk)
+                        .lineLimit(1)
+                }
+
+                if book.totalChapterNum > 0 {
+                    let read = min(book.durChapterIndex + 1, book.totalChapterNum)
+                    ProgressView(value: Double(read), total: Double(book.totalChapterNum))
+                        .tint(theme.palette.accent)
+                    Text("\(read)/\(book.totalChapterNum) CHAPTERS")
+                        .font(theme.typography.mono)
+                        .foregroundColor(theme.palette.secondaryInk)
+                } else if let chapter = book.durChapterTitle, !chapter.isEmpty {
+                    Text(chapter)
+                        .font(theme.typography.mono)
+                        .foregroundColor(theme.palette.secondaryInk)
+                        .lineLimit(1)
+                }
+
+            }
+            .padding(9)
+            .frame(maxWidth: .infinity, alignment: .topLeading)
+            .background(
+                LinearGradient(
+                    colors: [theme.palette.surface.opacity(0.94), theme.palette.surface],
+                    startPoint: .top,
+                    endPoint: .bottom
+                )
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: theme.metrics.cornerRadius, style: .continuous)
+                    .stroke(isSelected ? theme.palette.accent : theme.palette.divider.opacity(0.45),
+                            lineWidth: isSelected ? 1.4 : theme.metrics.borderWidth)
+            )
+            .clipShape(RoundedRectangle(cornerRadius: theme.metrics.cornerRadius, style: .continuous))
+            .shadow(color: .black.opacity(0.035), radius: 6, y: 3)
+        }
+        .buttonStyle(.plain)
+        .onLongPressGesture {
+            navigateToDetailBook = book
+        }
+        .contextMenu {
+            Button {
+                navigateToDetailBook = book
+            } label: {
+                Label("书籍详情", systemImage: "info.circle")
+            }
+            Menu("移动到分组") {
+                Button("未分组") { bookStore.assign(book, toGroup: nil) }
+                ForEach(bookStore.groups) { group in
+                    Button(group.name) { bookStore.assign(book, toGroup: group.id) }
+                }
+                Divider()
+                Button("新建分组…") {
+                    newGroupName = ""
+                    showNewGroupAlert = true
+                }
+            }
+            Button(role: .destructive) {
+                bookStore.removeBook(bookUrl: book.bookUrl)
+            } label: {
+                Label("删除", systemImage: "trash")
+            }
+        }
     }
 
     private var sortedBookshelf: [Book] {
@@ -147,68 +458,16 @@ public struct BookshelfView: View {
     public var body: some View {
         ZStack {
             NavigationView {
-            Group {
+            VStack(spacing: 0) {
+                bookshelfHeader
                 if bookStore.bookshelf.isEmpty {
                     emptyShelfView
                 } else {
-                    VStack(spacing: 0) {
                     groupFilterBar
-                    List {
-                        ForEach(displayedBooks) { book in
-                            BookRow(book: book)
-                                .contentShape(Rectangle())
-                                .onTapGesture {
-                                    selectedBook = book
-                                }
-                                .onLongPressGesture {
-                                    navigateToDetailBook = book
-                                }
-                                .contextMenu {
-                                    // 长按默认弹的是这个菜单，.onLongPressGesture 抢不到，
-                                    // 所以详情的入口放这儿
-                                    Button {
-                                        navigateToDetailBook = book
-                                    } label: {
-                                        Label("书籍详情", systemImage: "info.circle")
-                                    }
-                                    Menu("移动到分组") {
-                                        Button("未分组") { bookStore.assign(book, toGroup: nil) }
-                                        ForEach(bookStore.groups) { group in
-                                            Button(group.name) { bookStore.assign(book, toGroup: group.id) }
-                                        }
-                                        Divider()
-                                        Button("新建分组…") {
-                                            newGroupName = ""
-                                            showNewGroupAlert = true
-                                        }
-                                    }
-                                }
-                                .swipeActions(edge: .leading, allowsFullSwipe: false) {
-                                    Button {
-                                        navigateToDetailBook = book
-                                    } label: {
-                                        Label("详情", systemImage: "info.circle")
-                                    }
-                                    .tint(.blue)
-                                }
-                        }
-                        .onDelete { indexSet in
-                            for idx in indexSet {
-                                bookStore.removeBook(bookUrl: sortedBookshelf[idx].bookUrl)
-                            }
-                        }
-                    }
-                    .refreshable {
-                        await bookStore.refreshAllBooks()
-                    }
-                    #if os(iOS)
-                    .listStyle(.insetGrouped)
-                    #else
-                    .listStyle(.inset)
-                    #endif
-                    }
+                    bookshelfGrid
                 }
             }
+            .background(AppThemeBackdrop())
             .background(
                 Group {
                     // Programmatic push to SearchBookView
@@ -238,6 +497,22 @@ public struct BookshelfView: View {
                 .hidden()
                 .frame(width: 0, height: 0)
             )
+            .safeAreaInset(edge: .bottom) {
+                if isOrganizing {
+                    organizerBar
+                }
+            }
+            .alert("删除选中的书籍", isPresented: $showDeleteSelectedAlert) {
+                Button("取消", role: .cancel) {}
+                Button("删除", role: .destructive) {
+                    for url in selectedBookIDs {
+                        bookStore.removeBook(bookUrl: url)
+                    }
+                    selectedBookIDs.removeAll()
+                }
+            } message: {
+                Text("将删除 \(selectedBookIDs.count) 本书，阅读进度与缓存也会一起移除。")
+            }
             .navigationTitle("我的书架")
             .toolbar {
                 ToolbarItemGroup(placement: .primaryAction) {
@@ -250,6 +525,16 @@ public struct BookshelfView: View {
                     Button(action: { showFileImporter = true }) {
                         Image(systemName: "doc.badge.plus")
                     }
+
+                    Button {
+                        withAnimation(.easeInOut(duration: 0.18)) {
+                            isOrganizing.toggle()
+                            if !isOrganizing { selectedBookIDs.removeAll() }
+                        }
+                    } label: {
+                        Image(systemName: isOrganizing ? "checkmark.circle.fill" : "square.grid.2x2")
+                    }
+                    .accessibilityLabel(isOrganizing ? "完成整理" : "整理书架")
                 }
             }
             .fileImporter(
@@ -308,6 +593,7 @@ public struct BookshelfView: View {
         }
         #endif
         }
+        .background(AppThemeBackdrop())
     }
 
     @ViewBuilder
@@ -341,14 +627,16 @@ public struct BookshelfView: View {
                 .font(.subheadline.bold())
                 .padding(.horizontal, 18)
                 .padding(.vertical, 10)
-                .background(Color.accentColor)
-                .foregroundColor(.white)
-                .cornerRadius(20)
+                .background(theme.palette.accent)
+                .foregroundColor(theme.palette.onAccent)
+                .cornerRadius(theme.metrics.cornerRadius)
             }
             .buttonStyle(.plain)
             .padding(.top, 8)
         }
         .padding()
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(theme.palette.background)
     }
 }
 

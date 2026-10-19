@@ -17,6 +17,7 @@ public struct LegadoApp: App {
     @StateObject private var bookStore = BookStore.shared
     @StateObject private var scriptBrowser = ScriptBrowserPresenter.shared
     @StateObject private var toastPresenter = ToastPresenter.shared
+    @StateObject private var themeManager = AppThemeManager.shared
     @Environment(\.scenePhase) private var scenePhase
     @AppStorage("legado_app_theme") private var appTheme: String = "system"
 
@@ -26,6 +27,10 @@ public struct LegadoApp: App {
         case "dark": return .dark
         default: return nil
         }
+    }
+
+    private var effectiveColorScheme: ColorScheme? {
+        themeManager.theme.forcedColorScheme ?? selectedColorScheme
     }
 
     public init() {
@@ -53,11 +58,17 @@ public struct LegadoApp: App {
         // 才能保证脚本还没弹过网页时宿主就已经接好。
         MainTabView()
             .environmentObject(bookStore)
-            .preferredColorScheme(selectedColorScheme)
+            .environmentObject(themeManager)
+            .environment(\.appTheme, themeManager.theme)
+            .tint(themeManager.theme.palette.accent)
+            .preferredColorScheme(effectiveColorScheme)
         #else
         MainTabView()
             .environmentObject(bookStore)
-            .preferredColorScheme(selectedColorScheme)
+            .environmentObject(themeManager)
+            .environment(\.appTheme, themeManager.theme)
+            .tint(themeManager.theme.palette.accent)
+            .preferredColorScheme(effectiveColorScheme)
         #endif
     }
 

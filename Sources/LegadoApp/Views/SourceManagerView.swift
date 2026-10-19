@@ -112,6 +112,24 @@ public struct SourceManagerView: View {
 
     public var body: some View {
         List {
+            Section {
+                TerminalPageHeader(code: "SOURCE / LIBRARY", title: "书源管理", detail: "筛选 / 排序 / 校验 / 导入导出")
+                    .listRowInsets(EdgeInsets(top: 8, leading: 12, bottom: 8, trailing: 12))
+                    .listRowBackground(Color.clear)
+            }
+
+            Section(header: Text("工具")) {
+                NavigationLink(destination: SourceCheckView()) {
+                    HStack {
+                        Label("校验书源", systemImage: "checkmark.shield")
+                        Spacer()
+                        Text("逐个检测书源可用性")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
+                }
+            }
+
             Section(header: Text("筛选")) {
                 HStack {
                     Text("显示 \(filteredSources.count) / 共 \(bookStore.sources.count)")
@@ -243,6 +261,7 @@ public struct SourceManagerView: View {
 #else
             .listStyle(.inset)
 #endif
+            .appThemedList()
             .navigationTitle("书源管理")
             .toolbar {
                 ToolbarItem(placement: .primaryAction) {
@@ -592,6 +611,7 @@ enum SourceDocumentPicker {
                     .disabled(importText.trimmingCharacters(in: .whitespaces).isEmpty)
                 }
             }
+            .appThemedList()
             .navigationTitle("导入书源")
             #if os(iOS)
             .navigationBarTitleDisplayMode(.inline)
@@ -839,6 +859,7 @@ public struct SourceLoginSheet: View {
                     }
                 }
             }
+            .appThemedList()
             .navigationTitle("书源登录")
             #if os(iOS)
             .navigationBarTitleDisplayMode(.inline)

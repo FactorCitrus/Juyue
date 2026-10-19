@@ -493,6 +493,7 @@ struct ReaderCommentsSheet: View {
     let chapterURL: String?
 
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.appTheme) private var theme
     @State private var target: ReviewTarget?
 
     var body: some View {
@@ -525,16 +526,18 @@ struct ReaderCommentsSheet: View {
                                     .frame(maxWidth: .infinity, alignment: .leading)
                                 Text(item.count >= 99 ? "99+" : "\(item.count)")
                                     .font(.caption.bold())
-                                    .foregroundColor(.white)
+                                .foregroundColor(theme.palette.onAccent)
                                     .padding(.horizontal, 7)
                                     .padding(.vertical, 3)
-                                    .background(Color.accentColor, in: Capsule())
+                                .background(theme.palette.accent, in: Capsule())
                             }
                         }
                     }
                 }
             }
+            .appThemedList()
             .navigationTitle(chapterTitle.isEmpty ? "段评" : chapterTitle)
+            .tint(theme.palette.accent)
             #if os(iOS)
             .navigationBarTitleDisplayMode(.inline)
             #endif
@@ -560,6 +563,7 @@ private struct NativeCommentListSheet: View {
     let target: ReviewTarget
 
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.appTheme) private var theme
     @State private var comments: [ReviewComment] = []
     @State private var total = 0
     @State private var isLoading = true
@@ -684,9 +688,11 @@ private struct NativeCommentListSheet: View {
                         }
                     }
                     .listStyle(.plain)
+                    .appThemedList()
                 }
             }
             .navigationTitle(total > 0 ? "\(target.title) · \(total)" : target.title)
+            .tint(theme.palette.accent)
             #if os(iOS)
             .navigationBarTitleDisplayMode(.inline)
             #endif
@@ -973,6 +979,7 @@ public struct ScrollOffsetPreferenceKey: PreferenceKey {
 
 public struct ReaderView: View {
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.appTheme) private var theme
     @StateObject private var readerConfig = ReaderConfig.shared
     @StateObject private var audioService = AudioBookService.shared
 
@@ -987,6 +994,18 @@ public struct ReaderView: View {
     @State private var previousSource: BookSource?
 
     private var activeBook: Book { switchedBook ?? book }
+
+    private var chromeBackground: Color {
+        theme.choice == .lunarTerminal ? theme.palette.background : readerConfig.backgroundColor
+    }
+
+    private var chromeInk: Color {
+        theme.choice == .lunarTerminal ? theme.palette.ink : readerConfig.textColor
+    }
+
+    private var chromeRadius: CGFloat {
+        theme.choice == .lunarTerminal ? theme.metrics.cornerRadius : 24
+    }
 
     private var effectiveSource: BookSource? {
         switchedSource ?? source ?? BookStore.shared.findSource(for: activeBook)
@@ -1101,6 +1120,8 @@ public struct ReaderView: View {
     @State private var settingsPanel: ReaderQuickPanel = .quick
     /// 设置面板收起状态：调布局时把它折起来，整页都露出来
     @State private var panelCollapsed = false
+    @State private var layoutPreviewActive = false
+    @State private var layoutPreviewToken = 0
     /// 换章进行中：期间拦掉重复的翻页触发，免得拿旧章的页数推进
     @State private var isSwitchingChapter = false
     @State private var paginationTask: Task<Void, Never>?
@@ -1309,7 +1330,7 @@ public struct ReaderView: View {
                 // 5. Reading Settings Card Overlay (Bottom 1/3 of the screen)
                 if showSettings {
                     // 面板调淡的时候，底下这层压暗也得跟着淡，不然还是看不清正文
-                    Color.black.opacity(0.2 * readerConfig.panelOpacity)
+                    Color.black.opacity(0.2 * effectivePanelOpacity)
                         .contentShape(Rectangle())
                         .onTapGesture {
                             withAnimation(.easeInOut(duration: 0.22)) {
@@ -1657,7 +1678,7 @@ public struct ReaderView: View {
         } else {
             Text(title)
                 .font(.system(size: readerConfig.fontSize * readerConfig.chapterTitleScale, weight: .semibold))
-                .foregroundColor(readerConfig.textColor)
+                .foregroundColor(chromeInk)
                 .padding(.leading, readerConfig.paddingLeft)
                 .padding(.trailing, readerConfig.paddingRight)
                 .padding(.top, readerConfig.chapterTopSpacing)
@@ -2566,7 +2587,7 @@ public struct ReaderView: View {
                     Text("书架")
                         .font(.system(size: 16))
                 }
-                .foregroundColor(readerConfig.textColor)
+                .foregroundColor(chromeInk)
                 .contentShape(Rectangle())
             }
 
@@ -2620,21 +2641,21 @@ public struct ReaderView: View {
             } label: {
                 Image(systemName: "ellipsis.circle")
                     .font(.system(size: 19))
-                    .foregroundColor(readerConfig.textColor)
+                    .foregroundColor(chromeInk)
                     .frame(width: 54, height: 32)
             }
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 10)
         .background(
-            readerConfig.backgroundColor
+            chromeBackground
                 .opacity(0.97)
                 .shadow(color: Color.black.opacity(0.08), radius: 8, x: 0, y: 3)
                 .ignoresSafeArea(edges: .top)
         )
         .overlay(
             Rectangle()
-                .fill(readerConfig.textColor.opacity(0.12))
+                .fill(chromeInk.opacity(0.12))
                 .frame(height: 0.5),
             alignment: .bottom
         )
@@ -2645,7 +2666,7 @@ public struct ReaderView: View {
             chapterNavigationRow
 
             Rectangle()
-                .fill(readerConfig.textColor.opacity(0.12))
+                .fill(chromeInk.opacity(0.12))
                 .frame(height: 0.5)
 
             bottomActionRow
@@ -2654,7 +2675,7 @@ public struct ReaderView: View {
         .padding(.top, 14)
         .padding(.bottom, 10)
         .background(
-            readerConfig.backgroundColor
+            chromeBackground
                 .opacity(0.97)
                 .shadow(color: Color.black.opacity(0.12), radius: 10, x: 0, y: -4)
                 .ignoresSafeArea(edges: .bottom)
@@ -3614,8 +3635,21 @@ public struct ReaderView: View {
         .frame(maxWidth: .infinity)
         .padding(.horizontal, 4)
         .padding(.vertical, 6)
-        .background(.regularMaterial, in: Capsule())
-        .overlay(Capsule().stroke(Color.secondary.opacity(0.18), lineWidth: 0.5))
+        .background {
+            if theme.choice == .lunarTerminal {
+                RoundedRectangle(cornerRadius: theme.metrics.cornerRadius, style: .continuous)
+                    .fill(theme.palette.surface)
+            } else {
+                RoundedRectangle(cornerRadius: 22, style: .continuous)
+                    .fill(.regularMaterial)
+            }
+        }
+        .overlay(
+            RoundedRectangle(cornerRadius: theme.choice == .lunarTerminal ? theme.metrics.cornerRadius : 22,
+                             style: .continuous)
+                .stroke(theme.choice == .lunarTerminal ? theme.palette.divider : Color.secondary.opacity(0.18),
+                        lineWidth: 0.5)
+        )
         .shadow(color: Color.black.opacity(0.18), radius: 10, y: 4)
     }
 
@@ -4444,26 +4478,30 @@ public struct ReaderView: View {
             settingsHeader
             if !panelCollapsed {
                 settingsPanelSwitcher
+                settingsStatusStrip
                 brightnessRow
             ScrollView {
                 VStack(alignment: .leading, spacing: 14) {
                     switch settingsPanel {
                     case .quick:
-                        pageModeRow
-                        fontSizeRow
-                        themeRow
+                        settingsBlock {
+                            pageModeRow
+                            sectionDivider
+                            fontSizeRow
+                            themeRow
+                        }
                         CollapsibleSettingBlock(title: "配色", tint: readerConfig.textColor) { colorSection }
                         backgroundImageSection
                         CollapsibleSettingBlock(title: "显示", tint: readerConfig.textColor, initiallyExpanded: true) { displaySection }
                     case .spacing:
-                        typographySection
+                        settingsBlock { typographySection }
                         CollapsibleSettingBlock(title: "正文排版", tint: readerConfig.textColor) { bodyLayoutSection }
                         underlineSection
                         CollapsibleSettingBlock(title: "页边距", tint: readerConfig.textColor) { marginSection }
                         CollapsibleSettingBlock(title: "章节标题", tint: readerConfig.textColor) { chapterTitleSection }
                         headerFooterSection
                     case .tts:
-                        ttsSection
+                        settingsBlock { ttsSection }
                     }
                 }
                 .transition(.opacity)
@@ -4478,23 +4516,25 @@ public struct ReaderView: View {
         .padding(.top, 14)
         .padding(.bottom, 22)
         .background(
-            RoundedRectangle(cornerRadius: 24, style: .continuous)
+            RoundedRectangle(cornerRadius: chromeRadius, style: .continuous)
                 // 面板调半透明时不要毛玻璃，否则还是看不清底下的正文
-                .fill(readerConfig.backgroundColor.opacity(readerConfig.panelLayerOpacity))
+                .fill(theme.choice == .lunarTerminal
+                      ? theme.palette.surface.opacity(effectivePanelLayerOpacity)
+                      : readerConfig.backgroundColor.opacity(effectivePanelLayerOpacity))
                 .overlay(
                     Group {
-                        if readerConfig.panelOpacity >= 0.99 {
-                            RoundedRectangle(cornerRadius: 24, style: .continuous)
+                        if effectivePanelOpacity >= 0.99, theme.choice == .standard {
+                            RoundedRectangle(cornerRadius: chromeRadius, style: .continuous)
                                 .fill(.ultraThinMaterial)
                         }
                     }
                 )
         )
         .overlay(
-            RoundedRectangle(cornerRadius: 24, style: .continuous)
-                .stroke(readerConfig.textColor.opacity(0.08), lineWidth: 0.5)
+            RoundedRectangle(cornerRadius: chromeRadius, style: .continuous)
+                .stroke(chromeInk.opacity(0.08), lineWidth: 0.5)
         )
-        .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
+        .clipShape(RoundedRectangle(cornerRadius: chromeRadius, style: .continuous))
         .shadow(color: .black.opacity(0.16), radius: 18, y: -6)
         .fileImporter(
             isPresented: $showBackgroundImagePicker,
@@ -4506,18 +4546,36 @@ public struct ReaderView: View {
             }
         }
         .background(
-            readerConfig.backgroundColor
-                .opacity(readerConfig.panelLayerOpacity)
+            chromeBackground
+                .opacity(effectivePanelLayerOpacity)
                 .shadow(color: Color.black.opacity(0.2), radius: 16, x: 0, y: -6)
                 .ignoresSafeArea(edges: .bottom)
         )
-        .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .clipShape(RoundedRectangle(cornerRadius: chromeRadius, style: .continuous))
         .overlay(
-            RoundedRectangle(cornerRadius: 18, style: .continuous)
-                .stroke(readerConfig.textColor.opacity(0.10), lineWidth: 0.5)
+            RoundedRectangle(cornerRadius: chromeRadius, style: .continuous)
+                .stroke(chromeInk.opacity(0.10), lineWidth: 0.5)
         )
         .padding(.horizontal, 10)
         .padding(.bottom, 6)
+        .onChange(of: readerConfig.fontSize) { _ in flashLayoutPreview() }
+        .onChange(of: readerConfig.lineSpacing) { _ in flashLayoutPreview() }
+        .onChange(of: readerConfig.letterSpacing) { _ in flashLayoutPreview() }
+        .onChange(of: readerConfig.paragraphSpacing) { _ in flashLayoutPreview() }
+        .onChange(of: readerConfig.paddingTop) { _ in flashLayoutPreview() }
+        .onChange(of: readerConfig.paddingBottom) { _ in flashLayoutPreview() }
+        .onChange(of: readerConfig.paddingLeft) { _ in flashLayoutPreview() }
+        .onChange(of: readerConfig.paddingRight) { _ in flashLayoutPreview() }
+        .onChange(of: readerConfig.firstLineIndent) { _ in flashLayoutPreview() }
+        .onChange(of: readerConfig.pageMode) { _ in flashLayoutPreview() }
+        .onChange(of: readerConfig.chapterTitleScale) { _ in flashLayoutPreview() }
+        .onChange(of: readerConfig.chapterTitleSpacing) { _ in flashLayoutPreview() }
+        .onChange(of: readerConfig.chapterTopSpacing) { _ in flashLayoutPreview() }
+        .onChange(of: readerConfig.chapterBottomSpacing) { _ in flashLayoutPreview() }
+        .onDisappear {
+            layoutPreviewToken += 1
+            layoutPreviewActive = false
+        }
     }
 
     /// iOS 上附带仿真翻页的手势计数，方便截屏排查；其他平台为空。
@@ -4531,20 +4589,29 @@ public struct ReaderView: View {
 
     private var settingsHeader: some View {
         HStack(spacing: 8) {
-            Image(systemName: "textformat.size")
-                .font(.system(size: 13, weight: .semibold))
-                .foregroundColor(settingsAccent)
-                .frame(width: 26, height: 26)
-                .background(Circle().fill(settingsAccent.opacity(0.14)))
+            Text("READER")
+                .font(theme.typography.label)
+                .foregroundColor(theme.palette.secondaryInk)
+                .padding(.horizontal, 8)
+                .padding(.vertical, 5)
+                .overlay(
+                    Rectangle()
+                        .stroke(theme.palette.divider, lineWidth: theme.metrics.borderWidth)
+                )
 
             VStack(alignment: .leading, spacing: 1) {
-                Text("阅读设置")
-                    .font(.system(size: 16, weight: .semibold))
-                    .foregroundColor(readerConfig.textColor)
+                HStack(spacing: 6) {
+                    Text("阅读设置")
+                        .font(theme.typography.title)
+                        .foregroundColor(chromeInk)
+                    Text("SETTINGS / \(settingsPanel.rawValue)")
+                        .font(theme.typography.mono)
+                        .foregroundColor(theme.palette.secondaryInk)
+                }
                 // 这行小字带状态：翻页出问题时截一张就能看出来卡在哪
                 Text("\(settingsPanel.rawValue) · \(readerConfig.pageMode.rawValue) · 章 \(currentChapterIndex + 1)/\(chapters.count) · 页 \(currentPageIndex + 1)/\(currentLoadedChapter?.pages.count ?? 0)\(pagerDebugSuffix)\(isSwitchingChapter ? " · 换章中" : "")")
-                    .font(.system(size: 10))
-                    .foregroundColor(readerConfig.textColor.opacity(0.45))
+                    .font(theme.typography.mono)
+                    .foregroundColor(theme.palette.secondaryInk)
             }
 
             Spacer()
@@ -4557,7 +4624,7 @@ public struct ReaderView: View {
             }) {
                 Image(systemName: panelCollapsed ? "chevron.up.circle.fill" : "chevron.down.circle.fill")
                     .font(.system(size: 18))
-                    .foregroundColor(readerConfig.textColor.opacity(0.45))
+                    .foregroundColor(theme.palette.secondaryInk)
             }
             .buttonStyle(.plain)
 
@@ -4568,7 +4635,7 @@ public struct ReaderView: View {
             }) {
                 Image(systemName: "xmark.circle.fill")
                     .font(.system(size: 20))
-                    .foregroundColor(readerConfig.textColor.opacity(0.6))
+                    .foregroundColor(theme.palette.secondaryInk)
             }
             .buttonStyle(.plain)
         }
@@ -4576,7 +4643,32 @@ public struct ReaderView: View {
 
     /// 设置面板的强调色：跟当前主题走
     private var settingsAccent: Color {
-        readerConfig.theme.accentColor
+        theme.choice == .lunarTerminal ? theme.palette.accent : readerConfig.theme.accentColor
+    }
+
+    private var effectivePanelOpacity: Double {
+        layoutPreviewActive ? min(readerConfig.panelOpacity, 0.24) : readerConfig.panelOpacity
+    }
+
+    private var effectivePanelLayerOpacity: Double {
+        let value = max(0.0, min(1.0, effectivePanelOpacity))
+        return 1 - (1 - value).squareRoot()
+    }
+
+    private func flashLayoutPreview() {
+        layoutPreviewToken += 1
+        let token = layoutPreviewToken
+        if !layoutPreviewActive {
+            withAnimation(.easeOut(duration: 0.16)) {
+                layoutPreviewActive = true
+            }
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
+            guard token == layoutPreviewToken else { return }
+            withAnimation(.easeInOut(duration: 0.22)) {
+                layoutPreviewActive = false
+            }
+        }
     }
 
     /// 三个面板做成胶囊切换，比系统分段控件更贴阅读界面的调子
@@ -4591,6 +4683,9 @@ public struct ReaderView: View {
                                 withAnimation(.easeInOut(duration: 0.18)) { settingsPanel = panel }
                 } label: {
                     HStack(spacing: 5) {
+                        Text(panelIndex(panel))
+                            .font(theme.typography.mono)
+                            .foregroundColor(theme.palette.secondaryInk)
                         Image(systemName: panel.symbolName)
                             .font(.system(size: 11, weight: .medium))
                         Text(panel.rawValue)
@@ -4599,17 +4694,25 @@ public struct ReaderView: View {
                     .padding(.vertical, 7)
                     .frame(maxWidth: .infinity)
                     .background(
-                        RoundedRectangle(cornerRadius: 10, style: .continuous)
-                            .fill(isOn ? settingsAccent.opacity(0.20) : readerConfig.textColor.opacity(0.05))
+                        RoundedRectangle(cornerRadius: theme.metrics.cornerRadius, style: .continuous)
+                            .fill(isOn ? settingsAccent.opacity(0.20) : theme.palette.elevated.opacity(effectivePanelLayerOpacity))
                     )
                     .overlay(
-                        RoundedRectangle(cornerRadius: 10, style: .continuous)
-                            .stroke(isOn ? settingsAccent.opacity(0.45) : .clear, lineWidth: 0.8)
+                        RoundedRectangle(cornerRadius: theme.metrics.cornerRadius, style: .continuous)
+                            .stroke(isOn ? settingsAccent.opacity(0.65) : theme.palette.divider, lineWidth: theme.metrics.borderWidth)
                     )
-                    .foregroundColor(isOn ? settingsAccent : readerConfig.textColor.opacity(0.6))
+                    .foregroundColor(isOn ? settingsAccent : theme.palette.secondaryInk)
                 }
                 .buttonStyle(.plain)
             }
+        }
+    }
+
+    private func panelIndex(_ panel: ReaderQuickPanel) -> String {
+        switch panel {
+        case .quick: return "01"
+        case .spacing: return "02"
+        case .tts: return "03"
         }
     }
 
@@ -4620,17 +4723,50 @@ public struct ReaderView: View {
                 .fill(settingsAccent.opacity(0.85))
                 .frame(width: 2.5, height: 11)
             Text(text)
-                .font(.system(size: 11, weight: .semibold))
+                .font(theme.typography.label)
                 .tracking(0.6)
-                .foregroundColor(readerConfig.textColor.opacity(0.5))
+                .foregroundColor(theme.palette.secondaryInk)
         }
     }
 
     private var sectionDivider: some View {
         Rectangle()
-            .fill(readerConfig.textColor.opacity(0.08))
+            .fill(theme.palette.divider.opacity(0.55))
             .frame(height: 0.5)
-            .padding(.top, 12)
+            .padding(.top, 8)
+    }
+
+    private var settingsStatusStrip: some View {
+        HStack(spacing: 10) {
+            Text("字号 \(Int(readerConfig.fontSize))")
+            Text("行距 \(Int(readerConfig.lineSpacing))")
+            Text(readerConfig.theme.rawValue)
+            Text(readerConfig.pageMode.rawValue)
+        }
+        .font(theme.typography.mono)
+        .foregroundColor(theme.palette.secondaryInk)
+        .lineLimit(1)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 7)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(theme.palette.elevated.opacity(effectivePanelLayerOpacity))
+        .overlay(
+            Rectangle()
+                .stroke(theme.palette.divider, lineWidth: theme.metrics.borderWidth)
+        )
+    }
+
+    private func settingsBlock<Content: View>(@ViewBuilder content: () -> Content) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            content()
+        }
+        .padding(10)
+        .background(theme.palette.elevated.opacity(effectivePanelLayerOpacity))
+        .overlay(
+            RoundedRectangle(cornerRadius: theme.metrics.cornerRadius, style: .continuous)
+                .stroke(theme.palette.divider, lineWidth: theme.metrics.borderWidth)
+        )
+        .clipShape(RoundedRectangle(cornerRadius: theme.metrics.cornerRadius, style: .continuous))
     }
 
     /// 页边距：上下左右四向分开调
@@ -4697,14 +4833,38 @@ public struct ReaderView: View {
     }
 
     private var pageModeRow: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: 10) {
             sectionTitle("阅读模式")
-            Picker("阅读模式", selection: $readerConfig.pageMode) {
+            LazyVGrid(
+                columns: Array(repeating: GridItem(.flexible(), spacing: 6), count: 3),
+                spacing: 6
+            ) {
                 ForEach(PageMode.allCases) { mode in
-                    Text(mode.rawValue).tag(mode)
+                    let isOn = readerConfig.pageMode == mode
+                    Button {
+                        withAnimation(.easeInOut(duration: 0.16)) {
+                            readerConfig.pageMode = mode
+                        }
+                    } label: {
+                        Text(mode.rawValue)
+                            .font(.system(size: 12, weight: isOn ? .semibold : .regular))
+                            .foregroundColor(isOn ? theme.palette.onAccent : theme.palette.ink)
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 11)
+                            .background(
+                                RoundedRectangle(cornerRadius: theme.metrics.cornerRadius, style: .continuous)
+                                    .fill(isOn ? settingsAccent : theme.palette.elevated)
+                            )
+                            .overlay(
+                                RoundedRectangle(cornerRadius: theme.metrics.cornerRadius, style: .continuous)
+                                    .stroke(isOn ? settingsAccent : theme.palette.divider,
+                                            lineWidth: theme.metrics.borderWidth)
+                            )
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityAddTraits(isOn ? .isSelected : [])
                 }
             }
-            .pickerStyle(.segmented)
         }
     }
 
@@ -5270,30 +5430,28 @@ public struct ReaderView: View {
     }
 
     private var fontSizeRow: some View {
-        HStack(spacing: 12) {
-            Text("字号")
-                .font(.system(size: 13, weight: .medium))
-                .foregroundColor(readerConfig.textColor.opacity(0.7))
-                .frame(width: 36, alignment: .leading)
+        VStack(alignment: .leading, spacing: 8) {
+            sectionTitle("字号")
+            HStack(spacing: 12) {
+                Text("A-")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundColor(readerConfig.textColor.opacity(0.8))
 
-            Text("A-")
-                .font(.system(size: 13, weight: .semibold))
-                .foregroundColor(readerConfig.textColor.opacity(0.8))
+                Slider(value: $readerConfig.fontSize, in: 12...32, step: 1)
+                    .accentColor(.accentColor)
+                    .onChange(of: readerConfig.fontSize) { _ in
+                        recomputePagination()
+                    }
 
-            Slider(value: $readerConfig.fontSize, in: 12...32, step: 1)
-                .accentColor(.accentColor)
-                .onChange(of: readerConfig.fontSize) { _ in
-                    recomputePagination()
-                }
+                Text("A+")
+                    .font(.system(size: 16, weight: .bold))
+                    .foregroundColor(readerConfig.textColor.opacity(0.8))
 
-            Text("A+")
-                .font(.system(size: 16, weight: .bold))
-                .foregroundColor(readerConfig.textColor.opacity(0.8))
-
-            Text("\(Int(readerConfig.fontSize)) pt")
-                .font(.system(size: 12, weight: .medium, design: .monospaced))
-                .foregroundColor(readerConfig.textColor.opacity(0.7))
-                .frame(width: 42, alignment: .trailing)
+                Text("\(Int(readerConfig.fontSize)) pt")
+                    .font(.system(size: 12, weight: .medium, design: .monospaced))
+                    .foregroundColor(readerConfig.textColor.opacity(0.7))
+                    .frame(width: 42, alignment: .trailing)
+            }
         }
     }
 

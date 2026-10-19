@@ -47,11 +47,17 @@ public struct WebDAVSyncView: View {
 
     public var body: some View {
         Form {
+            Section {
+                TerminalPageHeader(code: "DATA / SYNC", title: "WebDAV 云同步", detail: "备份 / 恢复 / 远端版本")
+                    .listRowInsets(EdgeInsets(top: 8, leading: 12, bottom: 8, trailing: 12))
+                    .listRowBackground(Color.clear)
+            }
             serverConfigSection
             statusSection
             actionsSection
             localBackupSection
         }
+        .appThemedList()
         .navigationTitle("WebDAV 云同步")
         .onAppear {
             loadConfig()
@@ -385,6 +391,7 @@ public struct WebDAVSyncView: View {
                     }
                 }
             }
+            .appThemedList()
             .navigationTitle("选择云端备份")
             #if os(iOS)
             .navigationBarTitleDisplayMode(.inline)
