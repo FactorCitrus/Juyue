@@ -672,9 +672,13 @@ public struct PageCurlPager: UIViewControllerRepresentable {
                 parent.onTapCenter()
                 return
             }
-            // 热评页的点击交给卡片按钮，别把翻页手势叠上去
+            // 热评页直接开段评；页面手势层会抢掉 SwiftUI 按钮的点击
             if index >= 0, index < parent.pages.count,
-               parent.pages[index].first?.commentCount == -2 {
+               let block = parent.pages[index].first,
+               block.commentCount == -2 {
+                if let url = block.commentURL {
+                    parent.onCommentTap?(url)
+                }
                 return
             }
             // 气泡贴着左右翻页区也要先命中评论；否则贴边会直接翻页

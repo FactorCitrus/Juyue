@@ -2441,6 +2441,16 @@ public struct ReaderView: View {
                         if moved < 8 {
                             // 刚长按选中过段落：松手这一次不能再当点击使唤，否则操作栏会被菜单盖掉
                             guard !tapSuppressor.isActive else { return }
+                            // 分页模式的热评页由整页手势接住，避免被翻页区抢走
+                            if let cur = currentLoadedChapter,
+                               currentPageIndex < cur.pages.count,
+                               let block = cur.pages[currentPageIndex].first,
+                               block.commentCount == -2 {
+                                if let url = block.commentURL {
+                                    directCommentTarget = ReviewTarget(url: url, title: "段评")
+                                }
+                                return
+                            }
                             #if os(iOS)
                             // SwiftUI 的 global 坐标不含顶部安全区；UIKit 窗口坐标含，
                             // 直接传会整体偏一条状态栏，气泡就点不中。
