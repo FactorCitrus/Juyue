@@ -672,14 +672,17 @@ public struct PageCurlPager: UIViewControllerRepresentable {
                 parent.onTapCenter()
                 return
             }
-            // 热评页直接开段评；页面手势层会抢掉 SwiftUI 按钮的点击
+            // 热评页：左右翻页区照常翻页，中间点卡片开段评
             if index >= 0, index < parent.pages.count,
                let block = parent.pages[index].first,
                block.commentCount == -2 {
-                if let url = block.commentURL {
-                    parent.onCommentTap?(url)
+                let zone = gesture.view?.tag
+                if zone != 0, zone != 2 {
+                    if let url = block.commentURL {
+                        parent.onCommentTap?(url)
+                    }
+                    return
                 }
-                return
             }
             // 气泡贴着左右翻页区也要先命中评论；否则贴边会直接翻页
             if let view = gesture.view {

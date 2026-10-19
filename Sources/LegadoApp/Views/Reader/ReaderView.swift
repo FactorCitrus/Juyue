@@ -513,7 +513,9 @@ struct GodReviewCardView: View {
                 }
                 if let imageURL, !imageURL.isEmpty {
                     ChapterImageView(urlString: imageURL, referer: referer)
-                        .frame(maxHeight: 240)
+                        .frame(maxWidth: .infinity)
+                        .frame(height: 180)
+                        .clipped()
                         .clipShape(RoundedRectangle(cornerRadius: 8))
                         .allowsHitTesting(false)
                 }
@@ -2441,16 +2443,6 @@ public struct ReaderView: View {
                         if moved < 8 {
                             // 刚长按选中过段落：松手这一次不能再当点击使唤，否则操作栏会被菜单盖掉
                             guard !tapSuppressor.isActive else { return }
-                            // 分页模式的热评页由整页手势接住，避免被翻页区抢走
-                            if let cur = currentLoadedChapter,
-                               currentPageIndex < cur.pages.count,
-                               let block = cur.pages[currentPageIndex].first,
-                               block.commentCount == -2 {
-                                if let url = block.commentURL {
-                                    directCommentTarget = ReviewTarget(url: url, title: "段评")
-                                }
-                                return
-                            }
                             #if os(iOS)
                             // SwiftUI 的 global 坐标不含顶部安全区；UIKit 窗口坐标含，
                             // 直接传会整体偏一条状态栏，气泡就点不中。
@@ -2468,6 +2460,17 @@ public struct ReaderView: View {
                                 return
                             }
                             let x = value.startLocation.x - geo.frame(in: .global).minX
+                            // 热评页：左右边缘仍是翻页区，中间点卡片才开段评
+                            if x >= width * 0.3, x <= width * 0.7,
+                               let cur = currentLoadedChapter,
+                               currentPageIndex < cur.pages.count,
+                               let block = cur.pages[currentPageIndex].first,
+                               block.commentCount == -2 {
+                                if let url = block.commentURL {
+                                    directCommentTarget = ReviewTarget(url: url, title: "段评")
+                                }
+                                return
+                            }
                             if x < width * 0.3 {
                                 turnPage(forward: false)
                             } else if x > width * 0.7 {
@@ -6002,6 +6005,7 @@ public struct ReaderView: View {
             let trimmed = marked.line.trimmingCharacters(in: .whitespacesAndNewlines)
             if trimmed.isEmpty {
                 attachReviewMarker(marked, from: blocks.count, blocks: &blocks)
+                currentId = (blocks.last?.id ?? currentId) + 1
                 continue
             }
             let firstBlockIndex = blocks.count
@@ -6038,6 +6042,7 @@ public struct ReaderView: View {
                         }
                     }
                     attachReviewMarker(marked, from: firstBlockIndex, blocks: &blocks)
+                    currentId = (blocks.last?.id ?? currentId) + 1
                     continue
                 }
             }
@@ -6050,6 +6055,7 @@ public struct ReaderView: View {
                 currentId += 1
             }
             attachReviewMarker(marked, from: firstBlockIndex, blocks: &blocks)
+            currentId = (blocks.last?.id ?? currentId) + 1
         }
         return blocks
     }
