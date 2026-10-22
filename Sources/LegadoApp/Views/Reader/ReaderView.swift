@@ -4645,62 +4645,7 @@ public struct ReaderView: View {
                 settingsPanelSwitcher
                 settingsStatusStrip
                 brightnessRow
-            ScrollView {
-                VStack(alignment: .leading, spacing: 14) {
-                    switch settingsPanel {
-                    case .quick:
-                        CollapsibleSettingBlock(
-                            title: "阅读模式",
-                            tint: readerConfig.textColor,
-                            initiallyExpanded: true,
-                            summary: readerConfig.pageMode.rawValue
-                        ) { pageModeRow }
-                        CollapsibleSettingBlock(
-                            title: "字号与主题",
-                            tint: readerConfig.textColor,
-                            initiallyExpanded: true,
-                            summary: "\(Int(readerConfig.fontSize)) pt · \(readerConfig.theme.rawValue)"
-                        ) {
-                            fontSizeRow
-                            themeRow
-                        }
-                        CollapsibleSettingBlock(
-                            title: "背景图",
-                            tint: readerConfig.textColor,
-                            summary: readerConfig.backgroundImageEnabled ? "已开启" : "关闭"
-                        ) { backgroundImageSection }
-                        CollapsibleSettingBlock(
-                            title: "配色",
-                            tint: readerConfig.textColor,
-                            summary: readerConfig.useCustomColors ? "自定义" : "跟随主题"
-                        ) { colorSection }
-                        CollapsibleSettingBlock(
-                            title: "显示",
-                            tint: readerConfig.textColor,
-                            summary: "亮度 \(Int(readerConfig.brightness * 100))% · 面板 \(Int((readerConfig.panelOpacity * 100).rounded()))%"
-                        ) { displaySection }
-                    case .spacing:
-                        CollapsibleSettingBlock(
-                            title: "字体与正文",
-                            tint: readerConfig.textColor,
-                            initiallyExpanded: true,
-                            summary: readerConfig.font.displayName
-                        ) { typographySection }
-                        CollapsibleSettingBlock(title: "正文排版", tint: readerConfig.textColor) { bodyLayoutSection }
-                        underlineSection
-                        CollapsibleSettingBlock(title: "页边距", tint: readerConfig.textColor) { marginSection }
-                        CollapsibleSettingBlock(title: "章节标题", tint: readerConfig.textColor) { chapterTitleSection }
-                        headerFooterSection
-                    case .tts:
-                        settingsBlock { ttsSection }
-                    }
-                }
-                .transition(.opacity)
-                .animation(.easeInOut(duration: 0.18), value: settingsPanel)
-                .tint(settingsAccent)
-                .padding(.bottom, 4)
-            }
-            .frame(maxHeight: 420)
+            settingsPanelBody
             }
         }
         .padding(.horizontal, 18)
@@ -4776,6 +4721,66 @@ public struct ReaderView: View {
         #else
         return ""
         #endif
+    }
+
+    /// 设置面板正文单独拆出来，避免阅读页整体表达式过大触发编译器超时。
+    private var settingsPanelBody: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 14) {
+                switch settingsPanel {
+                case .quick:
+                    CollapsibleSettingBlock(
+                        title: "阅读模式",
+                        tint: readerConfig.textColor,
+                        initiallyExpanded: true,
+                        summary: readerConfig.pageMode.rawValue
+                    ) { pageModeRow }
+                    CollapsibleSettingBlock(
+                        title: "字号与主题",
+                        tint: readerConfig.textColor,
+                        initiallyExpanded: true,
+                        summary: "\(Int(readerConfig.fontSize)) pt · \(readerConfig.theme.rawValue)"
+                    ) {
+                        fontSizeRow
+                        themeRow
+                    }
+                    CollapsibleSettingBlock(
+                        title: "背景图",
+                        tint: readerConfig.textColor,
+                        summary: readerConfig.backgroundImageEnabled ? "已开启" : "关闭"
+                    ) { backgroundImageSection }
+                    CollapsibleSettingBlock(
+                        title: "配色",
+                        tint: readerConfig.textColor,
+                        summary: readerConfig.useCustomColors ? "自定义" : "跟随主题"
+                    ) { colorSection }
+                    CollapsibleSettingBlock(
+                        title: "显示",
+                        tint: readerConfig.textColor,
+                        summary: "亮度 \(Int(readerConfig.brightness * 100))% · 面板 \(Int((readerConfig.panelOpacity * 100).rounded()))%"
+                    ) { displaySection }
+                case .spacing:
+                    CollapsibleSettingBlock(
+                        title: "字体与正文",
+                        tint: readerConfig.textColor,
+                        initiallyExpanded: true,
+                        summary: readerConfig.font.displayName
+                    ) { typographySection }
+                    CollapsibleSettingBlock(title: "正文排版", tint: readerConfig.textColor) { bodyLayoutSection }
+                    underlineSection
+                    CollapsibleSettingBlock(title: "页边距", tint: readerConfig.textColor) { marginSection }
+                    CollapsibleSettingBlock(title: "章节标题", tint: readerConfig.textColor) { chapterTitleSection }
+                    headerFooterSection
+                case .tts:
+                    settingsBlock { ttsSection }
+                }
+            }
+            .transition(.opacity)
+            .animation(.easeInOut(duration: 0.18), value: settingsPanel)
+            .tint(settingsAccent)
+            .padding(.bottom, 4)
+        }
+        .frame(maxHeight: 420)
     }
 
     private var settingsHeader: some View {

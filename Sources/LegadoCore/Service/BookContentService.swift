@@ -1060,6 +1060,21 @@ public struct SubscribeArticle: Identifiable, Equatable {
     public var date: String?
     public var summary: String?
     public var imageUrl: String?
+
+    /// 跨模块构造需要显式的 public init；成员逐一初始化，顺序与声明一致。
+    public init(
+        title: String,
+        link: String,
+        date: String? = nil,
+        summary: String? = nil,
+        imageUrl: String? = nil
+    ) {
+        self.title = title
+        self.link = link
+        self.date = date
+        self.summary = summary
+        self.imageUrl = imageUrl
+    }
 }
 
 public enum SubscribeSourceService {

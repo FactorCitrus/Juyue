@@ -523,7 +523,7 @@ public struct CategoryExploreView: View {
             List {
                 ForEach(Array(books.enumerated()), id: \.element.id) { index, book in
                     categoryRow(book, index: index)
-                        .listRowSeparator(.hidden)
+                        .hideListRowSeparatorCompat()
                         .listRowBackground(theme.palette.surface)
                         .contentShape(Rectangle())
                         .onTapGesture {
@@ -917,5 +917,18 @@ public struct CategoryExploreView: View {
         }
 
         return groups
+    }
+}
+
+private extension View {
+    /// `listRowSeparator` 在 macOS 上是 13.0 才有的 API，工程最低支持 macOS 12，
+    /// 这里包一层可用性判断，两端都能编过。
+    @ViewBuilder
+    func hideListRowSeparatorCompat() -> some View {
+        if #available(iOS 15.0, macOS 13.0, *) {
+            self.listRowSeparator(.hidden)
+        } else {
+            self
+        }
     }
 }

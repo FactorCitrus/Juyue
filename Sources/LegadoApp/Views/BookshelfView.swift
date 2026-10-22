@@ -7,6 +7,14 @@ import UniformTypeIdentifiers
 import UIKit
 #endif
 
+/// 拖动预览用的快照图。macOS 构建没有 UIImage，这里给个占位类型，
+/// 让 `dragSnapshot` 这类状态在两端都能编译；macOS 上 makeDragSnapshot 始终返回 nil。
+#if canImport(UIKit)
+typealias ShelfDragImage = UIImage
+#else
+struct ShelfDragImage {}
+#endif
+
 /// 书架角标的外观配置。
 /// 原来那个红色 99+ 是写死的，颜色、位置、封顶都改不了。
 public enum BookshelfBadgeStyle: String, CaseIterable, Identifiable {
@@ -189,7 +197,7 @@ public struct BookshelfView: View {
     @State private var draggingBook: Book? = nil
     @State private var dragLocation: CGPoint = .zero
     @State private var dragCover: Image? = nil
-    @State private var dragSnapshot: UIImage? = nil
+    @State private var dragSnapshot: ShelfDragImage? = nil
     @State private var hoveredBookUrl: String? = nil
     @State private var lastLiveTarget: String? = nil
     @State private var cardFrames: [String: CGRect] = [:]
@@ -619,8 +627,8 @@ public struct BookshelfView: View {
     private func draggedCardOverlay(_ book: Book) -> some View {
         let index = displayedBooks.firstIndex(where: { $0.bookUrl == book.bookUrl }) ?? 0
         Group {
-            if let dragSnapshot {
-                Image(uiImage: dragSnapshot)
+            if let dragSnapshotImage {
+                dragSnapshotImage
                     .resizable()
                     .frame(width: shelfConfig.layout == .grid ? gridCardWidth : shelfContentWidth)
             } else if shelfConfig.layout == .grid {
@@ -1092,7 +1100,16 @@ public struct BookshelfView: View {
             }
     }
 
-    private func makeDragSnapshot(_ book: Book, cover: Image?) -> UIImage? {
+    private var dragSnapshotImage: Image? {
+        #if canImport(UIKit)
+        guard let dragSnapshot else { return nil }
+        return Image(uiImage: dragSnapshot)
+        #else
+        return nil
+        #endif
+    }
+
+    private func makeDragSnapshot(_ book: Book, cover: Image?) -> ShelfDragImage? {
         #if os(iOS)
         guard #available(iOS 16.0, *) else { return nil }
         let index = displayedBooks.firstIndex(where: { $0.bookUrl == book.bookUrl }) ?? 0
