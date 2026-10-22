@@ -763,7 +763,14 @@ public class JSEngine {
         var cache = {
           put: function(key, value){ java.put(String(key), String(value)); },
           get: function(key){ var v = java.get(String(key)); return (v === undefined || v === null) ? '' : v; },
-          remove: function(key){ java.removeCache(String(key)); }
+          remove: function(key){ java.removeCache(String(key)); },
+          putMemory: function(key, value){ java.put('__mem__' + String(key), String(value)); },
+          getFromMemory: function(key){
+            var v = java.get('__mem__' + String(key));
+            if (v === undefined || v === null || v === '') return 0;
+            var n = Number(v);
+            return isNaN(n) ? 0 : n;
+          }
         };
         """)
         context.exception = nil

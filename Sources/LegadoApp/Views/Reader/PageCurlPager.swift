@@ -672,6 +672,18 @@ public struct PageCurlPager: UIViewControllerRepresentable {
                 parent.onTapCenter()
                 return
             }
+            // 热评页：左右翻页区照常翻页，中间点卡片开段评
+            if index >= 0, index < parent.pages.count,
+               let block = parent.pages[index].first,
+               block.commentCount == -2 {
+                let zone = gesture.view?.tag
+                if zone != 0, zone != 2 {
+                    if let url = block.commentURL {
+                        parent.onCommentTap?(url)
+                    }
+                    return
+                }
+            }
             // 气泡贴着左右翻页区也要先命中评论；否则贴边会直接翻页
             if let view = gesture.view {
                 let point = view.convert(gesture.location(in: view), to: nil)
@@ -1007,7 +1019,18 @@ struct PageCurlContent: View {
                     }
                 }
 
-                if blocks.first?.isImage == true, let urlStr = blocks.first?.imageUrl {
+                if let block = blocks.first, block.commentCount == -2 {
+                    GodReviewCardView(
+                        text: block.text,
+                        imageURL: block.imageUrl,
+                        referer: nil
+                    ) {
+                        if let url = block.commentURL {
+                            onCommentTap?(url)
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                } else if blocks.first?.isImage == true, let urlStr = blocks.first?.imageUrl {
                     ChapterImageView(urlString: urlStr, referer: nil)
                 } else {
                     let lines = blocks.map { $0.text }
