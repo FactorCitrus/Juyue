@@ -1210,6 +1210,19 @@ public class ReaderConfig: ObservableObject {
         if d.object(forKey: "reader_title_designer_height") != nil {
             chapterTitleCanvasHeight = d.double(forKey: "reader_title_designer_height")
         }
+
+        AppLog.write("[阅读配置] 载入 字号=\(fontSize) 行距=\(lineSpacing) 亮度=\(brightness) 面板=\(panelOpacity) 标题=\(chapterTitleScale) 距顶=\(headerOffset) 距底=\(footerOffset) 主题=\(theme.rawValue) 模式=\(pageMode.rawValue)")
+        // 所有滑块值统一夹回界面实际范围。旧版本存过越界值时，
+        // SwiftUI Slider 一渲染就会 trap，点「界面」即闪退。
+        headerOffset = min(max(0, headerOffset), 160)
+        footerOffset = min(max(0, footerOffset), 120)
+        brightness = min(max(0.2, brightness), 1.0)
+        panelOpacity = min(max(0.25, panelOpacity), 1.0)
+        chapterTitleScale = min(max(1.0, chapterTitleScale), 1.8)
+        chapterTitleSpacing = min(max(0, chapterTitleSpacing), 48)
+        chapterTopSpacing = min(max(0, chapterTopSpacing), 48)
+        chapterBottomSpacing = min(max(0, chapterBottomSpacing), 72)
+        shortTitleLength = min(max(2, shortTitleLength), 12)
     }
 
     private func persist(_ value: CGFloat, _ key: String) {

@@ -5,6 +5,10 @@ import LegadoCore
 import UniformTypeIdentifiers
 #if canImport(UIKit)
 import UIKit
+typealias ShelfLogoImage = UIImage
+#elseif canImport(AppKit)
+import AppKit
+typealias ShelfLogoImage = NSImage
 #endif
 
 /// 拖动预览用的快照图。macOS 构建没有 UIImage，这里给个占位类型，
@@ -145,6 +149,34 @@ public class BookshelfConfig: ObservableObject {
         didSet { Self.defaults.set(Double(cardScale), forKey: "shelf_card_scale") }
     }
 
+    /// 书架标题：文字、字号、水平/垂直位置都能单独调
+    @Published public var titleText: String = "我的书架" {
+        didSet { Self.defaults.set(titleText, forKey: "shelf_title_text") }
+    }
+    /// 自定义图标本身带字时可以关掉标题文字，避免出现两行「我的书架」
+    @Published public var titleVisible: Bool = true {
+        didSet { Self.defaults.set(titleVisible, forKey: "shelf_title_visible") }
+    }
+    @Published public var titleFontSize: CGFloat = 30 {
+        didSet { Self.defaults.set(Double(titleFontSize), forKey: "shelf_title_font_size") }
+    }
+    @Published public var titleOffsetX: CGFloat = 0 {
+        didSet { Self.defaults.set(Double(titleOffsetX), forKey: "shelf_title_offset_x") }
+    }
+    @Published public var titleOffsetY: CGFloat = 0 {
+        didSet { Self.defaults.set(Double(titleOffsetY), forKey: "shelf_title_offset_y") }
+    }
+    /// 书架图标（ShelfMark）可以换成相册里的图，大小与位置单独调
+    @Published public var logoHeight: CGFloat = 72 {
+        didSet { Self.defaults.set(Double(logoHeight), forKey: "shelf_logo_height") }
+    }
+    @Published public var logoOffsetX: CGFloat = 0 {
+        didSet { Self.defaults.set(Double(logoOffsetX), forKey: "shelf_logo_offset_x") }
+    }
+    @Published public var logoOffsetY: CGFloat = 0 {
+        didSet { Self.defaults.set(Double(logoOffsetY), forKey: "shelf_logo_offset_y") }
+    }
+
     public var badgeColor: Color { Color(hex: badgeColorHex) ?? .red }
 
     public init() {
@@ -173,12 +205,88 @@ public class BookshelfConfig: ObservableObject {
         if d.object(forKey: "shelf_card_scale") != nil {
             cardScale = min(1.40, max(0.40, CGFloat(d.double(forKey: "shelf_card_scale"))))
         }
+        if let text = d.string(forKey: "shelf_title_text") { titleText = text }
+        if d.object(forKey: "shelf_title_visible") != nil { titleVisible = d.bool(forKey: "shelf_title_visible") }
+        if d.object(forKey: "shelf_title_font_size") != nil {
+            titleFontSize = min(75, max(14, CGFloat(d.double(forKey: "shelf_title_font_size"))))
+        }
+        if d.object(forKey: "shelf_title_offset_x") != nil {
+            titleOffsetX = min(120, max(-120, CGFloat(d.double(forKey: "shelf_title_offset_x"))))
+        }
+        if d.object(forKey: "shelf_title_offset_y") != nil {
+            titleOffsetY = min(60, max(-40, CGFloat(d.double(forKey: "shelf_title_offset_y"))))
+        }
+        if d.object(forKey: "shelf_logo_height") != nil {
+            logoHeight = min(160, max(32, CGFloat(d.double(forKey: "shelf_logo_height"))))
+        }
+        if d.object(forKey: "shelf_logo_offset_x") != nil {
+            logoOffsetX = min(80, max(-80, CGFloat(d.double(forKey: "shelf_logo_offset_x"))))
+        }
+        if d.object(forKey: "shelf_logo_offset_y") != nil {
+            logoOffsetY = min(40, max(-40, CGFloat(d.double(forKey: "shelf_logo_offset_y"))))
+        }
+        AppLog.write("[书架] 载入 标题字号=\(titleFontSize) 位置=\(titleOffsetX),\(titleOffsetY) 文字长度=\(titleText.count) 列=\(gridColumns) 卡片=\(cardScale)")
+        AppLog.write("[书架] 图标 大小=\(logoHeight) 位置=\(logoOffsetX),\(logoOffsetY) 自定义=\(ShelfLogoStorage.hasImage)")
+    }
+}
+
+/// 自定义书架图标：固定写在 Documents/ShelfLogo/custom-logo.png。
+enum ShelfLogoStorage {
+    static var folderURL: URL {
+        FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("ShelfLogo", isDirectory: true)
+    }
+    static var fileURL: URL { folderURL.appendingPathComponent("custom-logo.png") }
+    static var hasImage: Bool { FileManager.default.fileExists(atPath: fileURL.path) }
+}
+
+/// 图标在书架与设置预览之间共享，换图后两边同时刷新
+final class ShelfLogoStore: ObservableObject {
+    static let shared = ShelfLogoStore()
+
+    @Published private(set) var image: ShelfLogoImage?
+
+    private init() { reload() }
+
+    func reload() {
+        #if canImport(UIKit)
+        image = UIImage(contentsOfFile: ShelfLogoStorage.fileURL.path)
+        #else
+        image = nil
+        #endif
+    }
+
+    @discardableResult
+    func save(_ data: Data) -> Bool {
+        #if canImport(UIKit)
+        guard let source = UIImage(data: data) else { return false }
+        // 相册原图可能几千万像素，先缩到 1024，避免书架每次进都解大图
+        let maxSide: CGFloat = 1024
+        let longest = max(source.size.width, source.size.height)
+        let scale = longest > maxSide ? maxSide / longest : 1
+        let size = CGSize(width: max(1, source.size.width * scale), height: max(1, source.size.height * scale))
+        let renderer = UIGraphicsImageRenderer(size: size)
+        let resized = renderer.image { _ in source.draw(in: CGRect(origin: .zero, size: size)) }
+        guard let png = resized.pngData() else { return false }
+        try? FileManager.default.createDirectory(at: ShelfLogoStorage.folderURL, withIntermediateDirectories: true)
+        guard (try? png.write(to: ShelfLogoStorage.fileURL)) != nil else { return false }
+        reload()
+        return true
+        #else
+        return false
+        #endif
+    }
+
+    func clear() {
+        try? FileManager.default.removeItem(at: ShelfLogoStorage.fileURL)
+        reload()
     }
 }
 
 public struct BookshelfView: View {
     @ObservedObject var bookStore = BookStore.shared
     @ObservedObject private var shelfConfig = BookshelfConfig.shared
+    @StateObject private var shelfLogo = ShelfLogoStore.shared
     @Environment(\.appTheme) private var theme
     @Environment(\.colorScheme) private var colorScheme
     @State private var selectedBook: Book? = nil
@@ -318,7 +426,17 @@ public struct BookshelfView: View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(alignment: .bottom, spacing: 12) {
                 Group {
-                    if colorScheme == .dark {
+                    if let custom = shelfLogo.image {
+                        #if canImport(UIKit)
+                        Image(uiImage: custom)
+                            .resizable()
+                            .scaledToFit()
+                        #else
+                        Image(nsImage: custom)
+                            .resizable()
+                            .scaledToFit()
+                        #endif
+                    } else if colorScheme == .dark {
                         Image("ShelfMark")
                             .renderingMode(.original)
                             .resizable()
@@ -331,17 +449,26 @@ public struct BookshelfView: View {
                             .scaledToFit()
                     }
                 }
-                .frame(height: 72)
+                .frame(height: shelfConfig.logoHeight)
+                .offset(x: shelfConfig.logoOffsetX, y: shelfConfig.logoOffsetY)
                 .accessibilityHidden(true)
 
-                Text("我的书架")
-                    .font(.system(size: 30, weight: .bold))
-                    .foregroundColor(theme.palette.ink)
-                    .padding(.bottom, 4)
+                if shelfConfig.titleVisible {
+                    Text(shelfDisplayTitle)
+                        .font(.system(size: shelfConfig.titleFontSize, weight: .bold))
+                        .foregroundColor(theme.palette.ink)
+                        .lineLimit(1)
+                        // 字号要真实生效：别在 29pt 以后又自动缩回去
+                        .fixedSize(horizontal: true, vertical: false)
+                        .offset(x: shelfConfig.titleOffsetX, y: shelfConfig.titleOffsetY)
+                        .padding(.bottom, 4)
+                }
 
-                Spacer(minLength: 8)
-
+                Spacer(minLength: 0)
+            }
+            .overlay(alignment: .bottomTrailing) {
                 shelfHeaderActions
+                    .padding(.bottom, 4)
             }
 
             // 标题下的装饰线：短红条 + 细线 + 末端小方块，呼应档案终端的分隔记号
@@ -361,7 +488,12 @@ public struct BookshelfView: View {
         .padding(.horizontal, 16)
         .padding(.top, 8)
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("我的书架")
+        .accessibilityLabel(shelfDisplayTitle)
+    }
+
+    private var shelfDisplayTitle: String {
+        let text = shelfConfig.titleText.trimmingCharacters(in: .whitespacesAndNewlines)
+        return text.isEmpty ? "我的书架" : text
     }
 
     private var readingBookCount: Int {
@@ -469,6 +601,7 @@ public struct BookshelfView: View {
                 isOrganizing.toggle()
                 if !isOrganizing { selectedBookIDs.removeAll() }
             }
+            AppLog.write("[书架] \(isOrganizing ? "进入" : "退出")整理模式 已选=\(selectedBookIDs.count)")
         } label: {
             Label(isOrganizing ? "完成整理" : "整理书架",
                   systemImage: isOrganizing ? "checkmark.circle" : "checklist")
@@ -630,6 +763,7 @@ public struct BookshelfView: View {
             if let dragSnapshotImage {
                 dragSnapshotImage
                     .resizable()
+                    .scaledToFit()
                     .frame(width: shelfConfig.layout == .grid ? gridCardWidth : shelfContentWidth)
             } else if shelfConfig.layout == .grid {
                 gridCardContent(book, index: index, isSelected: false, coverOverride: dragCover)
@@ -692,7 +826,7 @@ public struct BookshelfView: View {
 
     private func bookshelfCard(_ book: Book, index: Int) -> some View {
         let isSelected = selectedBookIDs.contains(book.bookUrl)
-        return Button {
+        let card = Button {
             if isOrganizing {
                 if isSelected {
                     selectedBookIDs.remove(book.bookUrl)
@@ -722,8 +856,15 @@ public struct BookshelfView: View {
                 .stroke(theme.palette.accent, lineWidth: 1.5)
                 .opacity(hoveredBookUrl == book.bookUrl ? 1 : 0)
         )
-        .contextMenu {
-            bookContextMenu(book)
+        // 整理模式下长按要直接拖书，别再弹详情菜单
+        return Group {
+            if isOrganizing {
+                card
+            } else {
+                card.contextMenu {
+                    bookContextMenu(book)
+                }
+            }
         }
     }
 
@@ -872,6 +1013,7 @@ public struct BookshelfView: View {
                 selectedBookIDs.removeAll()
                 isOrganizing = true
             }
+            AppLog.write("[书架] 进入整理模式（书籍菜单）")
         } label: {
             Label("整理书架", systemImage: "checklist")
         }
@@ -884,7 +1026,7 @@ public struct BookshelfView: View {
         let coverWidth = (60 * scale).rounded()
         let coverHeight = (84 * scale).rounded()
 
-        return Button {
+        let card = Button {
             if isOrganizing {
                 if isSelected {
                     selectedBookIDs.remove(book.bookUrl)
@@ -913,8 +1055,15 @@ public struct BookshelfView: View {
                 .stroke(theme.palette.accent, lineWidth: 1.5)
                 .opacity(hoveredBookUrl == book.bookUrl ? 1 : 0)
         )
-        .contextMenu {
-            bookContextMenu(book)
+        // 整理模式下长按要直接拖书，别再弹详情菜单
+        return Group {
+            if isOrganizing {
+                card
+            } else {
+                card.contextMenu {
+                    bookContextMenu(book)
+                }
+            }
         }
     }
 
@@ -1089,6 +1238,9 @@ public struct BookshelfView: View {
                 if let source = draggingBook?.bookUrl,
                    let target = hoveredBookUrl,
                    source != target {
+                    let from = displayedBooks.firstIndex(where: { $0.bookUrl == source }) ?? -1
+                    let to = displayedBooks.firstIndex(where: { $0.bookUrl == target }) ?? -1
+                    AppLog.write("[书架] 拖动排序 \(from)->\(to)")
                     moveBook(source, onto: target)
                 }
                 draggingBook = nil
@@ -1117,7 +1269,7 @@ public struct BookshelfView: View {
         if shelfConfig.layout == .grid {
             card = AnyView(
                 gridCardContent(book, index: index, isSelected: false, coverOverride: cover)
-                    .frame(width: gridCardWidth)
+                    .frame(width: gridCardWidth, height: gridCoverHeight + 126)
                     .environment(\.appTheme, theme)
             )
         } else {
@@ -1282,12 +1434,12 @@ public struct BookshelfView: View {
                 Button("取消", role: .cancel) {}
             }
             .sheet(isPresented: $showShelfSizeSheet) {
-                if #available(iOS 16.4, *) {
+                if #available(iOS 16.4, macOS 13.3, *) {
                     shelfSizeSheet
                         .presentationDetents([.height(190)])
                         .presentationDragIndicator(.visible)
                         .presentationBackground(.clear)
-                } else if #available(iOS 16.0, *) {
+                } else if #available(iOS 16.0, macOS 13.0, *) {
                     shelfSizeSheet
                         .presentationDetents([.height(190)])
                         .presentationDragIndicator(.visible)

@@ -10,6 +10,9 @@ import AppKit
 #if canImport(WebKit)
 import WebKit
 #endif
+#if canImport(PhotosUI)
+import PhotosUI
+#endif
 #if canImport(LegadoCore)
 import LegadoCore
 #endif
@@ -142,6 +145,7 @@ public struct SettingsView: View {
     @ObservedObject var bookStore = BookStore.shared
     @ObservedObject var readerConfig = ReaderConfig.shared
     @ObservedObject var shelfConfig = BookshelfConfig.shared
+    @StateObject private var shelfLogo = ShelfLogoStore.shared
     @StateObject private var appIcon = AppIconManager.shared
     @ObservedObject private var themeManager = AppThemeManager.shared
     @Environment(\.appTheme) private var theme
@@ -156,6 +160,10 @@ public struct SettingsView: View {
     @State private var webDAVStatusText: String = "未配置"
     @State private var clearCacheMessage: String? = nil
     @State private var showAppIconOptions: Bool = false
+    @State private var showLogoImporter = false
+    @State private var logoPhotoItem: Any?
+    @State private var iconGroupExpanded = false
+    @State private var titleGroupExpanded = true
     @State private var presentedBoard: SettingsBoard? = nil
     @State private var boardContentVisible = false
 
@@ -365,6 +373,7 @@ public struct SettingsView: View {
 
     private func boardTile(_ board: SettingsBoard, height: CGFloat = 146) -> some View {
         return Button {
+            AppLog.write("[设置] 打开板块 \(board.title)")
             boardContentVisible = false
             withAnimation(.easeInOut(duration: 0.26)) {
                 presentedBoard = board
@@ -474,6 +483,9 @@ public struct SettingsView: View {
                     }
                     .padding(16)
                     .padding(.bottom, 40)
+                    .onAppear {
+                        AppLog.write("[设置] 板块内容已渲染 \(board.title)")
+                    }
                 }
             }
             .opacity(boardContentVisible ? 1 : 0)
@@ -530,8 +542,8 @@ public struct SettingsView: View {
         _ title: String,
         tag: String,
         @ViewBuilder content: () -> Content
-    ) -> some View {
-        VStack(alignment: .leading, spacing: 10) {
+    ) -> AnyView {
+        AnyView(VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 8) {
                 Rectangle()
                     .fill(theme.palette.accent)
@@ -559,7 +571,7 @@ public struct SettingsView: View {
                 RoundedRectangle(cornerRadius: theme.metrics.cornerRadius, style: .continuous)
                     .stroke(theme.palette.divider, lineWidth: theme.metrics.borderWidth)
             )
-        }
+        })
     }
 
     private var cardDivider: some View {
@@ -649,8 +661,8 @@ public struct SettingsView: View {
         _ binding: Binding<CGFloat>,
         in range: ClosedRange<CGFloat>,
         step: CGFloat
-    ) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
+    ) -> AnyView {
+        AnyView(VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 12) {
                 if let icon {
                     rowIcon(icon)
@@ -667,15 +679,15 @@ public struct SettingsView: View {
         }
         .padding(.horizontal, 14)
         .padding(.top, 11)
-        .padding(.bottom, 13)
+        .padding(.bottom, 13))
     }
 
     private func settingBlock<Content: View>(
         _ title: String? = nil,
         icon: String? = nil,
         @ViewBuilder content: () -> Content
-    ) -> some View {
-        VStack(alignment: .leading, spacing: 9) {
+    ) -> AnyView {
+        AnyView(VStack(alignment: .leading, spacing: 9) {
             if let title {
                 HStack(spacing: 12) {
                     if let icon {
@@ -689,7 +701,7 @@ public struct SettingsView: View {
             content()
         }
         .padding(.horizontal, 14)
-        .padding(.vertical, 12)
+        .padding(.vertical, 12))
     }
 
     private func settingStepper(
@@ -954,6 +966,179 @@ public struct SettingsView: View {
             )
         }
 
+        sectionCard("书架标题与图标", tag: "TITLE") {
+            shelfTitlePreview
+                .fileImporter(
+                    isPresented: $showLogoImporter,
+                    allowedContentTypes: [.image],
+                    allowsMultipleSelection: false
+                ) { result in
+                    if case .success(let urls) = result, let url = urls.first {
+                        let scoped = url.startAccessingSecurityScopedResource()
+                        defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+                        if let data = try? Data(contentsOf: url), shelfLogo.save(data) {
+                            AppLog.write("[设置] 书架图标已更换（文件）")
+                        }
+                    }
+                }
+            cardDivider
+            Button {
+                withAnimation(.easeInOut(duration: 0.18)) { iconGroupExpanded.toggle() }
+            } label: {
+                shelfGroupLabel("图标", icon: "photo", summary: "\(Int(shelfConfig.logoHeight)) pt", expanded: iconGroupExpanded)
+            }
+            .buttonStyle(.plain)
+
+            if iconGroupExpanded {
+                settingBlock("书架图标", icon: "photo") {
+                    HStack(spacing: 14) {
+                        #if os(iOS)
+                        if #available(iOS 16.0, *) {
+                            PhotosPicker(selection: Binding(
+                                get: { logoPhotoItem as? PhotosPickerItem },
+                                set: { newValue in
+                                    logoPhotoItem = newValue
+                                    guard let item = newValue else { return }
+                                    Task {
+                                        if let data = try? await item.loadTransferable(type: Data.self),
+                                           shelfLogo.save(data) {
+                                            await MainActor.run {
+                                                AppLog.write("[设置] 书架图标已更换（相册）")
+                                                logoPhotoItem = nil
+                                            }
+                                        }
+                                    }
+                                }
+                            ), matching: .images) {
+                                Text(ShelfLogoStorage.hasImage ? "更换图片" : "从相册选择")
+                                    .font(.system(size: 13, weight: .medium))
+                                    .foregroundColor(theme.palette.accent)
+                            }
+                        } else {
+                            Button(ShelfLogoStorage.hasImage ? "更换图片" : "选择图片…") {
+                                showLogoImporter = true
+                            }
+                            .font(.system(size: 13, weight: .medium))
+                            .foregroundColor(theme.palette.accent)
+                        }
+                        #else
+                        Button(ShelfLogoStorage.hasImage ? "更换图片" : "选择图片…") {
+                            showLogoImporter = true
+                        }
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundColor(theme.palette.accent)
+                        #endif
+
+                        if ShelfLogoStorage.hasImage {
+                            Button("清除", role: .destructive) {
+                                shelfLogo.clear()
+                                AppLog.write("[设置] 清除自定义书架图标")
+                            }
+                            .font(.system(size: 13))
+                        }
+                        Spacer(minLength: 0)
+                    }
+                }
+                cardDivider
+                settingSlider(
+                    "图标大小",
+                    icon: "arrow.up.left.and.arrow.down.right",
+                    value: "\(Int(shelfConfig.logoHeight)) pt",
+                    $shelfConfig.logoHeight,
+                    in: 32...160,
+                    step: 1
+                )
+                cardDivider
+                settingSlider(
+                    "图标水平位置",
+                    icon: "arrow.left.and.right",
+                    value: "\(Int(shelfConfig.logoOffsetX)) pt",
+                    $shelfConfig.logoOffsetX,
+                    in: -80...80,
+                    step: 1
+                )
+                cardDivider
+                settingSlider(
+                    "图标垂直位置",
+                    icon: "arrow.up.and.down",
+                    value: "\(Int(shelfConfig.logoOffsetY)) pt",
+                    $shelfConfig.logoOffsetY,
+                    in: -40...40,
+                    step: 1
+                )
+            }
+
+            cardDivider
+            Button {
+                withAnimation(.easeInOut(duration: 0.18)) { titleGroupExpanded.toggle() }
+            } label: {
+                shelfGroupLabel(
+                    "标题文字",
+                    icon: "textformat",
+                    summary: shelfConfig.titleVisible ? "显示" : "已隐藏",
+                    expanded: titleGroupExpanded
+                )
+            }
+            .buttonStyle(.plain)
+
+            if titleGroupExpanded {
+                settingBlock("标题文字", icon: "textformat") {
+                    Toggle("显示标题文字", isOn: $shelfConfig.titleVisible)
+                        .font(theme.typography.body)
+                        .tint(theme.palette.accent)
+                    TextField("我的书架", text: $shelfConfig.titleText)
+                        .font(theme.typography.body)
+                        .foregroundColor(theme.palette.ink)
+                        .textFieldStyle(.roundedBorder)
+                        .disabled(!shelfConfig.titleVisible)
+                        .opacity(shelfConfig.titleVisible ? 1 : 0.5)
+                        .onSubmit {
+                            AppLog.write("[设置] 书架标题已修改 长度=\(shelfConfig.titleText.count)")
+                        }
+                }
+                cardDivider
+                settingSlider(
+                    "字号",
+                    icon: "textformat.size",
+                    value: "\(Int(shelfConfig.titleFontSize)) pt",
+                    $shelfConfig.titleFontSize,
+                    in: 14...75,
+                    step: 1
+                )
+                cardDivider
+                settingSlider(
+                    "水平位置",
+                    icon: "arrow.left.and.right",
+                    value: "\(Int(shelfConfig.titleOffsetX)) pt",
+                    $shelfConfig.titleOffsetX,
+                    in: -120...120,
+                    step: 1
+                )
+                cardDivider
+                settingSlider(
+                    "垂直位置",
+                    icon: "arrow.up.and.down",
+                    value: "\(Int(shelfConfig.titleOffsetY)) pt",
+                    $shelfConfig.titleOffsetY,
+                    in: -40...60,
+                    step: 1
+                )
+                cardDivider
+                settingBlock {
+                    Button("恢复默认标题") {
+                        shelfConfig.titleText = "我的书架"
+                        shelfConfig.titleVisible = true
+                        shelfConfig.titleFontSize = 30
+                        shelfConfig.titleOffsetX = 0
+                        shelfConfig.titleOffsetY = 0
+                        AppLog.write("[设置] 恢复默认书架标题")
+                    }
+                    .font(.system(size: 13))
+                    .foregroundColor(theme.palette.accent)
+                }
+            }
+        }
+
         sectionCard("书架角标", tag: "BADGE") {
             settingBlock("角标样式", icon: "bookmark") {
                 chipPicker(
@@ -1017,6 +1202,103 @@ public struct SettingsView: View {
                 }
             }
         }
+    }
+
+    /// 书架标题实时预览：改字、字号、位置都按真实书架的比例立刻显示
+    private var shelfTitlePreview: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .bottom, spacing: 12) {
+                Group {
+                    if let custom = shelfLogo.image {
+                        #if canImport(UIKit)
+                        Image(uiImage: custom)
+                            .resizable()
+                            .scaledToFit()
+                        #else
+                        Image(nsImage: custom)
+                            .resizable()
+                            .scaledToFit()
+                        #endif
+                    } else {
+                        Image("ShelfMark")
+                            .renderingMode(.template)
+                            .resizable()
+                            .scaledToFit()
+                            .foregroundColor(theme.palette.ink)
+                    }
+                }
+                .frame(height: shelfConfig.logoHeight)
+                .offset(x: shelfConfig.logoOffsetX, y: shelfConfig.logoOffsetY)
+
+                if shelfConfig.titleVisible {
+                    Text(shelfTitlePreviewText)
+                        .font(.system(size: shelfConfig.titleFontSize, weight: .bold))
+                        .foregroundColor(theme.palette.ink)
+                        .lineLimit(1)
+                        .fixedSize(horizontal: true, vertical: false)
+                        .offset(x: shelfConfig.titleOffsetX, y: shelfConfig.titleOffsetY)
+                        .padding(.bottom, 4)
+                }
+
+                Spacer(minLength: 0)
+            }
+
+            HStack(spacing: 0) {
+                Rectangle()
+                    .fill(theme.palette.accent)
+                    .frame(width: 24, height: 2)
+                Rectangle()
+                    .fill(theme.palette.divider.opacity(0.9))
+                    .frame(height: 0.5)
+                Rectangle()
+                    .fill(theme.palette.ink.opacity(0.75))
+                    .frame(width: 4, height: 4)
+            }
+            .padding(.leading, 6)
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .frame(height: 120, alignment: .bottomLeading)
+        .background(
+            LinearGradient(
+                colors: [theme.palette.elevated.opacity(0.9), theme.palette.surface],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
+        )
+        .clipShape(RoundedRectangle(cornerRadius: theme.metrics.cornerRadius, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: theme.metrics.cornerRadius, style: .continuous)
+                .stroke(theme.palette.divider, lineWidth: theme.metrics.borderWidth)
+        )
+        .clipped()
+        .padding(.horizontal, 14)
+        .padding(.top, 10)
+    }
+
+    private var shelfTitlePreviewText: String {
+        let text = shelfConfig.titleText.trimmingCharacters(in: .whitespacesAndNewlines)
+        return text.isEmpty ? "我的书架" : text
+    }
+
+    private func shelfGroupLabel(_ title: String, icon: String, summary: String, expanded: Bool) -> some View {
+        HStack(spacing: 12) {
+            rowIcon(icon)
+            Text(title)
+                .font(theme.typography.body)
+                .foregroundColor(theme.palette.ink)
+            Spacer(minLength: 8)
+            Text(summary)
+                .font(.system(size: 12, design: .monospaced))
+                .foregroundColor(theme.palette.secondaryInk)
+            Image(systemName: "chevron.down")
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundColor(theme.palette.secondaryInk)
+                .rotationEffect(.degrees(expanded ? 180 : 0))
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 11)
+        .contentShape(Rectangle())
     }
 
     @ViewBuilder
@@ -4455,12 +4737,19 @@ enum AppLog {
             let stacks = exception.callStackSymbols.prefix(14).joined(separator: " | ")
             AppLog.writeSync("💥 未捕获异常 \(exception.name.rawValue): \(exception.reason ?? "") || \(stacks)")
         }
+        // 信号处理里不能分配内存，提前把目录和路径准备好
+        try? FileManager.default.createDirectory(
+            at: fileURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        if crashPath == nil {
+            crashPath = strdup(fileURL.path)
+        }
         // Swift 运行时的 fatalError / 前提条件失败 / 野指针走的是信号，不走 NSException，
         // 所以要单独接一层：只写一行标记再交还给系统，保持原本的崩溃行为
         for sig in [SIGABRT, SIGSEGV, SIGBUS, SIGILL, SIGTRAP, SIGFPE] {
             signal(sig, { received in
-                let name = AppLog.signalName(received)
-                AppLog.writeSync("💥 信号 \(name)——运行时崩溃，上一行日志就是最后的动作\n")
+                AppLog.writeSignalCrash(received)
                 signal(received, SIG_DFL)
                 raise(received)
             })
@@ -4471,6 +4760,28 @@ enum AppLog {
         LegadoLog.handler = { line in AppLog.write(line) }
         // 启动行属于常规日志，跟着开关走
         write("—— 启动 v\(version) (\(build)) ——")
+    }
+
+    /// 信号处理专用：只用 open/write/close，不建目录、不做字符串插值
+    private static var crashPath: UnsafeMutablePointer<CChar>?
+
+    private static func writeSignalCrash(_ sig: Int32) {
+        guard let path = crashPath else { return }
+        let fd = Darwin.open(path, O_WRONLY | O_APPEND | O_CREAT, 0o644)
+        guard fd >= 0 else { return }
+        let message: StaticString
+        switch sig {
+        case SIGABRT: message = "💥 SIGABRT\n"
+        case SIGSEGV: message = "💥 SIGSEGV\n"
+        case SIGBUS: message = "💥 SIGBUS\n"
+        case SIGILL: message = "💥 SIGILL\n"
+        case SIGTRAP: message = "💥 SIGTRAP\n"
+        case SIGFPE: message = "💥 SIGFPE\n"
+        default: message = "💥 SIGNAL\n"
+        }
+        _ = Darwin.write(fd, message.utf8Start, message.utf8CodeUnitCount)
+        _ = Darwin.write(fd, "\n", 1)
+        Darwin.close(fd)
     }
 
     /// 落盘前的隐私过滤。

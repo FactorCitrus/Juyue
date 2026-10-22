@@ -14,12 +14,14 @@ import LegadoCore
 /// 23 个选项塞进 Menu 太长，铺成自适应网格更好点。
 /// 可折叠设置块：默认收起只留标题，点开才渲染里面的控件
 /// （设置卡片一屏堆满控件在真机上很吃渲染，能折的都折起来）
-struct CollapsibleSettingBlock<Content: View>: View {
+struct CollapsibleSettingBlock: View {
     let title: String
     let tint: Color
     let initiallyExpanded: Bool
     let summary: String?
-    @ViewBuilder let content: () -> Content
+    /// 内容闭包返回 AnyView：面板的泛型类型不再把整棵内容树嵌进类型名。
+    /// iOS 27 的 Swift 运行时解码超深泛型名会栈溢出，点「界面」时直接闪退。
+    private let content: () -> AnyView
 
     @State private var expanded: Bool
 
@@ -29,14 +31,14 @@ struct CollapsibleSettingBlock<Content: View>: View {
         tint: Color,
         initiallyExpanded: Bool = false,
         summary: String? = nil,
-        @ViewBuilder content: @escaping () -> Content
+        @ViewBuilder content: @escaping () -> some View
     ) {
         self._expanded = State(initialValue: initiallyExpanded)
         self.title = title
         self.tint = tint
         self.initiallyExpanded = initiallyExpanded
         self.summary = summary
-        self.content = content
+        self.content = { AnyView(content()) }
     }
 
     var body: some View {
@@ -74,6 +76,61 @@ struct CollapsibleSettingBlock<Content: View>: View {
                 content()
             }
         }
+    }
+}
+
+/// 阅读设置卡片的整套外观压成一个 modifier。
+/// 原来 10 层 .background/.overlay/.clipShape 串在卡片类型上，iOS 27 解码类型名会栈溢出。
+private struct ReaderSettingsCardChrome: ViewModifier {
+    let radius: CGFloat
+    let fill: Color
+    let showsMaterial: Bool
+    let ink: Color
+    let backdrop: Color
+    let layerOpacity: Double
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if #available(iOS 16.0, macOS 13.0, *) {
+            styled(
+                content,
+                shape: UnevenRoundedRectangle(
+                    topLeadingRadius: radius,
+                    bottomLeadingRadius: 0,
+                    bottomTrailingRadius: 0,
+                    topTrailingRadius: radius,
+                    style: .continuous
+                )
+            )
+        } else {
+            styled(content, shape: RoundedRectangle(cornerRadius: radius, style: .continuous))
+        }
+    }
+
+    private func styled<S: Shape>(_ content: Content, shape: S) -> some View {
+        content
+            .background(
+                shape
+                    .fill(fill)
+                    .overlay(
+                        Group {
+                            if showsMaterial {
+                                shape.fill(.ultraThinMaterial)
+                            }
+                        }
+                    )
+            )
+            .overlay(shape.stroke(ink.opacity(0.08), lineWidth: 0.5))
+            .clipShape(shape)
+            .shadow(color: .black.opacity(0.16), radius: 18, y: -6)
+            .background(
+                backdrop
+                    .opacity(layerOpacity)
+                    .shadow(color: Color.black.opacity(0.2), radius: 16, x: 0, y: -6)
+                    .ignoresSafeArea(edges: .bottom)
+            )
+            .clipShape(shape)
+            .overlay(shape.stroke(ink.opacity(0.10), lineWidth: 0.5))
     }
 }
 
@@ -502,6 +559,54 @@ public struct LoadedChapter: Identifiable {
     public var pages: [[ContentBlock]] = []
 }
 
+/// 热评卡片：滚动、分页、仿真共用。文字和可选插图都在这里画。
+struct GodReviewCardView: View {
+    let text: String
+    let imageURL: String?
+    let referer: String?
+    let onTap: () -> Void
+
+    private var displayText: String {
+        text
+            .replacingOccurrences(of: "热评 · ", with: "")
+            .replacingOccurrences(of: "神评 · ", with: "")
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+                HStack(alignment: .top, spacing: 9) {
+                    Text("热评")
+                        .font(.system(size: 11, weight: .bold))
+                        .foregroundColor(.white)
+                        .padding(.horizontal, 7)
+                        .padding(.vertical, 4)
+                        .background(Color.orange, in: RoundedRectangle(cornerRadius: 6))
+                    if !displayText.isEmpty, displayText != "热评" {
+                        Text(displayText)
+                            .font(.subheadline)
+                            .foregroundColor(.primary)
+                            .multilineTextAlignment(.leading)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                }
+                if let imageURL, !imageURL.isEmpty {
+                    ChapterImageView(urlString: imageURL, referer: referer)
+                        .frame(maxWidth: .infinity)
+                        .frame(height: 180)
+                        .clipped()
+                        .clipShape(RoundedRectangle(cornerRadius: 8))
+                }
+        }
+        .padding(11)
+        .background(RoundedRectangle(cornerRadius: 10).fill(Color.orange.opacity(0.10)))
+        .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.orange.opacity(0.22), lineWidth: 0.5))
+        // 卡片整体点击开评论详情；插图里的「点击重试」按钮要能单独收到点击，
+        // 所以用 contentShape + onTapGesture 而不是把整张卡包进 Button。
+        .contentShape(RoundedRectangle(cornerRadius: 10))
+        .onTapGesture(perform: onTap)
+    }
+}
+
 public struct ReaderCommentItem: Identifiable {
     public let id: Int
     public let excerpt: String
@@ -628,6 +733,12 @@ private struct ReviewTarget: Identifiable {
     let id = UUID()
     let url: String
     let title: String
+}
+
+private struct GodReviewMarker {
+    let text: String
+    let imageURL: String?
+    let url: String
 }
 
 private struct NativeCommentListSheet: View {
@@ -784,6 +895,7 @@ private struct NativeCommentListSheet: View {
                     Text(String(format: "%02d", index + 1))
                         .font(.system(size: 11, weight: .bold, design: .monospaced))
                         .foregroundColor(palette.accent)
+                    avatarView(comment.user, size: 18)
                     Text(comment.user?.user_name ?? "匿名")
                         .font(.system(size: 11, weight: .semibold))
                         .foregroundColor(palette.ink)
@@ -803,7 +915,7 @@ private struct NativeCommentListSheet: View {
                     .foregroundColor(palette.ink)
                     .fixedSize(horizontal: false, vertical: true)
 
-                if let image = comment.image_url, let url = URL(string: image) {
+                if let image = comment.image_url, let url = resolvedImageURL(image) {
                     AsyncImage(url: url) { phase in
                         if let image = phase.image {
                             image.resizable().scaledToFit()
@@ -843,7 +955,7 @@ private struct NativeCommentListSheet: View {
                                 Text(commentText(reply.content))
                                     .font(.system(size: 12))
                                     .foregroundColor(palette.ink.opacity(0.9))
-                                if let image = reply.image_url, let url = URL(string: image) {
+                                if let image = reply.image_url, let url = resolvedImageURL(image) {
                                     AsyncImage(url: url) { phase in
                                         if let image = phase.image {
                                             image.resizable().scaledToFit()
@@ -873,6 +985,39 @@ private struct NativeCommentListSheet: View {
             }
         }
         .padding(.horizontal, 16)
+    }
+
+    @ViewBuilder
+    private func avatarView(_ user: ReviewUser?, size: CGFloat = 24) -> some View {
+        if let raw = user?.user_avatar, let url = resolvedImageURL(raw) {
+            AsyncImage(url: url) { phase in
+                if let image = phase.image {
+                    image.resizable().scaledToFill()
+                } else {
+                    Color.secondary.opacity(0.12)
+                }
+            }
+            .frame(width: size, height: size)
+            .clipShape(Circle())
+        } else {
+            Image(systemName: "person.crop.circle.fill")
+                .font(.system(size: size))
+                .foregroundColor(.secondary.opacity(0.55))
+                .frame(width: size, height: size)
+        }
+    }
+
+    private func resolvedImageURL(_ raw: String?) -> URL? {
+        guard let raw = raw?.trimmingCharacters(in: .whitespacesAndNewlines), !raw.isEmpty else {
+            return nil
+        }
+        if raw.hasPrefix("//") {
+            return URL(string: "https:" + raw)
+        }
+        if let url = URL(string: raw), url.scheme != nil {
+            return url
+        }
+        return URL(string: raw, relativeTo: URL(string: target.url))?.absoluteURL
     }
 
     private func load(reset: Bool) async {
@@ -1033,6 +1178,7 @@ private struct ReviewComment: Decodable, Identifiable {
 
 private struct ReviewUser: Decodable {
     let user_name: String?
+    let user_avatar: String?
 }
 
 public struct BlockFrameInfo: Equatable {
@@ -1201,6 +1347,7 @@ public struct ReaderView: View {
 
     @ObservedObject private var bookmarkStore = BookStore.shared
     @State private var showTOC: Bool = false
+    @State private var tocSearchText: String = ""
     @State private var tocReversed: Bool = false
     @State private var showBookmarks: Bool = false
     @State private var showComments: Bool = false
@@ -1364,7 +1511,7 @@ public struct ReaderView: View {
                     VStack(spacing: 0) {
                     // 按页翻的模式（左右/覆盖/滑动/仿真）页眉页脚画在每页里，跟着一起翻
                     // 整页下拉（加书签手势）时这一层整体位移，松手弹回
-                    if readerConfig.headerEnabled, readerConfig.pageMode == .scroll {
+                    if readerConfig.headerEnabled, readerConfig.pageMode == .scroll, !showSettings {
                         statusBar(left: readerConfig.headerLeft, center: readerConfig.headerCenter, right: readerConfig.headerRight, extendEdge: .top)
                             .offset(y: readerConfig.headerGap - screenTopInset)
                     }
@@ -1449,7 +1596,7 @@ public struct ReaderView: View {
                     }
 
                     // Fixed Bottom Information Bar (Apple Books Style)
-                    if readerConfig.footerEnabled, readerConfig.pageMode == .scroll {
+                    if readerConfig.footerEnabled, readerConfig.pageMode == .scroll, !showSettings {
                         statusBar(left: readerConfig.footerLeft, center: readerConfig.footerCenter, right: readerConfig.footerRight, extendEdge: .bottom)
                             .offset(y: screenBottomInset - readerConfig.footerGap)
                     }
@@ -1494,7 +1641,7 @@ public struct ReaderView: View {
                 // 5. Reading Settings Card Overlay (Bottom 1/3 of the screen)
                 if showSettings {
                     // 面板调淡的时候，底下这层压暗也得跟着淡，不然还是看不清正文
-                    Color.black.opacity(0.2 * effectivePanelOpacity)
+                    Color.black.opacity(0.28 * effectivePanelOpacity)
                         .contentShape(Rectangle())
                         .onTapGesture {
                             withAnimation(.easeInOut(duration: 0.22)) {
@@ -1508,6 +1655,8 @@ public struct ReaderView: View {
                         Spacer()
                         readingSettingsCard
                     }
+                    // 底部贴住屏幕物理边缘，别再露出正文页脚那一条
+                    .ignoresSafeArea(edges: .bottom)
                     .transition(.asymmetric(
                         insertion: .move(edge: .bottom).combined(with: .opacity),
                         removal: .move(edge: .bottom).combined(with: .opacity)
@@ -2362,7 +2511,18 @@ public struct ReaderView: View {
                         }
 
                         // Page Content
-                        if pageBlocks.first?.isImage == true, let urlStr = pageBlocks.first?.imageUrl {
+                        if let block = pageBlocks.first, block.commentCount == -2 {
+                            GodReviewCardView(
+                                text: block.text,
+                                imageURL: block.imageUrl,
+                                referer: effectiveSource?.bookSourceUrl
+                            ) {
+                                if let url = block.commentURL {
+                                    directCommentTarget = ReviewTarget(url: url, title: "段评")
+                                }
+                            }
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                        } else if pageBlocks.first?.isImage == true, let urlStr = pageBlocks.first?.imageUrl {
                             ChapterImageView(urlString: urlStr, referer: effectiveSource?.bookSourceUrl)
                         } else {
                             let lines = pageBlocks.map { $0.text }
@@ -2531,6 +2691,17 @@ public struct ReaderView: View {
                                 return
                             }
                             let x = value.startLocation.x - geo.frame(in: .global).minX
+                            // 热评页：左右边缘仍是翻页区，中间点卡片才开段评
+                            if x >= width * 0.3, x <= width * 0.7,
+                               let cur = currentLoadedChapter,
+                               currentPageIndex < cur.pages.count,
+                               let block = cur.pages[currentPageIndex].first,
+                               block.commentCount == -2 {
+                                if let url = block.commentURL {
+                                    directCommentTarget = ReviewTarget(url: url, title: "段评")
+                                }
+                                return
+                            }
                             if x < width * 0.3 {
                                 turnPage(forward: false)
                             } else if x > width * 0.7 {
@@ -3237,7 +3408,10 @@ public struct ReaderView: View {
     private var bottomActionRow: some View {
         return HStack(spacing: 0) {
             // Contents Table (目录)
-            Button(action: { showTOC = true }) {
+            Button(action: {
+                tocSearchText = ""
+                showTOC = true
+            }) {
                 VStack(spacing: 4) {
                     Image(systemName: "list.bullet")
                         .font(.system(size: 20))
@@ -3321,7 +3495,11 @@ public struct ReaderView: View {
             }
 
             // Interface Settings (界面设置)
-            Button(action: { showSettings = true }) {
+            Button(action: {
+                // 真机打开面板会闪退，先留一行完整状态：崩溃后日志最后一条就是现场
+                AppLog.write("[阅读设置] 点开界面 主题=\(readerConfig.theme.rawValue) 模式=\(readerConfig.pageMode.rawValue) 字号=\(readerConfig.fontSize) 行距=\(readerConfig.lineSpacing) 亮度=\(readerConfig.brightness) 面板=\(readerConfig.panelOpacity) 章=\(currentChapterIndex + 1)/\(chapters.count) 页=\(currentPageIndex + 1)")
+                showSettings = true
+            }) {
                 VStack(spacing: 4) {
                     Image(systemName: "textformat.size")
                         .font(.system(size: 20))
@@ -3403,7 +3581,7 @@ public struct ReaderView: View {
 
     private var tocSheet: some View {
         NavigationView {
-            List(tocDisplayChapters) { ch in
+            List(tocFilteredChapters) { ch in
                 Button(action: {
                     showTOC = false
                     jumpToChapter(ch.index)
@@ -3419,7 +3597,27 @@ public struct ReaderView: View {
                     }
                 }
             }
-            .navigationTitle("目录 (\(chapters.count)章)")
+            .overlay {
+                if tocFilteredChapters.isEmpty {
+                    Text(tocSearchText.isEmpty ? "目录为空" : "没有匹配的章节")
+                        .font(.system(size: 13))
+                        .foregroundColor(.secondary)
+                }
+            }
+            #if os(iOS)
+            .searchable(
+                text: $tocSearchText,
+                placement: .navigationBarDrawer(displayMode: .always),
+                prompt: "搜索章节"
+            )
+            #else
+            .searchable(text: $tocSearchText, prompt: "搜索章节")
+            #endif
+            .navigationTitle(
+                tocSearchText.isEmpty
+                    ? "目录 (\(chapters.count)章)"
+                    : "目录 · \(tocFilteredChapters.count)/\(chapters.count)"
+            )
             #if os(iOS)
             .navigationBarTitleDisplayMode(.inline)
             #endif
@@ -3839,32 +4037,17 @@ public struct ReaderView: View {
         .buttonStyle(.plain)
     }
 
-    /// 神评：源里的 SVG 卡片换成原生样式，点了直接开该段评论。
+    /// 热评：源里的 SVG / 图片卡片换成原生样式，文字和插图都保留。
     private func godReviewCard(_ block: ContentBlock) -> some View {
-        let text = block.text.replacingOccurrences(of: "神评 · ", with: "")
-        return Button {
+        GodReviewCardView(
+            text: block.text,
+            imageURL: block.imageUrl,
+            referer: effectiveSource?.bookSourceUrl
+        ) {
             if let url = block.commentURL {
                 directCommentTarget = ReviewTarget(url: url, title: "段评")
             }
-        } label: {
-            HStack(alignment: .top, spacing: 9) {
-                Text("神评")
-                    .font(.system(size: 11, weight: .bold))
-                    .foregroundColor(.white)
-                    .padding(.horizontal, 7)
-                    .padding(.vertical, 4)
-                    .background(Color.orange, in: RoundedRectangle(cornerRadius: 6))
-                Text(text)
-                    .font(.subheadline)
-                    .foregroundColor(.primary)
-                    .multilineTextAlignment(.leading)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-            }
-            .padding(11)
-            .background(RoundedRectangle(cornerRadius: 10).fill(Color.orange.opacity(0.10)))
-            .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.orange.opacity(0.22), lineWidth: 0.5))
         }
-        .buttonStyle(.plain)
     }
 
     /// 段评数量气泡，贴在段落右下角。
@@ -4580,6 +4763,12 @@ public struct ReaderView: View {
         tocReversed ? chapters.reversed() : chapters
     }
 
+    private var tocFilteredChapters: [BookChapter] {
+        let query = tocSearchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !query.isEmpty else { return tocDisplayChapters }
+        return tocDisplayChapters.filter { $0.title.localizedCaseInsensitiveContains(query) }
+    }
+
     /// 下载缓存：从当前章往后缓存 N 章，N 在设置里调
     private func downloadCachedChapters(span chosen: Int? = nil) {
         guard let source = effectiveSource, !chapters.isEmpty else { return }
@@ -4645,33 +4834,21 @@ public struct ReaderView: View {
                 settingsPanelSwitcher
                 settingsStatusStrip
                 brightnessRow
-            settingsPanelBody
+                settingsPanelBody
             }
         }
-        .padding(.horizontal, 18)
-        .padding(.top, 14)
-        .padding(.bottom, 22)
-        .background(
-            RoundedRectangle(cornerRadius: chromeRadius, style: .continuous)
-                // 面板调半透明时不要毛玻璃，否则还是看不清底下的正文
-                .fill(theme.choice == .lunarTerminal
-                      ? theme.palette.surface.opacity(effectivePanelLayerOpacity)
-                      : readerConfig.backgroundColor.opacity(effectivePanelLayerOpacity))
-                .overlay(
-                    Group {
-                        if effectivePanelOpacity >= 0.99, theme.choice == .standard {
-                            RoundedRectangle(cornerRadius: chromeRadius, style: .continuous)
-                                .fill(.ultraThinMaterial)
-                        }
-                    }
-                )
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: chromeRadius, style: .continuous)
-                .stroke(chromeInk.opacity(0.08), lineWidth: 0.5)
-        )
-        .clipShape(RoundedRectangle(cornerRadius: chromeRadius, style: .continuous))
-        .shadow(color: .black.opacity(0.16), radius: 18, y: -6)
+        .padding(EdgeInsets(top: 14, leading: 18, bottom: max(16, safeInsets.bottom), trailing: 18))
+        .modifier(ReaderSettingsCardChrome(
+            radius: chromeRadius,
+            // 面板调半透明时不要毛玻璃，否则还是看不清底下的正文
+            fill: theme.choice == .lunarTerminal
+                ? theme.palette.surface.opacity(effectivePanelLayerOpacity)
+                : readerConfig.backgroundColor.opacity(effectivePanelLayerOpacity),
+            showsMaterial: effectivePanelOpacity >= 0.99 && theme.choice == .standard,
+            ink: chromeInk,
+            backdrop: chromeBackground,
+            layerOpacity: effectivePanelLayerOpacity
+        ))
         .fileImporter(
             isPresented: $showBackgroundImagePicker,
             allowedContentTypes: [.image],
@@ -4681,37 +4858,20 @@ public struct ReaderView: View {
                 importBackgroundImage(from: url)
             }
         }
-        .background(
-            chromeBackground
-                .opacity(effectivePanelLayerOpacity)
-                .shadow(color: Color.black.opacity(0.2), radius: 16, x: 0, y: -6)
-                .ignoresSafeArea(edges: .bottom)
-        )
-        .clipShape(RoundedRectangle(cornerRadius: chromeRadius, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: chromeRadius, style: .continuous)
-                .stroke(chromeInk.opacity(0.10), lineWidth: 0.5)
-        )
-        .padding(.horizontal, 10)
-        .padding(.bottom, 6)
-        .onChange(of: readerConfig.fontSize) { _ in flashLayoutPreview() }
-        .onChange(of: readerConfig.lineSpacing) { _ in flashLayoutPreview() }
-        .onChange(of: readerConfig.letterSpacing) { _ in flashLayoutPreview() }
-        .onChange(of: readerConfig.paragraphSpacing) { _ in flashLayoutPreview() }
-        .onChange(of: readerConfig.paddingTop) { _ in flashLayoutPreview() }
-        .onChange(of: readerConfig.paddingBottom) { _ in flashLayoutPreview() }
-        .onChange(of: readerConfig.paddingLeft) { _ in flashLayoutPreview() }
-        .onChange(of: readerConfig.paddingRight) { _ in flashLayoutPreview() }
-        .onChange(of: readerConfig.firstLineIndent) { _ in flashLayoutPreview() }
-        .onChange(of: readerConfig.pageMode) { _ in flashLayoutPreview() }
-        .onChange(of: readerConfig.chapterTitleScale) { _ in flashLayoutPreview() }
-        .onChange(of: readerConfig.chapterTitleSpacing) { _ in flashLayoutPreview() }
-        .onChange(of: readerConfig.chapterTopSpacing) { _ in flashLayoutPreview() }
-        .onChange(of: readerConfig.chapterBottomSpacing) { _ in flashLayoutPreview() }
+        .onAppear {
+            AppLog.write("[阅读设置] 面板卡片已渲染 折叠=\(panelCollapsed)")
+        }
+        .onChange(of: layoutPreviewSignature) { _ in flashLayoutPreview() }
         .onDisappear {
             layoutPreviewToken += 1
             layoutPreviewActive = false
         }
+    }
+
+    /// 十几个 onChange 合成一个：每层 onChange 都会给视图类型再套一层泛型，
+    /// iOS 27 解码这串类型名会栈溢出。
+    private var layoutPreviewSignature: String {
+        "\(readerConfig.fontSize)|\(readerConfig.lineSpacing)|\(readerConfig.letterSpacing)|\(readerConfig.paragraphSpacing)|\(readerConfig.paddingTop)|\(readerConfig.paddingBottom)|\(readerConfig.paddingLeft)|\(readerConfig.paddingRight)|\(readerConfig.firstLineIndent)|\(readerConfig.pageMode.rawValue)|\(readerConfig.chapterTitleScale)|\(readerConfig.chapterTitleSpacing)|\(readerConfig.chapterTopSpacing)|\(readerConfig.chapterBottomSpacing)"
     }
 
     /// iOS 上附带仿真翻页的手势计数，方便截屏排查；其他平台为空。
@@ -4739,7 +4899,7 @@ public struct ReaderView: View {
                         title: "字号与主题",
                         tint: readerConfig.textColor,
                         initiallyExpanded: true,
-                        summary: "\(Int(readerConfig.fontSize)) pt · \(readerConfig.theme.rawValue)"
+                        summary: "\(safeInt(readerConfig.fontSize)) pt · \(readerConfig.theme.rawValue)"
                     ) {
                         fontSizeRow
                         themeRow
@@ -4757,7 +4917,7 @@ public struct ReaderView: View {
                     CollapsibleSettingBlock(
                         title: "显示",
                         tint: readerConfig.textColor,
-                        summary: "亮度 \(Int(readerConfig.brightness * 100))% · 面板 \(Int((readerConfig.panelOpacity * 100).rounded()))%"
+                        summary: "亮度 \(safeInt(readerConfig.brightness * 100))% · 面板 \(safeInt(readerConfig.panelOpacity * 100))%"
                     ) { displaySection }
                 case .spacing:
                     CollapsibleSettingBlock(
@@ -4779,6 +4939,9 @@ public struct ReaderView: View {
             .animation(.easeInOut(duration: 0.18), value: settingsPanel)
             .tint(settingsAccent)
             .padding(.bottom, 4)
+            .onAppear {
+                AppLog.write("[阅读设置] 面板内容已渲染 \(settingsPanel.rawValue)")
+            }
         }
         .frame(maxHeight: 420)
     }
@@ -4972,9 +5135,9 @@ public struct ReaderView: View {
 
     private var settingsStatusStrip: some View {
         HStack(spacing: 0) {
-            statusMetric("字号", "\(Int(readerConfig.fontSize)) pt")
+            statusMetric("字号", "\(safeInt(readerConfig.fontSize)) pt")
             statusMetricDivider
-            statusMetric("行距", "\(Int(readerConfig.lineSpacing)) pt")
+            statusMetric("行距", "\(safeInt(readerConfig.lineSpacing)) pt")
             statusMetricDivider
             statusMetric("主题", readerConfig.theme.rawValue)
             statusMetricDivider
@@ -4988,6 +5151,7 @@ public struct ReaderView: View {
                 .stroke(theme.palette.divider, lineWidth: theme.metrics.borderWidth)
         )
         .clipShape(RoundedRectangle(cornerRadius: theme.metrics.cornerRadius, style: .continuous))
+        .onAppear { AppLog.write("[阅读设置] 状态条已渲染") }
     }
 
     private func statusMetric(_ title: String, _ value: String) -> some View {
@@ -5046,7 +5210,7 @@ public struct ReaderView: View {
                     .font(.system(size: 12, weight: .medium))
                     .foregroundColor(theme.palette.secondaryInk)
                 Spacer()
-                Text("\(Int(readerConfig.brightness * 100))%")
+                Text("\(safeInt(readerConfig.brightness * 100))%")
                     .font(.system(size: 11, weight: .medium, design: .monospaced))
                     .foregroundColor(theme.palette.secondaryInk)
                     .padding(.vertical, 2)
@@ -5057,13 +5221,17 @@ public struct ReaderView: View {
                 Image(systemName: "sun.min")
                     .font(.system(size: 11))
                     .foregroundColor(theme.palette.secondaryInk.opacity(0.7))
-                Slider(value: $readerConfig.brightness, in: 0.2...1.0, step: 0.05)
+                Slider(value: Binding(
+                    get: { min(max(readerConfig.brightness, 0.2), 1.0) },
+                    set: { readerConfig.brightness = min(max($0, 0.2), 1.0) }
+                ), in: 0.2...1.0, step: 0.05)
                     .tint(settingsAccent)
                 Image(systemName: "sun.max.fill")
                     .font(.system(size: 13))
                     .foregroundColor(theme.palette.secondaryInk.opacity(0.7))
             }
         }
+        .onAppear { AppLog.write("[阅读设置] 亮度条已渲染") }
     }
 
     /// 显示：亮度 + 自动夜间
@@ -5074,11 +5242,11 @@ public struct ReaderView: View {
                     .font(.system(size: 12, weight: .medium))
                     .foregroundColor(readerConfig.textColor.opacity(0.7))
                 Slider(value: Binding(
-                    get: { readerConfig.panelOpacity },
-                    set: { readerConfig.panelOpacity = $0 }
+                    get: { min(max(readerConfig.panelOpacity, 0.25), 1.0) },
+                    set: { readerConfig.panelOpacity = min(max($0, 0.25), 1.0) }
                 ), in: 0.25...1.0, step: 0.05)
                 .tint(readerConfig.textColor.opacity(0.65))
-                Text("\(Int((readerConfig.panelOpacity * 100).rounded()))%")
+                Text("\(safeInt(readerConfig.panelOpacity * 100))%")
                     .font(.system(size: 11, design: .monospaced))
                     .foregroundColor(readerConfig.textColor.opacity(0.6))
                     .frame(width: 40, alignment: .trailing)
@@ -5129,6 +5297,7 @@ public struct ReaderView: View {
                 }
             }
         }
+        .onAppear { AppLog.write("[阅读设置] 阅读模式区已渲染") }
     }
 
     /// 排版页的字体预览：存下来的字体名可能已经不在设备上（导入过又删、跨设备带过来），
@@ -5664,7 +5833,10 @@ public struct ReaderView: View {
                 .foregroundColor(readerConfig.textColor.opacity(0.68))
                 .lineLimit(1)
                 .frame(width: 48, alignment: .leading)
-            Slider(value: value, in: range, step: step)
+            Slider(value: Binding(
+                get: { min(max(value.wrappedValue, range.lowerBound), range.upperBound) },
+                set: { value.wrappedValue = min(max($0, range.lowerBound), range.upperBound) }
+            ), in: range, step: step)
                 .tint(settingsAccent)
             Text(settingValueText(value.wrappedValue, step: step, suffix: suffix))
                 .font(.system(size: 10, weight: .semibold, design: .rounded))
@@ -5681,7 +5853,14 @@ public struct ReaderView: View {
         if step < 1 {
             return String(format: "%.1f%@", Double(value), suffix)
         }
-        return "\(Int(value))\(suffix)"
+        return "\(safeInt(value))\(suffix)"
+    }
+
+    /// 面板里所有 "Int(配置值)" 都走这里：NaN / 无穷大会让 Int() 直接 trap，
+    /// 表现就是点开界面立刻回桌面，真机旧配置里出现一个脏值就够触发。
+    private func safeInt(_ value: CGFloat) -> Int {
+        guard value.isFinite else { return 0 }
+        return Int(value.rounded())
     }
 
     private var fontSizeRow: some View {
@@ -5689,7 +5868,7 @@ public struct ReaderView: View {
             HStack(alignment: .firstTextBaseline) {
                 sectionTitle("字号")
                 Spacer()
-                Text("\(Int(readerConfig.fontSize)) pt")
+                Text("\(safeInt(readerConfig.fontSize)) pt")
                     .font(.system(size: 11, weight: .semibold, design: .monospaced))
                     .foregroundColor(settingsAccent)
                     .padding(.vertical, 2)
@@ -5701,7 +5880,10 @@ public struct ReaderView: View {
                     .font(.system(size: 13, weight: .semibold))
                     .foregroundColor(readerConfig.textColor.opacity(0.8))
 
-                Slider(value: $readerConfig.fontSize, in: 12...32, step: 1)
+                Slider(value: Binding(
+                    get: { min(max(readerConfig.fontSize, 12), 32) },
+                    set: { readerConfig.fontSize = min(max($0, 12), 32) }
+                ), in: 12...32, step: 1)
                     .tint(settingsAccent)
                     .onChange(of: readerConfig.fontSize) { _ in
                         recomputePagination()
@@ -5712,6 +5894,7 @@ public struct ReaderView: View {
                     .foregroundColor(readerConfig.textColor.opacity(0.8))
             }
         }
+        .onAppear { AppLog.write("[阅读设置] 字号区已渲染") }
     }
 
     private var themeRow: some View {
@@ -5730,6 +5913,7 @@ public struct ReaderView: View {
                 }
             }
         }
+        .onAppear { AppLog.write("[阅读设置] 主题区已渲染") }
     }
 
     private func themeButton(for t: ReaderTheme) -> some View {
@@ -6186,6 +6370,7 @@ public struct ReaderView: View {
             let trimmed = marked.line.trimmingCharacters(in: .whitespacesAndNewlines)
             if trimmed.isEmpty {
                 attachReviewMarker(marked, from: blocks.count, blocks: &blocks)
+                currentId = (blocks.last?.id ?? currentId) + 1
                 continue
             }
             let firstBlockIndex = blocks.count
@@ -6222,6 +6407,7 @@ public struct ReaderView: View {
                         }
                     }
                     attachReviewMarker(marked, from: firstBlockIndex, blocks: &blocks)
+                    currentId = (blocks.last?.id ?? currentId) + 1
                     continue
                 }
             }
@@ -6234,18 +6420,19 @@ public struct ReaderView: View {
                 currentId += 1
             }
             attachReviewMarker(marked, from: firstBlockIndex, blocks: &blocks)
+            currentId = (blocks.last?.id ?? currentId) + 1
         }
         return blocks
     }
 
     /// 从一行里拆出段评 / 本章说哨兵，剩下才是正文。
     private func extractReviewMarkers(from line: String)
-        -> (line: String, count: Int, url: String?, chapterURL: String?, godText: String?) {
+        -> (line: String, count: Int, url: String?, chapterURL: String?, godReviews: [GodReviewMarker]) {
         var text = line
         var count = 0
         var url: String?
         var chapterURL: String?
-        var godText: String?
+        var godReviews: [GodReviewMarker] = []
 
         if let regex = try? NSRegularExpression(pattern: "\u{E000}C\u{1F}(\\d+)\u{1F}([^\u{E001}]*)\u{E001}") {
             let nsText = text as NSString
@@ -6262,22 +6449,29 @@ public struct ReaderView: View {
                 text = (text as NSString).replacingCharacters(in: match.range, with: "")
             }
         }
-        if let regex = try? NSRegularExpression(pattern: "\u{E000}G\u{1F}([^\u{1F}]*)\u{1F}([^\u{E001}]*)\u{E001}") {
+        if let regex = try? NSRegularExpression(pattern: "\u{E000}G\u{1F}([^\u{E001}]*)\u{E001}") {
             let nsText = text as NSString
-            if let match = regex.firstMatch(in: text, range: NSRange(location: 0, length: nsText.length)) {
-                let encoded = nsText.substring(with: match.range(at: 1))
-                if let data = Data(base64Encoded: encoded) {
-                    godText = String(data: data, encoding: .utf8)
+            let matches = regex.matches(in: text, range: NSRange(location: 0, length: nsText.length))
+            for match in matches.reversed() {
+                let body = nsText.substring(with: match.range(at: 1))
+                let parts = body.components(separatedBy: "\u{1F}")
+                let reviewText = decodeMarkerBase64(parts.first ?? "") ?? ""
+                let reviewURL = parts.count > 1 ? parts[1] : ""
+                let imageURL = parts.count > 2 ? decodeMarkerBase64(parts[2]) : nil
+                if !reviewText.isEmpty || imageURL != nil {
+                    godReviews.insert(
+                        GodReviewMarker(text: reviewText, imageURL: imageURL, url: reviewURL),
+                        at: 0
+                    )
                 }
-                url = nsText.substring(with: match.range(at: 2))
                 text = (text as NSString).replacingCharacters(in: match.range, with: "")
             }
         }
-        return (text, count, url, chapterURL, godText)
+        return (text, count, url, chapterURL, godReviews)
     }
 
     /// 段评挂在段落最后一块上；本章说单独生成一条入口。
-    private func attachReviewMarker(_ marker: (line: String, count: Int, url: String?, chapterURL: String?, godText: String?),
+    private func attachReviewMarker(_ marker: (line: String, count: Int, url: String?, chapterURL: String?, godReviews: [GodReviewMarker]),
                                     from firstBlockIndex: Int,
                                     blocks: inout [ContentBlock]) {
         if marker.count > 0, let url = marker.url,
@@ -6290,11 +6484,23 @@ public struct ReaderView: View {
             blocks.append(ContentBlock(id: id, isImage: false, text: "本章说 · 查看全部评论", imageUrl: nil,
                                        commentCount: -1, commentURL: chapterURL))
         }
-        if let godText = marker.godText, let url = marker.url {
+        for review in marker.godReviews {
             let id = (blocks.last?.id ?? 0) + 1
-            blocks.append(ContentBlock(id: id, isImage: false, text: "神评 · \(godText)", imageUrl: nil,
-                                       commentCount: -2, commentURL: url))
+            let text = review.text.isEmpty ? "热评" : "热评 · \(review.text)"
+            blocks.append(ContentBlock(
+                id: id,
+                isImage: false,
+                text: text,
+                imageUrl: review.imageURL,
+                commentCount: -2,
+                commentURL: review.url.isEmpty ? nil : review.url
+            ))
         }
+    }
+
+    private func decodeMarkerBase64(_ value: String) -> String? {
+        guard !value.isEmpty, let data = Data(base64Encoded: value) else { return nil }
+        return String(data: data, encoding: .utf8)
     }
 
     private func currentChapterCharOffset() -> Int {
@@ -6508,6 +6714,16 @@ public struct ReaderView: View {
         var blockIdCounter = 10000
 
         for block in blocks {
+            if block.commentCount == -2 {
+                if !currentPageLines.isEmpty {
+                    pages.append(buildPageBlocks(from: currentPageLines, startingId: &blockIdCounter))
+                    currentPageLines = []
+                }
+                pages.append([block])
+                currentPageHeight = 0
+                maxHeightForCurrentPage = normalHeight
+                continue
+            }
             if block.isImage {
                 if !currentPageLines.isEmpty {
                     pages.append(buildPageBlocks(from: currentPageLines, startingId: &blockIdCounter))
@@ -6619,7 +6835,11 @@ public struct ChapterImageView: View {
             if let comma = trimmed.firstIndex(of: ",") {
                 let meta = String(trimmed[trimmed.startIndex..<comma])
                 let payload = String(trimmed[trimmed.index(after: comma)...])
-                if meta.contains("base64"), let data = Data(base64Encoded: payload) {
+                // 源里的 base64 常带换行和 URL-safe 字符，宽松解码
+                if meta.contains("base64"), let data = Data(base64Encoded: payload, options: [.ignoreUnknownCharacters]) {
+                    if platformImage(from: data) == nil {
+                        AppLog.write("[插图] 解码失败 dataURI kind=\(meta.suffix(40)) bytes=\(data.count)")
+                    }
                     self.imageData = data
                     self.isLoading = false
                     self.loadFailed = false
@@ -6632,6 +6852,7 @@ public struct ChapterImageView: View {
                     return
                 }
             }
+            AppLog.write("[插图] 失败 dataURI kind=\(trimmed.prefix(32))")
             self.isLoading = false
             self.loadFailed = true
             return
@@ -6645,7 +6866,20 @@ public struct ChapterImageView: View {
             return
         }
 
-        // 2. Check local file
+        // 2. Inline data URI（部分书源把插图直接塞进正文）
+        if trimmed.hasPrefix("data:image") {
+            if let data = Self.decodeDataURL(trimmed) {
+                Self.imageCache.setObject(data as NSData, forKey: trimmed as NSString)
+                self.imageData = data
+                self.isLoading = false
+                self.loadFailed = false
+            } else {
+                self.loadFailed = true
+            }
+            return
+        }
+
+        // 3. Check local file
         if trimmed.hasPrefix("file://") {
             if let url = URL(string: trimmed), let data = try? Data(contentsOf: url) {
                 Self.imageCache.setObject(data as NSData, forKey: trimmed as NSString)
@@ -6654,7 +6888,7 @@ public struct ChapterImageView: View {
             }
         }
 
-        // 3. Remote URL with proper browser headers
+        // 4. Remote URL with proper browser headers
         guard let url = URL(string: trimmed) else {
             self.loadFailed = true
             return
@@ -6669,15 +6903,22 @@ public struct ChapterImageView: View {
             request.setValue("Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148", forHTTPHeaderField: "User-Agent")
             request.setValue("image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8", forHTTPHeaderField: "Accept")
 
-            // Determine Referer
-            if let ref = referer, !ref.isEmpty {
+            // 书源的 bookSourceUrl 可能只是「大灰狼融合VIP5.0」这种标识，
+            // 不是网址。无效 Referer 比不传更容易被图床拒绝，这里只接受 http(s)。
+            if let ref = referer,
+               let refURL = URL(string: ref),
+               let scheme = refURL.scheme?.lowercased(),
+               scheme == "http" || scheme == "https" {
                 request.setValue(ref, forHTTPHeaderField: "Referer")
-            } else if let host = url.host {
-                request.setValue("https://\(host)/", forHTTPHeaderField: "Referer")
+            } else if let host = url.host, let scheme = url.scheme {
+                request.setValue("\(scheme)://\(host)/", forHTTPHeaderField: "Referer")
             }
 
             let (data, response) = try await URLSession.shared.data(for: request)
             if let http = response as? HTTPURLResponse, (http.statusCode == 200 || http.statusCode == 304), !data.isEmpty {
+                if platformImage(from: data) == nil {
+                    AppLog.write("[插图] 解码失败 host=\(url.host ?? "-") bytes=\(data.count)")
+                }
                 Self.imageCache.setObject(data as NSData, forKey: trimmed as NSString)
                 await MainActor.run {
                     self.imageData = data
@@ -6685,17 +6926,31 @@ public struct ChapterImageView: View {
                     self.loadFailed = false
                 }
             } else {
+                let status = (response as? HTTPURLResponse)?.statusCode ?? -1
+                AppLog.write("[插图] 失败 host=\(url.host ?? "-") status=\(status) bytes=\(data.count)")
                 await MainActor.run {
                     self.isLoading = false
                     self.loadFailed = true
                 }
             }
         } catch {
+            AppLog.write("[插图] 失败 host=\(url.host ?? "-") error=\(error.localizedDescription)")
             await MainActor.run {
                 self.isLoading = false
                 self.loadFailed = true
             }
         }
+    }
+
+    private static func decodeDataURL(_ value: String) -> Data? {
+        guard let comma = value.firstIndex(of: ",") else { return nil }
+        let header = String(value[value.startIndex..<comma]).lowercased()
+        let payload = String(value[value.index(after: comma)...])
+        if header.contains(";base64") {
+            return Data(base64Encoded: payload, options: [.ignoreUnknownCharacters])
+        }
+        guard let decoded = payload.removingPercentEncoding else { return nil }
+        return decoded.data(using: .utf8)
     }
 
     private func platformImage(from data: Data) -> Image? {

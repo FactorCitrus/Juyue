@@ -251,6 +251,7 @@ public struct SearchBookView: View {
                     ForEach(viewModel.searchResults) { item in
                         SearchResultRow(item: item)
                             .contentShape(Rectangle())
+                            .appThemedRows()
                             .onTapGesture {
                                 selectedDetailBook = item
                             }
@@ -265,6 +266,7 @@ public struct SearchBookView: View {
                     Section {
                         footerView
                     }
+                    .appThemedRows()
                 }
                 .appThemedList()
                 .listStyle(.plain)
@@ -383,7 +385,7 @@ public struct SearchBookView: View {
                     viewModel.clearHistory()
                 }
                 .font(.caption)
-            }) {
+            }.appThemedRows()) {
                 ForEach(viewModel.history, id: \.self) { keyword in
                     Button {
                         viewModel.searchQuery = keyword
@@ -397,6 +399,7 @@ public struct SearchBookView: View {
                             Spacer()
                         }
                     }
+                    .appThemedRows()
                 }
             }
         }
