@@ -1282,12 +1282,12 @@ public struct BookshelfView: View {
                 Button("取消", role: .cancel) {}
             }
             .sheet(isPresented: $showShelfSizeSheet) {
-                if #available(iOS 16.4, *) {
+                if #available(iOS 16.4, macOS 13.3, *) {
                     shelfSizeSheet
                         .presentationDetents([.height(190)])
                         .presentationDragIndicator(.visible)
                         .presentationBackground(.clear)
-                } else if #available(iOS 16.0, *) {
+                } else if #available(iOS 16.0, macOS 13.0, *) {
                     shelfSizeSheet
                         .presentationDetents([.height(190)])
                         .presentationDragIndicator(.visible)
