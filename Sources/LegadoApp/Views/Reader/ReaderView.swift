@@ -859,6 +859,8 @@ struct GodReviewCardView: View {
     let accent: Color
     let textColor: Color
     let onAccentColor: Color
+    /// 0 左对齐 / 1 居中；跟热评样式面板里的「对齐」是同一个值
+    var alignment: Int = 0
     let onTap: () -> Void
 
     private var displayText: String {
@@ -888,9 +890,9 @@ struct GodReviewCardView: View {
                 Text(displayText)
                     .font(.system(size: 13))
                     .foregroundColor(textColor)
-                    .multilineTextAlignment(.leading)
+                    .multilineTextAlignment(alignment == 1 ? .center : .leading)
                     .lineSpacing(3)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .frame(maxWidth: .infinity, alignment: alignment == 1 ? .center : .leading)
                 }
             if let imageURL, !imageURL.isEmpty {
                 ChapterImageView(urlString: imageURL, referer: referer)
@@ -2868,7 +2870,8 @@ public struct ReaderView: View {
                                 referer: effectiveSource?.bookSourceUrl,
                                 accent: nierPalette.accent,
                                 textColor: nierPalette.ink,
-                                onAccentColor: nierPalette.background
+                                onAccentColor: nierPalette.background,
+                                alignment: reviewCardStyle.alignment
                             ) {
                                 if let url = block.commentURL {
                                     directCommentTarget = ReviewTarget(url: url, title: "段评")
@@ -4406,7 +4409,8 @@ public struct ReaderView: View {
             referer: effectiveSource?.bookSourceUrl,
             accent: nierPalette.accent,
             textColor: nierPalette.ink,
-            onAccentColor: nierPalette.background
+            onAccentColor: nierPalette.background,
+            alignment: reviewCardStyle.alignment
         ) {
             if let url = block.commentURL {
                 directCommentTarget = ReviewTarget(url: url, title: "段评")
@@ -7178,7 +7182,7 @@ public struct ReaderView: View {
         let reviewInset = Double(max(0, readerConfig.reviewInset))
         let reviewLineHeight = readerConfig.fontSize * reviewScale * 1.25 + readerConfig.lineSpacing
         // 跟 CoreTextUIView.reviewBands 同一个口径：卡片上下各多出这段留白
-        let reviewPad = min(10, max(4, readerConfig.paragraphSpacing * 0.7))
+        let reviewPad = min(14, max(8, readerConfig.paragraphSpacing + 1))
         // 断行的宽度必须和渲染时用的一致，不然一行排得比页宽，右边就被切掉
         let usableWidth = Double(max(200, readerContainerSize.width - readerConfig.paddingLeft - readerConfig.paddingRight))
 
@@ -8517,7 +8521,11 @@ public class CoreTextUIView: UIView {
             guard !lineText.isEmpty else { continue }
             let isParagraphStart = index == 0 || (index - 1 < isParagraphEnd.count && isParagraphEnd[index - 1])
             let lineParagraphId = index < lineParagraphIds.count ? lineParagraphIds[index] : -1
+            // 段落 id 之外的兜底：真实章节里热评块可能没有评论地址，id 也可能跨页漂掉，
+            // 首行前缀是最后的锚点，认不出来就会退回正文样式（字号、对齐全丢）。
             let isReviewLine = reviewParagraphIds.contains(lineParagraphId)
+                || lineText.hasPrefix("热评 · ")
+                || lineText.hasPrefix("神评 · ")
             let lineTextColor: UIColor
             if isReviewLine {
                 switch reviewStyle.textColorMode {
@@ -8590,7 +8598,10 @@ public class CoreTextUIView: UIView {
             var leading: CGFloat = 0
             CTLineGetTypographicBounds(finalLine, &ascent, &descent, &leading)
 
-            let baselineY = lineTops[index] + ascent
+            // 热评行的字面高度比行框矮，行框又上下各留了 pad，字看起来会偏上。
+            // 基线下压 2.5pt 让上下留白看起来一样宽（行框本身不动，分页不受影响）。
+            let reviewDrop: CGFloat = isReviewLine ? 2.5 : 0
+            let baselineY = lineTops[index] + ascent + reviewDrop
 
             // 标注与选中：段落级底色 / 下划线，选中时再叠一层淡蓝
             let blockId = index < lineBlockIds.count ? lineBlockIds[index] : -1
@@ -8746,8 +8757,9 @@ public class CoreTextUIView: UIView {
     /// 两处口径不可能再漂。
     private func reviewBands(lineTops: [CGFloat], lineHeights: [CGFloat], targetWidth: CGFloat) -> [(rect: CGRect, block: Int)] {
         guard reviewAccentColor != nil else { return [] }
-        // 卡片上下留白压在段间距里，段间距调小时自动收窄，不会盖住邻段文字
-        let pad = min(10, max(4, paragraphSpacing * 0.7))
+        // 卡片上下留白：旧值最小 4pt，热评行上沿几乎贴着边框。
+        // 段间距上再多给 1pt，保证窄段距时也有呼吸；只是画在上一段行框下沿，不会盖住字。
+        let pad = min(14, max(8, paragraphSpacing + 1))
         var bands: [(rect: CGRect, block: Int)] = []
         var startIndex: Int?
         var startParagraph: Int?

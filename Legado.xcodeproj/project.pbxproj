@@ -496,7 +496,7 @@
 				<key>CODE_SIGN_STYLE</key>
 				<string>Automatic</string>
 				<key>CURRENT_PROJECT_VERSION</key>
-				<string>5.0.2</string>
+				<string>5.0.3</string>
 				<key>DEVELOPMENT_TEAM</key>
 				<string></string>
 				<key>ENABLE_PREVIEWS</key>
@@ -518,7 +518,7 @@
 				<key>LD_RUNPATH_SEARCH_PATHS</key>
 				<string>$(inherited) @executable_path/Frameworks</string>
 				<key>MARKETING_VERSION</key>
-				<string>5.0.2</string>
+				<string>5.0.3</string>
 				<key>PRODUCT_BUNDLE_IDENTIFIER</key>
 				<string>com.factorcitrus.juyue</string>
 				<key>PRODUCT_NAME</key>
@@ -1563,7 +1563,7 @@
 				<key>CODE_SIGN_STYLE</key>
 				<string>Automatic</string>
 				<key>CURRENT_PROJECT_VERSION</key>
-				<string>5.0.2</string>
+				<string>5.0.3</string>
 				<key>DEVELOPMENT_TEAM</key>
 				<string></string>
 				<key>ENABLE_PREVIEWS</key>
@@ -1585,7 +1585,7 @@
 				<key>LD_RUNPATH_SEARCH_PATHS</key>
 				<string>$(inherited) @executable_path/Frameworks</string>
 				<key>MARKETING_VERSION</key>
-				<string>5.0.2</string>
+				<string>5.0.3</string>
 				<key>PRODUCT_BUNDLE_IDENTIFIER</key>
 				<string>com.factorcitrus.juyue</string>
 				<key>PRODUCT_NAME</key>

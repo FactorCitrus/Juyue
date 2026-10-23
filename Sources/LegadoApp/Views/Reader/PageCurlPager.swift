@@ -1050,7 +1050,8 @@ struct PageCurlContent: View {
                         referer: nil,
                         accent: accentColor,
                         textColor: textColor,
-                        onAccentColor: onAccentColor
+                        onAccentColor: onAccentColor,
+                        alignment: reviewStyle.alignment
                     ) {
                         if let url = block.commentURL {
                             onCommentTap?(url)
