@@ -1,5 +1,64 @@
 import Foundation
 
+/// 书源里的图片地址经常带两层包装：
+/// - 后端或脚本重复拼了 `data:`（`data:data:image/...`）；
+/// - 聚合源在图片后面追加 `,{"click":"showCmt(...)"}` 点击元数据。
+///
+/// 这两层都不能交给 `URLSession` / `Data(base64Encoded:)`，否则就是
+/// `kCFErrorDomainCFNetwork -10` 或 base64 解码失败。
+public enum ImageSourceNormalizer {
+    /// 去掉点击元数据，修正重复的 data 前缀，并把协议相对地址补成 https。
+    public static func normalize(_ raw: String) -> String {
+        var value = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !value.isEmpty else { return value }
+
+        // HTML 属性里可能还残留实体，先还原再判断。
+        value = value
+            .replacingOccurrences(of: "&amp;", with: "&")
+            .replacingOccurrences(of: "&#38;", with: "&")
+
+        value = stripMetadata(value)
+
+        // 有些聚合源把完整 data URI 再套一层 `data:`。
+        while value.lowercased().hasPrefix("data:data:") {
+            value.removeFirst("data:".count)
+        }
+
+        if value.hasPrefix("//") {
+            value = "https:" + value
+        }
+        return value
+    }
+
+    /// 只取图片本体，丢掉 `,{...}` / `,%7B...` / `,&quot;{...}` 这类点击元数据。
+    public static func stripMetadata(_ raw: String) -> String {
+        let value = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        let markers = [",%7B", ",%7b", ",&quot;{", ",{"]
+
+        for marker in markers {
+            guard let range = value.range(of: marker) else { continue }
+            let head = String(value[..<range.lowerBound])
+            let lower = head.lowercased()
+            guard lower.hasPrefix("data:")
+                    || lower.hasPrefix("http://")
+                    || lower.hasPrefix("https://")
+                    || head.hasPrefix("//") else { continue }
+            return head
+        }
+        return value
+    }
+
+    /// `data:image/...;base64,<payload>,<metadata>` 里的 base64 载荷。
+    /// base64 字母表不含逗号，所以第二个逗号之前就是图片本体。
+    public static func dataURIPayload(_ value: String) -> String? {
+        guard let comma = value.firstIndex(of: ",") else { return nil }
+        let body = value[value.index(after: comma)...]
+        let payload = body.split(separator: ",", maxSplits: 1, omittingEmptySubsequences: false).first.map(String.init) ?? ""
+        let trimmed = payload.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
+    }
+}
+
 /// 书源请求共用的准备逻辑。
 public enum SourceRequestSupport {
 
@@ -77,8 +136,9 @@ public enum MediaContentParser {
         return regex.matches(in: content, range: NSRange(location: 0, length: ns.length))
             .compactMap { match in
                 guard match.numberOfRanges > 1 else { return nil }
-                let value = ns.substring(with: match.range(at: 1))
-                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                let value = ImageSourceNormalizer.normalize(
+                    ns.substring(with: match.range(at: 1))
+                )
                 return value.isEmpty ? nil : value
             }
     }

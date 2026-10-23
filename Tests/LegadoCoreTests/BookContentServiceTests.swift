@@ -52,6 +52,45 @@ final class BookContentServiceTests: XCTestCase {
         XCTAssertEqual(marked.components(separatedBy: "\u{E000}G").count - 1, 2, marked)
     }
 
+    func testCleanHtmlNormalizesDoubleDataPrefix() {
+        let svg = "<svg xmlns='http://www.w3.org/2000/svg'><text>神评论</text><!--"
+            + String(repeating: "x", count: 600)
+            + "--></svg>"
+        let encoded = Data(svg.utf8).base64EncodedString()
+        let html = #"<p><img src="data:data:image/svg+xml;base64,\#(encoded)"></p>"#
+
+        let cleaned = BookContentService.cleanHtml(html)
+
+        XCTAssertTrue(
+            cleaned.contains("[image:data:image/svg+xml;base64,\(encoded)]"),
+            cleaned
+        )
+        XCTAssertFalse(cleaned.contains("data:data:"), cleaned)
+    }
+
+    func testPreserveReviewMarkersHandlesEncodedGodCardMetadata() throws {
+        let svg = "<svg><text>神评论</text><text>元数据被编码了</text></svg>"
+        let encoded = Data(svg.utf8).base64EncodedString()
+        let html = #"<img src="data:image/svg+xml;base64,\#(encoded),%7B&quot;js&quot;:&quot;showCmt('https://example.com/c','段评')&quot;%7D">"#
+
+        let marker = try godMarker(in: BookContentService.preserveReviewMarkers(html))
+
+        XCTAssertEqual(marker.text, "元数据被编码了")
+        XCTAssertEqual(marker.url, "https://example.com/c")
+    }
+
+    func testPreserveReviewMarkersConvertsSvgCardWithoutClickMetadata() throws {
+        let svg = "<svg><text>神评论</text><text>没有点击脚本也要显示</text></svg>"
+        let encoded = Data(svg.utf8).base64EncodedString()
+        let html = #"<img src="data:data:image/svg+xml;base64,\#(encoded),%7B">"#
+
+        let marker = try godMarker(in: BookContentService.preserveReviewMarkers(html))
+
+        XCTAssertEqual(marker.text, "没有点击脚本也要显示")
+        XCTAssertEqual(marker.url, "")
+        XCTAssertNil(marker.image)
+    }
+
     func testJSCacheMemoryHelpers() {
         let engine = JSEngine()
         let result = engine.eval(script: "cache.putMemory('k', 2); String(cache.getFromMemory('k'))")

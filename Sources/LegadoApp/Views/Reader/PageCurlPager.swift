@@ -39,6 +39,11 @@ public struct PageCurlPager: UIViewControllerRepresentable {
     public let paragraphSeparatorLines: Int
     public let paragraphSeparatorColor: Color
     public let textColor: Color
+    public let accentColor: Color
+    public let onAccentColor: Color
+    /// 热评卡片外观与点击目标
+    public let reviewStyle: ReviewCardStyle
+    public let reviewURLs: [Int: String]
     public let backgroundColor: Color
     /// 阅读背景图，跟着每一页和卷起来的背面一起铺
     public let backgroundImage: Image?
@@ -106,6 +111,10 @@ public struct PageCurlPager: UIViewControllerRepresentable {
         paragraphSeparatorLines: Int,
         paragraphSeparatorColor: Color,
         textColor: Color,
+        accentColor: Color,
+        onAccentColor: Color,
+        reviewStyle: ReviewCardStyle = ReviewCardStyle(),
+        reviewURLs: [Int: String] = [:],
         backgroundColor: Color,
         backgroundImage: Image?,
         chapterTitleScale: CGFloat,
@@ -163,6 +172,10 @@ public struct PageCurlPager: UIViewControllerRepresentable {
         self.paragraphSeparatorLines = paragraphSeparatorLines
         self.paragraphSeparatorColor = paragraphSeparatorColor
         self.textColor = textColor
+        self.accentColor = accentColor
+        self.onAccentColor = onAccentColor
+        self.reviewStyle = reviewStyle
+        self.reviewURLs = reviewURLs
         self.backgroundColor = backgroundColor
         self.backgroundImage = backgroundImage
         self.chapterTitleScale = chapterTitleScale
@@ -318,6 +331,9 @@ public struct PageCurlPager: UIViewControllerRepresentable {
         var parts: [String] = []
         parts.append(String(describing: backgroundColor))
         parts.append(String(describing: textColor))
+        parts.append(String(describing: accentColor))
+        parts.append("\(reviewStyle.fontScale)|\(reviewStyle.inset)|\(reviewStyle.opacity)|\(reviewStyle.style)|\(reviewStyle.alignment)|\(reviewStyle.textColorMode)")
+        parts.append(reviewURLs.map { "\($0.key)=\($0.value)" }.sorted().joined(separator: ","))
         parts.append("\(fontSize)")
         parts.append("\(lineSpacing)")
         parts.append("\(letterSpacing)")
@@ -448,6 +464,10 @@ public struct PageCurlPager: UIViewControllerRepresentable {
                 paragraphSeparatorLines: parent.paragraphSeparatorLines,
                 paragraphSeparatorColor: parent.paragraphSeparatorColor,
                 textColor: parent.textColor,
+                accentColor: parent.accentColor,
+                onAccentColor: parent.onAccentColor,
+                reviewStyle: parent.reviewStyle,
+                reviewURLs: parent.reviewURLs,
                 backgroundColor: parent.backgroundColor,
                 backgroundImage: parent.backgroundImage,
                 chapterTitleScale: parent.chapterTitleScale,
@@ -788,6 +808,10 @@ struct PageCurlContent: View {
     let paragraphSeparatorLines: Int
     let paragraphSeparatorColor: Color
     let textColor: Color
+    let accentColor: Color
+    let onAccentColor: Color
+    let reviewStyle: ReviewCardStyle
+    let reviewURLs: [Int: String]
     let backgroundColor: Color
     let backgroundImage: Image?
     let chapterTitleScale: CGFloat
@@ -1023,7 +1047,10 @@ struct PageCurlContent: View {
                     GodReviewCardView(
                         text: block.text,
                         imageURL: block.imageUrl,
-                        referer: nil
+                        referer: nil,
+                        accent: accentColor,
+                        textColor: textColor,
+                        onAccentColor: onAccentColor
                     ) {
                         if let url = block.commentURL {
                             onCommentTap?(url)
@@ -1083,6 +1110,9 @@ struct PageCurlContent: View {
                         onLongPressLine: onLongPressLine,
                         commentMap: commentMap,
                         pageBackgroundColor: backgroundColor,
+                        reviewAccentColor: accentColor,
+                        reviewStyle: reviewStyle,
+                        reviewURLs: reviewURLs,
                         onCommentTap: onCommentTap
                     )
                     .frame(width: usableWidth, height: contentHeight, alignment: .topLeading)

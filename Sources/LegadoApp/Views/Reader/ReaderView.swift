@@ -19,6 +19,8 @@ struct CollapsibleSettingBlock: View {
     let tint: Color
     let initiallyExpanded: Bool
     let summary: String?
+    /// 展开/收起回调：热评卡片块展开时把设置面板变透明，方便直接看字卡
+    let onExpandedChange: ((Bool) -> Void)?
     /// 内容闭包返回 AnyView：面板的泛型类型不再把整棵内容树嵌进类型名。
     /// iOS 27 的 Swift 运行时解码超深泛型名会栈溢出，点「界面」时直接闪退。
     private let content: () -> AnyView
@@ -31,6 +33,7 @@ struct CollapsibleSettingBlock: View {
         tint: Color,
         initiallyExpanded: Bool = false,
         summary: String? = nil,
+        onExpandedChange: ((Bool) -> Void)? = nil,
         @ViewBuilder content: @escaping () -> some View
     ) {
         self._expanded = State(initialValue: initiallyExpanded)
@@ -38,6 +41,7 @@ struct CollapsibleSettingBlock: View {
         self.tint = tint
         self.initiallyExpanded = initiallyExpanded
         self.summary = summary
+        self.onExpandedChange = onExpandedChange
         self.content = { AnyView(content()) }
     }
 
@@ -45,6 +49,7 @@ struct CollapsibleSettingBlock: View {
         VStack(alignment: .leading, spacing: 12) {
             Button {
                 withAnimation(.easeInOut(duration: 0.18)) { expanded.toggle() }
+                onExpandedChange?(expanded)
             } label: {
                 HStack(spacing: 8) {
                     RoundedRectangle(cornerRadius: 1.5, style: .continuous)
@@ -560,10 +565,300 @@ public struct LoadedChapter: Identifiable {
 }
 
 /// 热评卡片：滚动、分页、仿真共用。文字和可选插图都在这里画。
+/// 热评卡片的可调外观。设置面板改这里，分页/绘制两条路径读同一份。
+public struct ReviewCardStyle: Equatable {
+    public var fontScale: CGFloat
+    public var inset: CGFloat
+    public var opacity: CGFloat
+    /// 0 纸面卡 / 1 左线卡 / 2 无框
+    public var style: Int
+    /// 0 左对齐 / 1 居中
+    public var alignment: Int
+    /// 0 尼尔墨色 / 1 氧化红 / 2 跟随正文
+    public var textColorMode: Int
+
+    public init(fontScale: CGFloat = 0.82,
+                inset: CGFloat = 12,
+                opacity: CGFloat = 1,
+                style: Int = 0,
+                alignment: Int = 0,
+                textColorMode: Int = 0) {
+        self.fontScale = fontScale
+        self.inset = inset
+        self.opacity = opacity
+        self.style = style
+        self.alignment = alignment
+        self.textColorMode = textColorMode
+    }
+}
+
+/// 热评样式的实时预览：跟正文里那条卡片同一套参数，改哪一项当场能看到。
+struct ReviewStylePreview: View {
+    let style: ReviewCardStyle
+    let palette: NieRPalette
+    let accent: Color
+    let pageColor: Color
+    /// 正文的正文色 / 字号 / 行距 / 段距：预览必须跟阅读页同一套，不然调完对不上
+    let readerTextColor: Color
+    let baseFontSize: CGFloat
+    let readerLineSpacing: CGFloat
+    let paragraphSpacing: CGFloat
+    let readerFontName: String
+    var sample: String = "热评 · 这个重重的关上门真的全是细节，她作为曾经的地级，身上藏着的东西比谁都多……"
+
+    private var paper: Color {
+        palette.isDark ? Color(hex: "#23241F") ?? .black : Color(hex: "#F2ECDE") ?? .white
+    }
+
+    private var cardPad: CGFloat {
+        min(10, max(4, paragraphSpacing * 0.7))
+    }
+
+    private var textColor: Color {
+        switch style.textColorMode {
+        case 1: return accent
+        case 2: return readerTextColor
+        default: return palette.ink
+        }
+    }
+
+    var body: some View {
+        content
+            .padding(.horizontal, max(0, style.inset))
+            .padding(.vertical, cardPad)
+            .background(cardBackground)
+            .overlay(cardFrame)
+            .padding(.horizontal, 14)
+            .padding(.vertical, 12)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(pageColor)
+    }
+
+    private var content: some View {
+        Text(sample)
+            .font(.custom(readerFontName, size: baseFontSize * style.fontScale))
+            .foregroundColor(textColor)
+            .lineSpacing(readerLineSpacing)
+            .multilineTextAlignment(style.alignment == 1 ? .center : .leading)
+            .frame(maxWidth: .infinity, alignment: style.alignment == 1 ? .center : .leading)
+    }
+
+    @ViewBuilder
+    private var cardBackground: some View {
+        switch style.style {
+        case 1:
+            Rectangle().fill(paper.opacity(0.55 * style.opacity))
+        case 2:
+            Rectangle().fill(accent.opacity(0.09 * style.opacity))
+        default:
+            ZStack {
+                Rectangle().fill(paper)
+                Rectangle().fill(pageColor.opacity((palette.isDark ? 0.12 : 0.18) * style.opacity))
+                Rectangle().fill(accent.opacity((palette.isDark ? 0.06 : 0.04) * style.opacity))
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var cardFrame: some View {
+        switch style.style {
+        case 1:
+            HStack(spacing: 0) {
+                Rectangle().fill(accent.opacity(style.opacity)).frame(width: 3)
+                Spacer(minLength: 0)
+            }
+        case 2:
+            EmptyView()
+        default:
+            ZStack {
+                Rectangle().stroke(palette.line.opacity(style.opacity), lineWidth: 0.8)
+                Rectangle()
+                    .stroke(accent.opacity(0.26 * style.opacity), lineWidth: 0.5)
+                    .padding(3.5)
+                    .mask(
+                        VStack(spacing: 0) {
+                            Rectangle().frame(height: 1)
+                            Spacer()
+                            Rectangle().frame(height: 1)
+                        }
+                    )
+                HStack {
+                    Rectangle().fill(accent.opacity(style.opacity)).frame(width: 2).padding(.vertical, 9).padding(.leading, 4.5)
+                    Spacer(minLength: 0)
+                }
+                cornerMarks
+            }
+        }
+    }
+
+    private var cornerMarks: some View {
+        ZStack {
+            ForEach(0..<4, id: \.self) { corner in
+                let top = corner < 2
+                let leading = corner % 2 == 0
+                ZStack(alignment: Alignment(horizontal: leading ? .leading : .trailing,
+                                            vertical: top ? .top : .bottom)) {
+                    Rectangle().fill(accent).frame(width: 11, height: 1.6)
+                    Rectangle().fill(accent).frame(width: 1.6, height: 11)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity,
+                       alignment: Alignment(horizontal: leading ? .leading : .trailing,
+                                            vertical: top ? .top : .bottom))
+            }
+        }
+    }
+}
+
+/// 热评样式面板：上面预览，下面调参数，跟书架那套「先看效果再调」一致。
+struct ReviewStyleSheet: View {
+    @ObservedObject var config: ReaderConfig
+    @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        let palette = NieRPalette(colorScheme)
+        ZStack {
+            NieRBackdrop(palette: palette)
+            VStack(spacing: 0) {
+                NieRSheetHeader(
+                    palette: palette,
+                    kicker: "HOT REVIEW // STYLE",
+                    title: "热评样式",
+                    subtitle: "PREVIEW · LIVE"
+                ) {
+                    dismiss()
+                }
+                ScrollView(.vertical, showsIndicators: false) {
+                    VStack(alignment: .leading, spacing: 16) {
+                        ReviewStylePreview(
+                            style: currentStyle,
+                            palette: palette,
+                            accent: palette.accent,
+                            pageColor: config.backgroundColor,
+                            readerTextColor: config.textColor,
+                            baseFontSize: config.fontSize,
+                            readerLineSpacing: config.lineSpacing,
+                            paragraphSpacing: config.paragraphSpacing,
+                            readerFontName: config.font.postScriptName
+                        )
+                        .overlay(Rectangle().stroke(palette.line.opacity(0.5), lineWidth: 0.5))
+                        .padding(.horizontal, 16)
+
+                        VStack(alignment: .leading, spacing: 14) {
+                            sliderRow("字号", value: Binding(
+                                get: { config.reviewFontScale },
+                                set: { config.reviewFontScale = $0 }
+                            ), range: 0.65...1.15, suffix: "×", palette: palette)
+                            sliderRow("内边距", value: Binding(
+                                get: { config.reviewInset },
+                                set: { config.reviewInset = $0 }
+                            ), range: 6...28, suffix: "pt", palette: palette)
+                            sliderRow("透明度", value: Binding(
+                                get: { config.reviewCardOpacity },
+                                set: { config.reviewCardOpacity = $0 }
+                            ), range: 0.2...1, suffix: "", palette: palette)
+
+                            chipRow(palette: palette, title: "样式", options: ["纸面卡", "左线卡", "无框"],
+                                    selected: config.reviewCardStyle) { config.reviewCardStyle = $0 }
+                            chipRow(palette: palette, title: "文字色", options: ["尼尔墨", "氧化红", "跟正文"],
+                                    selected: config.reviewTextColorMode) { config.reviewTextColorMode = $0 }
+                            chipRow(palette: palette, title: "对齐", options: ["左对齐", "居中"],
+                                    selected: config.reviewAlignment) { config.reviewAlignment = $0 }
+
+                            Button {
+                                config.reviewFontScale = 0.82
+                                config.reviewInset = 12
+                                config.reviewCardOpacity = 1
+                                config.reviewCardStyle = 0
+                                config.reviewAlignment = 0
+                                config.reviewTextColorMode = 0
+                            } label: {
+                                Text("恢复默认")
+                                    .font(.system(size: 12, weight: .semibold, design: .monospaced))
+                                    .foregroundColor(palette.accent)
+                                    .padding(.horizontal, 12)
+                                    .padding(.vertical, 7)
+                                    .overlay(Rectangle().stroke(palette.accent.opacity(0.5), lineWidth: 0.8))
+                            }
+                            .buttonStyle(.plain)
+                        }
+                        .padding(.horizontal, 16)
+                        .padding(.bottom, 28)
+                    }
+                    .padding(.top, 4)
+                }
+            }
+        }
+    }
+
+    private var currentStyle: ReviewCardStyle {
+        ReviewCardStyle(
+            fontScale: config.reviewFontScale,
+            inset: config.reviewInset,
+            opacity: config.reviewCardOpacity,
+            style: config.reviewCardStyle,
+            alignment: config.reviewAlignment,
+            textColorMode: config.reviewTextColorMode
+        )
+    }
+
+    private func sliderRow(_ title: String, value: Binding<CGFloat>,
+                           range: ClosedRange<CGFloat>, suffix: String, palette: NieRPalette) -> some View {
+        HStack(spacing: 10) {
+            Text(title)
+                .font(.system(size: 11, weight: .medium))
+                .foregroundColor(palette.ink.opacity(0.7))
+                .frame(width: 52, alignment: .leading)
+            Slider(value: Binding(
+                get: { min(max(value.wrappedValue, range.lowerBound), range.upperBound) },
+                set: { value.wrappedValue = min(max($0, range.lowerBound), range.upperBound) }
+            ), in: range)
+                .tint(palette.accent)
+            Text(suffix == "×"
+                 ? String(format: "%.2f×", Double(value.wrappedValue))
+                 : suffix.isEmpty
+                    ? "\(Int((value.wrappedValue * 100).rounded()))%"
+                    : "\(Int(value.wrappedValue.rounded()))\(suffix)")
+                .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                .foregroundColor(palette.accent)
+                .frame(width: 52, alignment: .trailing)
+        }
+    }
+
+    private func chipRow(palette: NieRPalette, title: String, options: [String],
+                         selected: Int, action: @escaping (Int) -> Void) -> some View {
+        HStack(spacing: 8) {
+            Text(title)
+                .font(.system(size: 11, weight: .medium))
+                .foregroundColor(palette.ink.opacity(0.7))
+                .frame(width: 52, alignment: .leading)
+            ForEach(options.indices, id: \.self) { index in
+                Button {
+                    action(index)
+                } label: {
+                    Text(options[index])
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundColor(selected == index ? palette.accent : palette.ink.opacity(0.7))
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 6)
+                        .background(Rectangle().fill(palette.accent.opacity(selected == index ? 0.16 : 0.05)))
+                        .overlay(Rectangle().stroke(palette.accent.opacity(selected == index ? 0.6 : 0.16), lineWidth: 0.8))
+                }
+                .buttonStyle(.plain)
+            }
+            Spacer(minLength: 0)
+        }
+    }
+}
+
 struct GodReviewCardView: View {
     let text: String
     let imageURL: String?
     let referer: String?
+    /// 跟随阅读主题的强调色，卡片底色、边框、标签都吃这一套。
+    let accent: Color
+    let textColor: Color
+    let onAccentColor: Color
     let onTap: () -> Void
 
     private var displayText: String {
@@ -574,35 +869,49 @@ struct GodReviewCardView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-                HStack(alignment: .top, spacing: 9) {
-                    Text("热评")
-                        .font(.system(size: 11, weight: .bold))
-                        .foregroundColor(.white)
-                        .padding(.horizontal, 7)
-                        .padding(.vertical, 4)
-                        .background(Color.orange, in: RoundedRectangle(cornerRadius: 6))
-                    if !displayText.isEmpty, displayText != "热评" {
-                        Text(displayText)
-                            .font(.subheadline)
-                            .foregroundColor(.primary)
-                            .multilineTextAlignment(.leading)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                    }
+            HStack(alignment: .center, spacing: 7) {
+                Text("热评")
+                    .font(.system(size: 9, weight: .bold, design: .monospaced))
+                    .tracking(0.8)
+                    .foregroundColor(onAccentColor)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 3)
+                    .background(accent)
+                    .overlay(Rectangle().stroke(accent.opacity(0.9), lineWidth: 0.6))
+                Text("HOT REVIEW //")
+                    .font(.system(size: 9, weight: .semibold, design: .monospaced))
+                    .tracking(0.5)
+                    .foregroundColor(textColor.opacity(0.48))
+                Spacer(minLength: 0)
+            }
+            if !displayText.isEmpty, displayText != "热评" {
+                Text(displayText)
+                    .font(.system(size: 13))
+                    .foregroundColor(textColor)
+                    .multilineTextAlignment(.leading)
+                    .lineSpacing(3)
+                    .frame(maxWidth: .infinity, alignment: .leading)
                 }
-                if let imageURL, !imageURL.isEmpty {
-                    ChapterImageView(urlString: imageURL, referer: referer)
-                        .frame(maxWidth: .infinity)
-                        .frame(height: 180)
-                        .clipped()
-                        .clipShape(RoundedRectangle(cornerRadius: 8))
-                }
+            if let imageURL, !imageURL.isEmpty {
+                ChapterImageView(urlString: imageURL, referer: referer)
+                    .frame(maxWidth: .infinity)
+                    .frame(height: 180)
+                    .clipped()
+                    .overlay(Rectangle().stroke(accent.opacity(0.28), lineWidth: 0.6))
+            }
         }
-        .padding(11)
-        .background(RoundedRectangle(cornerRadius: 10).fill(Color.orange.opacity(0.10)))
-        .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.orange.opacity(0.22), lineWidth: 0.5))
+        .padding(12)
+        .background(onAccentColor)
+        .overlay(Rectangle().stroke(accent.opacity(0.55), lineWidth: 0.8))
+        .overlay(alignment: .topLeading) {
+            ZStack(alignment: .topLeading) {
+                Rectangle().fill(accent).frame(width: 12, height: 1.5)
+                Rectangle().fill(accent).frame(width: 1.5, height: 12)
+            }
+        }
         // 卡片整体点击开评论详情；插图里的「点击重试」按钮要能单独收到点击，
         // 所以用 contentShape + onTapGesture 而不是把整张卡包进 Button。
-        .contentShape(RoundedRectangle(cornerRadius: 10))
+        .contentShape(Rectangle())
         .onTapGesture(perform: onTap)
     }
 }
@@ -1290,6 +1599,7 @@ public struct ScrollOffsetPreferenceKey: PreferenceKey {
 public struct ReaderView: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.appTheme) private var theme
+    @Environment(\.colorScheme) private var colorScheme
     @StateObject private var readerConfig = ReaderConfig.shared
     @StateObject private var audioService = AudioBookService.shared
 
@@ -1304,6 +1614,36 @@ public struct ReaderView: View {
     @State private var previousSource: BookSource?
 
     private var activeBook: Book { switchedBook ?? book }
+
+    /// 热评卡片固定走尼尔配色，不跟随阅读主题色。
+    private var nierPalette: NieRPalette { NieRPalette(colorScheme) }
+
+    /// 热评卡片外观：设置项 → 绘制参数
+    private var reviewCardStyle: ReviewCardStyle {
+        ReviewCardStyle(
+            fontScale: readerConfig.reviewFontScale,
+            inset: readerConfig.reviewInset,
+            opacity: readerConfig.reviewCardOpacity,
+            style: readerConfig.reviewCardStyle,
+            alignment: readerConfig.reviewAlignment,
+            textColorMode: readerConfig.reviewTextColorMode
+        )
+    }
+
+    /// 热评块 id → 评论地址；源里没给单条地址就退回本章说
+    private var reviewURLMap: [Int: String] {
+        let blocks = currentLoadedChapter?.blocks ?? []
+        let chapterURL = blocks.first(where: { $0.commentCount == -1 })?.commentURL
+        var map: [Int: String] = [:]
+        for block in blocks where block.commentCount == -2 {
+            if let url = block.commentURL, !url.isEmpty {
+                map[block.id] = url
+            } else if let chapterURL {
+                map[block.id] = chapterURL
+            }
+        }
+        return map
+    }
 
     private var chromeBackground: Color {
         theme.choice == .lunarTerminal ? theme.palette.background : readerConfig.backgroundColor
@@ -1433,6 +1773,7 @@ public struct ReaderView: View {
     @State private var panelCollapsed = false
     @State private var layoutPreviewActive = false
     @State private var layoutPreviewToken = 0
+    @State private var showReviewStyleSheet = false
     /// 换章进行中：期间拦掉重复的翻页触发，免得拿旧章的页数推进
     @State private var isSwitchingChapter = false
     @State private var paginationTask: Task<Void, Never>?
@@ -1722,6 +2063,11 @@ public struct ReaderView: View {
                     } label: {
                         Label("刷新目录", systemImage: "list.bullet.rectangle")
                     }
+                    Button(role: .destructive) {
+                        clearCurrentBookCache()
+                    } label: {
+                        Label("清除本书缓存", systemImage: "trash")
+                    }
                     Button {
                         downloadCachedChapters()
                     } label: {
@@ -1730,7 +2076,7 @@ public struct ReaderView: View {
                     Button {
                         showReplaceRules = true
                     } label: {
-                        Label("替换净化规则", systemImage: "wand.and.sparkles")
+                        Label("替换净化规则", systemImage: "wand.and.stars")
                     }
                     Button {
                         showBookmarks = true
@@ -2386,6 +2732,10 @@ public struct ReaderView: View {
                 paragraphSeparatorLines: readerConfig.paragraphSeparatorLines,
                 paragraphSeparatorColor: readerConfig.paragraphSeparatorColor,
                 textColor: readerConfig.textColor,
+                accentColor: nierPalette.accent,
+                onAccentColor: nierPalette.background,
+                reviewStyle: reviewCardStyle,
+                reviewURLs: reviewURLMap,
                 backgroundColor: readerConfig.backgroundColor,
                 backgroundImage: readerConfig.backgroundImageEnabled
                     ? platformImage(atPath: readerConfig.backgroundImagePath)
@@ -2515,7 +2865,10 @@ public struct ReaderView: View {
                             GodReviewCardView(
                                 text: block.text,
                                 imageURL: block.imageUrl,
-                                referer: effectiveSource?.bookSourceUrl
+                                referer: effectiveSource?.bookSourceUrl,
+                                accent: nierPalette.accent,
+                                textColor: nierPalette.ink,
+                                onAccentColor: nierPalette.background
                             ) {
                                 if let url = block.commentURL {
                                     directCommentTarget = ReviewTarget(url: url, title: "段评")
@@ -2586,6 +2939,9 @@ public struct ReaderView: View {
                                },
                                commentMap: commentMap,
                                pageBackgroundColor: readerConfig.backgroundColor,
+                               reviewAccentColor: nierPalette.accent,
+                               reviewStyle: reviewCardStyle,
+                               reviewURLs: reviewURLMap,
                                onCommentTap: { url in
                                    directCommentTarget = ReviewTarget(url: url, title: "段评")
                                }
@@ -2949,6 +3305,11 @@ public struct ReaderView: View {
                 } label: {
                     Label("刷新目录", systemImage: "list.bullet.rectangle")
                 }
+                Button(role: .destructive) {
+                    clearCurrentBookCache()
+                } label: {
+                    Label("清除本书缓存", systemImage: "trash")
+                }
                 Menu {
                     ForEach([10, 20, 30, 50, 100], id: \.self) { n in
                         Button("往后 \(n) 章") { downloadCachedChapters(span: n) }
@@ -2961,7 +3322,7 @@ public struct ReaderView: View {
                 Button {
                     showReplaceRules = true
                 } label: {
-                    Label("替换净化规则", systemImage: "wand.and.sparkles")
+                    Label("替换净化规则", systemImage: "wand.and.stars")
                 }
                 Button {
                     showBookmarks = true
@@ -4042,7 +4403,10 @@ public struct ReaderView: View {
         GodReviewCardView(
             text: block.text,
             imageURL: block.imageUrl,
-            referer: effectiveSource?.bookSourceUrl
+            referer: effectiveSource?.bookSourceUrl,
+            accent: nierPalette.accent,
+            textColor: nierPalette.ink,
+            onAccentColor: nierPalette.background
         ) {
             if let url = block.commentURL {
                 directCommentTarget = ReviewTarget(url: url, title: "段评")
@@ -4802,6 +5166,25 @@ public struct ReaderView: View {
         loadInitialChapter(at: index, targetPageIndex: page)
     }
 
+    /// 清掉本书的章节缓存：磁盘 + 内存一起清，然后重抓当前章。
+    /// 旧缓存里没有热评标记时，靠这个换一份新正文。
+    private func clearCurrentBookCache() {
+        let index = currentChapterIndex
+        let page = currentPageIndex
+        let count = BookContentService.shared.getCacheCount(for: activeBook.bookUrl)
+        BookContentService.shared.clearCache(for: activeBook.bookUrl)
+        chapterCache.removeAll()
+        loadedChapters = []
+        audioService.stop()
+        errorMessage = nil
+        downloadHint = count > 0 ? "已清除本书缓存（\(count) 章）" : "本书没有缓存章节，已重新加载"
+        loadInitialChapter(at: index, targetPageIndex: page)
+        Task {
+            try? await Task.sleep(nanoseconds: 2_500_000_000)
+            await MainActor.run { downloadHint = nil }
+        }
+    }
+
     /// 手动刷新目录：重新抓章节列表，尽量停在原来那一章
     private func refreshChapterList() async {
         guard let source = effectiveSource else { return }
@@ -4914,6 +5297,11 @@ public struct ReaderView: View {
                         tint: readerConfig.textColor,
                         summary: readerConfig.useCustomColors ? "自定义" : "跟随主题"
                     ) { colorSection }
+                    CollapsibleSettingBlock(
+                        title: "热评卡片",
+                        tint: readerConfig.textColor,
+                        summary: "\(safeInt(readerConfig.reviewFontScale * 100))% · \(reviewStyleName)"
+                    ) { reviewCardSection }
                     CollapsibleSettingBlock(
                         title: "显示",
                         tint: readerConfig.textColor,
@@ -5897,6 +6285,71 @@ public struct ReaderView: View {
         .onAppear { AppLog.write("[阅读设置] 字号区已渲染") }
     }
 
+    private var reviewStyleName: String {
+        switch readerConfig.reviewCardStyle {
+        case 1: return "左线卡"
+        case 2: return "无框"
+        default: return "纸面卡"
+        }
+    }
+
+    private func reviewChip(_ title: String, selected: Bool, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Text(title)
+                .font(.system(size: 11, weight: .medium))
+                .foregroundColor(selected ? settingsAccent : readerConfig.textColor.opacity(0.72))
+                .padding(.horizontal, 10)
+                .padding(.vertical, 6)
+                .background(Rectangle().fill(settingsAccent.opacity(selected ? 0.16 : 0.05)))
+                .overlay(Rectangle().stroke(settingsAccent.opacity(selected ? 0.6 : 0.16), lineWidth: 0.8))
+        }
+        .buttonStyle(.plain)
+    }
+
+    private var reviewCardSection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            // 缩略预览：不进二级页也能看到当前效果
+            ReviewStylePreview(
+                style: reviewCardStyle,
+                palette: nierPalette,
+                accent: nierPalette.accent,
+                pageColor: readerConfig.backgroundColor,
+                readerTextColor: readerConfig.textColor,
+                baseFontSize: readerConfig.fontSize,
+                readerLineSpacing: readerConfig.lineSpacing,
+                paragraphSpacing: readerConfig.paragraphSpacing,
+                readerFontName: readerConfig.font.postScriptName,
+                sample: "热评 · 这条热评会跟着你的设置变化"
+            )
+            .overlay(Rectangle().stroke(readerConfig.textColor.opacity(0.12), lineWidth: 0.5))
+            .clipShape(Rectangle())
+
+            HStack(spacing: 8) {
+                Text("字号 \(safeInt(readerConfig.reviewFontScale * 100))% · 内边距 \(safeInt(readerConfig.reviewInset))pt · 不透明 \(safeInt(readerConfig.reviewCardOpacity * 100))%")
+                    .font(.system(size: 9, weight: .medium, design: .monospaced))
+                    .foregroundColor(readerConfig.textColor.opacity(0.45))
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.8)
+                Spacer(minLength: 0)
+                Button {
+                    showReviewStyleSheet = true
+                } label: {
+                    Text("预览调整")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundColor(settingsAccent)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 6)
+                        .overlay(Rectangle().stroke(settingsAccent.opacity(0.5), lineWidth: 0.8))
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(.top, 2)
+        .sheet(isPresented: $showReviewStyleSheet) {
+            ReviewStyleSheet(config: readerConfig)
+        }
+    }
+
     private var themeRow: some View {
         VStack(alignment: .leading, spacing: 10) {
             sectionDivider
@@ -6268,6 +6721,10 @@ public struct ReaderView: View {
             "\(readerConfig.letterSpacing)",
             "\(readerConfig.paragraphSpacing)",
             "\(readerConfig.firstLineIndent)",
+            "\(readerConfig.reviewFontScale)",
+            "\(readerConfig.reviewInset)",
+            "\(readerConfig.reviewCardStyle)",
+            "\(readerConfig.reviewAlignment)",
             "\(readerConfig.weightLevel)",
             "\(readerConfig.paddingTop)",
             "\(readerConfig.paddingBottom)",
@@ -6574,11 +7031,20 @@ public struct ReaderView: View {
     ///
     /// 这里必须跟 `CoreTextPageView` 用同一套字体和字距：换字体或把字距调大后，
     /// 按默认苹方、不带字距切出来的行，画的时候会宽于量出来的宽度，整页就溢出/错位。
-    private func splitParagraphIntoLines(text: String, width: Double) -> [(text: String, isParagraphEnd: Bool, charStart: Int)] {
+    /// 热评段用比正文小一号的字，并且左右各留出卡片内边距，
+    /// 所以断行必须按「小字号 + 收窄宽度」来算，跟 draw 那边保持同一口径。
+    private func splitParagraphIntoLines(
+        text: String,
+        width: Double,
+        fontSizeOverride: CGFloat? = nil,
+        horizontalInset: Double = 0,
+        suppressFirstLineIndent: Bool = false
+    ) -> [(text: String, isParagraphEnd: Bool, charStart: Int)] {
+        let fontSize = fontSizeOverride ?? readerConfig.fontSize
         let font = ReaderFontFactory.ctFont(
             postScriptName: readerConfig.font.postScriptName,
             boldPostScriptName: readerConfig.font.boldPostScriptName,
-            size: readerConfig.fontSize,
+            size: fontSize,
             weightLevel: readerConfig.weightLevel
         )
         let attributes: [CFString: Any] = [
@@ -6594,11 +7060,14 @@ public struct ReaderView: View {
         var result: [(text: String, isParagraphEnd: Bool, charStart: Int)] = []
         let nsStr = text as NSString
         // 段首会补全角缩进，第一行要按缩进后的宽度切，否则首行一定超宽
-        let indentWidth = Double(readerConfig.firstLineIndent.rounded()) * Double(readerConfig.fontSize)
+        let indentWidth = suppressFirstLineIndent
+            ? 0
+            : Double(readerConfig.firstLineIndent.rounded()) * Double(fontSize)
+        let textWidth = max(20, width - horizontalInset * 2)
         var isFirstLine = true
 
         while start < textLen {
-            let available = isFirstLine ? max(20, width - indentWidth) : width
+            let available = isFirstLine ? max(20, textWidth - indentWidth) : textWidth
             var count = CTTypesetterSuggestLineBreak(typesetter, start, available)
             if count <= 0 { break }
             if readerConfig.punctuationKinsoku {
@@ -6704,6 +7173,12 @@ public struct ReaderView: View {
         let normalHeight = metrics.pageHeight
         let firstPageHeight = metrics.firstPageHeight
         let lineHeight = readerConfig.fontSize * 1.25 + readerConfig.lineSpacing
+        // 热评卡片：小一号字 + 两侧内边距，跟 CoreTextUIView.draw 的口径一致
+        let reviewScale = max(0.5, readerConfig.reviewFontScale)
+        let reviewInset = Double(max(0, readerConfig.reviewInset))
+        let reviewLineHeight = readerConfig.fontSize * reviewScale * 1.25 + readerConfig.lineSpacing
+        // 跟 CoreTextUIView.reviewBands 同一个口径：卡片上下各多出这段留白
+        let reviewPad = min(10, max(4, readerConfig.paragraphSpacing * 0.7))
         // 断行的宽度必须和渲染时用的一致，不然一行排得比页宽，右边就被切掉
         let usableWidth = Double(max(200, readerContainerSize.width - readerConfig.paddingLeft - readerConfig.paddingRight))
 
@@ -6714,16 +7189,6 @@ public struct ReaderView: View {
         var blockIdCounter = 10000
 
         for block in blocks {
-            if block.commentCount == -2 {
-                if !currentPageLines.isEmpty {
-                    pages.append(buildPageBlocks(from: currentPageLines, startingId: &blockIdCounter))
-                    currentPageLines = []
-                }
-                pages.append([block])
-                currentPageHeight = 0
-                maxHeightForCurrentPage = normalHeight
-                continue
-            }
             if block.isImage {
                 if !currentPageLines.isEmpty {
                     pages.append(buildPageBlocks(from: currentPageLines, startingId: &blockIdCounter))
@@ -6735,11 +7200,39 @@ public struct ReaderView: View {
                 currentPageHeight = 0
                 maxHeightForCurrentPage = normalHeight
             } else {
-                let pLines = splitParagraphIntoLines(text: block.text, width: usableWidth)
+                let isReviewBlock = block.commentCount == -2
+                let pLines = splitParagraphIntoLines(
+                    text: block.text,
+                    width: usableWidth,
+                    fontSizeOverride: isReviewBlock ? readerConfig.fontSize * reviewScale : nil,
+                    horizontalInset: isReviewBlock ? reviewInset : 0,
+                    suppressFirstLineIndent: isReviewBlock
+                )
+                // 卡片整块留在同一页，不然框会从中间被页面切断
+                if isReviewBlock, !currentPageLines.isEmpty {
+                    let spacingBefore: CGFloat = currentPageLines.last?.isParagraphEnd == true
+                        ? readerConfig.paragraphSpacing : 0
+                    let topExtra: CGFloat = currentPageLines.isEmpty
+                        ? 0
+                        : max(0, reviewPad - spacingBefore)
+                    let bottomExtra = max(0, reviewPad - readerConfig.paragraphSpacing)
+                    let blockHeight = spacingBefore
+                        + CGFloat(pLines.count) * reviewLineHeight
+                        + readerConfig.paragraphSpacing
+                        + topExtra
+                        + bottomExtra
+                    if currentPageHeight + blockHeight > maxHeightForCurrentPage,
+                       blockHeight <= normalHeight {
+                        pages.append(buildPageBlocks(from: currentPageLines, startingId: &blockIdCounter))
+                        currentPageLines = []
+                        currentPageHeight = 0
+                        maxHeightForCurrentPage = normalHeight
+                    }
+                }
                 for lineInfo in pLines {
                     // 段间距算在两个段落之间：上一行是段尾时，这一行之前才加间距，
                     // 页面最后一行后面不会白留一截
-                    var lineHeightWithSpacing = lineHeight
+                    var lineHeightWithSpacing = isReviewBlock ? reviewLineHeight : lineHeight
                     if currentPageLines.last?.isParagraphEnd == true {
                         lineHeightWithSpacing += readerConfig.paragraphSpacing
                     }
@@ -6802,7 +7295,7 @@ public struct ChapterImageView: View {
             } else if loadFailed {
                 Button(action: { Task { await loadImage() } }) {
                     VStack(spacing: 6) {
-                        Image(systemName: "photo.badge.exclamationmark")
+                        Image(systemName: "exclamationmark.triangle")
                             .font(.system(size: 22))
                             .foregroundColor(.secondary)
                         Text("插图加载失败，点击重试")
@@ -6827,8 +7320,15 @@ public struct ChapterImageView: View {
     }
 
     private func loadImage() async {
-        let trimmed = urlString.trimmingCharacters(in: .whitespacesAndNewlines)
+        var trimmed = ImageSourceNormalizer.normalize(urlString)
         guard !trimmed.isEmpty else { return }
+
+        // 夹了空格/中文的裸地址先补成 URLSession 能吃的形式，否则报 -10。
+        if !trimmed.contains("://"), !trimmed.hasPrefix("data:") {
+            if let encoded = trimmed.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) {
+                trimmed = encoded
+            }
+        }
 
         // data:image 内联图（聚合源常见）：直接解码，不发网络请求
         if trimmed.hasPrefix("data:image") {
@@ -6853,6 +7353,7 @@ public struct ChapterImageView: View {
                 }
             }
             AppLog.write("[插图] 失败 dataURI kind=\(trimmed.prefix(32))")
+            Self.dumpRaw(urlString)
             self.isLoading = false
             self.loadFailed = true
             return
@@ -6928,6 +7429,7 @@ public struct ChapterImageView: View {
             } else {
                 let status = (response as? HTTPURLResponse)?.statusCode ?? -1
                 AppLog.write("[插图] 失败 host=\(url.host ?? "-") status=\(status) bytes=\(data.count)")
+                Self.dumpRaw(urlString)
                 await MainActor.run {
                     self.isLoading = false
                     self.loadFailed = true
@@ -6935,10 +7437,26 @@ public struct ChapterImageView: View {
             }
         } catch {
             AppLog.write("[插图] 失败 host=\(url.host ?? "-") error=\(error.localizedDescription)")
+            Self.dumpRaw(urlString)
             await MainActor.run {
                 self.isLoading = false
                 self.loadFailed = true
             }
+        }
+    }
+
+    // 原始地址落盘排查用：AppLog 会过滤 URL 的 path/query，这里只写本地 Documents
+    private static func dumpRaw(_ raw: String) {
+        let dir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+        let file = dir.appendingPathComponent("hot_review_debug.txt")
+        let line = Date().ISO8601Format() + " " + String(raw.prefix(400)) + "\n"
+        guard let data = line.data(using: .utf8) else { return }
+        if let handle = try? FileHandle(forWritingTo: file) {
+            handle.seekToEndOfFile()
+            handle.write(data)
+            try? handle.close()
+        } else {
+            try? data.write(to: file)
         }
     }
 
@@ -7137,6 +7655,12 @@ public struct CoreTextPageView: NSViewRepresentable {
     public var onLongPressLine: ((Int, Int) -> Void)?
     public var commentMap: [Int: (count: Int, url: String)] = [:]
     public var pageBackgroundColor: Color = .clear
+    /// 热评段落跟随阅读主题的强调色；普通正文仍用 textColor。
+    public var reviewAccentColor: Color? = nil
+    /// 热评卡片外观
+    public var reviewStyle: ReviewCardStyle = ReviewCardStyle()
+    /// 热评块 id → 评论地址；点卡片进热评页
+    public var reviewURLs: [Int: String] = [:]
     public var onCommentTap: ((String) -> Void)?
 
     public func makeNSView(context: Context) -> CoreTextNSView {
@@ -7244,7 +7768,8 @@ public class CoreTextNSView: NSView {
             }
             guard let attrStr = CFAttributedStringCreate(nil, renderedText as CFString, attrs as CFDictionary) else { continue }
             let typesetter = CTTypesetterCreateWithAttributedString(attrStr)
-            let ctLine = CTTypesetterCreateLine(typesetter, CFRange(location: 0, length: renderedText.count))
+            // 长度必须按 UTF-16 算：emoji 是代理对，用 String.count 会把范围截在半个表情上
+            let ctLine = CTTypesetterCreateLine(typesetter, CFRange(location: 0, length: (renderedText as NSString).length))
 
             let isEnd = (index < isParagraphEnd.count) ? isParagraphEnd[index] : false
             let finalLine: CTLine
@@ -7527,6 +8052,12 @@ public struct CoreTextPageView: UIViewRepresentable {
     public var onLongPressLine: ((Int, Int) -> Void)?
     public var commentMap: [Int: (count: Int, url: String)] = [:]
     public var pageBackgroundColor: Color = .clear
+    /// 热评段落跟随阅读主题的强调色；普通正文仍用 textColor。
+    public var reviewAccentColor: Color? = nil
+    /// 热评卡片外观
+    public var reviewStyle: ReviewCardStyle = ReviewCardStyle()
+    /// 热评块 id → 评论地址；点卡片进热评页
+    public var reviewURLs: [Int: String] = [:]
     public var onCommentTap: ((String) -> Void)?
 
     public func makeUIView(context: Context) -> CoreTextUIView {
@@ -7562,6 +8093,9 @@ public struct CoreTextPageView: UIViewRepresentable {
         uiView.onLongPressLine = onLongPressLine
         uiView.commentMap = commentMap
         uiView.bubbleFillColor = UIColor(pageBackgroundColor)
+        uiView.reviewAccentColor = reviewAccentColor.map { UIColor($0) }
+        uiView.reviewStyle = reviewStyle
+        uiView.reviewURLs = reviewURLs
         uiView.onCommentTap = onCommentTap
         uiView.textColor = UIColor(textColor)
         uiView.containerWidth = width
@@ -7622,8 +8156,14 @@ public class CoreTextUIView: UIView {
     /// 段落 id → 评论数 / 评论地址；段尾画气泡
     public var commentMap: [Int: (count: Int, url: String)] = [:]
     public var bubbleFillColor: UIColor = .clear
+    public var reviewAccentColor: UIColor?
+    /// 热评卡片外观（字号/内边距/透明度/样式/对齐/文字色）
+    public var reviewStyle: ReviewCardStyle = ReviewCardStyle()
+    /// 热评块 id → 评论地址，点卡片直接进对应热评页
+    public var reviewURLs: [Int: String] = [:]
     public var onCommentTap: ((String) -> Void)?
     private var commentBubbleRects: [(rect: CGRect, url: String)] = []
+    private var reviewCardRects: [(rect: CGRect, url: String)] = []
 
     public override init(frame: CGRect) {
         super.init(frame: frame)
@@ -7631,6 +8171,9 @@ public class CoreTextUIView: UIView {
         press.minimumPressDuration = 0.3
         press.allowableMovement = 22
         addGestureRecognizer(press)
+        let tap = UITapGestureRecognizer(target: self, action: #selector(handleTap(_:)))
+        tap.delegate = self
+        addGestureRecognizer(tap)
     }
 
     public required init?(coder: NSCoder) {
@@ -7639,6 +8182,21 @@ public class CoreTextUIView: UIView {
         press.minimumPressDuration = 0.3
         press.allowableMovement = 22
         addGestureRecognizer(press)
+        let tap = UITapGestureRecognizer(target: self, action: #selector(handleTap(_:)))
+        tap.delegate = self
+        addGestureRecognizer(tap)
+    }
+
+    /// 点热评卡片 → 进热评页；点段评气泡 → 进段评。其余位置交给翻页手势。
+    @objc private func handleTap(_ recognizer: UITapGestureRecognizer) {
+        let point = recognizer.location(in: self)
+        if let hit = reviewCardRects.first(where: { $0.rect.contains(point) }) {
+            onCommentTap?(hit.url)
+            return
+        }
+        if let hit = commentBubbleRects.first(where: { $0.rect.insetBy(dx: -6, dy: -6).contains(point) }) {
+            onCommentTap?(hit.url)
+        }
     }
 
     /// 长按落在哪一行 —— 行矩形是上一次绘制的产物，够用（同一页尺寸不会在两次绘制间变）
@@ -7793,6 +8351,9 @@ public class CoreTextUIView: UIView {
             chineseConversion.rawValue, fontPostScriptName, boldPostScriptName ?? "",
             "\(containerWidth)", "\(containerHeight)", textAlignment.rawValue,
             "\(underlineEnabled)", underlineColor?.description ?? "", textColor.description,
+            reviewAccentColor?.description ?? "",
+            "\(reviewStyle.fontScale)|\(reviewStyle.inset)|\(reviewStyle.opacity)|\(reviewStyle.style)|\(reviewStyle.alignment)|\(reviewStyle.textColorMode)",
+            reviewURLs.map { "\($0.key)=\($0.value)" }.sorted().joined(separator: ","),
             "\(paragraphSeparatorLines)", paragraphSeparatorColor?.description ?? ""
         ]
         parts.append(contentsOf: lines)
@@ -7828,40 +8389,197 @@ public class CoreTextUIView: UIView {
             weightLevel: weightLevel
         )
         let effectiveLineHeight = fontSize * 1.25 + lineSpacing
+        // 热评卡片排版：小一号字、更矮的行高、左右留内边距
+        let reviewScale = max(0.5, reviewStyle.fontScale)
+        let reviewInset = max(0, reviewStyle.inset)
+        let reviewLineHeight = fontSize * reviewScale * 1.25 + lineSpacing
+        let reviewFont = ReaderFontFactory.ctFont(
+            postScriptName: fontPostScriptName,
+            boldPostScriptName: boldPostScriptName,
+            size: fontSize * reviewScale,
+            weightLevel: weightLevel
+        )
         let targetWidth = Double(max(100, containerWidth))
-        var paragraphOffset: CGFloat = 0
+
+        // 热评段的段落 id：首行带「热评 · / 神评 · 」前缀；跨页后的续行没有前缀，
+        // 只能靠 reviewURLs 里的块 id 认回来，否则第二页会掉回正文样式。
+        var reviewParagraphIds = Set<Int>()
+        for paragraphId in lineParagraphIds where reviewURLs[paragraphId] != nil {
+            reviewParagraphIds.insert(paragraphId)
+        }
+        for (index, lineText) in lines.enumerated()
+        where lineText.hasPrefix("热评 · ") || lineText.hasPrefix("神评 · ") {
+            if index < lineParagraphIds.count { reviewParagraphIds.insert(lineParagraphIds[index]) }
+        }
+
+        // 每行的顶部 y 与行高。热评行更矮，所以不能再用 index * 行高。
+        var lineTops = [CGFloat](repeating: 0, count: lines.count)
+        var lineHeights = [CGFloat](repeating: effectiveLineHeight, count: lines.count)
+        var cursor: CGFloat = 0
+        for index in lines.indices {
+            let paragraphId = index < lineParagraphIds.count ? lineParagraphIds[index] : -1
+            let isReview = reviewParagraphIds.contains(paragraphId)
+            lineTops[index] = cursor
+            lineHeights[index] = isReview ? reviewLineHeight : effectiveLineHeight
+            cursor += lineHeights[index]
+            if index < isParagraphEnd.count, isParagraphEnd[index] {
+                cursor += paragraphSpacing
+            }
+        }
+
+        var pageR: CGFloat = 0, pageG: CGFloat = 0, pageB: CGFloat = 0, pageA: CGFloat = 0
+        bubbleFillColor.getRed(&pageR, green: &pageG, blue: &pageB, alpha: &pageA)
+        let isDarkPage = (0.299 * pageR + 0.587 * pageG + 0.114 * pageB) < 0.5
+        let paper = isDarkPage
+            ? UIColor(red: 0.137, green: 0.141, blue: 0.129, alpha: 1)
+            : UIColor(red: 0.949, green: 0.925, blue: 0.871, alpha: 1)
+        let nierInk = isDarkPage
+            ? UIColor(red: 0.914, green: 0.882, blue: 0.824, alpha: 1)
+            : UIColor(red: 0.118, green: 0.114, blue: 0.102, alpha: 1)
+        let nierLine = isDarkPage
+            ? UIColor(red: 0.290, green: 0.282, blue: 0.255, alpha: 1)
+            : UIColor(red: 0.725, green: 0.682, blue: 0.608, alpha: 1)
+
+        // 热评段先铺一层尼尔风格的纸面卡片：方角、细描边、左上角氧化色角标。
+        // 卡片跟着正文一起分页，不再单独占一页。
+        reviewCardRects.removeAll(keepingCapacity: true)
+        for item in reviewBands(lineTops: lineTops, lineHeights: lineHeights, targetWidth: CGFloat(targetWidth)) {
+            guard let accent = reviewAccentColor else { continue }
+            let band = item.rect
+            if let url = reviewURLs[item.block], !url.isEmpty {
+                reviewCardRects.append((band, url))
+            }
+            ctx.saveGState()
+            let op = max(0.05, min(1, reviewStyle.opacity))
+            switch reviewStyle.style {
+            case 1:
+                // 左线卡：只保留底色和一根氧化色导轨
+                ctx.setFillColor(paper.withAlphaComponent(0.55 * op).cgColor)
+                ctx.fill(band)
+                ctx.setFillColor(accent.withAlphaComponent(op).cgColor)
+                ctx.fill(CGRect(x: band.minX, y: band.minY + 2,
+                                width: 3, height: max(6, band.height - 4)))
+            case 2:
+                // 无框：一层淡底，靠字号和颜色跟正文区分
+                ctx.setFillColor(accent.withAlphaComponent(0.09 * op).cgColor)
+                ctx.fill(band)
+            default:
+                // 纸面卡：纸底 + 双线 + 四角折角标
+                ctx.setFillColor(paper.cgColor)
+                ctx.fill(band)
+                ctx.setFillColor(bubbleFillColor.withAlphaComponent((isDarkPage ? 0.12 : 0.18) * op).cgColor)
+                ctx.fill(band)
+                ctx.setFillColor(accent.withAlphaComponent((isDarkPage ? 0.06 : 0.04) * op).cgColor)
+                ctx.fill(band)
+                // 细扫描线，只在纸面上压一层很淡的终端质感
+                ctx.setStrokeColor(nierLine.withAlphaComponent((isDarkPage ? 0.14 : 0.10) * op).cgColor)
+                ctx.setLineWidth(0.5)
+                var scanY = band.minY + 4
+                while scanY < band.maxY {
+                    ctx.move(to: CGPoint(x: band.minX + 1, y: scanY))
+                    ctx.addLine(to: CGPoint(x: band.maxX - 1, y: scanY))
+                    scanY += 4
+                }
+                ctx.strokePath()
+                // 外框
+                ctx.setStrokeColor(nierLine.withAlphaComponent(op).cgColor)
+                ctx.setLineWidth(0.8)
+                ctx.stroke(band)
+                // 左侧氧化色导轨：字有内边距了，这条竖线不会压到正文
+                ctx.setFillColor(accent.cgColor)
+                ctx.fill(CGRect(x: band.minX + 4.5, y: band.minY + 9,
+                                width: 2, height: max(6, band.height - 18)))
+                // 内侧两道细横线：竖向留给左侧导轨，不然线和线挤在一起
+                ctx.setStrokeColor(accent.withAlphaComponent((isDarkPage ? 0.34 : 0.26) * op).cgColor)
+                ctx.setLineWidth(0.5)
+                ctx.move(to: CGPoint(x: band.minX + 3.5, y: band.minY + 3.5))
+                ctx.addLine(to: CGPoint(x: band.maxX - 3.5, y: band.minY + 3.5))
+                ctx.move(to: CGPoint(x: band.minX + 3.5, y: band.maxY - 3.5))
+                ctx.addLine(to: CGPoint(x: band.maxX - 3.5, y: band.maxY - 3.5))
+                ctx.strokePath()
+                // 四角折角标，比纯边框更像仪器面板
+                ctx.setFillColor(accent.cgColor)
+                let arm: CGFloat = 11
+                let thick: CGFloat = 1.6
+                ctx.fill(CGRect(x: band.minX, y: band.minY, width: arm, height: thick))
+                ctx.fill(CGRect(x: band.minX, y: band.minY, width: thick, height: arm))
+                ctx.fill(CGRect(x: band.maxX - arm, y: band.minY, width: arm, height: thick))
+                ctx.fill(CGRect(x: band.maxX - thick, y: band.minY, width: thick, height: arm))
+                ctx.fill(CGRect(x: band.minX, y: band.maxY - thick, width: arm, height: thick))
+                ctx.fill(CGRect(x: band.minX, y: band.maxY - arm, width: thick, height: arm))
+                ctx.fill(CGRect(x: band.maxX - arm, y: band.maxY - thick, width: arm, height: thick))
+                ctx.fill(CGRect(x: band.maxX - thick, y: band.maxY - arm, width: thick, height: arm))
+            }
+            ctx.restoreGState()
+        }
 
         for (index, lineText) in lines.enumerated() {
             guard !lineText.isEmpty else { continue }
             let isParagraphStart = index == 0 || (index - 1 < isParagraphEnd.count && isParagraphEnd[index - 1])
+            let lineParagraphId = index < lineParagraphIds.count ? lineParagraphIds[index] : -1
+            let isReviewLine = reviewParagraphIds.contains(lineParagraphId)
+            let lineTextColor: UIColor
+            if isReviewLine {
+                switch reviewStyle.textColorMode {
+                case 1: lineTextColor = reviewAccentColor ?? nierInk
+                case 2: lineTextColor = textColor
+                default: lineTextColor = nierInk
+                }
+            } else {
+                lineTextColor = textColor
+            }
+            let lineFont = isReviewLine ? reviewFont : ctFont
+            let lineInset = isReviewLine ? reviewInset : 0
+            let lineTargetWidth = max(40, CGFloat(targetWidth) - lineInset * 2)
             let convertedText = chineseConversion.apply(lineText)
             let renderedText = isParagraphStart ? String(repeating: "　", count: Int(firstLineIndent.rounded())) + convertedText : convertedText
             var attrs: [CFString: Any] = [
-                kCTFontAttributeName: ctFont,
-                kCTForegroundColorAttributeName: textColor.cgColor,
+                kCTFontAttributeName: lineFont,
+                kCTForegroundColorAttributeName: lineTextColor.cgColor,
                 kCTKernAttributeName: letterSpacing
             ]
             if underlineEnabled {
                 attrs[kCTUnderlineStyleAttributeName] = CTUnderlineStyle.single.rawValue
-                attrs[kCTUnderlineColorAttributeName] = (underlineColor ?? textColor).cgColor
+                attrs[kCTUnderlineColorAttributeName] = (underlineColor ?? lineTextColor).cgColor
             }
-            guard let attrStr = CFAttributedStringCreate(nil, renderedText as CFString, attrs as CFDictionary) else { continue }
+            guard let attrStr = CFAttributedStringCreateMutable(nil, 0) else { continue }
+            CFAttributedStringReplaceString(attrStr, CFRange(location: 0, length: 0), renderedText as CFString)
+            let renderedLength = (renderedText as NSString).length
+            CFAttributedStringSetAttributes(attrStr, CFRange(location: 0, length: renderedLength), attrs as CFDictionary, false)
+            if isReviewLine, let accent = reviewAccentColor {
+                let prefix = lineText.hasPrefix("神评 · ") ? "神评 · " : "热评 · "
+                let prefixRange = (renderedText as NSString).range(of: prefix)
+                if prefixRange.location != NSNotFound {
+                    CFAttributedStringSetAttribute(
+                        attrStr,
+                        CFRange(location: prefixRange.location, length: prefixRange.length),
+                        kCTForegroundColorAttributeName,
+                        accent.cgColor
+                    )
+                }
+            }
             let typesetter = CTTypesetterCreateWithAttributedString(attrStr)
-            let ctLine = CTTypesetterCreateLine(typesetter, CFRange(location: 0, length: renderedText.count))
+            // 长度必须按 UTF-16 算：emoji 是代理对，用 String.count 会把范围截在半个表情上
+            let ctLine = CTTypesetterCreateLine(typesetter, CFRange(location: 0, length: (renderedText as NSString).length))
 
             let isEnd = (index < isParagraphEnd.count) ? isParagraphEnd[index] : false
+            // 热评卡片的对齐只认自己的设置；正文继续跟全局对齐走。
+            let effectiveAlignment: ReaderTextAlignment = isReviewLine
+                ? (reviewStyle.alignment == 1 ? .center : .leading)
+                : textAlignment
+            let alignWidth: CGFloat = isReviewLine ? lineTargetWidth : CGFloat(targetWidth)
             let finalLine: CTLine
             var penOffset: CGFloat = 0
-            if textAlignment == .justify, !isEnd, lineText.count > 5 {
-                finalLine = CTLineCreateJustifiedLine(ctLine, 1.0, targetWidth) ?? ctLine
+            if effectiveAlignment == .justify, !isEnd, lineText.count > 5 {
+                finalLine = CTLineCreateJustifiedLine(ctLine, 1.0, alignWidth) ?? ctLine
             } else {
                 finalLine = ctLine
                 // 居中/靠右 CTLine 自己算不出位置，要用 flush 偏移推过去
-                switch textAlignment {
+                switch effectiveAlignment {
                 case .center:
-                    penOffset = CGFloat(CTLineGetPenOffsetForFlush(ctLine, 0.5, targetWidth))
+                    penOffset = CGFloat(CTLineGetPenOffsetForFlush(ctLine, 0.5, alignWidth))
                 case .trailing:
-                    penOffset = CGFloat(CTLineGetPenOffsetForFlush(ctLine, 1.0, targetWidth))
+                    penOffset = CGFloat(CTLineGetPenOffsetForFlush(ctLine, 1.0, alignWidth))
                 default:
                     break
                 }
@@ -7872,11 +8590,12 @@ public class CoreTextUIView: UIView {
             var leading: CGFloat = 0
             CTLineGetTypographicBounds(finalLine, &ascent, &descent, &leading)
 
-            let baselineY = CGFloat(index) * effectiveLineHeight + ascent + paragraphOffset
+            let baselineY = lineTops[index] + ascent
 
             // 标注与选中：段落级底色 / 下划线，选中时再叠一层淡蓝
             let blockId = index < lineBlockIds.count ? lineBlockIds[index] : -1
-            let lineRect = CGRect(x: 0, y: baselineY - ascent, width: CGFloat(targetWidth), height: ascent + descent)
+            let lineRect = CGRect(x: lineInset, y: baselineY - ascent,
+                                  width: lineTargetWidth, height: ascent + descent)
             rects[index] = lineRect
 
             // 逐字边界：CTLine 的字符偏移加上行本身的对齐位移
@@ -7891,7 +8610,7 @@ public class CoreTextUIView: UIView {
                     : 0
                 let renderedIndex = min(convUnits, max(0, mapped)) + indentUnits
                 let x = CGFloat(CTLineGetOffsetForStringIndex(finalLine, renderedIndex, nil))
-                boundaries.append(x + penOffset)
+                boundaries.append(x + penOffset + lineInset)
             }
             let paragraphId = index < lineParagraphIds.count ? lineParagraphIds[index] : -1
             let charStart = index < lineCharStarts.count ? lineCharStarts[index] : 0
@@ -7954,7 +8673,7 @@ public class CoreTextUIView: UIView {
 
             ctx.saveGState()
             ctx.textMatrix = .identity
-            ctx.translateBy(x: penOffset, y: baselineY)
+            ctx.translateBy(x: penOffset + lineInset, y: baselineY)
             ctx.scaleBy(x: 1.0, y: -1.0)
             CTLineDraw(finalLine, ctx)
             ctx.restoreGState()
@@ -8019,9 +8738,43 @@ public class CoreTextUIView: UIView {
                     ctx.strokePath()
                     ctx.restoreGState()
                 }
-                paragraphOffset += paragraphSpacing
             }
         }
+    }
+
+    /// 热评段在正文里的矩形范围。行 y 坐标直接吃 draw(_:) 算好的 lineTops / lineHeights，
+    /// 两处口径不可能再漂。
+    private func reviewBands(lineTops: [CGFloat], lineHeights: [CGFloat], targetWidth: CGFloat) -> [(rect: CGRect, block: Int)] {
+        guard reviewAccentColor != nil else { return [] }
+        // 卡片上下留白压在段间距里，段间距调小时自动收窄，不会盖住邻段文字
+        let pad = min(10, max(4, paragraphSpacing * 0.7))
+        var bands: [(rect: CGRect, block: Int)] = []
+        var startIndex: Int?
+        var startParagraph: Int?
+
+        for index in lines.indices {
+            let paragraphId = index < lineParagraphIds.count ? lineParagraphIds[index] : -1
+            let nextParagraphId = index + 1 < lineParagraphIds.count ? lineParagraphIds[index + 1] : -2
+
+            if startIndex == nil,
+               lines[index].hasPrefix("热评 · ") || lines[index].hasPrefix("神评 · ") {
+                startIndex = index
+                startParagraph = paragraphId
+            }
+
+            guard let start = startIndex, let pid = startParagraph else { continue }
+            let isLastOfParagraph = nextParagraphId != pid
+            if isLastOfParagraph {
+                let top = lineTops[start] - pad
+                let bottom = lineTops[index] + lineHeights[index] + pad
+                let blockId = start < lineBlockIds.count ? lineBlockIds[start] : -1
+                bands.append((CGRect(x: 0, y: max(0, top), width: targetWidth,
+                                     height: bottom - max(0, top)), blockId))
+                startIndex = nil
+                startParagraph = nil
+            }
+        }
+        return bands
     }
 
     // MARK: - 段内逐字：绘制
@@ -8147,6 +8900,16 @@ public class CoreTextUIView: UIView {
             }
         }
         return bestOffset
+    }
+}
+
+extension CoreTextUIView: UIGestureRecognizerDelegate {
+    /// 只有点在热评卡片或段评气泡上才吃掉这次点击，别抢翻页的 tap
+    public override func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
+        guard let tap = gestureRecognizer as? UITapGestureRecognizer else { return true }
+        let point = tap.location(in: self)
+        if reviewCardRects.contains(where: { $0.rect.contains(point) }) { return true }
+        return commentBubbleRects.contains { $0.rect.insetBy(dx: -6, dy: -6).contains(point) }
     }
 }
 #endif

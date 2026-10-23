@@ -627,6 +627,14 @@ public extension ReaderTheme {
         case .dark: return Color(red: 0.56, green: 0.73, blue: 0.96)
         }
     }
+
+    /// 落在 accentColor 上的字色：夜间主题的强调色偏亮，反色用深墨。
+    var onAccentColor: Color {
+        switch self {
+        case .dark: return Color(red: 0.08, green: 0.10, blue: 0.14)
+        default: return .white
+        }
+    }
 }
 
 /// 页眉页脚每栏能填什么。
@@ -733,6 +741,19 @@ public class ReaderConfig: ObservableObject {
     @Published public var letterSpacing: CGFloat = 0.5 { didSet { persist(letterSpacing, "reader_letter_spacing") } }
     /// 段间距
     @Published public var paragraphSpacing: CGFloat = 12.0 { didSet { persist(paragraphSpacing, "reader_paragraph_spacing") } }
+    // MARK: - 热评卡片
+    /// 热评正文相对正文的字号比例
+    @Published public var reviewFontScale: CGFloat = 0.82 { didSet { persist(reviewFontScale, "review_font_scale") } }
+    /// 热评卡片左右内边距
+    @Published public var reviewInset: CGFloat = 12.0 { didSet { persist(reviewInset, "review_inset") } }
+    /// 卡片底色/边框的不透明度，文字始终满不透明
+    @Published public var reviewCardOpacity: CGFloat = 1.0 { didSet { persist(reviewCardOpacity, "review_card_opacity") } }
+    /// 0 纸面卡 / 1 左线卡 / 2 无框
+    @Published public var reviewCardStyle: Int = 0 { didSet { Self.defaults.set(reviewCardStyle, forKey: "review_card_style") } }
+    /// 0 左对齐 / 1 居中
+    @Published public var reviewAlignment: Int = 0 { didSet { Self.defaults.set(reviewAlignment, forKey: "review_alignment") } }
+    /// 0 尼尔墨色 / 1 氧化红 / 2 跟随正文
+    @Published public var reviewTextColorMode: Int = 0 { didSet { Self.defaults.set(reviewTextColorMode, forKey: "review_text_color_mode") } }
     /// 左右页边距
     @Published public var horizontalPadding: CGFloat = 24.0 { didSet { persist(horizontalPadding, "reader_horizontal_padding") } }
     /// 上下左右分开调（旧的两个键只用来做一次性迁移）
@@ -1151,6 +1172,18 @@ public class ReaderConfig: ObservableObject {
         paddingLeft = min(max(0, paddingLeft), 200)
         paddingRight = min(max(0, paddingRight), 200)
         paragraphSpacing = min(max(0, paragraphSpacing), 30)
+        if d.object(forKey: "review_font_scale") != nil { reviewFontScale = CGFloat(d.double(forKey: "review_font_scale")) }
+        if d.object(forKey: "review_inset") != nil { reviewInset = CGFloat(d.double(forKey: "review_inset")) }
+        if d.object(forKey: "review_card_opacity") != nil { reviewCardOpacity = CGFloat(d.double(forKey: "review_card_opacity")) }
+        if d.object(forKey: "review_card_style") != nil { reviewCardStyle = d.integer(forKey: "review_card_style") }
+        if d.object(forKey: "review_alignment") != nil { reviewAlignment = d.integer(forKey: "review_alignment") }
+        if d.object(forKey: "review_text_color_mode") != nil { reviewTextColorMode = d.integer(forKey: "review_text_color_mode") }
+        reviewFontScale = min(max(0.65, reviewFontScale), 1.15)
+        reviewInset = min(max(6, reviewInset), 28)
+        reviewCardOpacity = min(max(0.2, reviewCardOpacity), 1)
+        reviewCardStyle = min(max(0, reviewCardStyle), 2)
+        reviewAlignment = min(max(0, reviewAlignment), 1)
+        reviewTextColorMode = min(max(0, reviewTextColorMode), 2)
         lineSpacing = min(max(0, lineSpacing), 40)
         letterSpacing = min(max(0, letterSpacing), 4)
         firstLineIndent = min(max(0, firstLineIndent), 4)

@@ -268,7 +268,7 @@ public struct TTSSettingsSheet: View {
                         Button {
                             cast.makeStarterRoles()
                         } label: {
-                            Label("生成一套默认角色（旁白 + 对话）", systemImage: "person.2.badge.plus")
+                            Label("生成一套默认角色（旁白 + 对话）", systemImage: "person.badge.plus")
                         }
                     }
 

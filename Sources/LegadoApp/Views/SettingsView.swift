@@ -247,7 +247,10 @@ public struct SettingsView: View {
                 Button("取消", role: .cancel) {}
                 Button("确定清理", role: .destructive) {
                     AppLog.write("[设置] 清理阅读缓存")
-                    clearCacheMessage = "缓存已成功清理"
+                    let count = BookContentService.shared.getTotalCacheCount()
+                    BookContentService.shared.clearAllChapterCaches()
+                    URLCache.shared.removeAllCachedResponses()
+                    clearCacheMessage = count > 0 ? "已清理 \(count) 章缓存" : "没有需要清理的章节缓存"
                 }
             } message: {
                 Text("清理临时章节和图片缓存？书架和阅读进度会保留。")

@@ -119,7 +119,7 @@ struct MediaBookReaderView: View {
             mediaContent(payload)
         } else {
             VStack(spacing: 10) {
-                Image(systemName: "doc.questionmark")
+                Image(systemName: "questionmark.circle")
                     .font(.largeTitle)
                     .foregroundColor(.white.opacity(0.5))
                 Text("这一章没找到\(kind.label)地址")
@@ -465,7 +465,7 @@ private struct RemoteMediaImage: View {
                 #endif
             } else if loader.failed {
                 VStack(spacing: 8) {
-                    Image(systemName: "photo.badge.exclamationmark")
+                    Image(systemName: "exclamationmark.triangle")
                         .font(.largeTitle)
                     Text("图片加载失败")
                         .font(.caption)
@@ -499,7 +499,7 @@ private struct FileMediaView: View {
     var body: some View {
         VStack(spacing: 18) {
             Spacer()
-            Image(systemName: "doc.arrow.down")
+            Image(systemName: "arrow.down.doc")
                 .font(.system(size: 72))
                 .foregroundColor(.accentColor)
             Text(title)

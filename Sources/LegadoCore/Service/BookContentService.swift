@@ -605,6 +605,17 @@ public class BookContentService {
                     let encodedImage = Data((payload.imageURL ?? "").utf8).base64EncodedString()
                     marker = reviewGodMarkerStart + encodedText + "\u{1F}" + url
                         + "\u{1F}" + encodedImage + reviewMarkerEnd
+                } else if tag.range(of: "data:image/svg+xml", options: .caseInsensitive) != nil,
+                          let payload = godReviewPayload(from: tag),
+                          !payload.text.isEmpty {
+                    // 后端有时把 showCmt 元数据截断/转义坏，标签里没有点击脚本，
+                    // 但 SVG 里仍有「神评论」正文。直接还原成原生卡片，
+                    // 不要再交给 UIImage 解 SVG。
+                    let url = firstCapture(in: tag, pattern: "showCmt\\(\\s*'([^']+)'") ?? ""
+                    let encodedText = Data(payload.text.utf8).base64EncodedString()
+                    let encodedImage = Data((payload.imageURL ?? "").utf8).base64EncodedString()
+                    marker = reviewGodMarkerStart + encodedText + "\u{1F}" + url
+                        + "\u{1F}" + encodedImage + reviewMarkerEnd
                 } else {
                     continue
                 }
@@ -625,13 +636,12 @@ public class BookContentService {
         guard let src = firstCapture(in: imgTag, pattern: "(?i)src\\s*=\\s*[\"']([^\"']+)[\"']") else {
             return nil
         }
-        let imageSource = stripImageMetadata(src)
+        let imageSource = ImageSourceNormalizer.normalize(src)
         guard !imageSource.isEmpty else { return nil }
 
         if imageSource.hasPrefix("data:image/svg+xml") {
-            guard let comma = imageSource.firstIndex(of: ",") else { return nil }
-            let encoded = String(imageSource[imageSource.index(after: comma)...])
-            guard let data = Data(base64Encoded: encoded),
+            guard let encoded = ImageSourceNormalizer.dataURIPayload(imageSource),
+                  let data = Data(base64Encoded: encoded, options: [.ignoreUnknownCharacters]),
                   let svg = String(data: data, encoding: .utf8) else { return nil }
             let text = svgText(in: svg)
             let image = svgImageURL(in: svg)
@@ -639,7 +649,7 @@ public class BookContentService {
             return GodReviewPayload(text: text, imageURL: image)
         }
 
-        if imageSource.hasPrefix("data:") {
+        if imageSource.lowercased().hasPrefix("data:") {
             return GodReviewPayload(text: "", imageURL: imageSource)
         }
 
@@ -647,18 +657,6 @@ public class BookContentService {
         let lower = imageSource.lowercased()
         let isSVGCard = lower.contains("_svg") || lower.hasSuffix(".svg")
         return GodReviewPayload(text: text, imageURL: isSVGCard ? nil : imageSource)
-    }
-
-    /// 图片 src 可能带 `,{"click":"showCmt(...)"}` 元数据；只保留真正的图片地址。
-    private static func stripImageMetadata(_ raw: String) -> String {
-        guard let metaStart = raw.firstIndex(of: "{") else {
-            return raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        }
-        let prefix = raw[..<metaStart]
-        guard let comma = prefix.lastIndex(of: ",") else {
-            return raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        }
-        return String(prefix[..<comma]).trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     private static func svgText(in svg: String) -> String {
@@ -740,6 +738,12 @@ public class BookContentService {
         try? FileManager.default.removeItem(at: dir)
     }
 
+    /// 清掉所有书的章节缓存。设置里「清理阅读缓存」走这里。
+    public func clearAllChapterCaches() {
+        let cacheBase = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
+        try? FileManager.default.removeItem(at: cacheBase.appendingPathComponent("ChapterCache"))
+    }
+
     public func hasCachedChapter(bookUrl: String, chapterIndex: Int) -> Bool {
         let file = chapterCacheFile(bookUrl: bookUrl, chapterIndex: chapterIndex)
         return FileManager.default.fileExists(atPath: file.path)
@@ -789,6 +793,19 @@ public class BookContentService {
         let dir = chapterCacheDirectory(bookUrl: bookUrl)
         guard let files = try? FileManager.default.contentsOfDirectory(atPath: dir.path) else { return 0 }
         return files.filter { $0.hasSuffix(".txt") }.count
+    }
+
+    /// 所有书的缓存章节总数，清理前给用户一个确认数字。
+    public func getTotalCacheCount() -> Int {
+        let cacheBase = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
+        let root = cacheBase.appendingPathComponent("ChapterCache")
+        guard let dirs = try? FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: nil) else { return 0 }
+        var total = 0
+        for dir in dirs {
+            let files = (try? FileManager.default.contentsOfDirectory(atPath: dir.path)) ?? []
+            total += files.filter { $0.hasSuffix(".txt") }.count
+        }
+        return total
     }
 
     /// Sanitizes HTML text, converting <img> to [image:url], <p> and <br> to paragraphs, and stripping other tags
@@ -863,7 +880,7 @@ public class BookContentService {
         var rawSrc: String? = nil
         for pattern in patterns {
             guard let found = firstCapture(in: imgTag, pattern: pattern) else { continue }
-            let cleaned = stripImageMetadata(found)
+            let cleaned = ImageSourceNormalizer.normalize(found)
             if !cleaned.isEmpty && !isPlaceholderImage(cleaned) {
                 rawSrc = cleaned
                 break
@@ -875,7 +892,7 @@ public class BookContentService {
                             "(?i)srcset\\s*=\\s*[\"']([^\"']+)[\"']"] {
                 guard let srcset = firstCapture(in: imgTag, pattern: pattern),
                       let first = firstURL(from: srcset) else { continue }
-                rawSrc = stripImageMetadata(first)
+                rawSrc = ImageSourceNormalizer.normalize(first)
                 break
             }
         }

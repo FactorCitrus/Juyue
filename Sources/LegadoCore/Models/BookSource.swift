@@ -250,6 +250,24 @@ public struct BookSource: Codable, Identifiable, Equatable {
         self.customButton = Self.lenientBool(container, .customButton)
         self.enabledCookieJar = Self.lenientBool(container, .enabledCookieJar)
         self.concurrentRate = try container.decodeIfPresent(String.self, forKey: .concurrentRate)
+        self.applyCompatibilityFixes()
+    }
+
+    /// 已导入书源里的已知脚本缺陷，在解码时就地修掉，避免详情页反复报
+    /// `TypeError: undefined is not an object (evaluating 'abstract.split')`。
+    ///
+    /// 大灰狼 5.9.30 用 `String(value).length > 1` 判断简介，`undefined` 会被
+    /// 转成字符串 `"undefined"`，长度 9，于是走进 `abstract.split`。
+    public mutating func applyCompatibilityFixes() {
+        guard var info = ruleBookInfo, var intro = info.intro else { return }
+        let buggy = "let isValid = (value) => String(value).length > 1;"
+        guard intro.contains(buggy) else { return }
+        intro = intro.replacingOccurrences(
+            of: buggy,
+            with: "let isValid = (value) => value !== undefined && value !== null && String(value).length > 1;"
+        )
+        info.intro = intro
+        ruleBookInfo = info
     }
 
     /// 宽松取数。安卓导出的书源里同一字段类型会变：`lastUpdateTime` 有
