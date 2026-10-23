@@ -28,7 +28,12 @@ final class ScriptBrowserSemanticsTests: XCTestCase {
         let value = shim.startBrowserAwait("data:text/html;base64,PGh0bWw+", "书源设置", false)
 
         XCTAssertEqual(seen, [true], "Await 必须让宿主等网页关闭")
-        XCTAssertEqual(value.forProperty("body")?.toString(), "<html>设置结果</html>")
+        // body 按安卓契约是方法（`.body()`），字符串读 bodyString。
+        // 早先这里按属性直接比字符串，函数体 toString 永远不等于正文。
+        let bodyFn = value.forProperty("body")
+        XCTAssertEqual(bodyFn?.isObject, true, "body 必须是方法")
+        XCTAssertEqual(bodyFn?.call(withArguments: [])?.toString(), "<html>设置结果</html>")
+        XCTAssertEqual(value.forProperty("bodyString")?.toString(), "<html>设置结果</html>")
         XCTAssertEqual(value.forProperty("url")?.toString(), "about:blank#config=%7B%22pstyle%22%3A%221%22%7D")
         XCTAssertEqual(value.forProperty("code")?.toInt32(), 200)
     }
