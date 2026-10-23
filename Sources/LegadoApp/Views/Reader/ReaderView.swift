@@ -576,19 +576,23 @@ public struct ReviewCardStyle: Equatable {
     public var alignment: Int
     /// 0 尼尔墨色 / 1 氧化红 / 2 跟随正文
     public var textColorMode: Int
+    /// 热评文字在卡片里的垂直偏移，正数往下
+    public var textDrop: CGFloat
 
     public init(fontScale: CGFloat = 0.82,
                 inset: CGFloat = 12,
                 opacity: CGFloat = 1,
                 style: Int = 0,
                 alignment: Int = 0,
-                textColorMode: Int = 0) {
+                textColorMode: Int = 0,
+                textDrop: CGFloat = 2.5) {
         self.fontScale = fontScale
         self.inset = inset
         self.opacity = opacity
         self.style = style
         self.alignment = alignment
         self.textColorMode = textColorMode
+        self.textDrop = textDrop
     }
 }
 
@@ -611,7 +615,7 @@ struct ReviewStylePreview: View {
     }
 
     private var cardPad: CGFloat {
-        min(10, max(4, paragraphSpacing * 0.7))
+        min(14, max(8, paragraphSpacing + 1))
     }
 
     private var textColor: Color {
@@ -641,6 +645,7 @@ struct ReviewStylePreview: View {
             .lineSpacing(readerLineSpacing)
             .multilineTextAlignment(style.alignment == 1 ? .center : .leading)
             .frame(maxWidth: .infinity, alignment: style.alignment == 1 ? .center : .leading)
+            .offset(y: style.textDrop)
     }
 
     @ViewBuilder
@@ -757,6 +762,10 @@ struct ReviewStyleSheet: View {
                                 get: { config.reviewCardOpacity },
                                 set: { config.reviewCardOpacity = $0 }
                             ), range: 0.2...1, suffix: "", palette: palette)
+                            sliderRow("文字位置", value: Binding(
+                                get: { config.reviewTextDrop },
+                                set: { config.reviewTextDrop = $0 }
+                            ), range: -2...6, suffix: "pt", palette: palette)
 
                             chipRow(palette: palette, title: "样式", options: ["纸面卡", "左线卡", "无框"],
                                     selected: config.reviewCardStyle) { config.reviewCardStyle = $0 }
@@ -772,6 +781,7 @@ struct ReviewStyleSheet: View {
                                 config.reviewCardStyle = 0
                                 config.reviewAlignment = 0
                                 config.reviewTextColorMode = 0
+                                config.reviewTextDrop = 2.5
                             } label: {
                                 Text("恢复默认")
                                     .font(.system(size: 12, weight: .semibold, design: .monospaced))
@@ -798,7 +808,8 @@ struct ReviewStyleSheet: View {
             opacity: config.reviewCardOpacity,
             style: config.reviewCardStyle,
             alignment: config.reviewAlignment,
-            textColorMode: config.reviewTextColorMode
+            textColorMode: config.reviewTextColorMode,
+            textDrop: config.reviewTextDrop
         )
     }
 
@@ -1628,7 +1639,8 @@ public struct ReaderView: View {
             opacity: readerConfig.reviewCardOpacity,
             style: readerConfig.reviewCardStyle,
             alignment: readerConfig.reviewAlignment,
-            textColorMode: readerConfig.reviewTextColorMode
+            textColorMode: readerConfig.reviewTextColorMode,
+            textDrop: readerConfig.reviewTextDrop
         )
     }
 
@@ -6329,7 +6341,7 @@ public struct ReaderView: View {
             .clipShape(Rectangle())
 
             HStack(spacing: 8) {
-                Text("字号 \(safeInt(readerConfig.reviewFontScale * 100))% · 内边距 \(safeInt(readerConfig.reviewInset))pt · 不透明 \(safeInt(readerConfig.reviewCardOpacity * 100))%")
+                Text("字号 \(safeInt(readerConfig.reviewFontScale * 100))% · 内边距 \(safeInt(readerConfig.reviewInset))pt · 不透明 \(safeInt(readerConfig.reviewCardOpacity * 100))% · 位置 \(safeInt(readerConfig.reviewTextDrop))pt")
                     .font(.system(size: 9, weight: .medium, design: .monospaced))
                     .foregroundColor(readerConfig.textColor.opacity(0.45))
                     .lineLimit(1)
@@ -8599,8 +8611,8 @@ public class CoreTextUIView: UIView {
             CTLineGetTypographicBounds(finalLine, &ascent, &descent, &leading)
 
             // 热评行的字面高度比行框矮，行框又上下各留了 pad，字看起来会偏上。
-            // 基线下压 2.5pt 让上下留白看起来一样宽（行框本身不动，分页不受影响）。
-            let reviewDrop: CGFloat = isReviewLine ? 2.5 : 0
+            // 基线下压由「文字位置」控制（默认 2.5pt），行框本身不动，分页不受影响。
+            let reviewDrop: CGFloat = isReviewLine ? reviewStyle.textDrop : 0
             let baselineY = lineTops[index] + ascent + reviewDrop
 
             // 标注与选中：段落级底色 / 下划线，选中时再叠一层淡蓝

@@ -754,6 +754,8 @@ public class ReaderConfig: ObservableObject {
     @Published public var reviewAlignment: Int = 0 { didSet { Self.defaults.set(reviewAlignment, forKey: "review_alignment") } }
     /// 0 尼尔墨色 / 1 氧化红 / 2 跟随正文
     @Published public var reviewTextColorMode: Int = 0 { didSet { Self.defaults.set(reviewTextColorMode, forKey: "review_text_color_mode") } }
+    /// 热评文字在卡片里的垂直偏移：正数往下。2.5 是行框上下留白看起来对称的位置
+    @Published public var reviewTextDrop: CGFloat = 2.5 { didSet { persist(reviewTextDrop, "review_text_drop") } }
     /// 左右页边距
     @Published public var horizontalPadding: CGFloat = 24.0 { didSet { persist(horizontalPadding, "reader_horizontal_padding") } }
     /// 上下左右分开调（旧的两个键只用来做一次性迁移）
@@ -1178,12 +1180,14 @@ public class ReaderConfig: ObservableObject {
         if d.object(forKey: "review_card_style") != nil { reviewCardStyle = d.integer(forKey: "review_card_style") }
         if d.object(forKey: "review_alignment") != nil { reviewAlignment = d.integer(forKey: "review_alignment") }
         if d.object(forKey: "review_text_color_mode") != nil { reviewTextColorMode = d.integer(forKey: "review_text_color_mode") }
+        if d.object(forKey: "review_text_drop") != nil { reviewTextDrop = CGFloat(d.double(forKey: "review_text_drop")) }
         reviewFontScale = min(max(0.65, reviewFontScale), 1.15)
         reviewInset = min(max(6, reviewInset), 28)
         reviewCardOpacity = min(max(0.2, reviewCardOpacity), 1)
         reviewCardStyle = min(max(0, reviewCardStyle), 2)
         reviewAlignment = min(max(0, reviewAlignment), 1)
         reviewTextColorMode = min(max(0, reviewTextColorMode), 2)
+        reviewTextDrop = min(max(-2, reviewTextDrop), 6)
         lineSpacing = min(max(0, lineSpacing), 40)
         letterSpacing = min(max(0, letterSpacing), 4)
         firstLineIndent = min(max(0, firstLineIndent), 4)
