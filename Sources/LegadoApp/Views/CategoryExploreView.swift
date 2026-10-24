@@ -34,6 +34,8 @@ public struct CategoryExploreView: View {
     @State private var showFilterSheet: Bool = false
     @State private var sourceFilterText: String = ""
     @State private var selectedBookForDetail: SearchBook? = nil
+    /// 已经试过从详情补封面的书。签名过期的封面会在加载失败时触发一次补抓，失败不重试。
+    @State private var coverRepairAttempts: Set<String> = []
 
     /// 这个页签是不是当前选中的。TabView 会把三个页签都建出来，
     /// 分类页一被建出来就联网拉书，会造成启动卡顿，
@@ -575,13 +577,15 @@ public struct CategoryExploreView: View {
                 .padding(.top, 4)
 
             Group {
-                if book.coverUrl != nil {
+                if let cover = book.coverUrl, !cover.isEmpty {
                     BookCoverImage(
-                        urlString: book.coverUrl,
-                        placeholderOverride: AnyView(categoryCoverPlaceholder)
+                        urlString: cover,
+                        placeholderOverride: AnyView(categoryCoverPlaceholder),
+                        onFailure: { requestCoverRepair(for: book) }
                     )
                 } else {
                     categoryCoverPlaceholder
+                        .onAppear { requestCoverRepair(for: book) }
                 }
             }
             .frame(width: 46, height: 62)
@@ -627,6 +631,35 @@ public struct CategoryExploreView: View {
                 .fill(theme.palette.divider.opacity(0.45))
                 .frame(height: 0.5)
                 .padding(.leading, 74)
+        }
+    }
+
+    /// 分类列表的封面来自书源列表接口；有些源给的是带签名的地址，
+    /// 过期后图片 403，但详情接口会返回新签名。这里补抓一次并回填当前行。
+    private func requestCoverRepair(for book: SearchBook) {
+        guard let source = currentSource else { return }
+        guard !book.bookUrl.isEmpty else { return }
+        guard !coverRepairAttempts.contains(book.id) else { return }
+        coverRepairAttempts.insert(book.id)
+
+        let model = Book(
+            bookUrl: book.bookUrl,
+            name: book.name,
+            author: book.author,
+            kind: book.kind,
+            coverUrl: book.coverUrl,
+            intro: book.intro,
+            origin: book.origin,
+            originName: book.originName,
+            latestChapterTitle: book.latestChapterTitle
+        )
+        Task {
+            let cover = await CoverRepairService.shared.cover(for: model, source: source)
+            guard let cover, !cover.isEmpty else { return }
+            await MainActor.run {
+                guard let idx = books.firstIndex(where: { $0.bookUrl == book.bookUrl }) else { return }
+                books[idx].coverUrl = cover
+            }
         }
     }
 
@@ -917,6 +950,50 @@ public struct CategoryExploreView: View {
         }
 
         return groups
+    }
+}
+
+/// 分类列表补封面：同一本书可能同时有多行触发，合并成一次详情请求；结果和失败都记着，
+/// 免得滚动时反复打源站。
+final class CoverRepairService {
+    static let shared = CoverRepairService()
+
+    private let lock = NSLock()
+    private var cache: [String: String] = [:]
+    private var failed: Set<String> = []
+    private var inflight: [String: Task<String?, Never>] = [:]
+
+    func cover(for book: Book, source: BookSource) async -> String? {
+        let key = "\(source.bookSourceUrl)|\(book.bookUrl)"
+
+        lock.lock()
+        if let cached = cache[key] {
+            lock.unlock()
+            return cached
+        }
+        if failed.contains(key) {
+            lock.unlock()
+            return nil
+        }
+        if let running = inflight[key] {
+            lock.unlock()
+            return await running.value
+        }
+        let task = Task { await BookContentService.shared.fetchBookCover(book: book, source: source) }
+        inflight[key] = task
+        lock.unlock()
+
+        let value = await task.value
+
+        lock.lock()
+        inflight[key] = nil
+        if let value, !value.isEmpty {
+            cache[key] = value
+        } else {
+            failed.insert(key)
+        }
+        lock.unlock()
+        return value
     }
 }
 

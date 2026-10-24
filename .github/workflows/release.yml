@@ -67,6 +67,21 @@ jobs:
             exit 1
           }
 
+      # main 上任何 Sources 改动都会触发发布。版本号没升的话 tag 已存在，
+      # action-gh-release 会覆盖同一 tag 的 ipa，而 tag 还指在旧 commit 上。
+      # 手动 dispatch 保留覆盖重发的口子。
+      - name: Guard existing tag
+        if: github.event_name != 'workflow_dispatch'
+        run: |
+          git fetch --tags --force --depth=1 origin "+refs/tags/$TAG:refs/tags/$TAG" 2>/dev/null || true
+          if git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
+            OLD=$(git rev-list -n1 "refs/tags/$TAG")
+            [ "$OLD" = "$GITHUB_SHA" ] || {
+              echo "tag $TAG 已在 $OLD，这次没升版本号。先跑 scripts/legado.sh bump <新版本>。"
+              exit 1
+            }
+          fi
+
       - name: Run Tests
         run: |
           swift test

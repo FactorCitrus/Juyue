@@ -922,6 +922,8 @@ struct BookCoverImage: View {
     var contentMode: ContentMode = .fill
     /// 书架等场景可以换成自己的默认封面
     var placeholderOverride: AnyView? = nil
+    /// 网络图加载失败时回调一次，给列表补封面用（签名过期的封面会回 403）
+    var onFailure: (() -> Void)? = nil
 
     @State private var localImage: Image?
 
@@ -939,7 +941,7 @@ struct BookCoverImage: View {
                             .resizable()
                             .aspectRatio(contentMode: contentMode)
                     case .failure:
-                        placeholder
+                        placeholder.onAppear { onFailure?() }
                     default:
                         placeholder
                     }

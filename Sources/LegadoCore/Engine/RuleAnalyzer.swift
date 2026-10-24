@@ -206,6 +206,17 @@ public class RuleAnalyzer {
             if currentValues.isEmpty {
                 currentValues = evaluateJsonSteps(steps: steps, json: json)
             }
+            // 聚合源的接口常把书信息包一层 `{"code":0,"data":{...}}`，脚本里却直接写
+            // `$.thumb_url`。根路径取不到时再往 data / result 里找一层，别让封面、简介
+            // 这种字段因为外层包装整条丢失。
+            if currentValues.isEmpty, let dict = json as? [String: Any] {
+                for containerKey in ["data", "result"] {
+                    guard let inner = dict[containerKey] as? [String: Any] else { continue }
+                    guard let value = JSONPath.evaluate(path: rule, json: inner) else { continue }
+                    currentValues = value as? [Any] ?? [value]
+                    break
+                }
+            }
         } else if let doc = parsedDocument {
             currentValues = evaluateHtmlSteps(steps: steps, element: doc)
         } else if let element = content as? Element {

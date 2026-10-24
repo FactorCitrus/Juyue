@@ -612,10 +612,22 @@ struct ReviewRuleEditor: View {
 /// 规则页顶上那条「搜索 URL / 发现 URL」输入区
 @ViewBuilder
 func urlBar(title: String, key: String, text: Binding<String>, multi: Bool) -> some View {
+    let palette = AppThemeManager.shared.theme.palette
     RuleFieldRow(label: title, key: key, hint: title, multiline: multi, value: text)
+        // 多行 TextEditor 在 safeAreaInset 里会按可用高度贪心撑开（iOS 26 实测），
+        // 把下面的规则字段整块挤成 0 高，页面看起来只剩「搜索 URL」一行。
+        // 这里给固定的高度上限，让编辑框自己内部滚动。
+        .frame(height: multi ? 132 : nil)
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
-        .background(AppThemeManager.shared.theme.palette.divider.opacity(0.08))
+        // 这层是 pinned header，往下滚时正文会从底下穿过；用不透明底色 + 一条下边线，
+        // 否则会看到「作者 / 搜书列表」的字透上来。
+        .background(palette.background)
+        .overlay(alignment: .bottom) {
+            Rectangle()
+                .fill(palette.divider.opacity(0.25))
+                .frame(height: 0.5)
+        }
 }
 
 // MARK: - 配置测试

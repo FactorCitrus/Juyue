@@ -12,7 +12,8 @@ public class BookContentService {
         book: Book,
         source: BookSource,
         onProgress: ((Int, Int) -> Void)? = nil,
-        diagnostics: ((SourceRequestDiagnostic) -> Void)? = nil
+        diagnostics: ((SourceRequestDiagnostic) -> Void)? = nil,
+        includeChapters: Bool = true
     ) async throws -> (book: Book, chapters: [BookChapter]) {
         guard let tocRule = source.ruleToc else {
             return (book, [])
@@ -113,106 +114,110 @@ public class BookContentService {
             jsEngine: jsEngine
         )
 
-        // 1. Parse Chapters
-        let chapterElements = tocAnalyzer.getElements(tocRule.chapterList)
         var chapters: [BookChapter] = []
+        if includeChapters {
+            // 1. Parse Chapters
+            let chapterElements = tocAnalyzer.getElements(tocRule.chapterList)
 
-        for (_, item) in chapterElements.enumerated() {
-            let itemAnalyzer = RuleAnalyzer(
-                content: item,
-                baseUrl: pageBaseUrl,
-                bookSource: source,
-                jsEngine: jsEngine
-            )
-
-            let title = itemAnalyzer.getString(tocRule.chapterName)
-            let url = itemAnalyzer.getString(tocRule.chapterUrl, isUrl: true)
-
-            guard !title.isEmpty, !url.isEmpty else { continue }
-
-            let chapter = BookChapter(
-                bookUrl: book.bookUrl,
-                url: url,
-                title: title,
-                index: chapters.count
-            )
-            chapters.append(chapter)
-        }
-
-        // 目录分页：有的站点一页只给 40 章，靠 nextTocUrl 把后面的翻出来。
-        // 各页之间没有依赖（每页的页码表都列全），所以并发抓，不能一页一页等。
-        if let nextRule = tocRule.nextTocUrl?.trimmingCharacters(in: .whitespacesAndNewlines), !nextRule.isEmpty,
-           // data: 包没有「下一页网址」这回事，别拿载荷当网址去翻页
-           NetworkClient.dataURLPayload(targetUrl) == nil {
-            let pageLimit = 60
-            let pageTimeout: TimeInterval = 20
-
-            var chapterURLs = Set(chapters.map(\.url))
-            var discovered: Set<String> = [pageBaseUrl]
-            var frontier = BookContentService.extractURLs(from: analyzer, rule: nextRule, baseUrl: pageBaseUrl)
-            var round = 0
-
-            while !frontier.isEmpty, discovered.count < pageLimit, round < 4 {
-                round += 1
-                let urls = Array(frontier
-                    .filter { !discovered.contains($0) }
-                    .prefix(pageLimit - discovered.count))
-                if urls.isEmpty { break }
-                urls.forEach { discovered.insert($0) }
-
-                let bodies = await BookContentService.fetchBodies(
-                    urls: urls,
-                    header: headerToUse,
-                    baseUrl: source.bookSourceUrl,
-                    concurrency: 5,
-                    timeout: pageTimeout,
-                    rateKey: source.bookSourceUrl,
-                    rateLimit: source.rateLimit
+            for (_, item) in chapterElements.enumerated() {
+                let itemAnalyzer = RuleAnalyzer(
+                    content: item,
+                    baseUrl: pageBaseUrl,
+                    bookSource: source,
+                    jsEngine: jsEngine
                 )
 
-                var nextURLs: [String] = []
-                for (pageURL, body) in bodies {
-                    let pageAnalyzer = RuleAnalyzer(
-                        content: body,
-                        baseUrl: pageURL,
-                        bookSource: source,
-                        jsEngine: jsEngine
+                let title = itemAnalyzer.getString(tocRule.chapterName)
+                let url = itemAnalyzer.getString(tocRule.chapterUrl, isUrl: true)
+
+                guard !title.isEmpty, !url.isEmpty else { continue }
+
+                let chapter = BookChapter(
+                    bookUrl: book.bookUrl,
+                    url: url,
+                    title: title,
+                    index: chapters.count
+                )
+                chapters.append(chapter)
+            }
+
+            // 目录分页：有的站点一页只给 40 章，靠 nextTocUrl 把后面的翻出来。
+            // 各页之间没有依赖（每页的页码表都列全），所以并发抓，不能一页一页等。
+            if let nextRule = tocRule.nextTocUrl?.trimmingCharacters(in: .whitespacesAndNewlines), !nextRule.isEmpty,
+               // data: 包没有「下一页网址」这回事，别拿载荷当网址去翻页
+               NetworkClient.dataURLPayload(targetUrl) == nil {
+                let pageLimit = 60
+                let pageTimeout: TimeInterval = 20
+
+                var chapterURLs = Set(chapters.map(\.url))
+                var discovered: Set<String> = [pageBaseUrl]
+                var frontier = BookContentService.extractURLs(from: analyzer, rule: nextRule, baseUrl: pageBaseUrl)
+                var round = 0
+
+                while !frontier.isEmpty, discovered.count < pageLimit, round < 4 {
+                    round += 1
+                    let urls = Array(frontier
+                        .filter { !discovered.contains($0) }
+                        .prefix(pageLimit - discovered.count))
+                    if urls.isEmpty { break }
+                    urls.forEach { discovered.insert($0) }
+
+                    let bodies = await BookContentService.fetchBodies(
+                        urls: urls,
+                        header: headerToUse,
+                        baseUrl: source.bookSourceUrl,
+                        concurrency: 5,
+                        timeout: pageTimeout,
+                        rateKey: source.bookSourceUrl,
+                        rateLimit: source.rateLimit
                     )
-                    for item in pageAnalyzer.getElements(tocRule.chapterList) {
-                        let itemAnalyzer = RuleAnalyzer(
-                            content: item,
+
+                    var nextURLs: [String] = []
+                    for (pageURL, body) in bodies {
+                        let pageAnalyzer = RuleAnalyzer(
+                            content: body,
                             baseUrl: pageURL,
                             bookSource: source,
                             jsEngine: jsEngine
                         )
-                        let title = itemAnalyzer.getString(tocRule.chapterName)
-                        let url = itemAnalyzer.getString(tocRule.chapterUrl, isUrl: true)
-                        guard !title.isEmpty, !url.isEmpty else { continue }
-                        guard chapterURLs.insert(url).inserted else { continue }
-                        chapters.append(BookChapter(bookUrl: book.bookUrl, url: url, title: title, index: chapters.count))
+                        for item in pageAnalyzer.getElements(tocRule.chapterList) {
+                            let itemAnalyzer = RuleAnalyzer(
+                                content: item,
+                                baseUrl: pageURL,
+                                bookSource: source,
+                                jsEngine: jsEngine
+                            )
+                            let title = itemAnalyzer.getString(tocRule.chapterName)
+                            let url = itemAnalyzer.getString(tocRule.chapterUrl, isUrl: true)
+                            guard !title.isEmpty, !url.isEmpty else { continue }
+                            guard chapterURLs.insert(url).inserted else { continue }
+                            chapters.append(BookChapter(bookUrl: book.bookUrl, url: url, title: title, index: chapters.count))
+                        }
+                        nextURLs.append(contentsOf: BookContentService.extractURLs(
+                            from: pageAnalyzer,
+                            rule: nextRule,
+                            baseUrl: pageURL
+                        ))
                     }
-                    nextURLs.append(contentsOf: BookContentService.extractURLs(
-                        from: pageAnalyzer,
-                        rule: nextRule,
-                        baseUrl: pageURL
-                    ))
+                    frontier = nextURLs
+                    onProgress?(discovered.count, pageLimit)
                 }
-                frontier = nextURLs
-                onProgress?(discovered.count, pageLimit)
+                LegadoLog.log("[BookDetail] [\(source.bookSourceName)] 目录抓完 \(chapters.count) 章 / \(discovered.count) 页 / \(round) 轮")
             }
-            LegadoLog.log("[BookDetail] [\(source.bookSourceName)] 目录抓完 \(chapters.count) 章 / \(discovered.count) 页 / \(round) 轮")
         }
 
         // 2. Parse Book Metadata (Author, Intro, Kind, WordCount)
         var updatedBook = book
-        updatedBook.totalChapterNum = chapters.count
+        if includeChapters {
+            updatedBook.totalChapterNum = chapters.count
+        }
         diagnostics?(SourceRequestDiagnostic(
             step: "目录",
             url: pageBaseUrl,
             ruleHits: chapters.count,
             note: "目录 \(chapters.count) 章"
         ))
-        if let lastCh = chapters.last, updatedBook.latestChapterTitle == nil || updatedBook.latestChapterTitle?.isEmpty == true {
+        if includeChapters, let lastCh = chapters.last, updatedBook.latestChapterTitle == nil || updatedBook.latestChapterTitle?.isEmpty == true {
             updatedBook.latestChapterTitle = lastCh.title
         }
 
@@ -290,6 +295,18 @@ public class BookContentService {
         let nameTag = String(CryptoUtils.md5(updatedBook.name).prefix(8))
         LegadoLog.log("[BookDetail] ✅ [\(source.bookSourceName)] 解析完成 book#\(nameTag) 书名/作者长度=\(updatedBook.name.count)/\(updatedBook.author.count) 简介=\(updatedBook.intro?.count ?? 0) 章数=\(chapters.count)")
         return (updatedBook, chapters)
+    }
+
+    /// 列表里的封面有时是过期签名地址（CDN 回 403），详情接口才会给新的。
+    /// 这里只走详情请求、不解析目录，给列表补封面用；失败就返回 nil 保持原样。
+    public func fetchBookCover(book: Book, source: BookSource) async -> String? {
+        var probe = book
+        probe.coverUrl = nil
+        guard let result = try? await fetchBookDetail(book: probe, source: source, includeChapters: false) else {
+            return nil
+        }
+        guard let cover = result.book.coverUrl, !cover.isEmpty else { return nil }
+        return cover
     }
 
     /// Fetches and parses the chapter list (Table of Contents)

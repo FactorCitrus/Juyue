@@ -2465,6 +2465,8 @@ struct DownloadedImportSheet: View {
     @Environment(\.appTheme) private var theme
     @State private var message: String?
     @State private var importing = false
+    /// 备份包点一下就恢复，误触代价太大；先弹一次确认。
+    @State private var showBackupConfirm = false
 
     private enum ImportKind: String, Identifiable {
         case bookSource = "书源 JSON"
@@ -2542,7 +2544,11 @@ struct DownloadedImportSheet: View {
                 Section(header: Text("选择导入方式")) {
                     ForEach(candidates) { kind in
                         Button {
-                            importFile(as: kind)
+                            if kind == .backup {
+                                showBackupConfirm = true
+                            } else {
+                                importFile(as: kind)
+                            }
                         } label: {
                             HStack(spacing: 12) {
                                 Image(systemName: kind.symbol)
@@ -2580,6 +2586,14 @@ struct DownloadedImportSheet: View {
             #if os(iOS)
             .navigationBarTitleDisplayMode(.inline)
             #endif
+            .alert("恢复这个备份包？", isPresented: $showBackupConfirm) {
+                Button("取消", role: .cancel) {}
+                Button("恢复") {
+                    importFile(as: .backup)
+                }
+            } message: {
+                Text("备份里的书、书源和设置会合并进当前数据，已有内容不会被清空。")
+            }
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("关闭") { dismiss() }

@@ -328,8 +328,13 @@ private enum SettingsDocumentPicker {
         }
 
         func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
+            // 选择器还在退场时立刻弹预览 sheet，SwiftUI 会把这次 presentation 丢掉，
+            // 表现就是「选完文件什么都没发生」。等退场动画结束再回调。
+            let callback = onPicked
             SettingsDocumentPicker.retained = nil
-            onPicked(urls)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
+                callback(urls)
+            }
         }
 
         func documentPickerWasCancelled(_ controller: UIDocumentPickerViewController) {
