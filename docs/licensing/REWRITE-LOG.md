@@ -20,3 +20,19 @@
 - 全套 `swift test`：154 通过 / 13 跳过 / 0 失败；`swift build` 与 `-DJUYUE_APPSTORE` 均通过。
 - 审计：9315 → 8948 行。预算棘轮同步下调。
 - 新增 `scripts/upstream_refs_audit.sh` 与 `docs/licensing/EXIT-PLAN.md`，把历史、品牌、许可证三层出口写成闸门。
+
+## 2026-10-25 · 批次 3（构建基础设施）
+
+- `Legado.xcodeproj` 增加 `AppStore` 配置与 `JuyueReader` scheme：同一 target、同一份源码，靠 `JUYUE_APPSTORE` / `NO_BAIDU_TTS` 编译条件与 `Info-AppStore.plist` 分流。
+- 工程是**显式文件列表**（非 SPM glob）：新增源文件漏挂会在引用处报 `cannot find ... in scope`。补 `scripts/sync_xcode_sources.py`（`--check` 可进 CI，非零退出即缺文件）。
+- `build_edition.sh` 修三处：`overrides` 未初始化（`set -u` 下带版本号必炸）、`common` 与 WARN 块重复、新增 `ARCHS` 透传。
+- 验证记录：
+
+| 目标 | 命令 | 结果 |
+|---|---|---|
+| 商店模拟器 | `DESTINATION='generic/platform=iOS Simulator' NO_SIGN=1 scripts/build_edition.sh appstore build` | BUILD SUCCEEDED |
+| 商店真机 | `DESTINATION='generic/platform=iOS' NO_SIGN=1 scripts/build_edition.sh appstore archive` | ARCHIVE SUCCEEDED |
+| 商店预检 | `appstore_preflight.sh build/Juyue-appstore.xcarchive/Products/Applications/JuyueReader.app` | PASS (0 fail)，3 WARN 为未签名与两条人工项 |
+| 侧载真机 | `DESTINATION='generic/platform=iOS' NO_SIGN=1 scripts/build_edition.sh sideload build` | BUILD SUCCEEDED |
+
+- 侧载**不能**走模拟器：`libBDSpeechTTSBaseKit.a` 只有 iOS arm64 切片，模拟器目标链接必失败（脚本已加提示）。`Vendor/BaiduSpeech`（259MB）与 `Resources/BaiduTTS`（37MB）留在 `.gitignore`，商店包不依赖。
