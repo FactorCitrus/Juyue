@@ -59,3 +59,19 @@
 - 踩坑记录：`photoBinding` 从 `if #available(iOS 16.0, *)` 内联搬成属性后丢了可用性保护，Xcode 构建报 `'PhotosPickerItem' is only available in iOS 16.0 or newer`；补 `@available(iOS 16.0, *)` 后通过。SPM 的 macOS 构建不暴露这个问题。
 - 审计 8085 → 8036（-49）；`BookDetailView` 541 → 492。
 - 验证：`swift build`、商店模拟器构建、侧载真机构建均 BUILD SUCCEEDED，0 error。
+
+## 2026-10-25 · 批次 7（GPL 残留重写 · BookStore）
+
+- `BookStore`：实质 281 → 242 行，逻辑残留 27 → **0**（文件 1518 → 1533）。
+- 五个 helper：`prependToShelf` / `upsertShelf` / `mutateSource` / `chapterFileURL` / `decodeTxt`（UTF-8 → GB18030 → 容错三级）。
+- 行为保持：三条导入路径（EPUB / TXT / 漫画）与两处书源修改收敛到 helper，插入顺序、去重键、书源覆盖语义不变。
+- 产物 `artifacts/gpl-rewrite-2026-10-25/batch04-bookstore/`。
+
+## 2026-10-25 · 批次 8（GPL 残留重写 · SearchBookView）
+
+- `SearchBookView`：逐行 254 → 99，逻辑残留 71 → **0**（文件 569 → 600）。
+- 结构：五个状态视图 + `sourceFilterBar` + `resultRow(_:)` 抽出；`SearchResultRow` 拆成 cover / metaLine / kindLine / introLine / latestLine。
+- 视觉等价：三处 footer 的 `Spacer()` 换 `.frame(maxWidth: .infinity)`，`FilterChip` 内边距合并成一条 `EdgeInsets`。
+- 踩坑：`some View` 属性里先 `let` 再返回，必须显式 `return`，否则不透明返回类型推断失败。
+- 全局：上游逐行 6877 → 6737，实质 6123 → 5968，逻辑 902 → 831。
+- 产物 `artifacts/gpl-rewrite-2026-10-25/batch05-searchbookview/`。

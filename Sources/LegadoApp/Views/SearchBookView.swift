@@ -166,75 +166,19 @@ public struct SearchBookView: View {
 
             // Source filter chips
             if !viewModel.availableSources.isEmpty {
-                ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: 8) {
-                        FilterChip(
-                            title: "全部书源 (\(viewModel.availableSources.count))",
-                            isSelected: viewModel.selectedSourceUrl == nil
-                        ) {
-                            viewModel.selectedSourceUrl = nil
-                            if !viewModel.searchQuery.trimmingCharacters(in: .whitespaces).isEmpty {
-                                viewModel.startSearch()
-                            }
-                        }
-
-                        ForEach(viewModel.availableSources) { source in
-                            FilterChip(
-                                title: source.bookSourceName,
-                                isSelected: viewModel.selectedSourceUrl == source.bookSourceUrl
-                            ) {
-                                viewModel.selectedSourceUrl = source.bookSourceUrl
-                                if !viewModel.searchQuery.trimmingCharacters(in: .whitespaces).isEmpty {
-                                    viewModel.startSearch()
-                                }
-                            }
-                        }
-                    }
-                    .padding(.horizontal, 16)
-                    .padding(.vertical, 10)
-                }
+                sourceFilterBar
             }
 
             Divider()
 
             // Content area
             if viewModel.isSearching && viewModel.searchResults.isEmpty {
-                Spacer()
-                VStack(spacing: 12) {
-                    ProgressView()
-                    Text("正在搜索全网书籍 (第 1 页)...")
-                        .font(.subheadline)
-                        .foregroundColor(theme.palette.secondaryInk)
-                }
-                Spacer()
+                searchingState
             } else if viewModel.searchResults.isEmpty && !viewModel.searchQuery.isEmpty && !viewModel.isSearching {
-                Spacer()
-                VStack(spacing: 8) {
-                    Image(systemName: "magnifyingglass")
-                        .font(.largeTitle)
-                        .foregroundColor(theme.palette.secondaryInk.opacity(0.6))
-                    Text("没找到相关书籍")
-                        .font(.headline)
-                        .foregroundColor(theme.palette.secondaryInk)
-                    Text(viewModel.hiddenByFilterCount > 0
-                         ? "搜到 \(viewModel.hiddenByFilterCount) 条，但都不符合当前匹配口径"
-                         : "可尝试切换其他书源或更换关键词")
-                        .font(.caption)
-                        .foregroundColor(theme.palette.secondaryInk)
-                }
-                Spacer()
+                noResultState
             } else if viewModel.searchResults.isEmpty && viewModel.searchQuery.isEmpty {
                 if viewModel.history.isEmpty {
-                    Spacer()
-                    VStack(spacing: 8) {
-                        Image(systemName: "books.vertical")
-                            .font(.system(size: 40))
-                            .foregroundColor(theme.palette.secondaryInk.opacity(0.5))
-                        Text("输入关键词开启全网搜索")
-                            .font(.subheadline)
-                            .foregroundColor(theme.palette.secondaryInk)
-                    }
-                    Spacer()
+                    emptyPromptState
                 } else {
                     searchHistoryList
                 }
@@ -249,17 +193,7 @@ public struct SearchBookView: View {
                 }
                 List {
                     ForEach(viewModel.searchResults) { item in
-                        SearchResultRow(item: item)
-                            .contentShape(Rectangle())
-                            .appThemedRows()
-                            .onTapGesture {
-                                selectedDetailBook = item
-                            }
-                            .onAppear {
-                                if viewModel.shouldAutoLoadMore(for: item) {
-                                    viewModel.loadNextPage()
-                                }
-                            }
+                        resultRow(item)
                     }
 
                     // List footer (loading / more / finished)
@@ -292,11 +226,95 @@ public struct SearchBookView: View {
                         EmptyView()
                     }
                 },
-                label: { EmptyView() }
+                label: { SwiftUI.EmptyView() }
             )
-            .hidden()
-            .frame(width: 0, height: 0)
+            .hidden().frame(width: 0, height: 0)
         )
+    }
+
+    /// 单条搜索结果：点按进详情，滚到可见时按需续页。
+    private func resultRow(_ item: SearchBook) -> some View {
+        SearchResultRow(item: item)
+            .contentShape(Rectangle())
+            .appThemedRows()
+            .onTapGesture {
+                selectedDetailBook = item
+            }
+            .onAppear {
+                if viewModel.shouldAutoLoadMore(for: item) {
+                    viewModel.loadNextPage()
+                }
+            }
+    }
+
+    // MARK: - 状态视图
+
+    /// 书源筛选条：第一个是「全部」，后面每个源一个。
+    private var sourceFilterBar: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 8) {
+                FilterChip(title: "全部书源 (\(viewModel.availableSources.count))",
+                           isSelected: viewModel.selectedSourceUrl == nil) {
+                    pickSource(nil)
+                }
+                ForEach(viewModel.availableSources) { source in
+                    FilterChip(title: source.bookSourceName,
+                               isSelected: viewModel.selectedSourceUrl == source.bookSourceUrl) {
+                        pickSource(source.bookSourceUrl)
+                    }
+                }
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 10)
+        }
+    }
+
+    /// 切书源。已经有搜索词就顺手重搜，空词只记选择。
+    private func pickSource(_ url: String?) {
+        viewModel.selectedSourceUrl = url
+        guard !viewModel.searchQuery.trimmingCharacters(in: .whitespaces).isEmpty else { return }
+        viewModel.startSearch()
+    }
+
+    private var searchingState: some View {
+        VStack(spacing: 12) {
+            ProgressView()
+            Text("正在搜索全网书籍 (第 1 页)...")
+                .font(.subheadline)
+                .foregroundColor(theme.palette.secondaryInk)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private var noResultState: some View {
+        VStack(spacing: 8) {
+            Image(systemName: "magnifyingglass")
+                .font(.largeTitle)
+                .foregroundColor(theme.palette.secondaryInk.opacity(0.6))
+            Text("没找到相关书籍")
+                .font(.headline)
+                .foregroundColor(theme.palette.secondaryInk)
+            Text(viewModel.hiddenByFilterCount > 0
+                 ? "搜到 \(viewModel.hiddenByFilterCount) 条，但都不符合当前匹配口径"
+                 : "可尝试切换其他书源或更换关键词")
+                .font(.caption)
+                .foregroundColor(theme.palette.secondaryInk)
+        }
+        .multilineTextAlignment(.center)
+        .padding(.horizontal, 24)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private var emptyPromptState: some View {
+        VStack(spacing: 8) {
+            Image(systemName: "books.vertical")
+                .font(.system(size: 40))
+                .foregroundColor(theme.palette.secondaryInk.opacity(0.5))
+            Text("输入关键词开启全网搜索")
+                .font(.subheadline)
+                .foregroundColor(theme.palette.secondaryInk)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     // MARK: - Footer View
@@ -304,40 +322,39 @@ public struct SearchBookView: View {
     @ViewBuilder
     private var footerView: some View {
         if viewModel.isLoadingMore {
-            HStack(spacing: 8) {
-                Spacer()
-                ProgressView()
-                Text("正在加载第 \(viewModel.currentPage + 1) 页...")
-                    .font(.footnote)
-                    .foregroundColor(theme.palette.secondaryInk)
-                Spacer()
-            }
-            .padding(.vertical, 10)
+            loadingMoreRow
         } else if viewModel.hasMore && !viewModel.searchResults.isEmpty {
             Button(action: {
                 viewModel.loadNextPage()
             }) {
                 HStack(spacing: 6) {
-                    Spacer()
                     Image(systemName: "arrow.clockwise")
                     Text("加载下一页 (第 \(viewModel.currentPage + 1) 页，已加载 \(viewModel.searchResults.count) 本)")
-                    Spacer()
                 }
+                .frame(maxWidth: .infinity)
                 .font(.footnote)
                 .foregroundColor(theme.palette.accent)
                 .padding(.vertical, 8)
             }
             .buttonStyle(.plain)
         } else if !viewModel.hasMore && !viewModel.searchResults.isEmpty {
-            HStack {
-                Spacer()
-                Text("— 已加载全部 \(viewModel.searchResults.count) 本书籍 —")
-                    .font(.caption2)
-                    .foregroundColor(theme.palette.secondaryInk)
-                Spacer()
-            }
-            .padding(.vertical, 12)
+            Text("— 已加载全部 \(viewModel.searchResults.count) 本书籍 —")
+                .font(.caption2)
+                .foregroundColor(theme.palette.secondaryInk)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 12)
         }
+    }
+
+    private var loadingMoreRow: some View {
+        HStack(spacing: 8) {
+            ProgressView()
+            Text("正在加载第 \(viewModel.currentPage + 1) 页...")
+                .font(.footnote)
+                .foregroundColor(theme.palette.secondaryInk)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 10)
     }
 
     /// 搜索框下方的「最近」快捷词；点一下直接重搜。
@@ -450,16 +467,17 @@ struct FilterChip: View {
     let action: () -> Void
 
     var body: some View {
-        Button(action: action) {
-            Text(title)
-                .font(.caption.weight(isSelected ? .bold : .regular))
-                .padding(.horizontal, 13)
-                .padding(.vertical, 7)
-                .background(isSelected ? theme.palette.accent : theme.palette.elevated)
-                .foregroundColor(isSelected ? .white : .primary)
-                .cornerRadius(17)
-        }
-        .buttonStyle(.plain)
+        Button(action: action) { label }
+            .buttonStyle(.plain)
+    }
+
+    private var label: some View {
+        Text(title)
+            .font(.caption.weight(isSelected ? .bold : .regular))
+            .padding(EdgeInsets(top: 7, leading: 13, bottom: 7, trailing: 13))
+            .background(isSelected ? theme.palette.accent : theme.palette.elevated)
+            .foregroundColor(isSelected ? .white : .primary)
+            .cornerRadius(17)
     }
 }
 
@@ -484,72 +502,16 @@ public struct SearchResultRow: View {
 
     public var body: some View {
         HStack(alignment: .center, spacing: 12) {
-            // Book cover image or fallback placeholder
-            if let coverUrlStr = item.coverUrl, let url = URL(string: coverUrlStr) {
-                AsyncImage(url: url) { phase in
-                    switch phase {
-                    case .success(let image):
-                        image
-                            .resizable()
-                            .scaledToFill()
-                    default:
-                        coverPlaceholder
-                    }
-                }
-                .frame(width: 52, height: 72)
-                .cornerRadius(6)
-                .clipped()
-            } else {
-                coverPlaceholder
-            }
-
+            cover
             VStack(alignment: .leading, spacing: 4) {
-                Text(item.name)
-                    .font(.headline)
+                Text(item.name).font(.headline)
                     .lineLimit(2)
-
-                HStack(spacing: 6) {
-                    if !item.author.isEmpty && item.author != "未知作者" {
-                        Text(item.author)
-                            .font(.subheadline)
-                            .foregroundColor(theme.palette.secondaryInk)
-                            .lineLimit(1)
-                    }
-
-                    Text(item.originName)
-                        .font(.caption2)
-                        .padding(.horizontal, 5)
-                        .padding(.vertical, 2)
-                        .background(theme.palette.accent.opacity(0.12))
-                        .foregroundColor(theme.palette.accent)
-                        .cornerRadius(4)
-                }
-
-                if let kind = item.kind, !kind.isEmpty {
-                    Text(kind.replacingOccurrences(of: ",", with: " · "))
-                        .font(.caption2)
-                        .foregroundColor(theme.palette.secondaryInk)
-                        .lineLimit(1)
-                }
-
-                if let intro = cleanIntro, !intro.isEmpty, !intro.hasPrefix("源站：") {
-                    Text(intro)
-                        .font(.caption2)
-                        .foregroundColor(theme.palette.secondaryInk.opacity(0.8))
-                        .lineLimit(2)
-                }
-
-                if let latest = item.latestChapterTitle, !latest.isEmpty {
-                    Text("最新: \(latest)")
-                        .font(.caption2)
-                        .foregroundColor(theme.palette.secondaryInk)
-                        .lineLimit(1)
-                }
+                metaLine
+                kindLine
+                introLine
+                latestLine
             }
-
-            Spacer()
-
-            // Chevron indicating navigation into detail page
+            .frame(maxWidth: .infinity, alignment: .leading)
             Image(systemName: "chevron.right")
                 .font(.system(size: 14, weight: .semibold))
                 .foregroundColor(theme.palette.secondaryInk.opacity(0.5))
@@ -557,13 +519,82 @@ public struct SearchResultRow: View {
         .padding(.vertical, 4)
     }
 
-    private var coverPlaceholder: some View {
-        RoundedRectangle(cornerRadius: 6)
-            .fill(Color.accentColor.opacity(0.12))
+    /// 封面：有地址就异步加载，失败或没地址都用占位块，尺寸保持一致
+    @ViewBuilder
+    private var cover: some View {
+        if let raw = item.coverUrl, let url = URL(string: raw) {
+            AsyncImage(url: url) { phase in
+                switch phase {
+                case .success(let image):
+                    image
+                        .resizable()
+                        .scaledToFill()
+                default:
+                    coverPlaceholder
+                }
+            }
             .frame(width: 52, height: 72)
-            .overlay(
-                Image(systemName: "book.closed")
-                    .foregroundColor(theme.palette.accent)
-            )
+            .cornerRadius(6)
+            .clipped()
+        } else {
+            coverPlaceholder
+        }
+    }
+
+    /// 作者 + 来源标签
+    private var metaLine: some View {
+        HStack(spacing: 6) {
+            if !item.author.isEmpty && item.author != "未知作者" {
+                Text(item.author)
+                    .font(.subheadline)
+                    .foregroundColor(theme.palette.secondaryInk)
+                    .lineLimit(1)
+            }
+            Text(item.originName)
+                .font(.caption2)
+                .padding(EdgeInsets(top: 2, leading: 5, bottom: 2, trailing: 5))
+                .background(theme.palette.accent.opacity(0.12))
+                .foregroundColor(theme.palette.accent)
+                .cornerRadius(4)
+        }
+    }
+
+    @ViewBuilder
+    private var kindLine: some View {
+        if let kind = item.kind, !kind.isEmpty {
+            Text(kind.replacingOccurrences(of: ",", with: " · "))
+                .font(.caption2)
+                .foregroundColor(theme.palette.secondaryInk)
+                .lineLimit(1)
+        }
+    }
+
+    @ViewBuilder
+    private var introLine: some View {
+        // cleanIntro 已经把空串和「源站：」前缀滤掉了
+        if let intro = cleanIntro {
+            Text(intro)
+                .font(.caption2)
+                .foregroundColor(theme.palette.secondaryInk.opacity(0.8))
+                .lineLimit(2)
+        }
+    }
+
+    @ViewBuilder
+    private var latestLine: some View {
+        if let latest = item.latestChapterTitle, !latest.isEmpty {
+            Text("最新: \(latest)")
+                .font(.caption2)
+                .foregroundColor(theme.palette.secondaryInk)
+                .lineLimit(1)
+        }
+    }
+
+    private var coverPlaceholder: some View {
+        let tint = Color.accentColor.opacity(0.12)
+        return RoundedRectangle(cornerRadius: 6)
+            .fill(tint)
+            .frame(width: 52, height: 72)
+            .overlay(Image(systemName: "book.closed").foregroundColor(theme.palette.accent))
     }
 }
