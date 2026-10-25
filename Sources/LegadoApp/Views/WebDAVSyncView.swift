@@ -359,7 +359,7 @@ public struct WebDAVSyncView: View {
     // MARK: 本地备份
 
     private var localBackupSection: some View {
-        Section(header: Text("本地备份 (兼容 Android Legado)")) {
+        Section(header: Text("本地备份 (兼容 Android 阅读器)")) {
             Button {
                 exportBackupToFiles()
             } label: {
@@ -378,7 +378,7 @@ public struct WebDAVSyncView: View {
                 }
             }
 
-            Text("导出：把书架、书源和应用设置打成和安卓一致的 backup*.zip，存到本机「文件」里 —— 不用配 WebDAV 也能备份。导入：支持选取 Android 版 Legado 导出的 backup*.zip（可配合 bookProgress 进度目录），自动恢复书籍、书源与阅读进度。")
+            Text("导出：把书架、书源和应用设置打成和安卓一致的 backup*.zip，存到本机「文件」里 —— 不用配 WebDAV 也能备份。导入：支持选取 Android 版阅读器导出的 backup*.zip（可配合 bookProgress 进度目录），自动恢复书籍、书源与阅读进度。")
                 .font(.caption2)
                 .foregroundColor(theme.palette.secondaryInk)
         }

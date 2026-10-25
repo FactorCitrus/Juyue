@@ -132,12 +132,10 @@ public struct BookDetailView: View {
             .toolbar {
                 ToolbarItem(placement: .primaryAction) {
                     Menu {
-                        if !AppEdition.isAppStoreClean {
-                            Button {
-                                showSourceSwitch = true
-                            } label: {
-                                Label("换源", systemImage: "arrow.triangle.2.circlepath")
-                            }
+                        Button {
+                            showSourceSwitch = true
+                        } label: {
+                            Label("换源", systemImage: "arrow.triangle.2.circlepath")
                         }
 
                         Button {
@@ -603,7 +601,7 @@ public struct BookDetailView: View {
 
             // Read Now Button
             Button(action: {
-                if !AppEdition.isAppStoreClean && resolvedSource == nil && currentBook.origin != "local" {
+                if resolvedSource == nil && currentBook.origin != "local" {
                     showSourceSwitch = true
                 } else {
                     selectedChapterIndex = currentBookshelfBook.durChapterIndex
@@ -642,7 +640,7 @@ public struct BookDetailView: View {
     }
 
     private var readButtonTitle: String {
-        if !AppEdition.isAppStoreClean && resolvedSource == nil && currentBook.origin != "local" {
+        if resolvedSource == nil && currentBook.origin != "local" {
             return "选择书源"
         }
         let continued = currentBookshelfBook.durChapterIndex > 0

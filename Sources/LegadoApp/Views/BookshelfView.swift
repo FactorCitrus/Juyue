@@ -1509,9 +1509,7 @@ public struct BookshelfView: View {
                 .foregroundColor(.secondary.opacity(0.6))
             Text("书架空空如也")
                 .font(.headline)
-            Text(AppEdition.isAppStoreClean
-                 ? "点击右上角的“+”导入本地书籍"
-                 : "可点击右上角放大镜搜索网络小说，或点击“+”导入本地书籍")
+            Text("可点击右上角放大镜搜索网络小说，或点击“+”导入本地书籍")
                 .font(.subheadline)
                 .foregroundColor(.secondary)
                 .multilineTextAlignment(.center)

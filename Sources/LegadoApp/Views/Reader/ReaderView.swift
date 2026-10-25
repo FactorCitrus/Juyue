@@ -3858,18 +3858,16 @@ public struct ReaderView: View {
                 showTTSSettings = true
             }
 
-            // Switch Book Source (换源)；商店版没有第三方书源
-            if !AppEdition.isAppStoreClean {
-                Button(action: { showSourceSwitch = true }) {
-                    VStack(spacing: 4) {
-                        Image(systemName: "arrow.triangle.2.circlepath")
-                            .font(.system(size: 20))
-                        Text("换源")
-                            .font(.system(size: 11, weight: .medium))
-                    }
-                    .foregroundColor(readerConfig.textColor)
-                    .frame(maxWidth: .infinity)
+            // Switch Book Source (换源)
+            Button(action: { showSourceSwitch = true }) {
+                VStack(spacing: 4) {
+                    Image(systemName: "arrow.triangle.2.circlepath")
+                        .font(.system(size: 20))
+                    Text("换源")
+                        .font(.system(size: 11, weight: .medium))
                 }
+                .foregroundColor(readerConfig.textColor)
+                .frame(maxWidth: .infinity)
             }
 
             // Interface Settings (界面设置)

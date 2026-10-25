@@ -199,9 +199,7 @@ public struct SettingsView: View {
                             spacing: 12
                         ) {
                             boardTile(.display)
-                            if !AppEdition.isAppStoreClean {
-                                boardTile(.sources)
-                            }
+                            boardTile(.sources)
                             boardTile(.data)
                             boardTile(.system)
                         }

@@ -124,7 +124,7 @@ public struct SourceManagerView: View {
     public var body: some View {
         List {
             Section {
-                TerminalPageHeader(code: "SOURCE / LIBRARY", title: "书源管理", detail: "筛选 / 排序 / 校验 / 导入导出")
+                TerminalPageHeader(code: "SOURCE / LIBRARY", title: "书源管理", detail: AppEdition.allowsSourceExport ? "筛选 / 排序 / 校验 / 导入导出" : "筛选 / 排序 / 校验 / 导入")
                     .listRowInsets(EdgeInsets(top: 8, leading: 12, bottom: 8, trailing: 12))
                     .listRowBackground(Color.clear)
             }
@@ -273,22 +273,16 @@ public struct SourceManagerView: View {
                                 Label("刷新", systemImage: "arrow.clockwise")
                             }
 
-                            Button {
-                                copySourceJSON(source)
-                            } label: {
-                                Label("复制 JSON", systemImage: "doc.on.doc")
-                            }
-
-                            Button {
-                                shareSource(source)
-                            } label: {
-                                Label("分享书源", systemImage: "square.and.arrow.up")
-                            }
-
-                            Button {
-                                exportSources([source], namePrefix: "bookSource-single")
-                            } label: {
-                                Label("导出这个书源", systemImage: "tray.and.arrow.down")
+                            if AppEdition.allowsSourceExport {
+                                Button { copySourceJSON(source) } label: {
+                                    Label("复制 JSON", systemImage: "doc.on.doc")
+                                }
+                                Button { shareSource(source) } label: {
+                                    Label("分享书源", systemImage: "square.and.arrow.up")
+                                }
+                                Button { exportSources([source], namePrefix: "bookSource-single") } label: {
+                                    Label("导出这个书源", systemImage: "tray.and.arrow.down")
+                                }
                             }
 
                             Button {
@@ -331,19 +325,21 @@ public struct SourceManagerView: View {
                     }
                 }
                 ToolbarItem(placement: .primaryAction) {
-                    Menu {
-                        Button("导出全部（\(bookStore.sources.count)）") {
-                            exportSources(bookStore.sources)
+                    if AppEdition.allowsSourceExport {
+                        Menu {
+                            Button("导出全部（\(bookStore.sources.count)）") {
+                                exportSources(bookStore.sources)
+                            }
+                            Button("导出当前筛选（\(filteredSources.count)）") {
+                                exportSources(filteredSources)
+                            }
+                            Button("选择书源导出…") {
+                                exportSelectedURLs = []
+                                showExportPicker = true
+                            }
+                        } label: {
+                            Image(systemName: "square.and.arrow.up")
                         }
-                        Button("导出当前筛选（\(filteredSources.count)）") {
-                            exportSources(filteredSources)
-                        }
-                        Button("选择书源导出…") {
-                            exportSelectedURLs = []
-                            showExportPicker = true
-                        }
-                    } label: {
-                        Image(systemName: "square.and.arrow.up")
                     }
                 }
             }
