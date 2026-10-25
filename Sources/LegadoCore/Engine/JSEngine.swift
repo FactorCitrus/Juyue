@@ -120,15 +120,7 @@ public final class ScriptBrowser {
         let body = resp?.bodyString ?? ""
         let code = resp?.statusCode ?? 0
 
-        let resultObj = JSValue(newObjectIn: ctx)
-        let bodyBlock: @convention(block) () -> String = { body }
-        let codeBlock: @convention(block) () -> Int = { code }
-        let urlBlock: @convention(block) () -> String = { url }
-        resultObj?.setValue(bodyBlock, forProperty: "body")
-        resultObj?.setValue(codeBlock, forProperty: "statusCode")
-        resultObj?.setValue(urlBlock, forProperty: "url")
-        resultObj?.setValue(body, forProperty: "text")
-        return resultObj ?? JSValue(nullIn: ctx)
+        return responseObject(body: body, code: code, url: url, in: ctx)
     }
 
     public func post(_ url: String, _ body: String, _ header: JSValue) -> JSValue {
@@ -136,19 +128,7 @@ public final class ScriptBrowser {
             return JSValue(undefinedIn: JSContext())
         }
 
-        var headerDict: [String: String] = [:]
-        if header.isObject || header.isString {
-            if let dict = header.toDictionary() as? [String: Any] {
-                for (k, v) in dict {
-                    headerDict[k] = "\(v)"
-                }
-            } else if let str = header.toString(), let data = str.data(using: .utf8),
-                      let dict = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
-                for (k, v) in dict {
-                    headerDict[k] = "\(v)"
-                }
-            }
-        }
+        var headerDict = headerFields(from: header)
 
         if headerDict["Content-Type"] == nil {
             headerDict["Content-Type"] = "application/json"
@@ -173,15 +153,34 @@ public final class ScriptBrowser {
         let respBody = resp?.bodyString ?? ""
         let respCode = resp?.statusCode ?? 0
 
-        let resultObj = JSValue(newObjectIn: ctx)
-        let bodyBlock: @convention(block) () -> String = { respBody }
-        let codeBlock: @convention(block) () -> Int = { respCode }
-        let urlBlock: @convention(block) () -> String = { url }
-        resultObj?.setValue(bodyBlock, forProperty: "body")
-        resultObj?.setValue(codeBlock, forProperty: "statusCode")
-        resultObj?.setValue(urlBlock, forProperty: "url")
-        resultObj?.setValue(respBody, forProperty: "text")
-        return resultObj ?? JSValue(nullIn: ctx)
+        return responseObject(body: respBody, code: respCode, url: url, in: ctx)
+    }
+
+    /// 脚本拿到的响应对象。`body` / `statusCode` / `url` 做成函数是为了兼容把响应当方法调的老脚本，
+    /// `text` 给直接读正文的新脚本，两边都给，省得按脚本年代分支。
+    private func responseObject(body: String, code: Int, url: String, in ctx: JSContext) -> JSValue {
+        let obj = JSValue(newObjectIn: ctx)
+        obj?.setValue({ body } as @convention(block) () -> String, forProperty: "body")
+        obj?.setValue({ code } as @convention(block) () -> Int, forProperty: "statusCode")
+        obj?.setValue({ url } as @convention(block) () -> String, forProperty: "url")
+        obj?.setValue(body, forProperty: "text")
+        return obj ?? JSValue(nullIn: ctx)
+    }
+
+    /// `post` 的第三个参数可能是对象，也可能是 JSON 字符串；两种都收，其它一律当空头。
+    private func headerFields(from value: JSValue) -> [String: String] {
+        var fields: [String: String] = [:]
+        guard value.isObject || value.isString else { return fields }
+        if let dict = value.toDictionary() as? [String: Any] {
+            for (name, raw) in dict { fields[name] = "\(raw)" }
+            return fields
+        }
+        guard let text = value.toString(), let blob = text.data(using: .utf8),
+              let dict = try? JSONSerialization.jsonObject(with: blob) as? [String: Any] else {
+            return fields
+        }
+        for (name, raw) in dict { fields[name] = "\(raw)" }
+        return fields
     }
 
     public func get(_ key: String) -> String? {
@@ -487,27 +486,26 @@ public final class ScriptBrowser {
     }
 
     public func getString(_ path: String) -> String {
-        guard let ctx = jsContext, let resVal = ctx.objectForKeyedSubscript("result" as NSString) else {
-            return ""
-        }
-        if resVal.isObject {
-            let cleanKey = path.replacingOccurrences(of: "$.", with: "").replacingOccurrences(of: "$", with: "")
-            if let prop = resVal.forProperty(cleanKey), !prop.isUndefined && !prop.isNull {
-                return prop.toString() ?? ""
+        guard let ctx = jsContext,
+              let result = ctx.objectForKeyedSubscript("result" as NSString) else { return "" }
+
+        if result.isObject {
+            // `$.data.name` 先按去掉前缀的属性名直取，取不到再交给 JSONPath
+            let directKey = String(path.drop { $0 == "$" || $0 == "." })
+            if let direct = result.forProperty(directKey), !direct.isUndefined, !direct.isNull {
+                return direct.toString() ?? ""
             }
-            if let dict = resVal.toDictionary() {
-                if let evaluated = JSONPath.evaluate(path: path, json: dict) {
-                    return "\(evaluated)"
-                }
+            if let dict = result.toDictionary(),
+               let hit = JSONPath.evaluate(path: path, json: dict) {
+                return "\(hit)"
             }
         }
-        let jsonStr = resVal.toString() ?? ""
-        if let data = jsonStr.data(using: .utf8),
-           let obj = try? JSONSerialization.jsonObject(with: data, options: []),
-           let evaluated = JSONPath.evaluate(path: path, json: obj) {
-            return "\(evaluated)"
-        }
-        return ""
+
+        // 不是对象就当成 JSON 字符串再解析一次
+        guard let text = result.toString(), let blob = text.data(using: .utf8),
+              let parsed = try? JSONSerialization.jsonObject(with: blob, options: []),
+              let hit = JSONPath.evaluate(path: path, json: parsed) else { return "" }
+        return "\(hit)"
     }
 
     public func jsonPath(_ json: String, _ path: String) -> JSValue {
@@ -613,28 +611,27 @@ public class JSEngine {
         }
 
         let getLoginInfoMapBlock: @convention(block) () -> JSValue = { [weak self] in
-            guard let ctx = self?.context else { return JSValue(nullIn: JSContext()) }
+            let ctx = self?.context ?? JSContext()
             let mapObj = JSValue(newObjectIn: ctx)
-            if let info = loginInfoStr, let data = info.data(using: .utf8),
-               let dict = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
-                for (k, v) in dict {
-                    mapObj?.setValue(v, forProperty: k)
-                }
+            if let info = loginInfoStr, let blob = info.data(using: .utf8),
+               let fields = try? JSONSerialization.jsonObject(with: blob) as? [String: Any] {
+                for (name, value) in fields { mapObj?.setValue(value, forProperty: name) }
             }
-            let getBlock: @convention(block) (String) -> String = { key in
-                return mapObj?.forProperty(key)?.toString() ?? ""
+            let lookup: @convention(block) (String) -> String = { key in
+                mapObj?.forProperty(key)?.toString() ?? ""
             }
-            mapObj?.setValue(getBlock, forProperty: "get")
+            mapObj?.setValue(lookup, forProperty: "get")
             return mapObj ?? JSValue(newObjectIn: ctx)
         }
 
-        sourceObj?.setValue(getLoginHeaderBlock, forProperty: "getLoginHeader")
-        sourceObj?.setValue(putLoginHeaderBlock, forProperty: "putLoginHeader")
-        sourceObj?.setValue(getLoginInfoBlock, forProperty: "getLoginInfo")
-        sourceObj?.setValue(putLoginInfoBlock, forProperty: "putLoginInfo")
-        sourceObj?.setValue(getLoginInfoMapBlock, forProperty: "getLoginInfoMap")
+        // 属性挂载与顺序无关；先挂变量读写，再挂登录态
         sourceObj?.setValue(getVariableBlock, forProperty: "getVariable")
         sourceObj?.setValue(setVariableBlock, forProperty: "setVariable")
+        sourceObj?.setValue(getLoginHeaderBlock, forProperty: "getLoginHeader")
+        sourceObj?.setValue(putLoginHeaderBlock, forProperty: "putLoginHeader")
+        sourceObj?.setValue(getLoginInfoMapBlock, forProperty: "getLoginInfoMap")
+        sourceObj?.setValue(putLoginInfoBlock, forProperty: "putLoginInfo")
+        sourceObj?.setValue(getLoginInfoBlock, forProperty: "getLoginInfo")
         let sourcePutBlock: @convention(block) (String, String) -> String = { [weak javaShim] key, value in
             javaShim?.put(key, value) ?? value
         }
@@ -723,13 +720,13 @@ public class JSEngine {
         // Compatibility polyfills
         context.evaluateScript("""
         var console = {
-            log: function(msg) { },
-            error: function(msg) { }
+            log: function () { },
+            error: function () { }
         };
-        function format(str) { return Array.isArray(str) ? str.join('\\n\\n') : (str || ''); }
-        function regex(str) { return str || ''; }
-        function annotate(text, kanji) { return text || ''; }
-        function update(url, token) { }
+        function format(value) { return Array.isArray(value) ? value.join('\\n\\n') : (value || ''); }
+        function regex(value) { return value || ''; }
+        function annotate(content) { return content || ''; }
+        function update(address) { }
         """)
 
         // Rhino 的 Java 互操作壳：JavaImporter、with(javaImport)、importClass、
@@ -855,30 +852,29 @@ public class JSEngine {
 
     /// Evaluates template strings containing `{{ ... }}`
     public func renderTemplate(_ text: String, variables: [String: Any] = [:]) -> String {
-        for (k, v) in variables {
-            context.setObject(JSEngine.jsSafeValue(v), forKeyedSubscript: k as NSString)
+        for (name, value) in variables {
+            context.setObject(JSEngine.jsSafeValue(value), forKeyedSubscript: name as NSString)
         }
 
-        var result = text
-        let pattern = "\\{\\{(.*?)\\}\\}"
-        guard let regex = try? NSRegularExpression(pattern: pattern, options: [.dotMatchesLineSeparators]) else {
+        guard !text.isEmpty,
+              let templates = try? NSRegularExpression(pattern: #"\{\{(.*?)\}\}"#,
+                                                      options: [.dotMatchesLineSeparators]) else {
             return text
         }
 
-        let nsString = text as NSString
-        let matches = regex.matches(in: text, options: [], range: NSRange(location: 0, length: nsString.length))
+        let source = text as NSString
+        let hits = templates.matches(in: text, range: NSRange(location: 0, length: source.length))
+        var output = text
 
-        for match in matches.reversed() {
-            let fullRange = match.range
-            let innerRange = match.range(at: 1)
-            let expression = nsString.substring(with: innerRange).trimmingCharacters(in: .whitespacesAndNewlines)
-
-            let evaluated = eval(script: expression)
-            let replacement = evaluated != nil ? "\(evaluated!)" : ""
-            result = (result as NSString).replacingCharacters(in: fullRange, with: replacement)
+        // 从后往前替换：后面的区间先改，前面的 range 一直有效
+        for hit in hits.reversed() {
+            let inner = source.substring(with: hit.range(at: 1))
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            let rendered = eval(script: inner).map { "\($0)" } ?? ""
+            output = (output as NSString).replacingCharacters(in: hit.range, with: rendered)
         }
 
-        return result
+        return output
     }
 
     /// JavaScriptCore can only bridge Objective-C classes. Handing it a Swift-only

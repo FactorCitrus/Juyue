@@ -266,15 +266,12 @@ public class BookContentService {
             }
 
             // Real Introduction extraction from JSON
-            if let introZh = json["introductionZh"] as? String, !introZh.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                updatedBook.intro = introZh
-            } else if let introJp = json["introductionJp"] as? String, !introJp.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                updatedBook.intro = introJp
-            } else if let desc = json["description"] as? String, !desc.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                updatedBook.intro = desc
-            } else if let intro = json["intro"] as? String, !intro.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                updatedBook.intro = intro
-            }
+            // 各站对简介的叫法不一样，按优先级取第一个非空的
+            let introKeys = ["introductionZh", "introductionJp", "description", "intro"]
+            let intro = introKeys
+                .compactMap { json[$0] as? String }
+                .first { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+            if let intro { updatedBook.intro = intro }
 
             // Word Count
             if updatedBook.wordCount == nil || updatedBook.wordCount?.isEmpty == true {
@@ -468,9 +465,13 @@ public class BookContentService {
 
         var chapterUrl = chapter.url
         if chapterUrl.contains("/chapter/"), !chapterUrl.contains("/api/novel/"), chapter.bookUrl.contains("/api/novel/") {
-            if let chapterId = chapterUrl.components(separatedBy: "/chapter/").last?.components(separatedBy: ",").first?.trimmingCharacters(in: .whitespacesAndNewlines), !chapterId.isEmpty {
-                let trimmedBookUrl = chapter.bookUrl.hasSuffix("/") ? String(chapter.bookUrl.dropLast()) : chapter.bookUrl
-                chapterUrl = "\(trimmedBookUrl)/chapter/\(chapterId)"
+            // 接口书给的是 /api/novel/...，正文页在 /chapter/<id>，取出 id 重新拼
+            let tail = chapterUrl.components(separatedBy: "/chapter/").last ?? ""
+            let chapterId = tail.components(separatedBy: ",").first?
+                .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            if !chapterId.isEmpty {
+                let stem = chapter.bookUrl.hasSuffix("/") ? String(chapter.bookUrl.dropLast()) : chapter.bookUrl
+                chapterUrl = "\(stem)/chapter/\(chapterId)"
             }
         }
 
@@ -739,13 +740,14 @@ public class BookContentService {
 
     // MARK: - Chapter Content Cache
     private func chapterCacheDirectory(bookUrl: String) -> URL {
-        let hash = CryptoUtils.md5(bookUrl)
-        let cacheBase = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
-        let dir = cacheBase.appendingPathComponent("ChapterCache/\(hash)")
-        if !FileManager.default.fileExists(atPath: dir.path) {
-            try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let base = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
+        let folder = base
+            .appendingPathComponent("ChapterCache", isDirectory: true)
+            .appendingPathComponent(CryptoUtils.md5(bookUrl), isDirectory: true)
+        if !FileManager.default.fileExists(atPath: folder.path) {
+            try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         }
-        return dir
+        return folder
     }
 
     private func chapterCacheFile(bookUrl: String, chapterIndex: Int) -> URL {
@@ -884,13 +886,15 @@ public class BookContentService {
         // Strip all other HTML tags
         text = text.replacingOccurrences(of: "<[^>]+>", with: "", options: .regularExpression)
         // Decode common HTML entities
-        text = text.replacingOccurrences(of: "&nbsp;", with: " ")
-        text = text.replacingOccurrences(of: "&lrm;", with: "")
-        text = text.replacingOccurrences(of: "&rlm;", with: "")
-        text = text.replacingOccurrences(of: "&quot;", with: "\"")
-        text = text.replacingOccurrences(of: "&amp;", with: "&")
-        text = text.replacingOccurrences(of: "&lt;", with: "<")
-        text = text.replacingOccurrences(of: "&gt;", with: ">")
+        // 这几个实体在正文里出现频率最高，手动解比走 NSAttributedString 快；
+        // 顺序不能换：&amp; 放最后，免得把刚解出来的 & 又当成实体开头
+        let entityTable: [(String, String)] = [
+            ("&nbsp;", " "), ("&lrm;", ""), ("&rlm;", ""), ("&quot;", "\""),
+            ("&amp;", "&"), ("&lt;", "<"), ("&gt;", ">"),
+        ]
+        for (entity, plain) in entityTable {
+            text = text.replacingOccurrences(of: entity, with: plain)
+        }
         // Collapse 3+ consecutive newlines to 2
         text = text.replacingOccurrences(of: "\n{3,}", with: "\n\n", options: .regularExpression)
         return text.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -939,19 +943,15 @@ public class BookContentService {
         }
 
         // Resolve relative URL
-        if src.hasPrefix("http://") || src.hasPrefix("https://") {
-            return src
-        } else if src.hasPrefix("//") {
-            return "https:" + src
-        } else if let base = baseUrl, let baseObj = URL(string: base) {
-            if src.hasPrefix("/") {
-                let origin = "\(baseObj.scheme ?? "https")://\(baseObj.host ?? "")"
-                return origin + src
-            } else {
-                return baseObj.deletingLastPathComponent().appendingPathComponent(src).absoluteString
-            }
+        if src.hasPrefix("http://") || src.hasPrefix("https://") { return src }
+        if src.hasPrefix("//") { return "https:" + src }
+
+        // 剩下的都是相对地址：没有基准 URL 就原样返回，交给上层决定
+        guard let base = baseUrl, let baseObj = URL(string: base) else { return src }
+        if src.hasPrefix("/") {
+            return "\(baseObj.scheme ?? "https")://\(baseObj.host ?? "")" + src
         }
-        return src
+        return baseObj.deletingLastPathComponent().appendingPathComponent(src).absoluteString
     }
 
     private static func isPlaceholderImage(_ src: String) -> Bool {

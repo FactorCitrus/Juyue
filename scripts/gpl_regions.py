@@ -31,6 +31,7 @@ def git(repo, *args):
 DECL = re.compile(r"""^\s*(
       (public|private|internal|fileprivate|open)\s+)?
       (var|let|case)\s+[\w\[\]?:<> ,=().\"]+$""", re.X)
+SIGNATURE = re.compile(r"^\s*(@objc\s+)?(public\s+|open\s+)?func\s+\w+\([^)]*\)(\s*->\s*[^{]+)?\s*\{?$")
 PARAM = re.compile(r"""^\s*\w+:\s*[\w\[\]?:<>(). ]+( = .*)?,?$""")
 ASSIGN = re.compile(r"""^\s*(self\.)?\w+ = \w+$""")
 
@@ -46,7 +47,7 @@ def is_logic(line):
         return False
     if text.startswith(("import ", "//", "///", "case ")):
         return False
-    if DECL.match(line) or PARAM.match(line) or ASSIGN.match(line):
+    if DECL.match(line) or PARAM.match(line) or ASSIGN.match(line) or SIGNATURE.match(line):
         return False
     if text.endswith("{") and text.count(" ") <= 6 and "(" not in text:
         return False

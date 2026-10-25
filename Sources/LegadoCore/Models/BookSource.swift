@@ -212,45 +212,54 @@ public struct BookSource: Codable, Identifiable, Equatable {
     }
 
     public init(from decoder: Decoder) throws {
-        let container = try decoder.container(keyedBy: CodingKeys.self)
-        self.bookSourceUrl = try container.decodeIfPresent(String.self, forKey: .bookSourceUrl) ?? ""
-        self.bookSourceName = try container.decodeIfPresent(String.self, forKey: .bookSourceName) ?? ""
-        self.bookSourceGroup = try container.decodeIfPresent(String.self, forKey: .bookSourceGroup)
-        self.bookSourceType = Self.lenientInt(container, .bookSourceType)
-        self.bookUrlPattern = try container.decodeIfPresent(String.self, forKey: .bookUrlPattern)
-        self.customOrder = Self.lenientInt(container, .customOrder)
-        self.enabled = Self.lenientBool(container, .enabled)
-        self.enabledExplore = Self.lenientBool(container, .enabledExplore)
-        self.header = try container.decodeIfPresent(String.self, forKey: .header)
-        self.loginUrl = try container.decodeIfPresent(String.self, forKey: .loginUrl)
-        self.loginUi = try container.decodeIfPresent(String.self, forKey: .loginUi)
-        self.loginCheckJs = try container.decodeIfPresent(String.self, forKey: .loginCheckJs)
-        self.coverDecodeJs = try container.decodeIfPresent(String.self, forKey: .coverDecodeJs)
-        self.bookSourceComment = try container.decodeIfPresent(String.self, forKey: .bookSourceComment)
-        self.variableComment = try container.decodeIfPresent(String.self, forKey: .variableComment)
-        self.lastUpdateTime = Self.lenientInt64(container, .lastUpdateTime)
-        self.respondTime = Self.lenientInt64(container, .respondTime)
-        self.weight = Self.lenientInt(container, .weight)
-        self.exploreUrl = try container.decodeIfPresent(String.self, forKey: .exploreUrl)
-        self.exploreScreen = try container.decodeIfPresent(String.self, forKey: .exploreScreen)
-        self.searchUrl = try container.decodeIfPresent(String.self, forKey: .searchUrl)
+        let box = try decoder.container(keyedBy: CodingKeys.self)
 
-        self.ruleExplore = decodeRule(ExploreRule.self, from: container, forKey: .ruleExplore)
-        self.ruleSearch = decodeRule(SearchRule.self, from: container, forKey: .ruleSearch)
-        self.ruleBookInfo = decodeRule(BookInfoRule.self, from: container, forKey: .ruleBookInfo)
-        self.ruleToc = decodeRule(TocRule.self, from: container, forKey: .ruleToc)
-        self.ruleContent = decodeRule(ContentRule.self, from: container, forKey: .ruleContent)
-        self.ruleReview = decodeRule(ReviewRule.self, from: container, forKey: .ruleReview)
+        // 书源 JSON 的字段类型经常不统一（数字写成字符串、布尔写成 0/1），
+        // 统一走宽容取值：取不到就 nil，由各字段自己的默认值兜底。
+        let text: (CodingKeys) -> String? = { try? box.decodeIfPresent(String.self, forKey: $0) }
 
-        self.loginInfo = try container.decodeIfPresent(String.self, forKey: .loginInfo)
-        self.loginHeader = try container.decodeIfPresent(String.self, forKey: .loginHeader)
-        self.variable = try container.decodeIfPresent(String.self, forKey: .variable)
-        self.jsLib = try container.decodeIfPresent(String.self, forKey: .jsLib)
-        self.eventListener = Self.lenientBool(container, .eventListener)
-        self.customButton = Self.lenientBool(container, .customButton)
-        self.enabledCookieJar = Self.lenientBool(container, .enabledCookieJar)
-        self.concurrentRate = try container.decodeIfPresent(String.self, forKey: .concurrentRate)
-        self.applyCompatibilityFixes()
+        bookSourceUrl = text(.bookSourceUrl) ?? ""
+        bookSourceName = text(.bookSourceName) ?? ""
+        bookSourceGroup = text(.bookSourceGroup)
+        bookSourceType = Self.lenientInt(box, .bookSourceType)
+        bookUrlPattern = text(.bookUrlPattern)
+        customOrder = Self.lenientInt(box, .customOrder)
+        enabled = Self.lenientBool(box, .enabled)
+        enabledExplore = Self.lenientBool(box, .enabledExplore)
+
+        header = text(.header)
+        loginUrl = text(.loginUrl)
+        loginUi = text(.loginUi)
+        loginCheckJs = text(.loginCheckJs)
+        coverDecodeJs = text(.coverDecodeJs)
+        bookSourceComment = text(.bookSourceComment)
+        variableComment = text(.variableComment)
+
+        lastUpdateTime = Self.lenientInt64(box, .lastUpdateTime)
+        respondTime = Self.lenientInt64(box, .respondTime)
+        weight = Self.lenientInt(box, .weight)
+        exploreUrl = text(.exploreUrl)
+        exploreScreen = text(.exploreScreen)
+        searchUrl = text(.searchUrl)
+
+        // 规则字段可能是对象也可能是字符串，交给 decodeRule 两种都试
+        ruleExplore = decodeRule(ExploreRule.self, from: box, forKey: .ruleExplore)
+        ruleSearch = decodeRule(SearchRule.self, from: box, forKey: .ruleSearch)
+        ruleBookInfo = decodeRule(BookInfoRule.self, from: box, forKey: .ruleBookInfo)
+        ruleToc = decodeRule(TocRule.self, from: box, forKey: .ruleToc)
+        ruleContent = decodeRule(ContentRule.self, from: box, forKey: .ruleContent)
+        ruleReview = decodeRule(ReviewRule.self, from: box, forKey: .ruleReview)
+
+        loginInfo = text(.loginInfo)
+        loginHeader = text(.loginHeader)
+        variable = text(.variable)
+        jsLib = text(.jsLib)
+        eventListener = Self.lenientBool(box, .eventListener)
+        customButton = Self.lenientBool(box, .customButton)
+        enabledCookieJar = Self.lenientBool(box, .enabledCookieJar)
+        concurrentRate = text(.concurrentRate)
+
+        applyCompatibilityFixes()
     }
 
     /// 已导入书源里的已知脚本缺陷，在解码时就地修掉，避免详情页反复报
