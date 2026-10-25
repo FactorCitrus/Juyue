@@ -1,10 +1,10 @@
 # 重写看板（upstream-free）
 
-基线 `d21903c`；当前存活上游 **7862** 行 / 32 个文件（2026-10-25 实测）。目标 0。
+基线 `d21903c`；当前存活上游 **7551** 行 / 32 个文件（2026-10-25 实测）。目标 0。
 
 - **棘轮闸门**：`python3 scripts/gpl_audit.py --budget "$(cat docs/licensing/upstream-budget.txt)"`。
-  预算当前 `7900`，只许下调；任何一批改动让存活行数上涨即 FAIL。
-- **下一道闸门 7700**：再清 162 行后把预算改成 `7700`，之后 7600 / 7400……逐档下压。
+  预算当前 `7551`，只许下调；任何一批改动让存活行数上涨即 FAIL。
+- **下一道闸门 7400**：再清 151 行后把预算改成 `7400`，之后 7300 / 7200……逐档下压。
 - **终局**：`python3 scripts/gpl_audit.py --strict`。注意 `--strict` 在脚本里等价于 `--budget 0`
   （`limit = 0 if args.strict else args.budget`），和 `--budget` 一起给会被覆盖成 0，别叠着用。
 
@@ -15,7 +15,7 @@
 
 | 阶段 | 文件 | 行数 | 存活上游 | 占比 | 状态 |
 |---|---|---:|---:|---:|---|
-| P2 内核 | `Sources/LegadoCore/Engine/RuleAnalyzer.swift` | 482 | 397 | 82% | 待做 |
+| P2 内核 | `Sources/LegadoCore/Engine/RuleAnalyzer.swift` | 488 | 86 | 18% | 已重写（余 86） |
 | P2 内核 | `Sources/LegadoCore/Engine/JSEngine.swift` | 924 | 295 | 32% | 待做 |
 | P2 内核 | `Sources/LegadoCore/Models/RuleModels.swift` | 288 | 207 | 72% | 待做 |
 | P2 内核 | `Sources/LegadoCore/Models/Book.swift` | 293 | 191 | 65% | 待做 |

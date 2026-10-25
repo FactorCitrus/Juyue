@@ -1,482 +1,488 @@
 import Foundation
 import SwiftSoup
 
-public class RuleAnalyzer {
+/// 书源规则的求值器：一个实例绑定一份内容（HTML 字符串 / 根元素 / JSON 对象），
+/// 同一份内容可以被不同规则反复求值，省掉重复解析。
+///
+/// 求值管线分四段，顺序不能换：
+/// 1. `@json:` 显式 JSONPath；2. `{{…}}` 模板；3. JS（`<js>` / `@js:`，可带前缀与尾巴）；
+/// 4. 兜底链（`||` 取第一个非空、`&&` 逐段取再拼行）→ 最后交给 tokenizer 拆步骤求值。
+public final class RuleAnalyzer {
     public let content: Any
     public let baseUrl: String?
     public let jsEngine: JSEngine
 
-    private var parsedDocument: Document?
-    private var parsedJson: Any?
+    /// init 时判定的内容形态。之后所有取数都按这个分支走，不再每次试探类型。
+    private enum Payload {
+        case json(Any)
+        case html(Document?)
+        case element(Element)
+        case opaque
+    }
 
-    public init(content: Any, baseUrl: String? = nil, bookSource: BookSource? = nil, jsEngine: JSEngine? = nil) {
+    private let payload: Payload
+
+    public init(
+        content: Any,
+        baseUrl: String? = nil,
+        bookSource: BookSource? = nil,
+        jsEngine: JSEngine? = nil
+    ) {
         self.content = content
         self.baseUrl = baseUrl
         self.jsEngine = jsEngine ?? JSEngine(bookSource: bookSource, baseUrl: baseUrl)
 
-        if let stringContent = content as? String {
-            let trimmed = stringContent.trimmingCharacters(in: .whitespacesAndNewlines)
-            if (trimmed.starts(with: "{") && trimmed.hasSuffix("}")) ||
-               (trimmed.starts(with: "[") && trimmed.hasSuffix("]")),
-               let data = trimmed.data(using: .utf8),
-               let json = try? JSONSerialization.jsonObject(with: data) {
-                self.parsedJson = json
-            } else {
-                self.parsedDocument = try? SwiftSoup.parse(stringContent, baseUrl ?? "")
-            }
-        } else if let dict = content as? [String: Any] {
-            self.parsedJson = dict
-        } else if let array = content as? [Any] {
-            self.parsedJson = array
+        if let text = content as? String {
+            self.payload = RuleAnalyzer.payload(forText: text, baseUrl: baseUrl ?? "")
+        } else if let element = content as? Element {
+            self.payload = .element(element)
+        } else if let json = content as? [String: Any] {
+            self.payload = .json(json)
+        } else if let json = content as? [Any] {
+            self.payload = .json(json)
+        } else {
+            self.payload = .opaque
         }
     }
 
-    /// Resolves relative URLs using baseUrl
+    /// 只看首尾字符判 JSON，避免把整页 HTML 丢给 `JSONSerialization` 白跑一遍。
+    private static func payload(forText text: String, baseUrl: String) -> Payload {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        let bracketed = (trimmed.hasPrefix("{") && trimmed.hasSuffix("}"))
+            || (trimmed.hasPrefix("[") && trimmed.hasSuffix("]"))
+        if bracketed,
+           let data = trimmed.data(using: .utf8),
+           let parsed = try? JSONSerialization.jsonObject(with: data) {
+            return .json(parsed)
+        }
+        return .html(try? SwiftSoup.parse(text, baseUrl))
+    }
+
+    // MARK: - 内容形态
+
+    private var jsonRoot: Any? {
+        if case .json(let value) = payload { return value }
+        return nil
+    }
+
+    private var htmlRoot: Element? {
+        switch payload {
+        case .html(let document): return document
+        case .element(let element): return element
+        default: return nil
+        }
+    }
+
+    // MARK: - 地址与模板
+
+    /// 把相对地址按 `baseUrl` 补全；已经是绝对地址或没有 base 时原样返回。
     public func resolveUrl(_ urlString: String) -> String {
-        guard let base = baseUrl, let baseUrlObj = URL(string: base) else {
+        guard let base = baseUrl, let baseObject = URL(string: base) else {
             return urlString
         }
         let trimmed = urlString.trimmingCharacters(in: .whitespacesAndNewlines)
-        if trimmed.starts(with: "http://") || trimmed.starts(with: "https://") {
+        if trimmed.hasPrefix("http://") || trimmed.hasPrefix("https://") {
             return trimmed
         }
-        return URL(string: trimmed, relativeTo: baseUrlObj)?.absoluteString ?? trimmed
+        guard let resolved = URL(string: trimmed, relativeTo: baseObject) else {
+            return trimmed
+        }
+        return resolved.absoluteString
     }
 
-    /// Evaluates template expressions with {{...}} placeholders
+    /// 展开 `{{…}}`。从后往前替换，前面的字符位置才不会因为长度变化而错位。
     public func evaluateTemplate(_ template: String) -> String {
-        var result = template
-        let pattern = "\\{\\{(.*?)\\}\\}"
-        guard let regex = try? NSRegularExpression(pattern: pattern) else { return template }
-        let matches = regex.matches(in: template, range: NSRange(location: 0, length: (template as NSString).length))
-
-        for match in matches.reversed() {
-            let fullRange = match.range
-            let innerRange = match.range(at: 1)
-            let innerExpr = (template as NSString).substring(with: innerRange).trimmingCharacters(in: .whitespacesAndNewlines)
-
-            var evaluatedValue = ""
-            if (innerExpr.starts(with: "'") && innerExpr.hasSuffix("'")) || (innerExpr.starts(with: "\"") && innerExpr.hasSuffix("\"")) {
-                evaluatedValue = String(innerExpr.dropFirst().dropLast())
-                    .replacingOccurrences(of: "\\n", with: "\n")
-                    .replacingOccurrences(of: "\\t", with: "\t")
-            } else if innerExpr.starts(with: "java.") || innerExpr.starts(with: "source.") || innerExpr.starts(with: "book.") {
-                let jsRes = jsEngine.evalRule(script: innerExpr, result: content)
-                evaluatedValue = jsRes != nil ? "\(jsRes!)" : ""
-            } else {
-                evaluatedValue = getString(innerExpr)
-            }
-
-            result = (result as NSString).replacingCharacters(in: fullRange, with: evaluatedValue)
+        guard let pattern = try? NSRegularExpression(pattern: #"\{\{(.*?)\}\}"#) else {
+            return template
         }
-        return result
+        let source = template as NSString
+        let matches = pattern.matches(in: template, range: NSRange(location: 0, length: source.length))
+        guard matches.isEmpty == false else { return template }
+
+        var output = template
+        for match in matches.reversed() {
+            let expression = source
+                .substring(with: match.range(at: 1))
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            output = (output as NSString).replacingCharacters(
+                in: match.range,
+                with: render(expression: expression)
+            )
+        }
+        return output
     }
 
-    /// Evaluates a rule string and returns a single string result
+    private func render(expression: String) -> String {
+        if expression.count >= 2,
+           (expression.hasPrefix("'") && expression.hasSuffix("'"))
+            || (expression.hasPrefix("\"") && expression.hasSuffix("\"")) {
+            return String(expression.dropFirst().dropLast())
+                .replacingOccurrences(of: "\\n", with: "\n")
+                .replacingOccurrences(of: "\\t", with: "\t")
+        }
+
+        let jsNamespaces = ["java.", "source.", "book."]
+        if jsNamespaces.contains(where: { expression.hasPrefix($0) }) {
+            guard let value = jsEngine.evalRule(script: expression, result: content) else { return "" }
+            return "\(value)"
+        }
+
+        return getString(expression)
+    }
+
+    // MARK: - JS 规则拆解
+
+    /// `<js>…</js>` 或 `@js:…` 的三段式拆法：标记前的规则、脚本本身、标记后的残留规则。
+    ///
+    /// 尾巴不是装饰：聚合源正文脚本回 `{"content":"…"}`，后面挂 `$.content` 才能把
+    /// JSON 壳剥掉，不然正文字典里会带着 `\n` 和花括号整段上屏。
+    private struct JavaScriptRule {
+        let prefix: String
+        let script: String
+        let suffix: String?
+    }
+
+    private func javascriptRule(in rule: String) -> JavaScriptRule? {
+        if let open = rule.range(of: "<js>"),
+           let close = rule.range(of: "</js>"),
+           open.upperBound <= close.lowerBound {
+            return JavaScriptRule(
+                prefix: String(rule[..<open.lowerBound]).trimmingCharacters(in: .whitespacesAndNewlines),
+                script: String(rule[open.upperBound..<close.lowerBound]),
+                suffix: String(rule[close.upperBound...]).trimmingCharacters(in: .whitespacesAndNewlines)
+            )
+        }
+        if rule.hasPrefix("@js:") {
+            return JavaScriptRule(prefix: "", script: String(rule.dropFirst(4)), suffix: nil)
+        }
+        return nil
+    }
+
+    // MARK: - 单值求值
+
     public func getString(_ rule: String?, isUrl: Bool = false) -> String {
-        guard let rule = rule?.trimmingCharacters(in: .whitespacesAndNewlines), !rule.isEmpty else {
+        guard let raw = rule?.trimmingCharacters(in: .whitespacesAndNewlines), raw.isEmpty == false else {
             return ""
         }
 
-        // 安卓语法的 @json: 明确取 JSONPath；和 $.xxx 等价，但优先级更高
-        if rule.hasPrefix("@json:"), let json = parsedJson {
-            let path = String(rule.dropFirst(6)).trimmingCharacters(in: .whitespaces)
-            if let value = JSONPath.evaluate(path: path, json: json) {
-                let text = value is String ? (value as? String ?? "") : "\(value)"
-                return isUrl ? resolveUrl(text) : text
-            }
-            return ""
+        // `@json:` 是显式声明，优先于 `$` 前缀推断；命中解析器就只走这一条，不再往下兜。
+        if raw.hasPrefix("@json:"), let json = jsonRoot {
+            let path = String(raw.dropFirst(6)).trimmingCharacters(in: .whitespaces)
+            guard let value = JSONPath.evaluate(path: path, json: json) else { return "" }
+            let text = (value as? String) ?? "\(value)"
+            return isUrl ? resolveUrl(text) : text
         }
 
-        // Handle template expressions {{...}}
-        if rule.contains("{{") && rule.contains("}}") {
-            let expanded = evaluateTemplate(rule)
+        if raw.contains("{{"), raw.contains("}}") {
+            let expanded = evaluateTemplate(raw)
             return isUrl ? resolveUrl(expanded) : expanded
         }
 
-        // Handle JS scripts: with or without rule prefix
-        var rulePrefix = ""
-        var jsScript: String? = nil
-
-        if let jsStart = rule.range(of: "<js>"), let jsEnd = rule.range(of: "</js>") {
-            rulePrefix = String(rule[..<jsStart.lowerBound]).trimmingCharacters(in: .whitespacesAndNewlines)
-            jsScript = String(rule[jsStart.upperBound..<jsEnd.lowerBound])
-        } else if rule.starts(with: "@js:") {
-            jsScript = String(rule.dropFirst(4))
-        }
-
-        if let script = jsScript {
-            var targetContent: Any? = content
-            if !rulePrefix.isEmpty {
-                let prefixVal = getString(rulePrefix, isUrl: false)
-                if !prefixVal.isEmpty {
-                    targetContent = prefixVal
-                }
+        if let javascript = javascriptRule(in: raw) {
+            let target: Any
+            if javascript.prefix.isEmpty {
+                target = content
+            } else {
+                let prefixed = getString(javascript.prefix)
+                target = prefixed.isEmpty ? content : prefixed
             }
-            let evalResult = jsEngine.evalRule(script: script, result: targetContent)
+            let evaluated = jsEngine.evalRule(script: javascript.script, result: target)
 
-            // `<js>…</js>$.content` 这种写法尾巴上还挂一段规则：先跑 JS，再把尾巴套在
-            // JS 的结果上（聚合源的正文脚本就是回 `{"content":"…"}` 再取 `$.content`，
-            // 不接尾巴的话正文字典会带着 JSON 壳和 \n 直接上屏）。
-            if let jsEnd = rule.range(of: "</js>") {
-                let suffix = String(rule[jsEnd.upperBound...]).trimmingCharacters(in: .whitespacesAndNewlines)
-                if !suffix.isEmpty {
-                    let nested = RuleAnalyzer(content: evalResult ?? "", baseUrl: baseUrl, bookSource: nil, jsEngine: jsEngine)
-                    return nested.getString(suffix, isUrl: isUrl)
-                }
+            if let suffix = javascript.suffix, suffix.isEmpty == false {
+                let nested = RuleAnalyzer(content: evaluated ?? "", baseUrl: baseUrl, jsEngine: jsEngine)
+                return nested.getString(suffix, isUrl: isUrl)
             }
 
-            let resStr = evalResult != nil ? "\(evalResult!)" : ""
-            return isUrl ? resolveUrl(resStr) : resStr
+            let text = evaluated.map { "\($0)" } ?? ""
+            return isUrl ? resolveUrl(text) : text
         }
 
-        // Handle fallback operator: rule1 || rule2
-        if rule.contains("||") {
-            let options = rule.components(separatedBy: "||")
-            for option in options {
-                let res = getString(option.trimmingCharacters(in: .whitespacesAndNewlines), isUrl: isUrl)
-                if !res.isEmpty {
-                    return res
-                }
+        if raw.contains("||") {
+            for option in raw.components(separatedBy: "||") {
+                let candidate = getString(option.trimmingCharacters(in: .whitespacesAndNewlines), isUrl: isUrl)
+                if candidate.isEmpty == false { return candidate }
             }
             return ""
         }
 
-        // Handle concatenation operator: rule1 && rule2
-        if rule.contains("&&") {
-            let segments = rule.components(separatedBy: "&&")
-            let combined = segments.map { getString($0.trimmingCharacters(in: .whitespacesAndNewlines), isUrl: isUrl) }
-                .filter { !$0.isEmpty }
-                .joined(separator: "\n")
-            return combined
+        if raw.contains("&&") {
+            let parts = raw.components(separatedBy: "&&").map {
+                getString($0.trimmingCharacters(in: .whitespacesAndNewlines), isUrl: isUrl)
+            }
+            return parts.filter { $0.isEmpty == false }.joined(separator: "\n")
         }
 
-        let list = getStringList(rule, isUrl: isUrl)
-        return list.first ?? ""
+        return getStringList(raw, isUrl: isUrl).first ?? ""
     }
 
-    /// Evaluates a rule string and returns a list of string results
+    // MARK: - 列表求值
+
     public func getStringList(_ rule: String?, isUrl: Bool = false) -> [String] {
-        guard let rule = rule?.trimmingCharacters(in: .whitespacesAndNewlines), !rule.isEmpty else {
+        guard let raw = rule?.trimmingCharacters(in: .whitespacesAndNewlines), raw.isEmpty == false else {
             return []
         }
 
-        // If pure JS: @js:script or <js>...</js>
-        if rule.starts(with: "@js:") {
-            let script = String(rule.dropFirst(4))
-            let evalResult = jsEngine.evalRule(script: script, result: content)
-            if let arr = evalResult as? [Any] {
-                return arr.map { "\(isUrl ? resolveUrl("\($0)") : "\($0)")" }
-            } else if let single = evalResult {
-                let str = "\(single)"
-                return [isUrl ? resolveUrl(str) : str]
-            }
-            return []
-        } else if rule.contains("<js>") && rule.contains("</js>") {
-            let start = rule.range(of: "<js>")?.upperBound ?? rule.startIndex
-            let end = rule.range(of: "</js>")?.lowerBound ?? rule.endIndex
-            let script = String(rule[start..<end])
-            let evalResult = jsEngine.evalRule(script: script, result: content)
-            if let arr = evalResult as? [Any] {
-                return arr.map { "\(isUrl ? resolveUrl("\($0)") : "\($0)")" }
-            } else if let single = evalResult {
-                let str = "\(single)"
-                return [isUrl ? resolveUrl(str) : str]
-            }
-            return []
+        // 列表规则里的 JS 只认脚本本身：`<js>` 之前的前缀在这条路径上不参与求值，
+        // 与上游 `getString` 的前缀语义不同，调用方依赖这个差异。
+        if raw.hasPrefix("@js:") || (raw.contains("<js>") && raw.contains("</js>")) {
+            return javascriptStrings(in: raw, isUrl: isUrl)
         }
 
-        let steps = RuleTokenizer.parse(rule)
-        var currentValues: [Any] = []
+        let steps = RuleTokenizer.parse(raw)
+        var values: [Any] = []
 
-        // Root evaluation
-        let jsonTarget: Any? = parsedJson ?? (content as? [String: Any])
-        if let json = jsonTarget {
-            let candidatePaths = [rule, "$.\(rule)"]
-            for p in candidatePaths {
-                if let val = JSONPath.evaluate(path: p, json: json) {
-                    if let arr = val as? [Any] {
-                        currentValues = arr
-                    } else {
-                        currentValues = [val]
-                    }
-                    break
-                }
+        if let json = jsonRoot {
+            values = rootValues(from: raw, json: json)
+            if values.isEmpty {
+                values = jsonStepValues(steps: steps, json: json)
             }
-            if currentValues.isEmpty {
-                currentValues = evaluateJsonSteps(steps: steps, json: json)
+            // 聚合源习惯把书信息包一层 `{"code":0,"data":{…}}`，规则却直接写 `$.title`。
+            // 根路径空的时候往 data / result 里再探一层，别让封面、简介整批丢掉。
+            if values.isEmpty, let dict = json as? [String: Any] {
+                values = wrappedValues(from: raw, container: dict)
             }
-            // 聚合源的接口常把书信息包一层 `{"code":0,"data":{...}}`，脚本里却直接写
-            // `$.thumb_url`。根路径取不到时再往 data / result 里找一层，别让封面、简介
-            // 这种字段因为外层包装整条丢失。
-            if currentValues.isEmpty, let dict = json as? [String: Any] {
-                for containerKey in ["data", "result"] {
-                    guard let inner = dict[containerKey] as? [String: Any] else { continue }
-                    guard let value = JSONPath.evaluate(path: rule, json: inner) else { continue }
-                    currentValues = value as? [Any] ?? [value]
-                    break
-                }
-            }
-        } else if let doc = parsedDocument {
-            currentValues = evaluateHtmlSteps(steps: steps, element: doc)
-        } else if let element = content as? Element {
-            currentValues = evaluateHtmlSteps(steps: steps, element: element)
+        } else if let root = htmlRoot {
+            values = htmlStepValues(steps: steps, element: root)
         }
 
-        // Apply remaining steps: JS, regex, attribute
-        return currentValues.map { val in
-            var text = "\(val)"
-            for step in steps {
-                switch step.type {
-                case .regex(let pattern, let replacement):
-                    if let rx = try? NSRegularExpression(pattern: pattern) {
-                        text = rx.stringByReplacingMatches(
-                            in: text,
-                            range: NSRange(location: 0, length: (text as NSString).length),
-                            withTemplate: replacement
-                        )
-                    }
-                case .js(let script):
-                    let res = jsEngine.evalRule(script: script, result: text)
-                    if let res = res {
-                        text = "\(res)"
-                    }
-                default:
-                    break
-                }
-            }
+        return values.map { value in
+            let text = applyTrailingSteps(steps: steps, to: "\(value)")
             return isUrl ? resolveUrl(text) : text
         }
     }
 
-    /// Evaluates a rule that returns multiple elements/objects (e.g. book list, chapter list)
+    private func javascriptStrings(in rule: String, isUrl: Bool) -> [String] {
+        let script: String
+        if rule.hasPrefix("@js:") {
+            script = String(rule.dropFirst(4))
+        } else {
+            let start = rule.range(of: "<js>")?.upperBound ?? rule.startIndex
+            let end = rule.range(of: "</js>")?.lowerBound ?? rule.endIndex
+            guard start <= end else { return [] }
+            script = String(rule[start..<end])
+        }
+
+        let evaluated = jsEngine.evalRule(script: script, result: content)
+        if let array = evaluated as? [Any] {
+            return array.map { isUrl ? resolveUrl("\($0)") : "\($0)" }
+        }
+        if let single = evaluated {
+            return [isUrl ? resolveUrl("\(single)") : "\(single)"]
+        }
+        return []
+    }
+
+    private func rootValues(from rule: String, json: Any) -> [Any] {
+        for candidate in [rule, "$." + rule] {
+            guard let hit = JSONPath.evaluate(path: candidate, json: json) else { continue }
+            return hit as? [Any] ?? [hit]
+        }
+        return []
+    }
+
+    private func wrappedValues(from rule: String, container: [String: Any]) -> [Any] {
+        for key in ["data", "result"] {
+            guard let inner = container[key] as? [String: Any],
+                  let hit = JSONPath.evaluate(path: rule, json: inner) else { continue }
+            return hit as? [Any] ?? [hit]
+        }
+        return []
+    }
+
+    private func jsonStepValues(steps: [RuleStep], json: Any) -> [Any] {
+        guard let first = steps.first, case .jsonPath(let path) = first.type else { return [] }
+        guard let hit = JSONPath.evaluate(path: path, json: json) else { return [] }
+        return hit as? [Any] ?? [hit]
+    }
+
+    /// 规则尾巴上的 `##正则##替换` 与 `@js` 是后处理，逐条套在同一批结果上。
+    private func applyTrailingSteps(steps: [RuleStep], to input: String) -> String {
+        var text = input
+        for step in steps {
+            switch step.type {
+            case .regex(let pattern, let replacement):
+                guard let regex = try? NSRegularExpression(pattern: pattern) else { continue }
+                text = regex.stringByReplacingMatches(
+                    in: text,
+                    range: NSRange(location: 0, length: (text as NSString).length),
+                    withTemplate: replacement
+                )
+            case .js(let script):
+                if let output = jsEngine.evalRule(script: script, result: text) {
+                    text = "\(output)"
+                }
+            default:
+                continue
+            }
+        }
+        return text
+    }
+
+    // MARK: - 多元素求值
+
     /// 脚本回一串 JSON 时，把里面的元素数组取出来。
     ///
-    /// 聚合源的章节列表惯例是回 `{"code":0,…,"data":[…]}`，条目字段再用 `$.title` 这类
-    /// 规则取；直接把它当一个元素、或者整串丢掉，目录就空了。
+    /// 聚合源的章节列表惯例是回 `{"code":0,…,"data":[…]}`，条目字段再逐条用 `$.title`
+    /// 这类规则取；把整串当一个元素或者干脆丢掉，目录就空了。
     static func elementsFromJSONText(_ text: String) -> [Any]? {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard trimmed.hasPrefix("{") || trimmed.hasPrefix("[") else { return nil }
         guard let data = trimmed.data(using: .utf8),
-              let json = try? JSONSerialization.jsonObject(with: data, options: [.fragmentsAllowed])
+              let parsed = try? JSONSerialization.jsonObject(with: data, options: [.fragmentsAllowed])
         else { return nil }
-        if let array = json as? [Any], !array.isEmpty { return array }
-        guard let dict = json as? [String: Any] else { return nil }
+
+        if let array = parsed as? [Any], array.isEmpty == false { return array }
+        guard let dict = parsed as? [String: Any] else { return nil }
+
         for key in ["data", "list", "chapters", "items", "result"] {
-            if let array = dict[key] as? [Any], !array.isEmpty { return array }
+            if let array = dict[key] as? [Any], array.isEmpty == false { return array }
         }
-        let arrays = dict.values.compactMap { $0 as? [Any] }.filter { !$0.isEmpty }
-        if arrays.count == 1 { return arrays[0] }
-        return nil
+        let arrays = dict.values.compactMap { $0 as? [Any] }.filter { $0.isEmpty == false }
+        return arrays.count == 1 ? arrays[0] : nil
     }
 
     public func getElements(_ rule: String?) -> [Any] {
-        guard let rule = rule?.trimmingCharacters(in: .whitespacesAndNewlines), !rule.isEmpty else {
+        guard let raw = rule?.trimmingCharacters(in: .whitespacesAndNewlines), raw.isEmpty == false else {
             return []
         }
 
-        if rule.hasPrefix("@json:"), let json = parsedJson {
-            let path = String(rule.dropFirst(6)).trimmingCharacters(in: .whitespaces)
-            if let evaluated = JSONPath.evaluate(path: path, json: json) {
-                if let array = evaluated as? [Any] { return array }
-                if let dict = evaluated as? [String: Any] { return [dict] }
-            }
-            return []
+        if raw.hasPrefix("@json:"), let json = jsonRoot {
+            let path = String(raw.dropFirst(6)).trimmingCharacters(in: .whitespaces)
+            guard let hit = JSONPath.evaluate(path: path, json: json) else { return [] }
+            return elements(from: hit)
         }
 
-        var rulePrefix = ""
-        var jsScript: String? = nil
+        if let javascript = javascriptRule(in: raw) {
+            let target: Any
+            if javascript.prefix.isEmpty {
+                target = content
+            } else {
+                // 前缀先选出父级元素，脚本拿到的是元素数组而不是整页内容。
+                let prefixed = RuleAnalyzer(
+                    content: content,
+                    baseUrl: baseUrl,
+                    jsEngine: jsEngine
+                ).getElements(javascript.prefix)
+                target = prefixed.isEmpty ? content : prefixed
+            }
 
-        if let jsStart = rule.range(of: "<js>"), let jsEnd = rule.range(of: "</js>") {
-            rulePrefix = String(rule[..<jsStart.lowerBound]).trimmingCharacters(in: .whitespacesAndNewlines)
-            jsScript = String(rule[jsStart.upperBound..<jsEnd.lowerBound])
-        } else if rule.starts(with: "@js:") {
-            jsScript = String(rule.dropFirst(4))
+            guard let evaluated = jsEngine.evalRule(script: javascript.script, result: target) else {
+                return []
+            }
+            if let text = evaluated as? String, let array = RuleAnalyzer.elementsFromJSONText(text) {
+                // 脚本直接把新页面的 JSON 吐出来时，这是「新内容」不是「一个元素」。
+                return array
+            }
+            return elements(from: evaluated)
         }
 
-        if let script = jsScript {
-            var targetContent: Any? = content
-            if !rulePrefix.isEmpty {
-                let prefixAnalyzer = RuleAnalyzer(content: content, baseUrl: baseUrl, jsEngine: jsEngine)
-                let prefixElements = prefixAnalyzer.getElements(rulePrefix)
-                if !prefixElements.isEmpty {
-                    targetContent = prefixElements
-                }
-            }
-            if let evalResult = jsEngine.evalRule(script: script, result: targetContent) {
-                if let array = evalResult as? [Any] {
-                    return array
-                } else if let dict = evalResult as? [String: Any] {
-                    return [dict]
-                } else if let text = evalResult as? String {
-                    // 聚合源的章节脚本直接回一串 JSON（章节列表在 data 里），
-                    // 这不是「一个元素」，是新的页面内容，接着往下解析。
-                    if let array = RuleAnalyzer.elementsFromJSONText(text) {
-                        return array
-                    }
-                }
-            }
-            return []
-        }
-
-        // If JSON content, prioritize JSONPath / JSON key lookup
-        let jsonTarget: Any? = parsedJson ?? (content as? [String: Any]) ?? (content as? [Any])
-        if let json = jsonTarget {
-            let candidatePaths = [rule, "$.\(rule)"]
-            for p in candidatePaths {
-                if let evaluated = JSONPath.evaluate(path: p, json: json) {
-                    if let array = evaluated as? [Any] {
-                        return array
-                    } else if let dict = evaluated as? [String: Any] {
-                        return [dict]
-                    }
-                }
+        if let json = jsonRoot {
+            for candidate in [raw, "$." + raw] {
+                guard let hit = JSONPath.evaluate(path: candidate, json: json) else { continue }
+                if let array = hit as? [Any] { return array }
+                if let dict = hit as? [String: Any] { return [dict] }
             }
         }
 
-        let steps = RuleTokenizer.parse(rule)
-        guard let firstStep = steps.first else { return [] }
-
-        switch firstStep.type {
-        case .jsonPath(let path):
-            if let json = jsonTarget {
-                let evaluated = JSONPath.evaluate(path: path, json: json)
-                if let array = evaluated as? [Any] {
-                    return array
-                } else if let dict = evaluated as? [String: Any] {
-                    return [dict]
-                }
-            }
-        default:
-            break
-        }
-
-        // HTML multi-step chained CSS selection
-        if parsedDocument != nil || content is Element {
-            var currentElements: [Element] = []
-            if let doc = parsedDocument {
-                currentElements = [doc]
-            } else if let el = content as? Element {
-                currentElements = [el]
-            }
-
-            for step in steps {
-                var selector: String?
-                switch step.type {
-                case .css(let rawSelector):
-                    selector = rawSelector
-                case .xpath(let rawXPath):
-                    // 引擎只有 CSS，能翻译的 XPath 先转成 CSS，翻不动的保持返回空
-                    selector = XPathToCSS.css(from: rawXPath)
-                default:
-                    selector = nil
-                }
-                if let selector {
-                    var next: [Element] = []
-                    for el in currentElements {
-                        next.append(contentsOf: selectElements(from: el, selector: selector))
-                    }
-                    currentElements = next
-                }
-            }
-            if !currentElements.isEmpty {
-                return currentElements
-            }
-        }
-
-        return []
-    }
-
-    /// Selects elements from a parent element given a selector, supporting Legado's `tag.index` syntax (e.g. `li.1`, `a.-1`)
-    private func selectElements(from element: Element, selector: String) -> [Element] {
-        let trimmed = selector.trimmingCharacters(in: .whitespacesAndNewlines)
-        let pattern = #"^([a-zA-Z0-9_\-\*]+)\.(-?\d+)$"#
-        if let regex = try? NSRegularExpression(pattern: pattern),
-           let match = regex.firstMatch(in: trimmed, options: [], range: NSRange(location: 0, length: trimmed.utf16.count)) {
-            if let tagRange = Range(match.range(at: 1), in: trimmed),
-               let indexRange = Range(match.range(at: 2), in: trimmed),
-               let index = Int(trimmed[indexRange]) {
-                let tag = String(trimmed[tagRange])
-                if let selected = try? element.select(tag) {
-                    let all = selected.array()
-                    if index >= 0 && index < all.count {
-                        return [all[index]]
-                    } else if index < 0 && (all.count + index) >= 0 {
-                        return [all[all.count + index]]
-                    } else {
-                        return []
-                    }
-                }
-            }
-        }
-
-        if let selected = try? element.select(trimmed) {
-            return selected.array()
-        }
-        return []
-    }
-
-    private func evaluateJsonSteps(steps: [RuleStep], json: Any) -> [Any] {
+        let steps = RuleTokenizer.parse(raw)
         guard let first = steps.first else { return [] }
-        var resultList: [Any] = []
 
-        if case .jsonPath(let path) = first.type {
-            if let evalResult = JSONPath.evaluate(path: path, json: json) {
-                if let array = evalResult as? [Any] {
-                    resultList = array
-                } else {
-                    resultList = [evalResult]
-                }
-            }
+        if case .jsonPath(let path) = first.type,
+           let json = jsonRoot,
+           let hit = JSONPath.evaluate(path: path, json: json) {
+            if let array = hit as? [Any] { return array }
+            if let dict = hit as? [String: Any] { return [dict] }
         }
 
-        return resultList
+        guard let root = htmlRoot else { return [] }
+        var current: [Element] = [root]
+        for step in steps {
+            let selector: String?
+            switch step.type {
+            case .css(let css):
+                selector = css
+            case .xpath(let xpath):
+                // 引擎只有 CSS，XPath 先翻译；翻不动的返回 nil，这一步整体跳过。
+                selector = XPathToCSS.css(from: xpath)
+            default:
+                selector = nil
+            }
+            guard let selector else { continue }
+            current = current.flatMap { select(from: $0, selector: selector) }
+        }
+        return current.isEmpty ? [] : current
     }
 
-    private func evaluateHtmlSteps(steps: [RuleStep], element: Element) -> [Any] {
-        var elements: [Element] = [element]
+    private func elements(from value: Any) -> [Any] {
+        if let array = value as? [Any] { return array }
+        if let dict = value as? [String: Any] { return [dict] }
+        return []
+    }
+
+    // MARK: - HTML 选择
+
+    /// 支持 Legado 的 `tag.index` 写法（`li.1`、`a.-1`），负数是倒数第几个。
+    private func select(from element: Element, selector: String) -> [Element] {
+        let query = selector.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        if let indexed = indexedSelector(query),
+           let picked = try? element.select(indexed.tag) {
+            let all = picked.array()
+            let offset = indexed.index < 0 ? all.count + indexed.index : indexed.index
+            guard all.indices.contains(offset) else { return [] }
+            return [all[offset]]
+        }
+
+        return (try? element.select(query))?.array() ?? []
+    }
+
+    private func indexedSelector(_ text: String) -> (tag: String, index: Int)? {
+        guard let pattern = try? NSRegularExpression(pattern: #"^([a-zA-Z0-9_\-\*]+)\.(-?\d+)$"#) else {
+            return nil
+        }
+        let full = NSRange(location: 0, length: text.utf16.count)
+        guard let match = pattern.firstMatch(in: text, range: full),
+              let tagRange = Range(match.range(at: 1), in: text),
+              let indexRange = Range(match.range(at: 2), in: text),
+              let index = Int(text[indexRange]) else { return nil }
+        return (String(text[tagRange]), index)
+    }
+
+    /// 逐级套 CSS。命中空集时再看节点自己是否匹配——站点常把列表容器本身写成
+    /// `div.list`，容器就是唯一的条目，丢掉了整页就空。
+    private func htmlStepValues(steps: [RuleStep], element: Element) -> [Any] {
+        var current: [Element] = [element]
 
         for step in steps {
-            if case .css(let selector) = step.type {
-                var next: [Element] = []
-                for el in elements {
-                    let found = selectElements(from: el, selector: selector)
-                    if found.isEmpty {
-                        if (try? el.iS(selector)) == true {
-                            next.append(el)
-                        }
-                    } else {
-                        next.append(contentsOf: found)
-                    }
-                }
-                elements = next
+            guard case .css(let selector) = step.type else { continue }
+            current = current.flatMap { node -> [Element] in
+                let found = select(from: node, selector: selector)
+                if found.isEmpty == false { return found }
+                return (try? node.iS(selector)) == true ? [node] : []
             }
         }
 
-        // Check if an attribute is requested
         for step in steps {
-            if case .attribute(let attr) = step.type {
-                return elements.compactMap { el in
-                    switch attr {
-                    case "text", "textnodes":
-                        return (try? el.text()) ?? ""
-                    case "html":
-                        return (try? el.html()) ?? ""
-                    case "href":
-                        return (try? el.attr("href")) ?? ""
-                    case "src":
-                        return (try? el.attr("src")) ?? ""
-                    default:
-                        if attr.starts(with: "attr(") && attr.hasSuffix(")") {
-                            let attrName = String(attr.dropFirst(5).dropLast())
-                            return try? el.attr(attrName)
-                        }
-                        return try? el.attr(attr)
-                    }
-                }
-            }
+            guard case .attribute(let attribute) = step.type else { continue }
+            return current.compactMap { attributeValue(attribute, of: $0) }
         }
 
-        return elements.compactMap { try? $0.text() }
+        return current.compactMap { try? $0.text() }
+    }
+
+    private func attributeValue(_ attribute: String, of element: Element) -> String? {
+        switch attribute {
+        case "text", "textnodes":
+            return (try? element.text()) ?? ""
+        case "html":
+            return (try? element.html()) ?? ""
+        case "href", "src":
+            return try? element.attr(attribute)
+        default:
+            if attribute.hasPrefix("attr("), attribute.hasSuffix(")"), attribute.count > 6 {
+                return try? element.attr(String(attribute.dropFirst(5).dropLast()))
+            }
+            return try? element.attr(attribute)
+        }
     }
 }
