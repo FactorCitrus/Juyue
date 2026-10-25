@@ -15,6 +15,10 @@ public struct SourceManagerView: View {
     @Environment(\.appTheme) private var theme
 
     @State private var showImportSheet: Bool = false
+    @State private var showDisclaimer: Bool = false
+    @State private var pendingImportAfterDisclaimer: Bool = false
+    /// 须知同意状态：撤回或同意后由 sheet 的 onDismiss 回写，否则工具行会显示旧值
+    @State private var disclaimerAccepted: Bool = BookSourceDisclaimer.hasAccepted
     /// 书源导出（存到「文件」）
     @State private var showSourceExporter: Bool = false
     @State private var sourceExportDocument: ExportedFile?
@@ -131,6 +135,19 @@ public struct SourceManagerView: View {
             .appThemedRows()
 
             Section(header: Text("工具")) {
+                Button {
+                    pendingImportAfterDisclaimer = false
+                    showDisclaimer = true
+                } label: {
+                    HStack {
+                        Label("书源导入须知", systemImage: "text.badge.checkmark")
+                        Spacer()
+                        Text(disclaimerStatusText)
+                            .font(.caption)
+                            .foregroundColor(theme.palette.secondaryInk)
+                    }
+                }
+
                 NavigationLink(destination: SourceCheckView()) {
                     HStack {
                         Label("校验书源", systemImage: "checkmark.shield")
@@ -320,7 +337,7 @@ public struct SourceManagerView: View {
             .navigationTitle("书源管理")
             .toolbar {
                 ToolbarItem(placement: .primaryAction) {
-                    Button(action: { showImportSheet = true }) {
+                    Button(action: openImportFlow) {
                         Image(systemName: "plus")
                     }
                 }
@@ -345,6 +362,18 @@ public struct SourceManagerView: View {
             }
             .sheet(isPresented: $showImportSheet) {
                 importSourceSheet
+            }
+            .sheet(isPresented: $showDisclaimer, onDismiss: {
+                disclaimerAccepted = BookSourceDisclaimer.hasAccepted
+                // 同意了才继续开导入面板；关掉或返回就不往下走
+                if pendingImportAfterDisclaimer {
+                    pendingImportAfterDisclaimer = false
+                    showImportSheet = true
+                }
+            }) {
+                BookSourceDisclaimerSheet(onAccept: {
+                    pendingImportAfterDisclaimer = true
+                })
             }
             .sheet(item: $groupEditTarget) { target in
                 groupEditor(for: target)
@@ -415,6 +444,21 @@ public struct SourceManagerView: View {
     }
 
     /// 导出全部书源成 JSON（和导入同一套格式，导回来能直接用）
+    private var disclaimerStatusText: String {
+        guard BookSourceDisclaimer.requiresConsent else { return "侧载版不强制" }
+        return disclaimerAccepted ? "已同意" : "首次导入需同意"
+    }
+
+    /// 导入总入口：商店版首次要先同意须知，同意过就直接开面板。
+    private func openImportFlow() {
+        if BookSourceDisclaimer.needsConsent {
+            pendingImportAfterDisclaimer = true
+            showDisclaimer = true
+        } else {
+            showImportSheet = true
+        }
+    }
+
     private func exportSources(_ list: [BookSource], namePrefix: String = "bookSource") {
         guard !list.isEmpty else {
             alertMessage = "没有可导出的书源"
