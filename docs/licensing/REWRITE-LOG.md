@@ -50,3 +50,12 @@
 - 行为保持：禁用条件（URL / 账号）、双恢复模式确认、安全作用域资源成对释放、所有提示文案逐字保留。
 - 修掉一个自造 bug：列表成功开 sheet 时不得再弹空提示（`perform` 返回 `Notice?`）。
 - 验证：`swift build`、商店模拟器构建、侧载真机构建均 BUILD SUCCEEDED，0 error。
+
+## 2026-10-25 · 批次 6（BookDetailView 组件层）
+
+- 重写五个自带边界的组件：`ChapterListView`、`BookCoverPickerSheet`、`BookCoverImage`、`BookCoverStorage`、`CoverCandidateFinder`。主体 `BookDetailView` 未动。
+- 结构变化：搜索栏 / 章节行 / 封面候选 / 手填地址 / 相册 / 清除各自成段；`photoBinding` 收成独立属性。
+- 行为保持：搜索大小写不敏感、当前章高亮与「上次阅读」徽标、候选去重且上限 40、`file://` 与绝对路径直读、加载失败回调一次。
+- 踩坑记录：`photoBinding` 从 `if #available(iOS 16.0, *)` 内联搬成属性后丢了可用性保护，Xcode 构建报 `'PhotosPickerItem' is only available in iOS 16.0 or newer`；补 `@available(iOS 16.0, *)` 后通过。SPM 的 macOS 构建不暴露这个问题。
+- 审计 8085 → 8036（-49）；`BookDetailView` 541 → 492。
+- 验证：`swift build`、商店模拟器构建、侧载真机构建均 BUILD SUCCEEDED，0 error。

@@ -715,67 +715,32 @@ public struct BookDetailView: View {
 // MARK: - ChapterListView
 
 struct ChapterListView: View {
-    @Environment(\.dismiss) private var dismiss
     @Environment(\.appTheme) private var theme
+
     let chapters: [BookChapter]
     let currentChapterIndex: Int
     let onSelectChapter: (Int) -> Void
 
-    @State private var searchKeyword: String = ""
+    @State private var searchKeyword = ""
 
-    private var filteredChapters: [(index: Int, chapter: BookChapter)] {
-        let enumerated = chapters.enumerated().map { (index: $0.offset, chapter: $0.element) }
-        if searchKeyword.trimmingCharacters(in: .whitespaces).isEmpty {
-            return enumerated
+    /// 空关键字直接按原序返回；有关键字才逐条比对标题。
+    private var visibleChapters: [(index: Int, chapter: BookChapter)] {
+        let keyword = searchKeyword.trimmingCharacters(in: .whitespaces)
+        guard !keyword.isEmpty else {
+            return chapters.indices.map { (index: $0, chapter: chapters[$0]) }
         }
-        return enumerated.filter { $0.chapter.title.localizedCaseInsensitiveContains(searchKeyword) }
+        return chapters.indices.compactMap { index in
+            chapters[index].title.localizedCaseInsensitiveContains(keyword)
+                ? (index: index, chapter: chapters[index])
+                : nil
+        }
     }
 
     var body: some View {
         VStack(spacing: 0) {
-            // Search filter
-            HStack {
-                Image(systemName: "magnifyingglass")
-                    .foregroundColor(.secondary)
-                TextField("搜索章节标题...", text: $searchKeyword)
-                if !searchKeyword.isEmpty {
-                    Button(action: { searchKeyword = "" }) {
-                        Image(systemName: "xmark.circle.fill")
-                            .foregroundColor(.secondary)
-                    }
-                }
-            }
-            .padding(8)
-            .background(theme.palette.elevated)
-            .cornerRadius(8)
-            .padding(.horizontal)
-            .padding(.top, 8)
-
-            List(filteredChapters, id: \.chapter.id) { item in
-                Button(action: {
-                    onSelectChapter(item.index)
-                }) {
-                    HStack {
-                        Text(item.chapter.title)
-                            .font(.subheadline)
-                            .foregroundColor(item.index == currentChapterIndex ? .accentColor : .primary)
-                            .lineLimit(1)
-
-                        Spacer()
-
-                        if item.index == currentChapterIndex {
-                            Text("上次阅读")
-                                .font(.caption2)
-                                .padding(.horizontal, 6)
-                                .padding(.vertical, 2)
-                                .background(Color.accentColor.opacity(0.15))
-                                .foregroundColor(.accentColor)
-                                .cornerRadius(4)
-                        }
-                    }
-                    .padding(.vertical, 2)
-                }
-                .buttonStyle(.plain)
+            searchBar
+            List(visibleChapters, id: \.chapter.id) { entry in
+                row(index: entry.index, chapter: entry.chapter)
             }
             .listStyle(.plain)
             .appThemedList()
@@ -784,6 +749,52 @@ struct ChapterListView: View {
         #if os(iOS)
         .navigationBarTitleDisplayMode(.inline)
         #endif
+    }
+
+    private var searchBar: some View {
+        HStack {
+            Image(systemName: "magnifyingglass")
+                .foregroundColor(.secondary)
+            TextField("搜索章节标题...", text: $searchKeyword)
+            if !searchKeyword.isEmpty {
+                Button {
+                    searchKeyword = ""
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .foregroundColor(.secondary)
+                }
+            }
+        }
+        .padding(8)
+        .background(theme.palette.elevated)
+        .cornerRadius(8)
+        .padding(.horizontal)
+        .padding(.top, 8)
+    }
+
+    private func row(index: Int, chapter: BookChapter) -> some View {
+        Button {
+            onSelectChapter(index)
+        } label: {
+            HStack {
+                Text(chapter.title)
+                    .font(.subheadline)
+                    .foregroundColor(index == currentChapterIndex ? .accentColor : .primary)
+                    .lineLimit(1)
+                Spacer()
+                if index == currentChapterIndex {
+                    Text("上次阅读")
+                        .font(.caption2)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(Color.accentColor.opacity(0.15))
+                        .foregroundColor(.accentColor)
+                        .cornerRadius(4)
+                }
+            }
+            .padding(.vertical, 2)
+        }
+        .buttonStyle(.plain)
     }
 }
 
@@ -796,7 +807,7 @@ struct BookCoverPickerSheet: View {
     @Environment(\.dismiss) private var dismiss
     @State private var candidates: [(source: String, url: String)] = []
     @State private var isLoading = true
-    @State private var manual = ""
+    @State private var manualAddress = ""
     #if os(iOS)
     @State private var pickedImage: Any?
     #endif
@@ -804,98 +815,11 @@ struct BookCoverPickerSheet: View {
     var body: some View {
         NavigationView {
             List {
-                if isLoading {
-                    Section {
-                        HStack(spacing: 8) {
-                            ProgressView()
-                            Text("正在书源里找这本书的封面…")
-                                .font(.caption)
-                                .foregroundColor(.secondary)
-                        }
-                    }
-                } else if candidates.isEmpty {
-                    Section {
-                        Text("书源里没搜到封面，用手填地址或相册吧。")
-                            .font(.caption)
-                            .foregroundColor(.secondary)
-                    }
-                }
-
-                if !candidates.isEmpty {
-                    Section(header: Text("书源找到的封面（\(candidates.count)）")) {
-                        LazyVGrid(columns: [GridItem(.adaptive(minimum: 76), spacing: 10)], spacing: 10) {
-                            ForEach(candidates, id: \.url) { item in
-                                Button {
-                                    onPick(item.url)
-                                    dismiss()
-                                } label: {
-                                    VStack(spacing: 4) {
-                                        BookCoverImage(urlString: item.url)
-                                            .frame(width: 76, height: 104)
-                                            .cornerRadius(6)
-                                        Text(item.source)
-                                            .font(.caption2)
-                                            .foregroundColor(.secondary)
-                                            .lineLimit(1)
-                                    }
-                                }
-                                .buttonStyle(.plain)
-                            }
-                        }
-                        .padding(.vertical, 4)
-                    }
-                }
-
-                Section(header: Text("手填地址")) {
-                    TextField("https://…", text: $manual)
-                        .autocorrectionDisabled()
-                    Button("用这个地址") {
-                        let trimmed = manual.trimmingCharacters(in: .whitespacesAndNewlines)
-                        guard !trimmed.isEmpty else { return }
-                        onPick(trimmed)
-                        dismiss()
-                    }
-                    .disabled(manual.trimmingCharacters(in: .whitespaces).isEmpty)
-                }
-
-                #if os(iOS)
-                if #available(iOS 16.0, *) {
-                    Section {
-                        PhotosPicker(
-                            selection: Binding(
-                                get: { pickedImage as? PhotosPickerItem },
-                                set: { newValue in
-                                    pickedImage = newValue
-                                    guard let item = newValue else { return }
-                                    Task {
-                                        if let data = try? await item.loadTransferable(type: Data.self),
-                                           let stored = BookCoverStorage.save(data) {
-                                            await MainActor.run {
-                                                onPick(stored)
-                                                dismiss()
-                                            }
-                                        }
-                                    }
-                                }
-                            ),
-                            matching: .images
-                        ) {
-                            Label("从相册选封面", systemImage: "photo.on.rectangle")
-                        }
-                    }
-                }
-                #endif
-
-                if let currentCover, !currentCover.isEmpty {
-                    Section {
-                        Button(role: .destructive) {
-                            onPick("")
-                            dismiss()
-                        } label: {
-                            Label("清除封面", systemImage: "trash")
-                        }
-                    }
-                }
+                statusSection
+                candidateSection
+                manualSection
+                photoSection
+                clearSection
             }
             .appThemedList()
             .navigationTitle("换封面")
@@ -907,11 +831,121 @@ struct BookCoverPickerSheet: View {
                     Button("取消") { dismiss() }
                 }
             }
-            .task { await load() }
+            .task { await loadCandidates() }
         }
     }
 
-    private func load() async {
+    @ViewBuilder
+    private var statusSection: some View {
+        if isLoading {
+            Section {
+                HStack(spacing: 8) {
+                    ProgressView()
+                    Text("正在书源里找这本书的封面…")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+            }
+        } else if candidates.isEmpty {
+            Section {
+                Text("书源里没搜到封面，用手填地址或相册吧。")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var candidateSection: some View {
+        if !candidates.isEmpty {
+            Section(header: Text("书源找到的封面（\(candidates.count)）")) {
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: 76), spacing: 10)], spacing: 10) {
+                    ForEach(candidates, id: \.url) { item in
+                        Button {
+                            onPick(item.url)
+                            dismiss()
+                        } label: {
+                            VStack(spacing: 4) {
+                                BookCoverImage(urlString: item.url)
+                                    .frame(width: 76, height: 104)
+                                    .cornerRadius(6)
+                                Text(item.source)
+                                    .font(.caption2)
+                                    .foregroundColor(.secondary)
+                                    .lineLimit(1)
+                            }
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+                .padding(.vertical, 4)
+            }
+        }
+    }
+
+    private var manualSection: some View {
+        Section(header: Text("手填地址")) {
+            TextField("https://…", text: $manualAddress)
+                .autocorrectionDisabled()
+            Button("用这个地址") {
+                let trimmed = manualAddress.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !trimmed.isEmpty else { return }
+                onPick(trimmed)
+                dismiss()
+            }
+            .disabled(manualAddress.trimmingCharacters(in: .whitespaces).isEmpty)
+        }
+    }
+
+    @ViewBuilder
+    private var photoSection: some View {
+        #if os(iOS)
+        if #available(iOS 16.0, *) {
+            Section {
+                PhotosPicker(selection: photoBinding, matching: .images) {
+                    Label("从相册选封面", systemImage: "photo.on.rectangle")
+                }
+            }
+        }
+        #endif
+    }
+
+    #if os(iOS)
+    @available(iOS 16.0, *)
+    private var photoBinding: Binding<PhotosPickerItem?> {
+        Binding(
+            get: { pickedImage as? PhotosPickerItem },
+            set: { item in
+                pickedImage = item
+                guard let item else { return }
+                Task {
+                    guard let data = try? await item.loadTransferable(type: Data.self),
+                          let stored = BookCoverStorage.save(data) else { return }
+                    await MainActor.run {
+                        onPick(stored)
+                        dismiss()
+                    }
+                }
+            }
+        )
+    }
+    #endif
+
+    @ViewBuilder
+    private var clearSection: some View {
+        if let currentCover, !currentCover.isEmpty {
+            Section {
+                Button(role: .destructive) {
+                    onPick("")
+                    dismiss()
+                } label: {
+                    Label("清除封面", systemImage: "trash")
+                }
+            }
+        }
+    }
+
+    private func loadCandidates() async {
         let sources = BookStore.shared.sources.filter { $0.enabled != false }
         candidates = await CoverCandidateFinder.find(bookName: bookName, sources: sources)
         isLoading = false
@@ -935,8 +969,8 @@ struct BookCoverImage: View {
                 localImage
                     .resizable()
                     .aspectRatio(contentMode: contentMode)
-            } else if let urlString, let url = URL(string: urlString) {
-                AsyncImage(url: url) { phase in
+            } else if let remoteURL = urlString.flatMap(URL.init(string:)) {
+                AsyncImage(url: remoteURL) { phase in
                     switch phase {
                     case .success(let image):
                         image
@@ -953,7 +987,7 @@ struct BookCoverImage: View {
             }
         }
         .task(id: urlString) {
-            localImage = Self.loadLocalImage(urlString)
+            localImage = Self.readLocalImage(urlString)
         }
     }
 
@@ -972,8 +1006,8 @@ struct BookCoverImage: View {
         }
     }
 
-    /// 只认本地文件，网络地址交给 AsyncImage
-    private static func loadLocalImage(_ urlString: String?) -> Image? {
+    /// 只认本地文件：`file://` 或绝对路径，其余交给 AsyncImage。
+    private static func readLocalImage(_ urlString: String?) -> Image? {
         guard let urlString else { return nil }
         let path: String
         if urlString.hasPrefix("file://") {
@@ -1000,17 +1034,17 @@ struct BookCoverImage: View {
 /// 相册选的封面存到沙盒里，书里只留文件地址
 enum BookCoverStorage {
     static func directory() -> URL {
-        let base = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
-        return base.appendingPathComponent("Covers", isDirectory: true)
+        FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("Covers", isDirectory: true)
     }
 
     static func save(_ data: Data) -> String? {
         let dir = directory()
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        let url = dir.appendingPathComponent(UUID().uuidString + ".jpg")
+        let target = dir.appendingPathComponent(UUID().uuidString + ".jpg")
         do {
-            try data.write(to: url, options: .atomic)
-            return url.absoluteString
+            try data.write(to: target, options: .atomic)
+            return target.absoluteString
         } catch {
             return nil
         }
@@ -1019,22 +1053,27 @@ enum BookCoverStorage {
 
 /// 去书源里找同一本书，把各家搜到的封面收回来当候选
 enum CoverCandidateFinder {
-    static func find(bookName: String, sources: [BookSource], limit: Int = 40) async -> [(source: String, url: String)] {
+    static func find(
+        bookName: String,
+        sources: [BookSource],
+        limit: Int = 40
+    ) async -> [(source: String, url: String)] {
         guard !bookName.isEmpty, !sources.isEmpty else { return [] }
-        var found: [(source: String, url: String)] = []
+
+        var collected: [(source: String, url: String)] = []
         var seen = Set<String>()
 
-        let stream = BookSearchService.shared.searchMultiSources(sources: sources, key: bookName, page: 1)
-        for await (source, books) in stream {
+        for await (source, books) in BookSearchService.shared.searchMultiSources(
+            sources: sources, key: bookName, page: 1
+        ) {
             for candidate in books where candidate.name.contains(bookName) || bookName.contains(candidate.name) {
-                guard let cover = candidate.coverUrl, !cover.isEmpty else { continue }
-                guard !seen.contains(cover) else { continue }
+                guard let cover = candidate.coverUrl, !cover.isEmpty, !seen.contains(cover) else { continue }
                 seen.insert(cover)
-                found.append((source: source.bookSourceName, url: cover))
-                if found.count >= limit { return found }
+                collected.append((source: source.bookSourceName, url: cover))
+                if collected.count >= limit { return collected }
             }
         }
-        return found
+        return collected
     }
 }
 
