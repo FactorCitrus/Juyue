@@ -1667,7 +1667,7 @@ struct BookRow: View {
     }
 }
 
-/// 商店版的标题标记：角标框 + 四条不等宽书脊 + 书架底线 + 一道强调线，全部 Canvas 绘制，
+/// 商店版的标题标记：角标框 + 一只简笔猫 + 一道强调线，全部 Canvas 绘制，
 /// 不含第三方角色美术。侧载版仍走 `ShelfMark` 图，分叉只在 `AppEdition` 上。
 struct ShelfEditionMark: View {
     let ink: Color
@@ -1677,8 +1677,10 @@ struct ShelfEditionMark: View {
         Canvas { context, size in
             let width = size.width
             let height = size.height
-            let line = max(1, height * 0.04)
+            let line = max(1, height * 0.035)
+            let stroke = StrokeStyle(lineWidth: line, lineCap: .round, lineJoin: .round)
 
+            // 角标框：左上与右下两个直角，跟其它页头的视觉语言一致
             var frame = Path()
             frame.move(to: CGPoint(x: 0, y: height * 0.5))
             frame.addLine(to: CGPoint(x: 0, y: 0))
@@ -1688,27 +1690,52 @@ struct ShelfEditionMark: View {
             frame.addLine(to: CGPoint(x: width * 0.66, y: height))
             context.stroke(frame, with: .color(ink.opacity(0.8)), lineWidth: line)
 
-            // 书脊：不等宽、不等高，压在一条书架上，别画成柱状图
-            let shelfY = height * 0.84
-            context.fill(
-                Path(CGRect(x: width * 0.1, y: shelfY, width: width * 0.58, height: line * 0.8)),
-                with: .color(ink.opacity(0.55))
-            )
-            let spines: [(x: CGFloat, width: CGFloat, rise: CGFloat)] = [
-                (0.12, 0.09, 0.46), (0.23, 0.12, 0.62), (0.37, 0.08, 0.54), (0.47, 0.11, 0.68)
-            ]
-            for spine in spines {
-                let rect = CGRect(
-                    x: width * spine.x,
-                    y: shelfY - height * spine.rise,
-                    width: width * spine.width,
-                    height: height * spine.rise
-                )
-                context.fill(Path(rect), with: .color(ink.opacity(0.92)))
+            // 猫头：一条闭合路径把两只耳朵一起勾出来，耳尖压在头顶两侧
+            func point(_ x: CGFloat, _ y: CGFloat) -> CGPoint {
+                CGPoint(x: width * x, y: height * y)
+            }
+            var head = Path()
+            head.move(to: point(0.255, 0.150))
+            head.addLine(to: point(0.400, 0.335))
+            head.addLine(to: point(0.600, 0.315))
+            head.addLine(to: point(0.745, 0.135))
+            head.addQuadCurve(to: point(0.755, 0.520), control: point(0.790, 0.320))
+            head.addQuadCurve(to: point(0.500, 0.745), control: point(0.750, 0.700))
+            head.addQuadCurve(to: point(0.245, 0.520), control: point(0.250, 0.700))
+            head.addQuadCurve(to: point(0.255, 0.150), control: point(0.210, 0.320))
+            head.closeSubpath()
+            context.stroke(head, with: .color(ink.opacity(0.92)), style: stroke)
+
+            // 眼睛两个点，别画表情，留白就够
+            let eyesAt: [CGFloat] = [0.395, 0.605]
+            for x in eyesAt {
+                let r = max(1.2, width * 0.022)
+                let eye = Path(ellipseIn: CGRect(
+                    x: width * x - r, y: height * 0.500 - r, width: r * 2, height: r * 2
+                ))
+                context.fill(eye, with: .color(ink.opacity(0.92)))
             }
 
+            // 胡须：左右各两根，短、等长，别伸到角标框外面
+            var whiskers = Path()
+            whiskers.move(to: point(0.300, 0.590)); whiskers.addLine(to: point(0.155, 0.560))
+            whiskers.move(to: point(0.300, 0.635)); whiskers.addLine(to: point(0.150, 0.660))
+            whiskers.move(to: point(0.700, 0.590)); whiskers.addLine(to: point(0.845, 0.560))
+            whiskers.move(to: point(0.700, 0.635)); whiskers.addLine(to: point(0.850, 0.660))
+            context.stroke(whiskers, with: .color(ink.opacity(0.55)), lineWidth: max(1, line * 0.7))
+
+            // 身体只留一道肩线，尾巴绕到右下，收在角标框里
+            var body = Path()
+            body.move(to: point(0.330, 0.880))
+            body.addQuadCurve(to: point(0.670, 0.880), control: point(0.500, 0.780))
+            body.move(to: point(0.660, 0.880))
+            body.addQuadCurve(to: point(0.845, 0.800), control: point(0.800, 0.885))
+            body.addQuadCurve(to: point(0.790, 0.735), control: point(0.865, 0.740))
+            context.stroke(body, with: .color(ink.opacity(0.75)), style: stroke)
+
+            // 强调线：跟原来同位置，别动
             context.fill(
-                Path(CGRect(x: width * 0.78, y: height * 0.16, width: width * 0.16, height: line)),
+                Path(CGRect(x: width * 0.78, y: height * 0.12, width: width * 0.16, height: line)),
                 with: .color(accent)
             )
         }
