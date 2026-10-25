@@ -1,12 +1,16 @@
 import SwiftUI
 
-/// 书源导入须知：条款写死在代码里，每一次导入都得重新勾一次。
+/// 书源导入须知：条款写死在代码里，商店版每一次导入都得重新勾一次。
 ///
-/// 同意不落盘，只对本次导入有效：面板一关就作废，下次进来勾选框还是空的。
+/// 侧载包是自用包，不计：面板一进来就是勾好的，关掉也不清零。
+/// 同意不落盘，只对本次导入有效（商店版）：面板一关就作废，下次进来勾选框还是空的。
 /// 只往日志里留一条「什么时候同意过」，条款改了就抬 `currentVersion`。
 enum BookSourceDisclaimer {
     /// 条款版本。改文案就加一。
     static let currentVersion = 1
+
+    /// 强制范围：商店包每次导入都要重新勾，侧载包不拦。
+    static var requiresConsent: Bool { AppEdition.isAppStoreClean }
 
     /// 勾选即代表这一次导入的同意；不写 UserDefaults，所以下次导入必须再勾。
     static func accept() {
