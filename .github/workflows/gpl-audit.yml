@@ -1,0 +1,16 @@
+name: gpl-audit
+
+on:
+  push:
+    branches: [main, 'rewrite/**', 'appstore-*']
+  pull_request:
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Surviving upstream lines must stay within budget
+        run: python3 scripts/gpl_audit.py --baseline d21903c --budget "$(cat docs/licensing/upstream-budget.txt)"

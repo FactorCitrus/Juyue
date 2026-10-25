@@ -7,110 +7,110 @@ public struct RuleStep: Equatable {
         case xpath(String)
         case regex(pattern: String, replacement: String)
         case js(String)
-        case attribute(String) // e.g. text, html, href, src
+        case attribute(String) // text, html, href, src, ...
     }
 
     public let type: StepType
 }
 
+/// 把 Legado 书源规则拆成有序步骤：选择器 → 属性 → JS → 正则替换。
+/// 规格见 docs/licensing/specs/RuleTokenizer.md。
 public class RuleTokenizer {
 
+    private static let attributeWords: Set<String> = [
+        "text", "textnodes", "html", "href", "src", "title", "content"
+    ]
+
     public static func parse(_ rawRule: String) -> [RuleStep] {
-        var trimmed = rawRule.trimmingCharacters(in: .whitespacesAndNewlines)
-        if trimmed.isEmpty { return [] }
+        var rule = rawRule.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !rule.isEmpty else { return [] }
 
-        // Check for regex replacement at the end: e.g. rule##regex##replacement
-        var regexReplacements: [RuleStep] = []
-        if let hashRange = trimmed.range(of: "##") {
-            let rulePart = String(trimmed[..<hashRange.lowerBound])
-            let regexPart = String(trimmed[hashRange.upperBound...])
-            let regexSegments = regexPart.components(separatedBy: "##")
-            if !regexSegments.isEmpty {
-                let pattern = regexSegments[0]
-                let replacement = regexSegments.count > 1 ? regexSegments[1] : ""
-                regexReplacements.append(RuleStep(type: .regex(pattern: pattern, replacement: replacement)))
-                trimmed = rulePart
-            }
-        }
+        let regexSteps = takeRegexReplacement(&rule)
+        let jsStep = takeJavaScript(&rule)
+        var steps = selectorSteps(in: rule)
 
-        // Split by '@js:' or '<js>'
-        var jsStep: RuleStep? = nil
-        if let jsRange = trimmed.range(of: "@js:") {
-            let rulePart = String(trimmed[..<jsRange.lowerBound])
-            let script = String(trimmed[jsRange.upperBound...])
-            jsStep = RuleStep(type: .js(script))
-            trimmed = rulePart
-        } else if let openTag = trimmed.range(of: "<js>"),
-                  let closeTag = trimmed.range(of: "</js>") {
-            let script = String(trimmed[openTag.upperBound..<closeTag.lowerBound])
-            jsStep = RuleStep(type: .js(script))
-            let beforeTag = String(trimmed[..<openTag.lowerBound])
-            trimmed = beforeTag
-        }
-
-        // Split by '@'
-        // XPath 规则里 @ 是属性谓词的一部分（例如 //div[@id="x"]），
-        // 不能按 @ 拆。只有形如 "...@text" 的尾部属性提取才拆。
-        var parts: [String]
-        if trimmed.hasPrefix("//") || trimmed.hasPrefix("/") {
-            if let lastAt = trimmed.lastIndex(of: "@") {
-                let tail = String(trimmed[trimmed.index(after: lastAt)...])
-                    .trimmingCharacters(in: .whitespacesAndNewlines)
-                    .lowercased()
-                let attrNames: Set<String> = ["text", "textnodes", "html", "href", "src", "title", "content"]
-                if attrNames.contains(tail) || tail.hasPrefix("attr(") {
-                    parts = [String(trimmed[..<lastAt]), tail]
-                } else {
-                    parts = [trimmed]
-                }
-            } else {
-                parts = [trimmed]
-            }
-        } else {
-            parts = trimmed.components(separatedBy: "@")
-        }
-        var steps: [RuleStep] = []
-
-        for (index, part) in parts.enumerated() {
-            let token = part.trimmingCharacters(in: .whitespacesAndNewlines)
-            if token.isEmpty { continue }
-
-            let lower = token.lowercased()
-            let knownAttributes: Set<String> = ["text", "textnodes", "html", "href", "src", "title", "content"]
-            let isAttr = knownAttributes.contains(lower) || lower.starts(with: "attr(")
-
-            if index == 0 {
-                // Determine root type
-                if isAttr {
-                    steps.append(RuleStep(type: .attribute(lower)))
-                } else if token.starts(with: "$.") || token.starts(with: "$[") {
-                    steps.append(RuleStep(type: .jsonPath(token)))
-                } else if token.starts(with: "//") || token.starts(with: "/") {
-                    steps.append(RuleStep(type: .xpath(token)))
-                } else {
-                    steps.append(RuleStep(type: .css(normalizeSelector(token))))
-                }
-            } else {
-                // Secondary steps can be attributes or sub-selectors
-                if isAttr {
-                    steps.append(RuleStep(type: .attribute(lower)))
-                } else {
-                    steps.append(RuleStep(type: .css(normalizeSelector(token))))
-                }
-            }
-        }
-
-        if let js = jsStep {
-            steps.append(js)
-        }
-        steps.append(contentsOf: regexReplacements)
-
+        if let jsStep { steps.append(jsStep) }
+        steps.append(contentsOf: regexSteps)
         return steps
     }
 
-    /// Converts Legado's legacy selector prefixes into CSS selectors:
-    /// `id.list` -> `#list`, `class.list` -> `.list`.
-    private static func normalizeSelector(_ token: String) -> String {
+    /// `rule##pattern##replacement`，只认第一个 `##` 之后的两段。
+    private static func takeRegexReplacement(_ rule: inout String) -> [RuleStep] {
+        guard let marker = rule.range(of: "##") else { return [] }
+        let payload = rule[marker.upperBound...].components(separatedBy: "##")
+        let step = RuleStep(type: .regex(
+            pattern: payload.first ?? "",
+            replacement: payload.count > 1 ? payload[1] : ""
+        ))
+        rule = String(rule[..<marker.lowerBound])
+        return [step]
+    }
+
+    /// `selector@js:code` 或 `selector<js>code</js>`。
+    private static func takeJavaScript(_ rule: inout String) -> RuleStep? {
+        if let marker = rule.range(of: "@js:") {
+            let code = String(rule[marker.upperBound...])
+            rule = String(rule[..<marker.lowerBound])
+            return RuleStep(type: .js(code))
+        }
+        if let open = rule.range(of: "<js>"),
+           let close = rule.range(of: "</js>", range: open.upperBound..<rule.endIndex) {
+            let code = String(rule[open.upperBound..<close.lowerBound])
+            rule = String(rule[..<open.lowerBound])
+            return RuleStep(type: .js(code))
+        }
+        return nil
+    }
+
+    private static func selectorSteps(in rule: String) -> [RuleStep] {
+        let chunks = splitSelectors(rule)
+        var steps: [RuleStep] = []
+
+        for (position, chunk) in chunks.enumerated() {
+            let token = chunk.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !token.isEmpty else { continue }
+
+            if isAttribute(token) {
+                steps.append(RuleStep(type: .attribute(token.lowercased())))
+            } else if position == 0 {
+                steps.append(RuleStep(type: rootKind(of: token)))
+            } else {
+                steps.append(RuleStep(type: .css(expandLegacyPrefix(token))))
+            }
+        }
+        return steps
+    }
+
+    /// XPath 里的 `@` 属于谓词（`//div[@id="x"]`），只有尾部属性提取才拆。
+    private static func splitSelectors(_ rule: String) -> [String] {
+        guard rule.hasPrefix("/") else {
+            return rule.components(separatedBy: "@")
+        }
+        guard let lastAt = rule.lastIndex(of: "@") else { return [rule] }
+        let tail = rule[rule.index(after: lastAt)...]
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        guard isAttribute(tail) else { return [rule] }
+        return [String(rule[..<lastAt]), tail]
+    }
+
+    private static func rootKind(of token: String) -> RuleStep.StepType {
+        if token.hasPrefix("$.") || token.hasPrefix("$[") {
+            return .jsonPath(token)
+        }
+        if token.hasPrefix("//") || token.hasPrefix("/") {
+            return .xpath(token)
+        }
+        return .css(expandLegacyPrefix(token))
+    }
+
+    private static func isAttribute(_ token: String) -> Bool {
+        let lowered = token.lowercased()
+        return attributeWords.contains(lowered) || lowered.hasPrefix("attr(")
+    }
+
+    /// `id.x` → `#x`，`class.x` → `.x`，`tag.x` → `x`。
+    private static func expandLegacyPrefix(_ token: String) -> String {
         if token.hasPrefix("id.") { return "#" + token.dropFirst(3) }
         if token.hasPrefix("class.") { return "." + token.dropFirst(6) }
         if token.hasPrefix("tag.") { return String(token.dropFirst(4)) }
