@@ -1,13 +1,16 @@
 import SwiftUI
 import UniformTypeIdentifiers
+#if os(iOS)
+import UIKit
+#endif
 #if canImport(LegadoCore)
 import LegadoCore
 #endif
 
 /// WebDAV 云同步：配置、探活、备份、恢复、本地 zip 导入导出。
 ///
-/// 所有异步动作共用一套状态机（`Activity`）与一种提示（`Notice`），
-/// 免得四个布尔各自为政、按钮禁用条件漏判。
+/// 异步动作共用 `Activity` 状态机；三档确认与普通提示共用单一 `Dialog`，
+/// 避免同一节点挂多个 `.alert` —— iOS 只认最后一个。
 public struct WebDAVSyncView: View {
     @ObservedObject var bookStore = BookStore.shared
     @Environment(\.appTheme) private var theme
@@ -20,14 +23,12 @@ public struct WebDAVSyncView: View {
     @State private var lastSyncTime: Date?
 
     @State private var activity: Activity = .idle
-    @State private var notice: Notice?
+    @State private var dialog: Dialog?
 
     @State private var remoteBackups: [RemoteBackupInfo] = []
     @State private var showBackupPickerSheet = false
-    @State private var showRestoreConfirm = false
     @State private var selectedRestoreBackupName: String?
 
-    @State private var showFileImporter = false
     /// 备份包存到「文件」，不连 WebDAV 也能备份
     @State private var showBackupExporter = false
     @State private var backupExportDocument: ExportedFile?
@@ -49,6 +50,46 @@ public struct WebDAVSyncView: View {
         let id = UUID()
         let title: String
         let message: String
+    }
+
+    /// 本地备份包解析结果：只解析、不落盘，等用户选模式。
+    private struct ImportPreview: Identifiable {
+        let id = UUID()
+        let fileName: String
+        let books: [Book]?
+        let sources: [BookSource]?
+        let settingsData: Data?
+
+        var summary: String {
+            [
+                "文件：\(fileName)",
+                "书架 \(books?.count ?? 0) 本",
+                "书源 \(sources?.count ?? 0) 个",
+                "应用设置：\(settingsData == nil ? "无" : "有")"
+            ].joined(separator: "\n")
+        }
+    }
+
+    private enum Dialog: Identifiable {
+        case notice(Notice)
+        case restoreConfirm
+        case importConfirm(ImportPreview)
+
+        var id: String {
+            switch self {
+            case .notice(let notice): return "notice-\(notice.id.uuidString)"
+            case .restoreConfirm: return "restore-confirm"
+            case .importConfirm(let preview): return "import-\(preview.id.uuidString)"
+            }
+        }
+
+        var title: String {
+            switch self {
+            case .notice(let notice): return notice.title
+            case .restoreConfirm: return "从 WebDAV 恢复"
+            case .importConfirm: return "导入备份包"
+            }
+        }
     }
 
     private var isBusy: Bool { activity != .idle }
@@ -82,39 +123,20 @@ public struct WebDAVSyncView: View {
         .appThemedList()
         .navigationTitle("WebDAV 云同步")
         .onAppear(perform: loadConfig)
-        .alert(item: $notice) { notice in
-            Alert(
-                title: Text(notice.title),
-                message: Text(notice.message),
-                dismissButton: .default(Text("确定"))
-            )
-        }
-        .alert("从 WebDAV 恢复", isPresented: $showRestoreConfirm) {
-            Button("取消", role: .cancel) {}
-            Button("替换恢复（完全采用备份）", role: .destructive) {
-                saveConfig()
-                restoreFromWebDAV(backupFileName: selectedRestoreBackupName, mode: .replace)
-            }
-            Button("合并恢复（保留本地进度 / 分组 / 封面）") {
-                saveConfig()
-                restoreFromWebDAV(backupFileName: selectedRestoreBackupName, mode: .merge)
-            }
-        } message: {
-            if let name = selectedRestoreBackupName {
-                Text("从 WebDAV 下载 [\(name)]，和本地数据合并。继续吗？")
-            } else {
-                Text("从 WebDAV 下载最新的备份，和本地数据合并。继续吗？")
-            }
+        .alert(
+            Text(dialog?.title ?? ""),
+            isPresented: Binding(
+                get: { dialog != nil },
+                set: { presented in if !presented { dialog = nil } }
+            ),
+            presenting: dialog
+        ) { current in
+            dialogActions(for: current)
+        } message: { current in
+            Text(message(for: current))
         }
         .sheet(isPresented: $showBackupPickerSheet) {
             backupPicker
-        }
-        .fileImporter(
-            isPresented: $showFileImporter,
-            allowedContentTypes: [.zip, .archive],
-            allowsMultipleSelection: false
-        ) { result in
-            importLocalZip(result)
         }
         .fileExporter(
             isPresented: $showBackupExporter,
@@ -124,10 +146,54 @@ public struct WebDAVSyncView: View {
         ) { result in
             switch result {
             case .success:
-                notice = Notice(title: "备份包已导出", message: "已存到「文件」：\(backupExportName)")
+                dialog = .notice(Notice(title: "备份包已导出", message: "已存到「文件」：\(backupExportName)"))
             case .failure(let error):
-                notice = Notice(title: "导出失败", message: error.localizedDescription)
+                dialog = .notice(Notice(title: "导出失败", message: error.localizedDescription))
             }
+        }
+    }
+
+    @ViewBuilder
+    private func dialogActions(for current: Dialog) -> some View {
+        switch current {
+        case .notice:
+            Button("确定", role: .cancel) {}
+
+        case .restoreConfirm:
+            Button("取消", role: .cancel) {}
+            Button("替换恢复（完全采用备份）", role: .destructive) {
+                saveConfig()
+                restoreFromWebDAV(backupFileName: selectedRestoreBackupName, mode: .replace)
+            }
+            Button("合并恢复（保留本地进度 / 分组 / 封面）") {
+                saveConfig()
+                restoreFromWebDAV(backupFileName: selectedRestoreBackupName, mode: .merge)
+            }
+
+        case .importConfirm(let preview):
+            Button("取消", role: .cancel) {
+                AppLog.write("[云备份] 用户取消导入")
+            }
+            Button("替换导入", role: .destructive) {
+                applyImport(preview, mode: .replace)
+            }
+            Button("合并导入") {
+                applyImport(preview, mode: .merge)
+            }
+        }
+    }
+
+    private func message(for current: Dialog) -> String {
+        switch current {
+        case .notice(let notice):
+            return notice.message
+        case .restoreConfirm:
+            if let name = selectedRestoreBackupName {
+                return "从 WebDAV 下载 [\(name)]，和本地数据合并。继续吗？"
+            }
+            return "从 WebDAV 下载最新的备份，和本地数据合并。继续吗？"
+        case .importConfirm(let preview):
+            return preview.summary
         }
     }
 
@@ -260,7 +326,7 @@ public struct WebDAVSyncView: View {
                 requiresAccount: true
             ) {
                 selectedRestoreBackupName = nil
-                showRestoreConfirm = true
+                dialog = .restoreConfirm
             }
         }
         .appThemedRows()
@@ -304,7 +370,7 @@ public struct WebDAVSyncView: View {
             }
 
             Button {
-                showFileImporter = true
+                presentBackupPicker()
             } label: {
                 HStack {
                     Image(systemName: "doc.badge.arrow.up")
@@ -327,7 +393,7 @@ public struct WebDAVSyncView: View {
                         Button {
                             showBackupPickerSheet = false
                             selectedRestoreBackupName = backup.fileName
-                            showRestoreConfirm = true
+                            dialog = .restoreConfirm
                         } label: {
                             backupRow(backup)
                         }
@@ -387,7 +453,7 @@ public struct WebDAVSyncView: View {
         Task { @MainActor in
             let result = await work()
             activity = .idle
-            notice = result
+            if let result { dialog = .notice(result) }
         }
     }
 
@@ -506,6 +572,72 @@ public struct WebDAVSyncView: View {
         }
     }
 
+    // MARK: 本地导入
+
+    /// `.fileImporter` 与同节点的 sheet / alert 抢 presentation，iOS 16 上选完文件回调不进来；
+    /// 改用 UIKit 文档选择器，照 `SourceDocumentPicker` 的形状。
+    private func presentBackupPicker() {
+        #if os(iOS)
+        BackupDocumentPicker.present(contentTypes: [.zip, .archive]) { urls in
+            guard let url = urls.first else { return }
+            prepareImport(from: url)
+        }
+        #else
+        AppLog.write("[云备份] 当前平台未接入系统文档选择器")
+        dialog = .notice(Notice(title: "暂不支持", message: "当前平台还没有接入文档选择器。"))
+        #endif
+    }
+
+    /// 只解析、不落盘：拿到摘要等用户确认，解析失败就地报错。
+    private func prepareImport(from url: URL) {
+        AppLog.write("[云备份] 选中备份包 \(url.lastPathComponent)")
+        AppLog.write("[云备份] 导入本地备份包")
+        do {
+            let (books, sources) = try WebDAVService.shared.restoreFromZip(fileUrl: url)
+            // parseArchive 对缺失的 bookshelf.json 只回 nil 不抛错，
+            // 直接进确认框会得到一份「0 本 0 源」的空摘要，等于骗用户点合并。
+            guard let books else {
+                let reason = "压缩包里没有可用的 bookshelf.json（缺失或解析失败），先确认这是安卓版 Legado 导出的备份包。"
+                AppLog.write("[云备份] 本地备份导入失败 \(reason)")
+                dialog = .notice(Notice(title: "导入失败", message: reason))
+                return
+            }
+            let settingsData = WebDAVService.shared.extractSettingsJSON(fromZipFileUrl: url)
+            dialog = .importConfirm(ImportPreview(
+                fileName: url.lastPathComponent,
+                books: books,
+                sources: sources,
+                settingsData: settingsData
+            ))
+        } catch {
+            AppLog.write("[云备份] 本地备份导入失败 \(error.localizedDescription)")
+            dialog = .notice(Notice(title: "导入失败", message: error.localizedDescription))
+        }
+    }
+
+    /// 用户确认后才落盘；merge / replace 语义与 WebDAV 恢复一致。
+    private func applyImport(_ preview: ImportPreview, mode: BookStore.RestoreMode) {
+        AppLog.write("[云备份] 用户确认导入 mode=\(mode == .replace ? "replace" : "merge")")
+        let (bookCount, sourceCount) = bookStore.restoreFromWebDAV(
+            books: preview.books,
+            sources: preview.sources,
+            mode: mode
+        )
+
+        var settingsNote = ""
+        if let data = preview.settingsData, let payload = AppSettingsBackup.decode(data) {
+            let summary = AppSettingsBackup.apply(payload, mode: mode == .replace ? .replace : .merge)
+            settingsNote = "\n• 应用设置（\(mode == .replace ? "替换" : "合并")）: \(summary)"
+        }
+
+        AppLog.write("[云备份] 本地备份导入完成 书架=\(bookCount) 书源=\(sourceCount)")
+        let text = "成功识别并合并 Android 备份数据：\n• 书架更新/新增: \(bookCount) 本\n• 书源更新/新增: \(sourceCount) 个\(settingsNote)"
+        // 确认框正在退场，此刻直接换下一个 alert 会被吞掉。
+        DispatchQueue.main.async {
+            self.dialog = .notice(Notice(title: "备份包导入成功", message: text))
+        }
+    }
+
     /// 不出网也备份：直接把 zip 存到「文件」。
     private func exportBackupToFiles() {
         AppLog.write("[云备份] 导出备份包到本地")
@@ -521,36 +653,7 @@ public struct WebDAVSyncView: View {
             AppLog.write("[云备份] 导出本地备份完成")
         } catch {
             AppLog.write("[云备份] 导出本地备份失败 \(error.localizedDescription)")
-            notice = Notice(title: "导出失败", message: error.localizedDescription)
-        }
-    }
-
-    private func importLocalZip(_ result: Result<[URL], Error>) {
-        AppLog.write("[云备份] 导入本地备份包")
-        do {
-            guard let selectedUrl = try result.get().first else { return }
-            let scoped = selectedUrl.startAccessingSecurityScopedResource()
-            defer {
-                if scoped { selectedUrl.stopAccessingSecurityScopedResource() }
-            }
-
-            let (books, sources) = try WebDAVService.shared.restoreFromZip(fileUrl: selectedUrl)
-            let (bookCount, sourceCount) = bookStore.restoreFromWebDAV(books: books, sources: sources)
-
-            var settingsNote = ""
-            if let data = WebDAVService.shared.extractSettingsJSON(fromZipFileUrl: selectedUrl),
-               let payload = AppSettingsBackup.decode(data) {
-                settingsNote = "\n• 应用设置（合并）: \(AppSettingsBackup.apply(payload, mode: .merge))"
-            }
-
-            AppLog.write("[云备份] 本地备份导入完成 书架=\(bookCount) 书源=\(sourceCount)")
-            notice = Notice(
-                title: "备份包导入成功",
-                message: "成功识别并合并 Android 备份数据：\n• 书架更新/新增: \(bookCount) 本\n• 书源更新/新增: \(sourceCount) 个\(settingsNote)"
-            )
-        } catch {
-            AppLog.write("[云备份] 本地备份导入失败 \(error.localizedDescription)")
-            notice = Notice(title: "导入失败", message: error.localizedDescription)
+            dialog = .notice(Notice(title: "导出失败", message: error.localizedDescription))
         }
     }
 
@@ -570,3 +673,56 @@ public struct WebDAVSyncView: View {
         return formatter.string(from: date)
     }
 }
+
+#if os(iOS)
+/// 备份包专用的系统文档选择器。
+///
+/// 不用 `.fileImporter`：它与同节点的 `.sheet` / `.alert` / `.fileExporter` 抢 presentation，
+/// iOS 16 真机上选完文件点「打开」回调不进来（表现为界面完全没反应）。
+/// `asCopy: true` 直接拿到沙盒副本，不需要安全作用域访问。
+enum BackupDocumentPicker {
+    private static var retained: Delegate?
+
+    static func present(contentTypes: [UTType], onPicked: @escaping ([URL]) -> Void) {
+        guard let top = topViewController() else { return }
+        let picker = UIDocumentPickerViewController(forOpeningContentTypes: contentTypes, asCopy: true)
+        picker.allowsMultipleSelection = false
+        let delegate = Delegate(onPicked: onPicked)
+        retained = delegate
+        picker.delegate = delegate
+        top.present(picker, animated: true)
+    }
+
+    private static func topViewController() -> UIViewController? {
+        let scenes = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
+        let window = scenes.flatMap { $0.windows }.first(where: { $0.isKeyWindow })
+            ?? scenes.first?.windows.first
+        var controller = window?.rootViewController
+        while let presented = controller?.presentedViewController {
+            controller = presented
+        }
+        return controller
+    }
+
+    private final class Delegate: NSObject, UIDocumentPickerDelegate {
+        let onPicked: ([URL]) -> Void
+
+        init(onPicked: @escaping ([URL]) -> Void) {
+            self.onPicked = onPicked
+        }
+
+        func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
+            // 选择器还在退场时立刻弹 alert，SwiftUI 会丢掉这次 presentation。
+            let callback = onPicked
+            BackupDocumentPicker.retained = nil
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
+                callback(urls)
+            }
+        }
+
+        func documentPickerWasCancelled(_ controller: UIDocumentPickerViewController) {
+            BackupDocumentPicker.retained = nil
+        }
+    }
+}
+#endif
