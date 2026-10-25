@@ -2,6 +2,11 @@
 
 基线 `d21903c`；当前存活上游 **8948** 行 / 32 个文件。目标 0，命令：`python3 scripts/gpl_audit.py --strict`。
 
+## 用户指定待办
+
+- [x] **侧载版主题在商店版可用**（2026-10-25 核实）：统一源码后主题从未被 `isAppStoreClean` 拦截。`Sources/LegadoApp/Views/NieRTheme.swift`（252 行）与 `Sources/LegadoApp/Theme/ReaderConfig.swift`（1578 行）全量编入商店包；`JuyueReader` 二进制内含 `NieRBackdrop / NieRBadge / NieRDivider / NieRPalette / NieRPanel / NieRScanBar / NieRSectionTitle / NieRSheetHeader` 八个组件符号与「复古羊皮纸 / 护眼绿 / 夜间暗黑」三个主题名，而「换源」出现 0 次（gate 生效）。旧 `appstore-clean` 树删掉的 `NieRTheme.swift` + ReaderConfig 558 行，在单一源码方案下自动回归。**余项**：真机 UI 走查确认视觉与侧载版一致。
+- [ ] **段评 UI 入口 gate**：`BookshelfView:244/335`、`ReaderView:1157/1174/2781/2831/5486`。目前只拦截解析层（`extractReviewMarkers`），商店二进制里仍能搜到「段评」文案，属于审核面残留。
+
 | 阶段 | 文件 | 行数 | 存活上游 | 占比 | 状态 |
 |---|---|---:|---:|---:|---|
 | P2 内核 | `Sources/LegadoCore/Engine/RuleAnalyzer.swift` | 482 | 397 | 82% | 待做 |
