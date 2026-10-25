@@ -50,8 +50,12 @@ jobs:
             echo "VERSION 格式错误：$TAG"
             exit 1
           }
-          MARKETING=$(sed -n '/<key>MARKETING_VERSION<\/key>/{n;s/.*<string>\(.*\)<\/string>.*/\1/p;}' Legado.xcodeproj/project.pbxproj | sort -u)
-          BUILD=$(sed -n '/<key>CURRENT_PROJECT_VERSION<\/key>/{n;s/.*<string>\(.*\)<\/string>.*/\1/p;}' Legado.xcodeproj/project.pbxproj | sort -u)
+          # 工程里有两个 target：LegadoApp（侧载，版本跟 VERSION 走）和
+          # JuyueReader（商店版，独立排 1.x）。全局 grep 会把两者混在一起，
+          # 这里只读 LegadoApp 的 Release 配置。
+          SETTINGS=$(xcodebuild -project Legado.xcodeproj -target LegadoApp -configuration Release -showBuildSettings 2>/dev/null)
+          MARKETING=$(echo "$SETTINGS" | sed -n 's/^ *MARKETING_VERSION = //p' | sort -u)
+          BUILD=$(echo "$SETTINGS" | sed -n 's/^ *CURRENT_PROJECT_VERSION = //p' | sort -u)
           echo "MARKETING_VERSION=$MARKETING"
           echo "CURRENT_PROJECT_VERSION=$BUILD"
           [ "$MARKETING" = "$VERSION_NO_V" ] || {
