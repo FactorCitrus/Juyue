@@ -1,6 +1,6 @@
 # 重写看板（upstream-free）
 
-基线 `d21903c`；当前存活上游 **8380** 行 / 32 个文件。目标 0，命令：`python3 scripts/gpl_audit.py --strict`。
+基线 `d21903c`；当前存活上游 **8085** 行 / 32 个文件。目标 0，命令：`python3 scripts/gpl_audit.py --strict`。
 
 ## 用户指定待办
 
@@ -26,7 +26,7 @@
 | P4 应用服务 | `Sources/LegadoApp/Services/AudioBookService.swift` | 668 | 124 | 19% | 待做 |
 | P5 界面 | `Sources/LegadoApp/Views/Reader/ReaderView.swift` | 9795 | 1709 | 17% | 待做 |
 | P5 界面 | `Sources/LegadoApp/Views/BookDetailView.swift` | 1190 | 541 | 45% | 待做 |
-| P5 界面 | `Sources/LegadoApp/Views/WebDAVSyncView.swift` | 609 | 491 | 81% | 待做 |
+| P5 界面 | `Sources/LegadoApp/Views/WebDAVSyncView.swift` | 577 | 196 | 34% | 已重写（余 196） |
 | P5 界面 | `Sources/LegadoApp/Views/CategoryExploreView.swift` | 1011 | 444 | 44% | 待做 |
 | P5 界面 | `Sources/LegadoApp/Views/SourceManagerView.swift` | 1390 | 431 | 31% | 待做 |
 | P5 界面 | `Sources/LegadoApp/Views/SourceWebLoginView.swift` | 511 | 380 | 74% | 待做 |

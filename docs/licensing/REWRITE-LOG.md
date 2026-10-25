@@ -43,3 +43,10 @@
 - 行为保持：明文 HTTP 不发凭据、MKCOL 白名单 200/201/204/405、zip 优先于散 JSON、远端旧进度不回拖、备份包三个条目与安卓端一致。
 - 新增 `Tests/LegadoCoreTests/WebDAVServiceCleanRoomTests.swift` 16 条（URL 拼接 / 凭据 / 命名 / PROPFIND / zip 往返 / 进度合并）。
 - 全套 `swift test`：170 通过 / 13 跳过 / 0 失败。审计 8948 → 8380（-568）。
+
+## 2026-10-25 · 批次 5
+
+- `WebDAVSyncView`：491 → 余量见 BOARD（文件 609 → 577）。四个忙碌布尔收成 `Activity` 枚举，两处 alert 收成一个 `Notice?`，五个同构输入行抽成 `field(_:placeholder:text:)`，四个操作按钮抽成 `actionRow`。
+- 行为保持：禁用条件（URL / 账号）、双恢复模式确认、安全作用域资源成对释放、所有提示文案逐字保留。
+- 修掉一个自造 bug：列表成功开 sheet 时不得再弹空提示（`perform` 返回 `Notice?`）。
+- 验证：`swift build`、商店模拟器构建、侧载真机构建均 BUILD SUCCEEDED，0 error。
