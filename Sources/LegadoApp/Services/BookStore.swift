@@ -15,8 +15,14 @@ public class BookStore: ObservableObject {
     @Published public var bookshelf: [Book] = []
     @Published public var sources: [BookSource] = []
 
-    private let booksKey = "legado_bookshelf_v1"
-    private let sourcesKey = "legado_sources_v1"
+    /// 落盘键名集中在这里：结构变了要新开键再写迁移，直接改字面量会丢用户的架子和书源。
+    private enum StoreKey {
+        static let bookshelf = "legado_bookshelf_v1"
+        static let sources = "legado_sources_v1"
+    }
+
+    private var booksKey: String { StoreKey.bookshelf }
+    private var sourcesKey: String { StoreKey.sources }
     private let bookmarksKey = "legado_bookmarks_v1"
     private let groupsKey = "legado_book_groups_v1"
     private let replaceRulesKey = "legado_text_replace_v1"
@@ -312,92 +318,100 @@ public class BookStore: ObservableObject {
         saveBookmarks()
     }
 
+    /// Documents 下的缓存目录；取不到时退回临时目录，这里不该成为崩溃点。
     private func getDocumentsDirectory() -> URL {
-        FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+        FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first
+            ?? FileManager.default.temporaryDirectory
     }
 
-    private func getBundledSourcesUrl() -> URL? {
+    /// 内置书源在 SPM 包里走 Bundle.module，装进 app 后走 Bundle.main。
+    private var bundledSourcesURL: URL? {
         #if SWIFT_PACKAGE
         if let url = Bundle.module.url(forResource: "bookSources", withExtension: "json") {
             return url
         }
         #endif
-        if let url = Bundle.main.url(forResource: "bookSources", withExtension: "json") {
-            return url
-        }
-        return nil
+        return Bundle.main.url(forResource: "bookSources", withExtension: "json")
     }
 
     public func loadData() {
-        // Load sources
-        if let data = UserDefaults.standard.data(forKey: sourcesKey),
-           let decoded = try? JSONDecoder().decode([BookSource].self, from: data) {
-            self.sources = decoded
+        if let stored = decode([BookSource].self, forKey: sourcesKey) {
+            sources = stored
         }
-
-        // Merge or populate bundled default sources
+        // 内置源每次都参与同步：本地为空整批灌入，非空只刷新规则，登录态由合并函数保住。
         loadBundledSources()
-
-        // Load bookshelf
-        if let data = UserDefaults.standard.data(forKey: booksKey),
-           let decoded = try? JSONDecoder().decode([Book].self, from: data) {
-            self.bookshelf = decoded
+        if let stored = decode([Book].self, forKey: booksKey) {
+            bookshelf = stored
         }
-
     }
 
     public func loadBundledSources(forceReset: Bool = false) {
-        guard let url = getBundledSourcesUrl(),
+        guard let url = bundledSourcesURL,
               let data = try? Data(contentsOf: url),
-              let defaultSources = try? JSONDecoder().decode([BookSource].self, from: data) else {
+              let bundled = try? JSONDecoder().decode([BookSource].self, from: data) else {
             return
         }
 
         if forceReset || sources.isEmpty {
-            sources = defaultSources
+            sources = bundled
             saveSources()
             return
         }
 
-        var didChange = false
-        for s in defaultSources {
-            // Match existing source by URL or name
-            if let idx = sources.firstIndex(where: {
-                $0.bookSourceUrl == s.bookSourceUrl ||
-                $0.bookSourceName == s.bookSourceName
-            }) {
-                // Update rules and configuration from bundled version while preserving user login state and toggles
-                var updated = s
-                updated.loginHeader = sources[idx].loginHeader
-                updated.loginInfo = sources[idx].loginInfo
-                if let customOrder = sources[idx].customOrder {
-                    updated.customOrder = customOrder
-                }
-                if let enabled = sources[idx].enabled {
-                    updated.enabled = enabled
-                }
-                sources[idx] = updated
-                didChange = true
-            } else if !sources.contains(where: { $0.bookSourceUrl == s.bookSourceUrl }) {
-                sources.append(s)
-                didChange = true
+        // 先把本地列表索引成字典：逐个内置源去线性扫本地表，条目一多就是 N×M。
+        var offsetByUrl: [String: Int] = [:]
+        var offsetByName: [String: Int] = [:]
+        for (offset, source) in sources.enumerated() {
+            offsetByUrl[source.bookSourceUrl] = offset
+            offsetByName[source.bookSourceName] = offset
+        }
+
+        for incoming in bundled {
+            // 先认 URL 再认书名：同一本书源换了域名时，靠书名把本地登录态接回来。
+            let matched = offsetByUrl[incoming.bookSourceUrl] ?? offsetByName[incoming.bookSourceName]
+            if let matched {
+                sources[matched] = carryingLocalState(from: sources[matched], into: incoming)
+            } else {
+                sources.append(incoming)
             }
+            // 新追加的条目也得进索引，否则后面同名的内置源会被重复插入。
+            let offset = matched ?? (sources.count - 1)
+            offsetByUrl[incoming.bookSourceUrl] = offset
+            offsetByName[incoming.bookSourceName] = offset
         }
-        if didChange {
-            saveSources()
+        saveSources()
+    }
+
+    /// 内置版本只负责规则；登录态、排序、启用开关是用户的，必须原样带过来。
+    private func carryingLocalState(from local: BookSource, into bundled: BookSource) -> BookSource {
+        var merged = bundled
+        merged.loginHeader = local.loginHeader
+        merged.loginInfo = local.loginInfo
+        if let order = local.customOrder {
+            merged.customOrder = order
         }
+        if let enabled = local.enabled {
+            merged.enabled = enabled
+        }
+        return merged
     }
 
     public func saveSources() {
-        if let data = try? JSONEncoder().encode(sources) {
-            UserDefaults.standard.set(data, forKey: sourcesKey)
-        }
+        encode(sources, forKey: sourcesKey)
     }
 
     public func saveBookshelf() {
-        if let data = try? JSONEncoder().encode(bookshelf) {
-            UserDefaults.standard.set(data, forKey: booksKey)
-        }
+        encode(bookshelf, forKey: booksKey)
+    }
+
+    private func decode<T: Decodable>(_ type: T.Type, forKey key: String) -> T? {
+        guard let data = UserDefaults.standard.data(forKey: key) else { return nil }
+        return try? JSONDecoder().decode(type, from: data)
+    }
+
+    private func encode<T: Encodable>(_ value: T, forKey key: String) {
+        guard let data = try? JSONEncoder().encode(value) else { return }
+        UserDefaults.standard.set(data, forKey: key)
     }
 
     /// Merges restored WebDAV books and sources into local storage
@@ -412,50 +426,55 @@ public class BookStore: ObservableObject {
         sources: [BookSource]?,
         mode: RestoreMode = .merge
     ) -> (booksAdded: Int, sourcesAdded: Int) {
-        var booksCount = 0
-        var sourcesCount = 0
+        var addedBooks = 0
+        var addedSources = 0
 
-        if let newBooks = books {
-            for b in newBooks {
-                if let idx = bookshelf.firstIndex(where: { $0.bookUrl == b.bookUrl }) {
-                    if mode == .replace {
-                        bookshelf[idx] = b
-                        continue
-                    }
-                    // 合并模式逐项覆盖，整条替换会丢掉本地字段
-                    var merged = b
-                    let existing = bookshelf[idx]
-                    // 远端备份更旧时不回退阅读进度
-                    if existing.durChapterTime > merged.durChapterTime {
-                        merged.durChapterIndex = existing.durChapterIndex
-                        merged.durChapterTitle = existing.durChapterTitle
-                        merged.durChapterPos = existing.durChapterPos
-                        merged.durChapterTime = existing.durChapterTime
-                    }
-                    if merged.groupId == nil { merged.groupId = existing.groupId }
-                    if (merged.coverUrl ?? "").isEmpty { merged.coverUrl = existing.coverUrl }
-                    bookshelf[idx] = merged
-                } else {
-                    bookshelf.append(b)
-                    booksCount += 1
+        if let backupBooks = books {
+            for backup in backupBooks {
+                guard let index = bookshelf.firstIndex(where: { $0.bookUrl == backup.bookUrl }) else {
+                    bookshelf.append(backup)
+                    addedBooks += 1
+                    continue
                 }
+                bookshelf[index] = mode == .replace
+                    ? backup
+                    : adoptingProgress(from: backup, over: bookshelf[index])
             }
             saveBookshelf()
         }
 
-        if let newSources = BookSourceGate.admitted(sources, appStore: AppEdition.isAppStoreClean) {
-            for s in newSources {
-                if let idx = self.sources.firstIndex(where: { $0.bookSourceUrl == s.bookSourceUrl }) {
-                    self.sources[idx] = s
+        if let admitted = BookSourceGate.admitted(sources, appStore: AppEdition.isAppStoreClean) {
+            var offsetByUrl: [String: Int] = [:]
+            for (offset, local) in self.sources.enumerated() {
+                offsetByUrl[local.bookSourceUrl] = offset
+            }
+            for incoming in admitted {
+                if let offset = offsetByUrl[incoming.bookSourceUrl] {
+                    self.sources[offset] = incoming
                 } else {
-                    self.sources.append(s)
-                    sourcesCount += 1
+                    self.sources.append(incoming)
+                    offsetByUrl[incoming.bookSourceUrl] = self.sources.count - 1
+                    addedSources += 1
                 }
             }
             saveSources()
         }
 
-        return (booksCount, sourcesCount)
+        return (addedBooks, addedSources)
+    }
+
+    /// 合并恢复：备份只补本地缺的字段，阅读进度更旧的时候不往回倒。
+    private func adoptingProgress(from backup: Book, over local: Book) -> Book {
+        var result = backup
+        if local.durChapterTime > result.durChapterTime {
+            result.durChapterIndex = local.durChapterIndex
+            result.durChapterTitle = local.durChapterTitle
+            result.durChapterPos = local.durChapterPos
+            result.durChapterTime = local.durChapterTime
+        }
+        if result.groupId == nil { result.groupId = local.groupId }
+        if (result.coverUrl ?? "").isEmpty { result.coverUrl = local.coverUrl }
+        return result
     }
 
     // MARK: - Book Management
@@ -465,7 +484,15 @@ public class BookStore: ObservableObject {
             return existing
         }
 
-        let newBook = Book(
+        let newBook = makeNetworkBook(from: searchResult)
+        bookshelf.insert(newBook, at: 0)
+        saveBookshelf()
+        AppLog.write("[书架] 加入网络书：新增")
+        return newBook
+    }
+
+    private func makeNetworkBook(from searchResult: SearchBook) -> Book {
+        Book(
             bookUrl: searchResult.bookUrl,
             name: searchResult.name,
             author: searchResult.author,
@@ -476,38 +503,52 @@ public class BookStore: ObservableObject {
             originName: searchResult.originName,
             latestChapterTitle: searchResult.latestChapterTitle
         )
-        bookshelf.insert(newBook, at: 0)
-        saveBookshelf()
-        AppLog.write("[书架] 加入网络书：新增")
-        return newBook
     }
 
     @discardableResult
     /// overwriteCover 为 true 时才用传入的封面覆盖本地封面。
     /// 刷新详情这类更新不传封面，不能覆盖用户自己设的封面。
     public func saveOrUpdateBook(_ book: Book, overwriteCover: Bool = false) -> Book {
-        if let index = bookshelf.firstIndex(where: { $0.bookUrl == book.bookUrl }) {
-            var existing = bookshelf[index]
-            if !book.name.isEmpty { existing.name = book.name }
-            if !book.author.isEmpty && book.author != "未知作者" { existing.author = book.author }
-            if overwriteCover {
-                existing.coverUrl = book.coverUrl
-            } else if let cover = book.coverUrl, !cover.isEmpty {
-                existing.coverUrl = cover
-            }
-            if let intro = book.intro, !intro.isEmpty, !intro.hasPrefix("源站：") { existing.intro = intro }
-            if let kind = book.kind, !kind.isEmpty { existing.kind = kind }
-            if let wordCount = book.wordCount, !wordCount.isEmpty { existing.wordCount = wordCount }
-            if let latest = book.latestChapterTitle, !latest.isEmpty { existing.latestChapterTitle = latest }
-            if book.totalChapterNum > 0 { existing.totalChapterNum = book.totalChapterNum }
-            bookshelf[index] = existing
-            saveBookshelf()
-            return existing
-        } else {
+        guard let index = bookshelf.firstIndex(where: { $0.bookUrl == book.bookUrl }) else {
             bookshelf.insert(book, at: 0)
             saveBookshelf()
             return book
         }
+        bookshelf[index] = mergingDetails(of: book, into: bookshelf[index], overwriteCover: overwriteCover)
+        saveBookshelf()
+        return bookshelf[index]
+    }
+
+    /// 详情刷新只补空字段，空值不覆盖已有内容。
+    private func mergingDetails(of incoming: Book, into local: Book, overwriteCover: Bool) -> Book {
+        var result = local
+        if incoming.name.isEmpty == false {
+            result.name = incoming.name
+        }
+        if incoming.author.isEmpty == false, incoming.author != "未知作者" {
+            result.author = incoming.author
+        }
+        if overwriteCover {
+            result.coverUrl = incoming.coverUrl
+        } else if let cover = incoming.coverUrl, cover.isEmpty == false {
+            result.coverUrl = cover
+        }
+        if let intro = incoming.intro, intro.isEmpty == false, intro.hasPrefix("源站：") == false {
+            result.intro = intro
+        }
+        if let kind = incoming.kind, kind.isEmpty == false {
+            result.kind = kind
+        }
+        if let wordCount = incoming.wordCount, wordCount.isEmpty == false {
+            result.wordCount = wordCount
+        }
+        if let latest = incoming.latestChapterTitle, latest.isEmpty == false {
+            result.latestChapterTitle = latest
+        }
+        if incoming.totalChapterNum > 0 {
+            result.totalChapterNum = incoming.totalChapterNum
+        }
+        return result
     }
 
     public func removeBook(bookUrl: String) {
@@ -544,64 +585,59 @@ public class BookStore: ObservableObject {
     }
 
     public func updateProgress(bookUrl: String, chapterIndex: Int, chapterTitle: String, chapterPos: Int = 0) {
-        if let index = bookshelf.firstIndex(where: { $0.bookUrl == bookUrl }) {
-            let now = Int64(Date().timeIntervalSince1970 * 1000)
-            bookshelf[index].durChapterIndex = chapterIndex
-            bookshelf[index].durChapterPos = chapterPos
-            bookshelf[index].durChapterTitle = chapterTitle
-            bookshelf[index].durChapterTime = now
-            bookshelf[index].lastCheckTime = now
-            saveBookshelf()
+        guard let index = bookshelf.firstIndex(where: { $0.bookUrl == bookUrl }) else { return }
 
-            // Asynchronously sync progress to WebDAV if configured
-            let updatedBook = bookshelf[index]
-            let config = WebDAVService.shared.loadConfig()
-            if !config.url.isEmpty && !config.username.isEmpty {
-                Task {
-                    try? await WebDAVService.shared.uploadBookProgress(book: updatedBook, config: config)
-                }
-            }
+        let stamp = Int64(Date().timeIntervalSince1970 * 1000)
+        bookshelf[index].durChapterIndex = chapterIndex
+        bookshelf[index].durChapterPos = chapterPos
+        bookshelf[index].durChapterTitle = chapterTitle
+        bookshelf[index].durChapterTime = stamp
+        bookshelf[index].lastCheckTime = stamp
+        saveBookshelf()
+
+        // 本地进度已经落盘，WebDAV 只是副本：没配就跳过，失败也不回滚。
+        let snapshot = bookshelf[index]
+        let config = WebDAVService.shared.loadConfig()
+        guard config.url.isEmpty == false, config.username.isEmpty == false else { return }
+        Task {
+            try? await WebDAVService.shared.uploadBookProgress(book: snapshot, config: config)
         }
     }
 
-    /// Refreshes all network books on the bookshelf concurrently
+    /// 整架刷新：所有网络书并发拉详情，回来一条写一条，单本失败不影响其余。
     public func refreshAllBooks() async {
-        let networkBooks = bookshelf.filter { $0.origin != "local" }
-        guard !networkBooks.isEmpty else { return }
-
-        AppLog.write("[Bookshelf] 开始整架刷新，网络书 \(networkBooks.count) 本")
+        let online = bookshelf.filter { $0.origin != "local" }
+        guard online.isEmpty == false else { return }
+        AppLog.write("[Bookshelf] 开始整架刷新，网络书 \(online.count) 本")
 
         await withTaskGroup(of: Book?.self) { group in
-            for book in networkBooks {
-                group.addTask {
-                    guard let source = self.findSource(for: book) else { return nil }
-
-                    do {
-                        let (detailedBook, chapters) = try await BookContentService.shared.fetchBookDetail(book: book, source: source)
-                        var updated = detailedBook
-                        updated.totalChapterNum = chapters.count
-                        if let lastCh = chapters.last {
-                            updated.latestChapterTitle = lastCh.title
-                        }
-                        return updated
-                    } catch {
-                        // 脱敏：书名不记原文，只留指纹
-                        let tag = String(CryptoUtils.md5(book.name).prefix(8))
-                        AppLog.write("[Bookshelf] ⚠️ 刷新失败 book#\(tag): \(error.localizedDescription)")
-                        return nil
-                    }
-                }
+            for book in online {
+                group.addTask { await self.refreshedDetail(of: book) }
             }
-
-            for await result in group {
-                if let updatedBook = result {
-                    _ = await MainActor.run {
-                        self.saveOrUpdateBook(updatedBook)
-                    }
-                }
+            for await refreshed in group {
+                guard let refreshed else { continue }
+                await MainActor.run { _ = self.saveOrUpdateBook(refreshed) }
             }
         }
         AppLog.write("[Bookshelf] ✅ 整架刷新完成")
+    }
+
+    /// 单本刷新。失败只记一条脱敏日志——书名不进日志，只留 md5 前缀。
+    private func refreshedDetail(of book: Book) async -> Book? {
+        guard let source = findSource(for: book) else { return nil }
+        do {
+            let (detail, chapters) = try await BookContentService.shared.fetchBookDetail(book: book, source: source)
+            var refreshed = detail
+            refreshed.totalChapterNum = chapters.count
+            if let last = chapters.last {
+                refreshed.latestChapterTitle = last.title
+            }
+            return refreshed
+        } catch {
+            let tag = String(CryptoUtils.md5(book.name).prefix(8))
+            AppLog.write("[Bookshelf] ⚠️ 刷新失败 book#\(tag): \(error.localizedDescription)")
+            return nil
+        }
     }
 
     // MARK: - Source Management
@@ -685,27 +721,35 @@ public class BookStore: ObservableObject {
         guard let data = json.data(using: .utf8) else { return 0 }
         let imported = try JSONDecoder().decode([BookSource].self, from: data)
 
-        for s in imported {
-            if let idx = sources.firstIndex(where: { $0.bookSourceUrl == s.bookSourceUrl || $0.bookSourceName == s.bookSourceName }) {
-                sources[idx] = s
+        var offsetByUrl: [String: Int] = [:]
+        var offsetByName: [String: Int] = [:]
+        for (offset, local) in sources.enumerated() {
+            offsetByUrl[local.bookSourceUrl] = offset
+            offsetByName[local.bookSourceName] = offset
+        }
+
+        for incoming in imported {
+            // 同名但换了域名的源按书名认领，避免导入后列表里出现两条同名条目
+            if let matched = offsetByUrl[incoming.bookSourceUrl] ?? offsetByName[incoming.bookSourceName] {
+                sources[matched] = incoming
+                offsetByUrl[incoming.bookSourceUrl] = matched
+                offsetByName[incoming.bookSourceName] = matched
             } else {
-                sources.append(s)
+                sources.append(incoming)
+                offsetByUrl[incoming.bookSourceUrl] = sources.count - 1
+                offsetByName[incoming.bookSourceName] = sources.count - 1
             }
         }
         saveSources()
-        // 已存在的书源是「覆盖更新」，也算导入成功。
-        // 只返回新增数的话，第二次导入同一个文件会得到 0，
-        // 界面那边就会误报「未在文件中发现有效书源」。
+        // 覆盖更新也算导入成功：只数新增的话，同一个文件导第二次会返回 0，
+        // 界面就会误报「未在文件中发现有效书源」。
         return imported.count
     }
 
     public func toggleSource(sourceUrl: String) {
-        if let idx = sources.firstIndex(where: { $0.bookSourceUrl == sourceUrl }) {
-            var s = sources[idx]
-            s.enabled = !(s.enabled ?? true)
-            sources[idx] = s
-            saveSources()
-        }
+        guard let index = sources.firstIndex(where: { $0.bookSourceUrl == sourceUrl }) else { return }
+        sources[index].enabled = !(sources[index].enabled ?? true)
+        saveSources()
     }
 
     public func deleteSource(sourceUrl: String) {
@@ -738,25 +782,24 @@ public class BookStore: ObservableObject {
     }
 
     public func updateSource(originalSource: BookSource? = nil, newSource: BookSource) {
-        let oldUrl = originalSource?.bookSourceUrl ?? newSource.bookSourceUrl
-        let oldName = originalSource?.bookSourceName ?? newSource.bookSourceName
+        let previousUrl = originalSource?.bookSourceUrl ?? newSource.bookSourceUrl
+        let previousName = originalSource?.bookSourceName ?? newSource.bookSourceName
+        let previousId = originalSource?.id ?? newSource.id
 
-        if let idx = sources.firstIndex(where: { $0.bookSourceUrl == oldUrl || $0.id == (originalSource?.id ?? newSource.id) }) {
-            sources[idx] = newSource
+        if let index = sources.firstIndex(where: { $0.bookSourceUrl == previousUrl || $0.id == previousId }) {
+            sources[index] = newSource
             saveSources()
         }
 
-        // Synchronize all books on the bookshelf that referenced the old source name or URL
-        var bookshelfModified = false
-        for i in 0..<bookshelf.count {
-            if bookshelf[i].origin == oldUrl ||
-               bookshelf[i].originName == oldName {
-                bookshelf[i].origin = newSource.bookSourceUrl
-                bookshelf[i].originName = newSource.bookSourceName
-                bookshelfModified = true
-            }
+        // 书架上指向旧源的条目要跟着改，否则改完源名点开书就「找不到书源」。
+        var touchedBookshelf = false
+        for index in bookshelf.indices
+        where bookshelf[index].origin == previousUrl || bookshelf[index].originName == previousName {
+            bookshelf[index].origin = newSource.bookSourceUrl
+            bookshelf[index].originName = newSource.bookSourceName
+            touchedBookshelf = true
         }
-        if bookshelfModified {
+        if touchedBookshelf {
             saveBookshelf()
         }
         SourceLoginService.shared.invalidate(sourceUrl: newSource.bookSourceUrl)

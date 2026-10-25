@@ -1,10 +1,10 @@
 # 重写看板（upstream-free）
 
-基线 `d21903c`；当前存活上游 **7551** 行 / 32 个文件（2026-10-25 实测）。目标 0。
+基线 `d21903c`；当前存活上游 **7398** 行 / 32 个文件（2026-10-25 实测）。目标 0。
 
 - **棘轮闸门**：`python3 scripts/gpl_audit.py --budget "$(cat docs/licensing/upstream-budget.txt)"`。
-  预算当前 `7551`，只许下调；任何一批改动让存活行数上涨即 FAIL。
-- **下一道闸门 7400**：再清 151 行后把预算改成 `7400`，之后 7300 / 7200……逐档下压。
+  预算当前 `7398`，只许下调；任何一批改动让存活行数上涨即 FAIL。
+- **下一道闸门 7200**：再清 198 行后把预算改成 `7200`，之后 7100 / 7000……逐档下压。
 - **终局**：`python3 scripts/gpl_audit.py --strict`。注意 `--strict` 在脚本里等价于 `--budget 0`
   （`limit = 0 if args.strict else args.budget`），和 `--budget` 一起给会被覆盖成 0，别叠着用。
 
@@ -27,7 +27,7 @@
 | P3 核心服务 | `Sources/LegadoCore/Service/BookExploreService.swift` | 300 | 172 | 57% | 待做 |
 | P3 核心服务 | `Sources/LegadoCore/Service/NetworkClient.swift` | 226 | 167 | 74% | 待做 |
 | P3 核心服务 | `Sources/LegadoCore/Service/EpubParser.swift` | 449 | 64 | 14% | 已重写（余 64） |
-| P4 应用服务 | `Sources/LegadoApp/Services/BookStore.swift` | 1475 | 470 | 32% | 待做 |
+| P4 应用服务 | `Sources/LegadoApp/Services/BookStore.swift` | 1518 | 316 | 21% | 部分重写（余 316，散在 41 段） |
 | P4 应用服务 | `Sources/LegadoApp/Services/SearchViewModel.swift` | 283 | 143 | 51% | 待做 |
 | P4 应用服务 | `Sources/LegadoApp/Services/AudioBookService.swift` | 668 | 124 | 19% | 待做 |
 | P5 界面 | `Sources/LegadoApp/Views/Reader/ReaderView.swift` | 9795 | 1709 | 17% | 待做 |
