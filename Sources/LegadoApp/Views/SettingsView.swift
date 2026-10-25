@@ -19,13 +19,15 @@ import LegadoCore
 
 enum AppIconChoice: String, CaseIterable, Identifiable {
     case modern
+    case orange
     case classic
 
     var id: String { rawValue }
 
     var title: String {
         switch self {
-        case .modern: return "猫与橙（新）"
+        case .modern: return "黑猫红日（新）"
+        case .orange: return "猫与橙"
         case .classic: return "像素猫（经典）"
         }
     }
@@ -33,6 +35,7 @@ enum AppIconChoice: String, CaseIterable, Identifiable {
     var subtitle: String {
         switch self {
         case .modern: return "当前默认图标"
+        case .orange: return "上一版黑猫与番茄"
         case .classic: return "紫色像素风旧图标"
         }
     }
@@ -40,6 +43,7 @@ enum AppIconChoice: String, CaseIterable, Identifiable {
     var alternateIconName: String? {
         switch self {
         case .modern: return nil
+        case .orange: return "AppIconOrange"
         case .classic: return "AppIconClassic"
         }
     }
@@ -80,8 +84,8 @@ final class AppIconManager: ObservableObject {
         choice = AppIconChoice(rawValue: stored ?? "") ?? .modern
         #if os(iOS)
         if let current = UIApplication.shared.alternateIconName,
-           current == AppIconChoice.classic.alternateIconName {
-            choice = .classic
+           let matched = AppIconChoice.allCases.first(where: { $0.alternateIconName == current }) {
+            choice = matched
         }
         #endif
     }

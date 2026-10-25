@@ -20,6 +20,13 @@
 					<string>AppIconClassic60x60</string>
 				</array>
 			</dict>
+			<key>AppIconOrange</key>
+			<dict>
+				<key>CFBundleIconFiles</key>
+				<array>
+					<string>AppIconOrange60x60</string>
+				</array>
+			</dict>
 		</dict>
 	</dict>
 	<key>CFBundleIcons~ipad</key>
@@ -32,6 +39,14 @@
 				<array>
 					<string>AppIconClassic76x76</string>
 					<string>AppIconClassic83.5x83.5</string>
+				</array>
+			</dict>
+			<key>AppIconOrange</key>
+			<dict>
+				<key>CFBundleIconFiles</key>
+				<array>
+					<string>AppIconOrange76x76</string>
+					<string>AppIconOrange83.5x83.5</string>
 				</array>
 			</dict>
 		</dict>

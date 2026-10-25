@@ -92,6 +92,34 @@
 			<key>isa</key>
 			<string>PBXBuildFile</string>
 		</dict>
+		<key>B1C0DE000000000000000005</key>
+		<dict>
+			<key>fileRef</key>
+			<string>A1C0DE000000000000000005</string>
+			<key>isa</key>
+			<string>PBXBuildFile</string>
+		</dict>
+		<key>B1C0DE000000000000000006</key>
+		<dict>
+			<key>fileRef</key>
+			<string>A1C0DE000000000000000006</string>
+			<key>isa</key>
+			<string>PBXBuildFile</string>
+		</dict>
+		<key>B1C0DE000000000000000007</key>
+		<dict>
+			<key>fileRef</key>
+			<string>A1C0DE000000000000000007</string>
+			<key>isa</key>
+			<string>PBXBuildFile</string>
+		</dict>
+		<key>B1C0DE000000000000000008</key>
+		<dict>
+			<key>fileRef</key>
+			<string>A1C0DE000000000000000008</string>
+			<key>isa</key>
+			<string>PBXBuildFile</string>
+		</dict>
 		<key>A1C0DE000000000000000001</key>
 		<dict>
 			<key>isa</key>
@@ -133,6 +161,50 @@
 			<string>image.png</string>
 			<key>path</key>
 			<string>Sources/LegadoApp/Resources/AppIconClassic83.5x83.5@2x~ipad.png</string>
+			<key>sourceTree</key>
+			<string>&lt;group&gt;</string>
+		</dict>
+		<key>A1C0DE000000000000000005</key>
+		<dict>
+			<key>isa</key>
+			<string>PBXFileReference</string>
+			<key>lastKnownFileType</key>
+			<string>image.png</string>
+			<key>path</key>
+			<string>Sources/LegadoApp/Resources/AppIconOrange60x60@2x.png</string>
+			<key>sourceTree</key>
+			<string>&lt;group&gt;</string>
+		</dict>
+		<key>A1C0DE000000000000000006</key>
+		<dict>
+			<key>isa</key>
+			<string>PBXFileReference</string>
+			<key>lastKnownFileType</key>
+			<string>image.png</string>
+			<key>path</key>
+			<string>Sources/LegadoApp/Resources/AppIconOrange60x60@3x.png</string>
+			<key>sourceTree</key>
+			<string>&lt;group&gt;</string>
+		</dict>
+		<key>A1C0DE000000000000000007</key>
+		<dict>
+			<key>isa</key>
+			<string>PBXFileReference</string>
+			<key>lastKnownFileType</key>
+			<string>image.png</string>
+			<key>path</key>
+			<string>Sources/LegadoApp/Resources/AppIconOrange76x76@2x~ipad.png</string>
+			<key>sourceTree</key>
+			<string>&lt;group&gt;</string>
+		</dict>
+		<key>A1C0DE000000000000000008</key>
+		<dict>
+			<key>isa</key>
+			<string>PBXFileReference</string>
+			<key>lastKnownFileType</key>
+			<string>image.png</string>
+			<key>path</key>
+			<string>Sources/LegadoApp/Resources/AppIconOrange83.5x83.5@2x~ipad.png</string>
 			<key>sourceTree</key>
 			<string>&lt;group&gt;</string>
 		</dict>
@@ -587,7 +659,7 @@
 				<key>CODE_SIGN_STYLE</key>
 				<string>Automatic</string>
 				<key>CURRENT_PROJECT_VERSION</key>
-				<string>5.0.6</string>
+				<string>5.0.8</string>
 				<key>DEVELOPMENT_TEAM</key>
 				<string></string>
 				<key>ENABLE_PREVIEWS</key>
@@ -609,7 +681,7 @@
 				<key>LD_RUNPATH_SEARCH_PATHS</key>
 				<string>$(inherited) @executable_path/Frameworks</string>
 				<key>MARKETING_VERSION</key>
-				<string>5.0.6</string>
+				<string>5.0.8</string>
 				<key>PRODUCT_BUNDLE_IDENTIFIER</key>
 				<string>com.factorcitrus.juyue</string>
 				<key>PRODUCT_NAME</key>
@@ -707,6 +779,10 @@
 				<string>B1C0DE000000000000000002</string>
 				<string>B1C0DE000000000000000003</string>
 				<string>B1C0DE000000000000000004</string>
+				<string>B1C0DE000000000000000005</string>
+				<string>B1C0DE000000000000000006</string>
+				<string>B1C0DE000000000000000007</string>
+				<string>B1C0DE000000000000000008</string>
 				<string>B1C0DE00000000000000A11C</string>
 			</array>
 			<key>isa</key>
@@ -1684,7 +1760,7 @@
 				<key>CODE_SIGN_STYLE</key>
 				<string>Automatic</string>
 				<key>CURRENT_PROJECT_VERSION</key>
-				<string>5.0.6</string>
+				<string>5.0.8</string>
 				<key>DEVELOPMENT_TEAM</key>
 				<string></string>
 				<key>ENABLE_PREVIEWS</key>
@@ -1706,7 +1782,7 @@
 				<key>LD_RUNPATH_SEARCH_PATHS</key>
 				<string>$(inherited) @executable_path/Frameworks</string>
 				<key>MARKETING_VERSION</key>
-				<string>5.0.6</string>
+				<string>5.0.8</string>
 				<key>PRODUCT_BUNDLE_IDENTIFIER</key>
 				<string>com.factorcitrus.juyue</string>
 				<key>PRODUCT_NAME</key>
@@ -1762,7 +1838,7 @@
 				<key>CODE_SIGN_STYLE</key>
 				<string>Automatic</string>
 				<key>CURRENT_PROJECT_VERSION</key>
-				<string>1</string>
+				<string>5.0.8</string>
 				<key>DEVELOPMENT_TEAM</key>
 				<string></string>
 				<key>ENABLE_PREVIEWS</key>
@@ -1786,7 +1862,7 @@
 				<key>LD_RUNPATH_SEARCH_PATHS</key>
 				<string>$(inherited) @executable_path/Frameworks</string>
 				<key>MARKETING_VERSION</key>
-				<string>1.0.0</string>
+				<string>5.0.8</string>
 				<key>PRODUCT_BUNDLE_IDENTIFIER</key>
 				<string>com.factorcitrus.juyue.reader</string>
 				<key>PRODUCT_NAME</key>
