@@ -60,7 +60,7 @@ public struct TTSSettingsSheet: View {
                         .font(.caption2)
                         .foregroundColor(theme.palette.secondaryInk)
 
-                    #if os(iOS)
+                    #if os(iOS) && !NO_BAIDU_TTS
                     ForEach(baiduVoices) { voice in
                         engineRow(
                             name: voice.name,
@@ -98,7 +98,7 @@ public struct TTSSettingsSheet: View {
                 }
                 .appThemedRows()
 
-                #if os(iOS)
+                #if os(iOS) && !NO_BAIDU_TTS
                 Section(header: Text("百度离线引擎")) {
                     HStack {
                         Text(baidu.statusText)
@@ -204,7 +204,7 @@ public struct TTSSettingsSheet: View {
                 .appThemedRows()
                 #endif
 
-                #if os(iOS)
+                #if os(iOS) && !NO_BAIDU_TTS
                 Section {
                     NavigationLink(destination: BaiduCredentialView()) {
                         VStack(alignment: .leading, spacing: 2) {
@@ -597,7 +597,7 @@ struct TTSCastRoleEditor: View {
 
             Section {
                 Picker("引擎", selection: $role.engine) {
-                    ForEach(TTSCastRole.Engine.allCases) { e in
+                    ForEach(TTSCastRole.Engine.allCases.filter(AppEdition.isTTSEngineAvailable)) { e in
                         Text(e.rawValue).tag(e)
                     }
                 }
@@ -614,7 +614,7 @@ struct TTSCastRoleEditor: View {
                     }
 
                 case .baiduOnline:
-                    #if os(iOS)
+                    #if os(iOS) && !NO_BAIDU_TTS
                     Picker("发音人", selection: $role.voiceId) {
                         Text("跟随全局设置").tag("")
                         ForEach(BaiduOnlineTTS.speakers) { speaker in
@@ -622,7 +622,7 @@ struct TTSCastRoleEditor: View {
                         }
                     }
                     #else
-                    Text("百度在线发音人只在 iOS 上可用。")
+                    Text("这个构建不带百度在线引擎。")
                         .font(.caption)
                         .foregroundColor(theme.palette.secondaryInk)
                     #endif

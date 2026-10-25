@@ -19,4 +19,13 @@ public enum AppEdition {
 
     /// 是否允许把书源复制/分享/导出出去。商店版关闭，免得 App 自己变成分发渠道。
     public static var allowsSourceExport: Bool { !isAppStoreClean }
+
+    /// 商店包不带百度语音 SDK，角色编辑器里就不该给出「百度在线」这个选项。
+    public static func isTTSEngineAvailable(_ engine: TTSCastRole.Engine) -> Bool {
+        #if NO_BAIDU_TTS
+        return engine != .baiduOnline
+        #else
+        return true
+        #endif
+    }
 }
