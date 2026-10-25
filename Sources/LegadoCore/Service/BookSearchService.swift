@@ -176,13 +176,13 @@ public class BookSearchService {
             let book = SearchBook(
                 name: name,
                 author: author,
-                kind: kind.isEmpty ? nil : kind,
                 bookUrl: bookUrl,
+                origin: source.bookSourceUrl,
+                originName: source.bookSourceName,
+                kind: kind.isEmpty ? nil : kind,
                 coverUrl: coverUrl.isEmpty ? nil : coverUrl,
                 intro: intro.isEmpty ? nil : intro,
                 latestChapterTitle: lastChapter.isEmpty ? nil : lastChapter,
-                origin: source.bookSourceUrl,
-                originName: source.bookSourceName,
                 wordCount: wordCount.isEmpty ? nil : wordCount
             )
             searchBooks.append(book)

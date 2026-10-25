@@ -259,13 +259,13 @@ public class BookExploreService {
             let book = SearchBook(
                 name: name,
                 author: cleanedAuthor,
-                kind: kind.isEmpty ? nil : kind,
                 bookUrl: bookUrl,
+                origin: source.bookSourceUrl,
+                originName: source.bookSourceName,
+                kind: kind.isEmpty ? nil : kind,
                 coverUrl: coverUrl.isEmpty ? nil : coverUrl,
                 intro: cleanedIntro,
                 latestChapterTitle: lastChapter.isEmpty ? nil : lastChapter,
-                origin: source.bookSourceUrl,
-                originName: source.bookSourceName,
                 wordCount: wordCount.isEmpty ? nil : wordCount
             )
             books.append(book)

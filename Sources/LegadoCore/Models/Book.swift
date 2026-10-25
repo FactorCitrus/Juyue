@@ -1,29 +1,42 @@
 import Foundation
 
-// MARK: - Book
+/// 宽容取值：键缺失、类型不符、值是 null，一律当没给，由调用点回落默认值。
+/// 书架数据是跨版本迁过来的，个别字段读不出来不该让整本书消失。
+private extension KeyedDecodingContainer {
+    func lenient<T: Decodable>(_ type: T.Type, for key: Key) -> T? {
+        try? decodeIfPresent(type, forKey: key)
+    }
+}
 
+/// 书架上的一本书。`bookUrl` 是主键，本地书的 scheme 是 `local://`。
 public struct Book: Codable, Identifiable, Equatable {
     public var id: String { bookUrl }
 
+    // 身份与来源
     public var bookUrl: String
     public var name: String
     public var author: String
-    public var kind: String?
-    public var coverUrl: String?
-    public var intro: String?
+
+    // 来源：书源 id / 名称，本地书是 local
     public var origin: String
     public var originName: String
     public var tocUrl: String
+
+    // 书目信息；tocUrl 归到这里，跟封面一样是可选抓取项
+    public var coverUrl: String?
+    public var intro: String?
+    public var kind: String?
     public var wordCount: String?
     public var latestChapterTitle: String?
 
-    // Reading progress
-    public var durChapterTitle: String?
+    // 阅读进度
     public var durChapterIndex: Int
     public var durChapterPos: Int
     public var durChapterTime: Int64
+    public var durChapterTitle: String?
     public var totalChapterNum: Int
     public var lastCheckTime: Int64
+
     /// 书架分组（nil = 未分组）
     public var groupId: UUID?
     /// 书级变量：脚本用 `book.setVariable` 存的 JSON，聚合源拿它存这本书的自定义配置
@@ -37,42 +50,56 @@ public struct Book: Codable, Identifiable, Equatable {
         bookUrl: String,
         name: String,
         author: String,
+        // 书目信息，缺省留空
         kind: String? = nil,
         coverUrl: String? = nil,
+        // 简介单独一行，长文本调试时好定位
         intro: String? = nil,
+
+        // 来源：缺省当作本地书
         origin: String = "local",
         originName: String = "",
+        // 目录地址；空串表示还没抓过
         tocUrl: String = "",
         wordCount: String? = nil,
         latestChapterTitle: String? = nil,
+        // 进度：章节序号、段内位置、时间戳（毫秒）
         durChapterTitle: String? = nil,
         durChapterIndex: Int = 0,
+        // 段内字符位置
         durChapterPos: Int = 0,
+        // 最后一次阅读的墙钟时间
         durChapterTime: Int64 = 0,
         totalChapterNum: Int = 0,
         lastCheckTime: Int64 = Int64(Date().timeIntervalSince1970 * 1000),
+        // 书架层配置
         groupId: UUID? = nil,
         variable: String? = nil,
         useReplaceRule: Bool? = nil,
         shelfOrder: Int? = nil
     ) {
+        // 身份
         self.bookUrl = bookUrl
         self.name = name
         self.author = author
-        self.kind = kind
-        self.coverUrl = coverUrl
-        self.intro = intro
+        // 来源
         self.origin = origin
         self.originName = originName
         self.tocUrl = tocUrl
+        // 书目
+        self.coverUrl = coverUrl
+        self.intro = intro
+        self.kind = kind
         self.wordCount = wordCount
         self.latestChapterTitle = latestChapterTitle
-        self.durChapterTitle = durChapterTitle
+        // 进度
         self.durChapterIndex = durChapterIndex
         self.durChapterPos = durChapterPos
         self.durChapterTime = durChapterTime
+        self.durChapterTitle = durChapterTitle
         self.totalChapterNum = totalChapterNum
         self.lastCheckTime = lastCheckTime
+        // 书架层
         self.groupId = groupId
         self.variable = variable
         self.useReplaceRule = useReplaceRule
@@ -80,44 +107,49 @@ public struct Book: Codable, Identifiable, Equatable {
     }
 
     enum CodingKeys: String, CodingKey {
-        case bookUrl, name, author, kind, coverUrl, intro
-        case origin, originName, tocUrl, wordCount, latestChapterTitle
-        case durChapterTitle, durChapterIndex, durChapterPos, durChapterTime, totalChapterNum, lastCheckTime
-        case groupId
-        case variable, useReplaceRule, shelfOrder
+        case bookUrl, name, author, origin, originName, tocUrl
+        case coverUrl, intro, kind, wordCount, latestChapterTitle
+        case durChapterIndex, durChapterPos, durChapterTime, durChapterTitle
+        case totalChapterNum, lastCheckTime
+        case groupId, variable, useReplaceRule, shelfOrder
     }
 
     public init(from decoder: Decoder) throws {
-        let container = try decoder.container(keyedBy: CodingKeys.self)
-        self.bookUrl = (try? container.decode(String.self, forKey: .bookUrl)) ?? ""
-        self.name = (try? container.decode(String.self, forKey: .name)) ?? "未知书名"
-        self.author = (try? container.decode(String.self, forKey: .author)) ?? "未知作者"
-        self.kind = try? container.decodeIfPresent(String.self, forKey: .kind)
-        self.coverUrl = try? container.decodeIfPresent(String.self, forKey: .coverUrl)
-        self.intro = try? container.decodeIfPresent(String.self, forKey: .intro)
-        self.origin = (try? container.decode(String.self, forKey: .origin)) ?? "local"
-        self.originName = (try? container.decode(String.self, forKey: .originName)) ?? ""
-        self.tocUrl = (try? container.decode(String.self, forKey: .tocUrl)) ?? ""
-        self.wordCount = try? container.decodeIfPresent(String.self, forKey: .wordCount)
-        self.latestChapterTitle = try? container.decodeIfPresent(String.self, forKey: .latestChapterTitle)
-        self.durChapterTitle = try? container.decodeIfPresent(String.self, forKey: .durChapterTitle)
-        self.durChapterIndex = (try? container.decode(Int.self, forKey: .durChapterIndex)) ?? 0
-        self.durChapterPos = (try? container.decode(Int.self, forKey: .durChapterPos)) ?? 0
-        self.durChapterTime = (try? container.decode(Int64.self, forKey: .durChapterTime)) ?? 0
-        self.totalChapterNum = (try? container.decode(Int.self, forKey: .totalChapterNum)) ?? 0
-        self.lastCheckTime = (try? container.decode(Int64.self, forKey: .lastCheckTime)) ?? Int64(Date().timeIntervalSince1970 * 1000)
-        self.groupId = try? container.decodeIfPresent(UUID.self, forKey: .groupId)
-        self.variable = try? container.decodeIfPresent(String.self, forKey: .variable)
-        self.useReplaceRule = try? container.decodeIfPresent(Bool.self, forKey: .useReplaceRule)
-        self.shelfOrder = try? container.decodeIfPresent(Int.self, forKey: .shelfOrder)
+        let box = try decoder.container(keyedBy: CodingKeys.self)
+        bookUrl = box.lenient(String.self, for: .bookUrl) ?? ""
+        name = box.lenient(String.self, for: .name) ?? "未知书名"
+        author = box.lenient(String.self, for: .author) ?? "未知作者"
+        origin = box.lenient(String.self, for: .origin) ?? "local"
+        originName = box.lenient(String.self, for: .originName) ?? ""
+        tocUrl = box.lenient(String.self, for: .tocUrl) ?? ""
+
+        coverUrl = box.lenient(String.self, for: .coverUrl)
+        intro = box.lenient(String.self, for: .intro)
+        kind = box.lenient(String.self, for: .kind)
+        wordCount = box.lenient(String.self, for: .wordCount)
+        latestChapterTitle = box.lenient(String.self, for: .latestChapterTitle)
+
+        durChapterIndex = box.lenient(Int.self, for: .durChapterIndex) ?? 0
+        durChapterPos = box.lenient(Int.self, for: .durChapterPos) ?? 0
+        durChapterTime = box.lenient(Int64.self, for: .durChapterTime) ?? 0
+        durChapterTitle = box.lenient(String.self, for: .durChapterTitle)
+        totalChapterNum = box.lenient(Int.self, for: .totalChapterNum) ?? 0
+        lastCheckTime = box.lenient(Int64.self, for: .lastCheckTime)
+            ?? Int64(Date().timeIntervalSince1970 * 1000)
+
+        groupId = box.lenient(UUID.self, for: .groupId)
+        variable = box.lenient(String.self, for: .variable)
+        useReplaceRule = box.lenient(Bool.self, for: .useReplaceRule)
+        shelfOrder = box.lenient(Int.self, for: .shelfOrder)
     }
 }
 
-// MARK: - BookProgress (Android Legado WebDAV Progress File)
-
+/// WebDAV 同步用的进度文件格式，字段跟安卓版 legado 对齐。
 public struct BookProgress: Codable, Equatable {
     public var name: String
     public var author: String
+
+    // 进度：章节序号、段内位置、时间戳、章节标题
     public var durChapterIndex: Int
     public var durChapterPos: Int
     public var durChapterTime: Int64?
@@ -126,29 +158,32 @@ public struct BookProgress: Codable, Equatable {
     public init(
         name: String,
         author: String,
+        // 章节序号与段内位置都是必需字段，缺失按 0 处理由调用方决定
         durChapterIndex: Int,
         durChapterPos: Int,
+        // 时间戳与章节标题是后加的，老进度文件里没有
         durChapterTime: Int64? = nil,
         durChapterTitle: String? = nil
     ) {
-        self.name = name
-        self.author = author
         self.durChapterIndex = durChapterIndex
         self.durChapterPos = durChapterPos
+        self.name = name
+        self.author = author
         self.durChapterTime = durChapterTime
         self.durChapterTitle = durChapterTitle
     }
 }
 
-// MARK: - BookChapter
-
+/// 目录里的一章。`id` 由书 + 序号拼出来，换源后不会撞。
 public struct BookChapter: Codable, Identifiable, Equatable {
     public var id: String { "\(bookUrl)_\(index)" }
 
     public var bookUrl: String
     public var url: String
-    public var title: String
     public var index: Int
+    public var title: String
+
+    // VIP 与卷标签；content 只在缓存回填时出现
     public var isVip: Bool?
     public var tag: String?
     public var content: String?
@@ -158,8 +193,11 @@ public struct BookChapter: Codable, Identifiable, Equatable {
         url: String,
         title: String,
         index: Int,
+
+        // VIP 与卷标签由书源规则判定，缺省按普通章处理
         isVip: Bool? = false,
         tag: String? = nil,
+        // 正文缓存回填时才有
         content: String? = nil
     ) {
         self.bookUrl = bookUrl
@@ -172,52 +210,58 @@ public struct BookChapter: Codable, Identifiable, Equatable {
     }
 }
 
-// MARK: - SearchBook
-
+/// 搜索结果里的一条，带来源标记，跟书架同名的书靠 `origin` 区分。
 public struct SearchBook: Codable, Identifiable, Equatable {
     public var id: String { "\(origin)_\(bookUrl)" }
 
     public var name: String
     public var author: String
-    public var kind: String?
     public var bookUrl: String
+    public var origin: String
+    public var originName: String
+
+    // 书目信息
+    public var kind: String?
     public var coverUrl: String?
     public var intro: String?
     public var latestChapterTitle: String?
-    public var origin: String
-    public var originName: String
+
+    // 字数，源里常带「万字」后缀，按原样存
     public var wordCount: String?
 
     public init(
         name: String,
         author: String,
-        kind: String? = nil,
         bookUrl: String,
+        origin: String,
+        originName: String,
+
+        // 书目信息
+        kind: String? = nil,
         coverUrl: String? = nil,
         intro: String? = nil,
         latestChapterTitle: String? = nil,
-        origin: String,
-        originName: String,
+
+        // 字数，原样存
         wordCount: String? = nil
     ) {
         self.name = name
         self.author = author
-        self.kind = kind
         self.bookUrl = bookUrl
+        self.origin = origin
+        self.originName = originName
+        self.kind = kind
         self.coverUrl = coverUrl
         self.intro = intro
         self.latestChapterTitle = latestChapterTitle
-        self.origin = origin
-        self.originName = originName
         self.wordCount = wordCount
     }
 }
 
-
 // MARK: - 书签 / 笔记
-/// 一条书签：章节 + 位置 + 当时摘的句子，可以再写备注
+
+/// 一条标注：书签、下划线、底色三种用途共用一份存储与列表。
 public struct BookBookmark: Codable, Identifiable, Equatable {
-    /// 标注类型：书签 / 下划线 / 底色（一条记录三种用途，复用同一份存储与列表）
     public enum Kind: String, Codable {
         case bookmark
         case underline
@@ -273,21 +317,21 @@ public struct BookBookmark: Codable, Identifiable, Equatable {
         self.kindRaw = kind.rawValue
     }
 
-    /// 新增字段都按可选解，老数据（没有这些键）照样能读出来
+    /// 后加的字段一律按可选解，老数据没有这些键也能读
     public init(from decoder: Decoder) throws {
-        let container = try decoder.container(keyedBy: CodingKeys.self)
-        self.id = (try? container.decode(UUID.self, forKey: .id)) ?? UUID()
-        self.bookUrl = (try? container.decode(String.self, forKey: .bookUrl)) ?? ""
-        self.chapterIndex = (try? container.decode(Int.self, forKey: .chapterIndex)) ?? 0
-        self.chapterTitle = (try? container.decode(String.self, forKey: .chapterTitle)) ?? ""
-        self.charOffset = (try? container.decode(Int.self, forKey: .charOffset)) ?? 0
-        self.snippet = (try? container.decode(String.self, forKey: .snippet)) ?? ""
-        self.note = (try? container.decode(String.self, forKey: .note)) ?? ""
-        self.createdAt = (try? container.decode(Date.self, forKey: .createdAt)) ?? Date()
-        self.blockId = try? container.decodeIfPresent(Int.self, forKey: .blockId)
-        self.length = try? container.decodeIfPresent(Int.self, forKey: .length)
-        self.color = try? container.decodeIfPresent(String.self, forKey: .color)
-        self.rangeUnitRaw = try? container.decodeIfPresent(String.self, forKey: .rangeUnitRaw)
-        self.kindRaw = try? container.decodeIfPresent(String.self, forKey: .kindRaw)
+        let box = try decoder.container(keyedBy: CodingKeys.self)
+        id = box.lenient(UUID.self, for: .id) ?? UUID()
+        bookUrl = box.lenient(String.self, for: .bookUrl) ?? ""
+        chapterIndex = box.lenient(Int.self, for: .chapterIndex) ?? 0
+        chapterTitle = box.lenient(String.self, for: .chapterTitle) ?? ""
+        charOffset = box.lenient(Int.self, for: .charOffset) ?? 0
+        snippet = box.lenient(String.self, for: .snippet) ?? ""
+        note = box.lenient(String.self, for: .note) ?? ""
+        createdAt = box.lenient(Date.self, for: .createdAt) ?? Date()
+        blockId = box.lenient(Int.self, for: .blockId)
+        length = box.lenient(Int.self, for: .length)
+        color = box.lenient(String.self, for: .color)
+        rangeUnitRaw = box.lenient(String.self, for: .rangeUnitRaw)
+        kindRaw = box.lenient(String.self, for: .kindRaw)
     }
 }

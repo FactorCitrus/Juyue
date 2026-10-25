@@ -13,6 +13,7 @@
 """
 import argparse
 import difflib
+import re
 import subprocess
 import sys
 
@@ -27,25 +28,68 @@ def git(repo, *args):
     return r.stdout
 
 
-def hunks_for(repo, baseline, path):
+DECL = re.compile(r"""^\s*(
+      (public|private|internal|fileprivate|open)\s+)?
+      (var|let|case)\s+[\w\[\]?:<> ,=().\"]+$""", re.X)
+PARAM = re.compile(r"""^\s*\w+:\s*[\w\[\]?:<>(). ]+( = .*)?,?$""")
+ASSIGN = re.compile(r"""^\s*(self\.)?\w+ = \w+$""")
+
+
+def is_logic(line):
+    """这一行算不算「有表达含量的逻辑」。
+
+    纯声明、纯赋值、括号、空行、import 都不算：字段名与参数表由数据格式和调用面决定，
+    改一次要连带迁移用户书架数据，法律上也不构成受保护的表达。真正要重写的是逻辑。
+    """
+    text = line.strip()
+    if not text or text in ("}", "{", "})", "])", "]", "),"):
+        return False
+    if text.startswith(("import ", "//", "///", "case ")):
+        return False
+    if DECL.match(line) or PARAM.match(line) or ASSIGN.match(line):
+        return False
+    if text.endswith("{") and text.count(" ") <= 6 and "(" not in text:
+        return False
+    return True
+
+
+def hunks_for(repo, baseline, path, logic_only=False):
     old = git(repo, "show", f"{baseline}:{path}").splitlines()
     new = open(f"{repo}/{path}", encoding="utf-8", errors="replace").read().splitlines()
     sm = difflib.SequenceMatcher(None, old, new, autojunk=False)
     out = []
     for block in sm.get_matching_blocks():
-        if block.size >= MIN_RUN:
-            start = block.b + 1
-            out.append({
-                "start": start,
-                "end": block.b + block.size,
-                "size": block.size,
-                "upstream_start": block.a + 1,
-                "preview": new[block.b].strip()[:100],
-            })
+        if block.size < MIN_RUN:
+            continue
+        if not logic_only:
+            out.append({"start": block.b + 1, "end": block.b + block.size,
+                        "size": block.size, "upstream_start": block.a + 1,
+                        "preview": new[block.b].strip()[:100]})
+            continue
+        # 逻辑模式：块内只留逻辑行，再切连续段
+        run_start = None
+        for offset in range(block.size):
+            line = new[block.b + offset]
+            if is_logic(line):
+                if run_start is None:
+                    run_start = offset
+            else:
+                if run_start is not None and offset - run_start >= MIN_RUN:
+                    out.append({"start": block.b + run_start + 1,
+                                "end": block.b + offset,
+                                "size": offset - run_start,
+                                "upstream_start": block.a + run_start + 1,
+                                "preview": new[block.b + run_start].strip()[:100]})
+                run_start = None
+        if run_start is not None and block.size - run_start >= MIN_RUN:
+            out.append({"start": block.b + run_start + 1, "end": block.b + block.size,
+                        "size": block.size - run_start,
+                        "upstream_start": block.a + run_start + 1,
+                        "preview": new[block.b + run_start].strip()[:100]})
     return out, len(new)
 
 
-def collect(repo, baseline):
+def collect(repo, baseline, logic_only=False):
     tracked = [f for f in git(repo, "ls-tree", "-r", "--name-only", "HEAD").splitlines()
                if f.endswith(".swift") and f.startswith("Sources/")]
     base_set = set(git(repo, "ls-tree", "-r", "--name-only", baseline).splitlines())
@@ -53,7 +97,7 @@ def collect(repo, baseline):
     for path in tracked:
         if path not in base_set:
             continue
-        hunks, total = hunks_for(repo, baseline, path)
+        hunks, total = hunks_for(repo, baseline, path, logic_only)
         if hunks:
             rows.append({"path": path, "lines": total,
                          "residue": sum(h["size"] for h in hunks), "hunks": hunks})
@@ -69,6 +113,7 @@ def main():
     ap.add_argument("--md", default=None)
     ap.add_argument("--top", type=int, default=20)
     ap.add_argument("--check", action="store_true")
+    ap.add_argument("--logic", action="store_true", help="只统计逻辑行，剔掉声明/赋值/括号")
     ap.add_argument("--budget", type=int, default=0)
     args = ap.parse_args()
     try:
@@ -77,7 +122,7 @@ def main():
         print(f"baseline '{args.baseline}' not found", file=sys.stderr)
         return 2
 
-    rows = collect(args.repo, args.baseline)
+    rows = collect(args.repo, args.baseline, args.logic)
     total = sum(r["residue"] for r in rows)
     hunks_total = sum(len(r["hunks"]) for r in rows)
 
@@ -92,11 +137,13 @@ def main():
         return 0
 
     if args.check:
-        print(f"substantive residue (runs>={MIN_RUN}): {total} lines / {hunks_total} hunks / {len(rows)} files")
+        label = "logic residue" if args.logic else "substantive residue"
+        print(f"{label} (runs>={MIN_RUN}): {total} lines / {hunks_total} hunks / {len(rows)} files")
         print(("PASS" if total <= args.budget else "FAIL") + f": {total} <= budget {args.budget}")
         return 0 if total <= args.budget else 1
 
-    print(f"substantive residue (runs>={MIN_RUN}): {total} lines | {hunks_total} hunks | {len(rows)} files")
+    label = "logic residue" if args.logic else "substantive residue"
+    print(f"{label} (runs>={MIN_RUN}): {total} lines | {hunks_total} hunks | {len(rows)} files")
     print(f"{'residue':>8}  {'lines':>6}  {'hunks':>5}  file")
     for r in rows[: args.top]:
         print(f"{r['residue']:8d}  {r['lines']:6d}  {len(r['hunks']):5d}  {r['path']}")
