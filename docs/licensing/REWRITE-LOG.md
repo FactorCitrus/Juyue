@@ -36,3 +36,10 @@
 | 侧载真机 | `DESTINATION='generic/platform=iOS' NO_SIGN=1 scripts/build_edition.sh sideload build` | BUILD SUCCEEDED |
 
 - 侧载**不能**走模拟器：`libBDSpeechTTSBaseKit.a` 只有 iOS arm64 切片，模拟器目标链接必失败（脚本已加提示）。`Vendor/BaiduSpeech`（259MB）与 `Resources/BaiduTTS`（37MB）留在 `.gitignore`，商店包不依赖。
+
+## 2026-10-25 · 批次 4
+
+- `WebDAVService`：750 → 182 行存活（文件 876 → 801）。协议层按 `specs/WebDAVService.md` 重写：统一请求层收掉十处重复的 401 判断，PROPFIND 解析抽成 `matches/firstMatch`，进度合并收敛到 `apply(_:to:requireNotBehind:)` 一个入口。
+- 行为保持：明文 HTTP 不发凭据、MKCOL 白名单 200/201/204/405、zip 优先于散 JSON、远端旧进度不回拖、备份包三个条目与安卓端一致。
+- 新增 `Tests/LegadoCoreTests/WebDAVServiceCleanRoomTests.swift` 16 条（URL 拼接 / 凭据 / 命名 / PROPFIND / zip 往返 / 进度合并）。
+- 全套 `swift test`：170 通过 / 13 跳过 / 0 失败。审计 8948 → 8380（-568）。

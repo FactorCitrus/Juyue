@@ -1,6 +1,6 @@
 # 重写看板（upstream-free）
 
-基线 `d21903c`；当前存活上游 **8948** 行 / 32 个文件。目标 0，命令：`python3 scripts/gpl_audit.py --strict`。
+基线 `d21903c`；当前存活上游 **8380** 行 / 32 个文件。目标 0，命令：`python3 scripts/gpl_audit.py --strict`。
 
 ## 用户指定待办
 
@@ -15,7 +15,7 @@
 | P2 内核 | `Sources/LegadoCore/Models/Book.swift` | 293 | 191 | 65% | 待做 |
 | P2 内核 | `Sources/LegadoCore/Models/BookSource.swift` | 302 | 157 | 52% | 待做 |
 | P2 内核 | `Sources/LegadoCore/Engine/RuleTokenizer.swift` | 119 | 23 | 19% | 已重写（余 23） |
-| P3 核心服务 | `Sources/LegadoCore/Service/WebDAVService.swift` | 876 | 750 | 86% | 待做 |
+| P3 核心服务 | `Sources/LegadoCore/Service/WebDAVService.swift` | 801 | 182 | 23% | 已重写（余 182） |
 | P3 核心服务 | `Sources/LegadoCore/Service/BookContentService.swift` | 1708 | 356 | 21% | 待做 |
 | P3 核心服务 | `Sources/LegadoCore/Service/BookSearchService.swift` | 339 | 175 | 52% | 待做 |
 | P3 核心服务 | `Sources/LegadoCore/Service/BookExploreService.swift` | 300 | 172 | 57% | 待做 |
