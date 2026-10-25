@@ -436,6 +436,9 @@ public struct BookshelfView: View {
                             .resizable()
                             .scaledToFit()
                         #endif
+                    } else if AppEdition.isAppStoreClean {
+                        // 商店包不能带第三方角色美术：换成程序绘制的档案标记
+                        ShelfEditionMark(ink: theme.palette.ink, accent: theme.palette.accent)
                     } else if colorScheme == .dark {
                         Image("ShelfMark")
                             .renderingMode(.original)
@@ -1661,5 +1664,54 @@ struct BookRow: View {
                     .font(.title2)
                     .foregroundColor(.accentColor.opacity(0.8))
             )
+    }
+}
+
+/// 商店版的标题标记：角标框 + 四条不等宽书脊 + 书架底线 + 一道强调线，全部 Canvas 绘制，
+/// 不含第三方角色美术。侧载版仍走 `ShelfMark` 图，分叉只在 `AppEdition` 上。
+struct ShelfEditionMark: View {
+    let ink: Color
+    let accent: Color
+
+    var body: some View {
+        Canvas { context, size in
+            let width = size.width
+            let height = size.height
+            let line = max(1, height * 0.04)
+
+            var frame = Path()
+            frame.move(to: CGPoint(x: 0, y: height * 0.5))
+            frame.addLine(to: CGPoint(x: 0, y: 0))
+            frame.addLine(to: CGPoint(x: width * 0.34, y: 0))
+            frame.move(to: CGPoint(x: width, y: height * 0.5))
+            frame.addLine(to: CGPoint(x: width, y: height))
+            frame.addLine(to: CGPoint(x: width * 0.66, y: height))
+            context.stroke(frame, with: .color(ink.opacity(0.8)), lineWidth: line)
+
+            // 书脊：不等宽、不等高，压在一条书架上，别画成柱状图
+            let shelfY = height * 0.84
+            context.fill(
+                Path(CGRect(x: width * 0.1, y: shelfY, width: width * 0.58, height: line * 0.8)),
+                with: .color(ink.opacity(0.55))
+            )
+            let spines: [(x: CGFloat, width: CGFloat, rise: CGFloat)] = [
+                (0.12, 0.09, 0.46), (0.23, 0.12, 0.62), (0.37, 0.08, 0.54), (0.47, 0.11, 0.68)
+            ]
+            for spine in spines {
+                let rect = CGRect(
+                    x: width * spine.x,
+                    y: shelfY - height * spine.rise,
+                    width: width * spine.width,
+                    height: height * spine.rise
+                )
+                context.fill(Path(rect), with: .color(ink.opacity(0.92)))
+            }
+
+            context.fill(
+                Path(CGRect(x: width * 0.78, y: height * 0.16, width: width * 0.16, height: line)),
+                with: .color(accent)
+            )
+        }
+        .aspectRatio(1.24, contentMode: .fit)
     }
 }

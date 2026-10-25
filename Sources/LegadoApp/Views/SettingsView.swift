@@ -1222,6 +1222,8 @@ public struct SettingsView: View {
                             .resizable()
                             .scaledToFit()
                         #endif
+                    } else if AppEdition.isAppStoreClean {
+                        ShelfEditionMark(ink: theme.palette.ink, accent: theme.palette.accent)
                     } else {
                         Image("ShelfMark")
                             .renderingMode(.template)

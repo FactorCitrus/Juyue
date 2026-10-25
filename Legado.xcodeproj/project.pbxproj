@@ -208,6 +208,24 @@
 			<key>isa</key>
 			<string>PBXBuildFile</string>
 		</dict>
+		<key>BB01AA0000000000000008C1</key>
+		<dict>
+			<key>isa</key>
+			<string>PBXFileReference</string>
+			<key>lastKnownFileType</key>
+			<string>folder.assetcatalog</string>
+			<key>path</key>
+			<string>Sources/LegadoApp/Resources/SideloadArt.xcassets</string>
+			<key>sourceTree</key>
+			<string>&lt;group&gt;</string>
+		</dict>
+		<key>BB01AA0000000000000009C1</key>
+		<dict>
+			<key>fileRef</key>
+			<string>BB01AA0000000000000008C1</string>
+			<key>isa</key>
+			<string>PBXBuildFile</string>
+		</dict>
 		<key>BB01AA000000000000001A41</key>
 		<dict>
 			<key>isa</key>
@@ -666,6 +684,7 @@
 				<string>F8605495CCFB2EF6EFFA85E6</string>
 				<string>AA11BB22CC33DD44EE55FF69</string>
 				<string>BB01AA0000000000000009B9</string>
+				<string>BB01AA0000000000000009C1</string>
 				<string>B1C0DE000000000000000001</string>
 				<string>B1C0DE000000000000000002</string>
 				<string>B1C0DE000000000000000003</string>
@@ -1732,6 +1751,8 @@
 				<string>YES</string>
 				<key>INFOPLIST_FILE</key>
 				<string>Sources/LegadoApp/Info-AppStore.plist</string>
+				<key>EXCLUDED_SOURCE_FILE_NAMES</key>
+				<string>*SideloadArt.xcassets</string>
 				<key>INFOPLIST_KEY_CFBundleDisplayName</key>
 				<string>橘阅阅读器</string>
 				<key>INFOPLIST_KEY_UIApplicationSceneManifest_Generation</key>
