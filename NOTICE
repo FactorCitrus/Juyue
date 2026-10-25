@@ -1,6 +1,11 @@
 Legado iOS / 橘阅
 Copyright (C) 2026 FactorCitrus and contributors
 
+Portions of this work are derived from SeitoMoyi/Legado-iOS
+<https://github.com/SeitoMoyi/Legado-iOS>, Copyright (C) SeitoMoyi and the
+Legado-iOS contributors, licensed under the GNU General Public License v3.0.
+Upstream snapshot: v0.2.0 (see THIRD-PARTY.md section 1).
+
 This program is free software: you can redistribute it and/or modify
 it under the terms of the GNU General Public License as published by
 the Free Software Foundation, either version 3 of the License, or

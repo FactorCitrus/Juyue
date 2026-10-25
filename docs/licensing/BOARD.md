@@ -1,6 +1,12 @@
 # 重写看板（upstream-free）
 
-基线 `d21903c`；当前存活上游 **8036** 行 / 32 个文件。目标 0，命令：`python3 scripts/gpl_audit.py --strict`。
+基线 `d21903c`；当前存活上游 **8026** 行 / 32 个文件（2026-10-25 实测）。目标 0。
+
+- **棘轮闸门**：`python3 scripts/gpl_audit.py --budget "$(cat docs/licensing/upstream-budget.txt)"`。
+  预算当前 `8026`，只许下调；任何一批改动让存活行数上涨即 FAIL。
+- **下一道闸门 7900**：清掉 126 行后把预算改成 `7900`，之后 7800 / 7600……逐档下压。
+- **终局**：`python3 scripts/gpl_audit.py --strict`。注意 `--strict` 在脚本里等价于 `--budget 0`
+  （`limit = 0 if args.strict else args.budget`），和 `--budget` 一起给会被覆盖成 0，别叠着用。
 
 ## 用户指定待办
 

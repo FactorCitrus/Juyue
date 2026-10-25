@@ -36,11 +36,37 @@
 - **百度离线语音合成 SDK**：`Vendor/BaiduSpeech`（未纳入 git），商用需向百度申请授权。
 - **百度音库**：`Sources/LegadoApp/Resources/BaiduTTS/`（未纳入 git），授权同上。
 
-## 6. 来源扫描结论（2026-10-13）
+## 6. 上游代码相似度实测（2026-10-25）
 
-- 仓库 49 个 Swift 文件、21110 行，均为自写代码；带 `Copyright` / `SPDX` / `GPL` / `MIT` 等外部版权头的 Swift 文件：0 个。
-- 非 Swift 代码文件仅三类：`moveable.min.js`（第三方，MIT）、`ChapterTitleDesigner/designer.js|css`（自写）、`Vendor/BaiduSpeech/include/*.h`（百度 SDK 头文件）。
-- 全仓无 Java/Kotlin 文件，即未搬入 gedoor/legado 及其分支的源码。
-- 提交作者统计：`Codex` 24 / `FactorCitrus` 11 / `baseline` 1，全部为本地提交。
-- **未执行**：与外部仓库的逐行相似度比对（需 `jscpd`、simian 等工具或人工抽查）。
-- **发布前清理（2026-10-14）**：移除预置书源数据、测试中的真实账号凭据与他人本机路径，并重写 Git 历史（`git filter-repo`）。
+用 `scripts/gpl_audit.py` 做逐行比对（`difflib.SequenceMatcher`，基线 `d21903c` 即上游 v0.2.0 快照），
+对 `Sources/` 下与上游同名的 32 个 Swift 文件统计仍然逐行一致的行数：
+
+```
+$ python3 scripts/gpl_audit.py --repo app/Legado-iOS --top 5
+baseline d21903c | files compared 32 | surviving upstream lines 8026
+ upstream   lines   ratio  file
+     1709    9793   17.5%  Sources/LegadoApp/Views/Reader/ReaderView.swift
+      492    1227   40.1%  Sources/LegadoApp/Views/BookDetailView.swift
+      469    1475   31.8%  Sources/LegadoApp/Services/BookStore.swift
+      397     482   82.4%  Sources/LegadoCore/Engine/RuleAnalyzer.swift
+      202     205   98.5%  Sources/LegadoApp/Views/ExploreBookListView.swift
+```
+
+**结论：本仓库仍是上游的衍生作品，不是独立实现。** 存活 8026 行，逐文件清单与清账进度见
+`docs/licensing/BOARD.md`，预算闸门见 `docs/licensing/upstream-budget.txt`。
+
+**作废的旧结论（2026-10-13）**：当时以「Swift 文件里没有 `Copyright` / `SPDX` / `GPL` 头」判定
+「49 个文件、21110 行均为自写代码」。该判据不成立——GPL 工程通常不在每个源文件里放版权头，
+头的缺失不能证明来源独立。此结论作废，不得再作为发布依据。
+
+由此确定的三条约束：
+
+- 仓库继续按 GPL-3.0 发布（见 `LICENSE`），对外分发须同时提供对应源码；
+- `NOTICE` 保留上游 `SeitoMoyi/Legado-iOS` 的版权声明；
+- 与上游的逐行比对**已经执行**（上面命令可复现），不再列为「未执行」。
+
+其余事实维持：全仓无 Java/Kotlin 文件（未搬入安卓版源码）；非 Swift 代码仅
+`moveable.min.js`（MIT）、`ChapterTitleDesigner/designer.js|css`（自写，来源待确认见第 4 节）、
+`Vendor/BaiduSpeech/include/*.h`（百度 SDK）；提交作者统计（2026-10-13 当时）
+`Codex` 24 / `FactorCitrus` 11 / `baseline` 1，全部为本地提交。
+**发布前清理（2026-10-14）**：移除预置书源数据、测试中的真实账号凭据与他人本机路径，并重写 Git 历史（`git filter-repo`）。
