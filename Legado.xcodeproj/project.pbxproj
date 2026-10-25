@@ -10,6 +10,24 @@
 	<string>54</string>
 	<key>objects</key>
 	<dict>
+		<key>6C127C12D8AD7B160F6CC0F3</key>
+		<dict>
+			<key>isa</key>
+			<string>PBXFileReference</string>
+			<key>lastKnownFileType</key>
+			<string>sourcecode.swift</string>
+			<key>path</key>
+			<string>Sources/LegadoApp/AppEdition.swift</string>
+			<key>sourceTree</key>
+			<string>&lt;group&gt;</string>
+		</dict>
+		<key>8B84D7F338D473FCF8456CF4</key>
+		<dict>
+			<key>fileRef</key>
+			<string>6C127C12D8AD7B160F6CC0F3</string>
+			<key>isa</key>
+			<string>PBXBuildFile</string>
+		</dict>
 		<key>B1C0DE000000000000000001</key>
 		<dict>
 			<key>fileRef</key>
@@ -81,6 +99,24 @@
 			<string>Sources/LegadoApp/Resources/AppIconClassic83.5x83.5@2x~ipad.png</string>
 			<key>sourceTree</key>
 			<string>&lt;group&gt;</string>
+		</dict>
+		<key>A1C0DE00000000000000A11C</key>
+		<dict>
+			<key>isa</key>
+			<string>PBXFileReference</string>
+			<key>lastKnownFileType</key>
+			<string>text.xml</string>
+			<key>path</key>
+			<string>Sources/LegadoApp/PrivacyInfo.xcprivacy</string>
+			<key>sourceTree</key>
+			<string>&lt;group&gt;</string>
+		</dict>
+		<key>B1C0DE00000000000000A11C</key>
+		<dict>
+			<key>fileRef</key>
+			<string>A1C0DE00000000000000A11C</string>
+			<key>isa</key>
+			<string>PBXBuildFile</string>
 		</dict>
 		<key>C0EAEEF5B1D649AD9FADFD30</key>
 		<dict>
@@ -251,6 +287,7 @@
 				<string>BB01AA0000000000000005A5</string>
 				<string>BB01AA0000000000000007A7</string>
 				<string>BB01AA0000000000000008A8</string>
+				<string>A1C0DE00000000000000A11C</string>
 			</array>
 			<key>isa</key>
 			<string>PBXGroup</string>
@@ -545,6 +582,7 @@
 					<string>-ObjC</string>
 					<string>-lz</string>
 					<string>-lc++</string>
+					<string>-lBDSpeechTTSBaseKit</string>
 					<string>-framework</string>
 					<string>Accelerate</string>
 					<string>-framework</string>
@@ -609,17 +647,38 @@
 			<array>
 				<string>F8605495CCFB2EF6EFFA85E6</string>
 				<string>AA11BB22CC33DD44EE55FF69</string>
-				<string>BB01AA0000000000000004A4</string>
 				<string>BB01AA0000000000000009B9</string>
 				<string>B1C0DE000000000000000001</string>
 				<string>B1C0DE000000000000000002</string>
 				<string>B1C0DE000000000000000003</string>
 				<string>B1C0DE000000000000000004</string>
+				<string>B1C0DE00000000000000A11C</string>
 			</array>
 			<key>isa</key>
 			<string>PBXResourcesBuildPhase</string>
 			<key>runOnlyForDeploymentPostprocessing</key>
 			<string>0</string>
+		</dict>
+		<key>C0DE00000000000000BA1D01</key>
+		<dict>
+			<key>buildActionMask</key>
+			<string>2147483647</string>
+			<key>files</key>
+			<array/>
+			<key>inputPaths</key>
+			<array/>
+			<key>isa</key>
+			<string>PBXShellScriptBuildPhase</string>
+			<key>name</key>
+			<string>Copy Optional BaiduTTS</string>
+			<key>outputPaths</key>
+			<array/>
+			<key>runOnlyForDeploymentPostprocessing</key>
+			<string>0</string>
+			<key>shellPath</key>
+			<string>/bin/sh</string>
+			<key>shellScript</key>
+			<string>if [ &quot;$CONFIGURATION&quot; != &quot;AppStore&quot; ] &amp;&amp; [ -d &quot;$SRCROOT/Sources/LegadoApp/Resources/BaiduTTS&quot; ] &amp;&amp; find &quot;$SRCROOT/Sources/LegadoApp/Resources/BaiduTTS&quot; -type f | grep -q .; then mkdir -p &quot;$TARGET_BUILD_DIR/$UNLOCALIZED_RESOURCES_FOLDER_PATH&quot;; cp -R &quot;$SRCROOT/Sources/LegadoApp/Resources/BaiduTTS&quot; &quot;$TARGET_BUILD_DIR/$UNLOCALIZED_RESOURCES_FOLDER_PATH/&quot;; fi</string>
 		</dict>
 		<key>66F32E672C0230504DDD4CA3</key>
 		<dict>
@@ -659,6 +718,7 @@
 				<string>9CD1113D1A0440D90EF379BC</string>
 				<string>C92DD416700C675A2583C93A</string>
 				<string>5D678E4AC7BCF177A1D9373C</string>
+				<string>C0DE00000000000000BA1D01</string>
 			</array>
 			<key>buildRules</key>
 			<array/>
@@ -778,6 +838,7 @@
 				<string>F97F8A5A96EDBC8F8194A9C4</string>
 				<string>AA11BB22CC33DD44EE55FF68</string>
 				<string>AA11BB22CC33DD44EE55FF6A</string>
+				<string>6C127C12D8AD7B160F6CC0F3</string>
 			</array>
 			<key>isa</key>
 			<string>PBXGroup</string>
@@ -848,6 +909,7 @@
 			<array>
 				<string>CEBF7BDACDA191C016A3D894</string>
 				<string>2D9902B0307FD62959CEFDB5</string>
+				<string>A5A5A5A5A5A5A5A5A5A5A502</string>
 			</array>
 			<key>defaultConfigurationIsVisible</key>
 			<string>0</string>
@@ -990,6 +1052,7 @@
 				<string>AA11BB22CC33DD44EE55FFAC</string>
 				<string>AA11BB22CC33DD44EE55FFAE</string>
 				<string>AA11BB22CC33DD44EE55FFB1</string>
+				<string>8B84D7F338D473FCF8456CF4</string>
 			</array>
 			<key>isa</key>
 			<string>PBXSourcesBuildPhase</string>
@@ -1378,7 +1441,6 @@
 			<array>
 				<string>56A0F6E7B159B88C9BE3A1DD</string>
 				<string>7B54E4C3682E2D192F748519</string>
-				<string>BB01AA0000000000000002A2</string>
 			</array>
 			<key>isa</key>
 			<string>PBXFrameworksBuildPhase</string>
@@ -1612,6 +1674,7 @@
 					<string>-ObjC</string>
 					<string>-lz</string>
 					<string>-lc++</string>
+					<string>-lBDSpeechTTSBaseKit</string>
 					<string>-framework</string>
 					<string>Accelerate</string>
 					<string>-framework</string>
@@ -1629,12 +1692,116 @@
 			<key>name</key>
 			<string>Release</string>
 		</dict>
+		<key>A5A5A5A5A5A5A5A5A5A5A501</key>
+		<dict>
+			<key>buildSettings</key>
+			<dict>
+				<key>ASSETCATALOG_COMPILER_APPICON_NAME</key>
+				<string>AppIcon</string>
+				<key>ASSETCATALOG_COMPILER_INCLUDE_ALL_APPICON_ASSETS</key>
+				<string>YES</string>
+				<key>CODE_SIGN_STYLE</key>
+				<string>Automatic</string>
+				<key>CURRENT_PROJECT_VERSION</key>
+				<string>1</string>
+				<key>DEVELOPMENT_TEAM</key>
+				<string></string>
+				<key>ENABLE_PREVIEWS</key>
+				<string>YES</string>
+				<key>GENERATE_INFOPLIST_FILE</key>
+				<string>YES</string>
+				<key>INFOPLIST_FILE</key>
+				<string>Sources/LegadoApp/Info-AppStore.plist</string>
+				<key>INFOPLIST_KEY_CFBundleDisplayName</key>
+				<string>橘阅阅读器</string>
+				<key>INFOPLIST_KEY_UIApplicationSceneManifest_Generation</key>
+				<string>YES</string>
+				<key>INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents</key>
+				<string>YES</string>
+				<key>INFOPLIST_KEY_UILaunchScreen_Generation</key>
+				<string>YES</string>
+				<key>INFOPLIST_KEY_UISupportedInterfaceOrientations</key>
+				<string>UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight</string>
+				<key>LD_RUNPATH_SEARCH_PATHS</key>
+				<string>$(inherited) @executable_path/Frameworks</string>
+				<key>MARKETING_VERSION</key>
+				<string>1.0.0</string>
+				<key>PRODUCT_BUNDLE_IDENTIFIER</key>
+				<string>com.factorcitrus.juyue.reader</string>
+				<key>PRODUCT_NAME</key>
+				<string>JuyueReader</string>
+				<key>SWIFT_VERSION</key>
+				<string>5.0</string>
+				<key>TARGETED_DEVICE_FAMILY</key>
+				<string>1,2</string>
+				<key>SWIFT_ACTIVE_COMPILATION_CONDITIONS</key>
+				<string>$(inherited) JUYUE_APPSTORE NO_BAIDU_TTS</string>
+				<key>SWIFT_OBJC_BRIDGING_HEADER</key>
+				<string>Vendor/BaiduSpeech/BaiduSpeech-Bridging-Header.h</string>
+				<key>HEADER_SEARCH_PATHS</key>
+				<array>
+					<string>$(inherited)</string>
+					<string>$(SRCROOT)/Vendor/BaiduSpeech/include</string>
+				</array>
+				<key>LIBRARY_SEARCH_PATHS</key>
+				<array>
+					<string>$(inherited)</string>
+					<string>$(SRCROOT)/Vendor/BaiduSpeech</string>
+				</array>
+				<key>OTHER_LDFLAGS</key>
+				<array>
+					<string>$(inherited)</string>
+					<string>-ObjC</string>
+					<string>-lz</string>
+					<string>-lc++</string>
+					<string>-framework</string>
+					<string>Accelerate</string>
+					<string>-framework</string>
+					<string>AudioToolbox</string>
+					<string>-framework</string>
+					<string>AVFoundation</string>
+					<string>-framework</string>
+					<string>SystemConfiguration</string>
+					<string>-framework</string>
+					<string>Security</string>
+				</array>
+			</dict>
+			<key>isa</key>
+			<string>XCBuildConfiguration</string>
+			<key>name</key>
+			<string>AppStore</string>
+		</dict>
+		<key>A5A5A5A5A5A5A5A5A5A5A502</key>
+		<dict>
+			<key>buildSettings</key>
+			<dict>
+				<key>ALWAYS_SEARCH_USER_PATHS</key>
+				<string>NO</string>
+				<key>CLANG_ENABLE_MODULES</key>
+				<string>YES</string>
+				<key>IPHONEOS_DEPLOYMENT_TARGET</key>
+				<string>15.0</string>
+				<key>SDKROOT</key>
+				<string>iphoneos</string>
+				<key>SWIFT_COMPILATION_MODE</key>
+				<string>wholemodule</string>
+				<key>SWIFT_OPTIMIZATION_LEVEL</key>
+				<string>-O</string>
+				<key>SWIFT_VERSION</key>
+				<string>5.0</string>
+			</dict>
+			<key>isa</key>
+			<string>XCBuildConfiguration</string>
+			<key>name</key>
+			<string>AppStore</string>
+		</dict>
 		<key>F62369FB915143384972F539</key>
 		<dict>
 			<key>buildConfigurations</key>
 			<array>
 				<string>3D8CC1E11ECF4F8A930479AB</string>
 				<string>F5F84B4E1D285DDACE9BA9C3</string>
+				<string>A5A5A5A5A5A5A5A5A5A5A501</string>
 			</array>
 			<key>defaultConfigurationIsVisible</key>
 			<string>0</string>
