@@ -1,10 +1,10 @@
 # 重写看板（upstream-free）
 
-基线 `d21903c`；当前存活上游 **7396** 行 / 32 个文件（2026-10-25 实测）。目标 0。
+基线 `d21903c`；当前存活上游 **7395** 行 / 32 个文件（2026-10-25 实测）。目标 0。
 
 - **棘轮闸门**：`python3 scripts/gpl_audit.py --budget "$(cat docs/licensing/upstream-budget.txt)"`。
-  预算当前 `7396`，只许下调；任何一批改动让存活行数上涨即 FAIL。
-- **下一道闸门 7200**：再清 196 行后把预算改成 `7200`，之后 7100 / 7000……逐档下压。
+  预算当前 `7395`，只许下调；任何一批改动让存活行数上涨即 FAIL。
+- **下一道闸门 7200**：再清 195 行后把预算改成 `7200`，之后 7100 / 7000……逐档下压。
 - **终局**：`python3 scripts/gpl_audit.py --strict`。注意 `--strict` 在脚本里等价于 `--budget 0`
   （`limit = 0 if args.strict else args.budget`），和 `--budget` 一起给会被覆盖成 0，别叠着用。
 
@@ -34,7 +34,7 @@
 | P5 界面 | `Sources/LegadoApp/Views/BookDetailView.swift` | 1228 | 492 | 40% | 部分重写（余 492） |
 | P5 界面 | `Sources/LegadoApp/Views/WebDAVSyncView.swift` | 577 | 196 | 34% | 已重写（余 196） |
 | P5 界面 | `Sources/LegadoApp/Views/CategoryExploreView.swift` | 1011 | 444 | 44% | 待做 |
-| P5 界面 | `Sources/LegadoApp/Views/SourceManagerView.swift` | 1398 | 428 | 31% | 待做 |
+| P5 界面 | `Sources/LegadoApp/Views/SourceManagerView.swift` | 1407 | 427 | 30% | 待做 |
 | P5 界面 | `Sources/LegadoApp/Views/SourceWebLoginView.swift` | 511 | 380 | 74% | 待做 |
 | P5 界面 | `Sources/LegadoApp/Views/SourceDetailView.swift` | 617 | 333 | 54% | 待做 |
 | P5 界面 | `Sources/LegadoApp/Views/SearchBookView.swift` | 569 | 270 | 47% | 待做 |

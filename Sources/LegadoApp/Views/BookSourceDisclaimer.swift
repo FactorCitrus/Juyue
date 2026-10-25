@@ -1,32 +1,20 @@
 import SwiftUI
 
-/// 书源导入须知：条款写死在代码里，导入面板里勾了才允许导入。
+/// 书源导入须知：条款写死在代码里，每一次导入都得重新勾一次。
 ///
-/// 商店版必须自己勾；侧载版是自用包，面板一进来就是勾好的（但取消勾选照样锁住入口）。
-/// 同意记录存 `UserDefaults`，条款改了就抬 `currentVersion`，已同意的人下次打开导入面板
-/// 会看到勾选框回落到未勾选——不同意就不给导入。
+/// 同意不落盘，只对本次导入有效：面板一关就作废，下次进来勾选框还是空的。
+/// 只往日志里留一条「什么时候同意过」，条款改了就抬 `currentVersion`。
 enum BookSourceDisclaimer {
     /// 条款版本。改文案就加一。
     static let currentVersion = 1
-    private static let key = "juyue.bookSourceDisclaimer.version"
 
-    static var acceptedVersion: Int { UserDefaults.standard.integer(forKey: key) }
-    static var hasAccepted: Bool { acceptedVersion >= currentVersion }
-
-    /// 强制同意的范围：只有商店包要过这一关，侧载包不拦。
-    static var requiresConsent: Bool { AppEdition.isAppStoreClean }
-
-    /// 打开导入面板时的初始勾选态：商店版看历史同意记录，侧载版直接当已同意。
-    static var initiallyAgreed: Bool { requiresConsent ? hasAccepted : true }
-
+    /// 勾选即代表这一次导入的同意；不写 UserDefaults，所以下次导入必须再勾。
     static func accept() {
-        UserDefaults.standard.set(currentVersion, forKey: key)
-        AppLog.write("[书源] 已同意导入须知 v\(currentVersion)")
+        AppLog.write("[书源] 已同意导入须知 v\(currentVersion)（本次导入有效）")
     }
 
     static func revoke() {
-        UserDefaults.standard.removeObject(forKey: key)
-        AppLog.write("[书源] 撤回导入须知同意")
+        AppLog.write("[书源] 取消勾选导入须知，本次导入不继续")
     }
 
     struct Clause: Identifiable {

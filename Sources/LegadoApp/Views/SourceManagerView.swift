@@ -15,8 +15,8 @@ public struct SourceManagerView: View {
     @Environment(\.appTheme) private var theme
 
     @State private var showImportSheet: Bool = false
-    /// 导入须知勾选状态：不勾选，导入面板里三个入口都是灰的（侧载版默认已勾）
-    @State private var importConsent: Bool = BookSourceDisclaimer.initiallyAgreed
+    /// 导入须知勾选状态：每次打开面板都是未勾，不勾三个入口就是灰的
+    @State private var importConsent: Bool = false
     /// 书源导出（存到「文件」）
     @State private var showSourceExporter: Bool = false
     @State private var sourceExportDocument: ExportedFile?
@@ -345,7 +345,7 @@ public struct SourceManagerView: View {
                     }
                 }
             }
-            .sheet(isPresented: $showImportSheet) {
+            .sheet(isPresented: $showImportSheet, onDismiss: resetImportConsent) {
                 importSourceSheet
             }
             .sheet(item: $groupEditTarget) { target in
@@ -416,9 +416,18 @@ public struct SourceManagerView: View {
             }
     }
 
-    /// 导入总入口：须知挪进面板里了，这里只管把面板打开。
+    /// 导入总入口：须知挪进面板里了，这里只管把面板打开，并把上一次的勾选清掉。
     private func openImportFlow() {
+        importConsent = false
         showImportSheet = true
+    }
+
+    /// 每次导入单独确认：面板一关（导入成功、取消、下滑关闭）就作废这次勾选。
+    private func resetImportConsent() {
+        if importConsent {
+            BookSourceDisclaimer.revoke()
+        }
+        importConsent = false
     }
 
     private func exportSources(_ list: [BookSource], namePrefix: String = "bookSource") {
