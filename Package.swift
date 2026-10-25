@@ -31,9 +31,10 @@ let package = Package(
             dependencies: [
                 "LegadoCore"
             ],
-            exclude: ["Info.plist"],
+            exclude: ["Info.plist", "Info-AppStore.plist"],
             resources: [
-                .process("Resources")
+                .process("Resources"),
+                .copy("PrivacyInfo.xcprivacy")
             ]),
         .testTarget(
             name: "LegadoCoreTests",

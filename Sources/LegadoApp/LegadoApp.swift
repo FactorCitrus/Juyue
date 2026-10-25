@@ -514,11 +514,13 @@ public struct MainTabView: View {
                 }
                 .tag(0)
 
-            CategoryExploreView(isActive: selection == 1)
-                .tabItem {
-                    Label("分类", systemImage: "square.grid.2x2.fill")
-                }
-                .tag(1)
+            if !AppEdition.isAppStoreClean {
+                CategoryExploreView(isActive: selection == 1)
+                    .tabItem {
+                        Label("分类", systemImage: "square.grid.2x2.fill")
+                    }
+                    .tag(1)
+            }
 
             SettingsView()
                 .tabItem {

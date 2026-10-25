@@ -1,155 +1,210 @@
 import Foundation
 
-/// 书源脚本用的 cookie 罐。
+/// 书源脚本可见的 Cookie 容器。
 ///
-/// Legado 书源脚本里到处是 `cookie.getCookie(url)` / `cookie.setCookie(url, "k=v; k2=v2")`
-/// / `cookie.getKey(url, name)` / `cookie.removeCookie(url)`。宿主不提供这套 API 时，
-/// 脚本第一行就抛 ReferenceError，登录自然永远失败。
-///
-/// 存储按 host 归并成一条 cookie 串，落 UserDefaults，跟网页登录抓到的 cookie 分开管。
+/// JS 桥接只依赖四个动作：按 URL 取串、写串、按名字取值、删除。
+/// 内部按 host 保存键值对并编码成 JSON；旧版按 host 存字符串的格式会在启动时迁移一次。
 public final class CookieJar {
     public static let shared = CookieJar()
 
-    private let defaultsKey = "legado.cookiejar"
-    private let lock = NSLock()
-    private var store: [String: String]
-
-    /// 最近一次写入落在哪个 host 上。
-    /// 有些书源（例：大灰狼聚合）的 `bookSourceUrl` 不是域名（写的是「大灰狼融合VIP5.0」），
-    /// 登录脚本却把 cookie 写在真实 host 下；宿主判「登录成没成」时得知道写到哪儿去了，
-    /// 否则明明登录成功、cookie 也存下来了，还是被判成「未返回有效凭据」。
+    /// 最近一次写入落在哪个 host。
+    /// 有的书源地址写的是别名而不是域名，登录脚本却把 cookie 写在真实 host 下，
+    /// 调用方要能回查这次写入的位置。
     public private(set) var lastWrittenHostKey: String?
 
-    /// 跑登录脚本前清一次，免得拿到上一次的残留。
-    public func resetLastWrite() {
-        lock.lock()
-        defer { lock.unlock() }
-        lastWrittenHostKey = nil
-    }
+    private let defaults: UserDefaults
+    private let storageKey: String
+    private let legacyKey: String?
+    private let lock = NSLock()
+    private var hosts: [String: [String: String]]
 
-    /// 只当 cookie 属性看，不当 cookie 名。
+    /// 这些名字是 Set-Cookie 的属性，不是 cookie 名。
     private static let attributeNames: Set<String> = [
-        "path", "domain", "expires", "max-age", "samesite", "secure", "httponly", "version"
+        "path", "domain", "expires", "max-age", "samesite",
+        "secure", "httponly", "version", "priority"
     ]
 
-    private init() {
-        store = UserDefaults.standard.dictionary(forKey: defaultsKey) as? [String: String] ?? [:]
+    private convenience init() {
+        self.init(
+            defaults: .standard,
+            storageKey: "juyue.cookiejar.v2",
+            legacyKey: "legado.cookiejar"
+        )
     }
 
-    // MARK: - Host 归一
-
-    /// 把 url 收敛成 host key。接受完整 URL、host、带 path 的 host。
-    static func hostKey(for url: String) -> String {
-        var text = url.trimmingCharacters(in: .whitespacesAndNewlines)
-        if text.isEmpty { return "" }
-        if let range = text.range(of: "://") {
-            text = String(text[range.upperBound...])
-        }
-        if let slash = text.firstIndex(of: "/") {
-            text = String(text[..<slash])
-        }
-        if let at = text.lastIndex(of: "@") {
-            text = String(text[text.index(after: at)...])
-        }
-        return text.lowercased()
+    /// 测试与迁移用入口。正式代码走 `shared`。
+    init(defaults: UserDefaults, storageKey: String, legacyKey: String? = nil) {
+        self.defaults = defaults
+        self.storageKey = storageKey
+        self.legacyKey = legacyKey
+        self.hosts = Self.load(defaults: defaults, storageKey: storageKey, legacyKey: legacyKey)
     }
 
-    // MARK: - 读写
+    // MARK: - 写入与读取
+
+    public func resetLastWrite() {
+        lock.lock()
+        lastWrittenHostKey = nil
+        lock.unlock()
+    }
 
     public func cookieString(for url: String) -> String {
-        let key = Self.hostKey(for: url)
-        guard !key.isEmpty else { return "" }
+        let host = Self.hostKey(for: url)
+        guard !host.isEmpty else { return "" }
         lock.lock()
-        defer { lock.unlock() }
-        return store[key] ?? ""
+        let jar = hosts[host] ?? [:]
+        lock.unlock()
+        return Self.encode(jar)
     }
 
-    /// 合并写入。带 Max-Age=0 的段按删除处理。
     public func setCookies(_ cookieString: String, for url: String) {
-        let key = Self.hostKey(for: url)
-        guard !key.isEmpty else { return }
+        let host = Self.hostKey(for: url)
+        guard !host.isEmpty else { return }
+
+        enum Change { case set(String), delete }
+        var changes: [String: Change] = [:]
+        var expiresEverything = false
+        for raw in cookieString.split(separator: ";", omittingEmptySubsequences: true) {
+            let segment = raw.trimmingCharacters(in: .whitespaces)
+            guard let separator = segment.firstIndex(of: "=") else { continue }
+            let name = String(segment[..<separator]).trimmingCharacters(in: .whitespaces)
+            let value = String(segment[segment.index(after: separator)...])
+                .trimmingCharacters(in: .whitespaces)
+            guard !name.isEmpty else { continue }
+
+            let lowered = name.lowercased()
+            if lowered == "max-age" {
+                if value == "0" { expiresEverything = true }
+                continue
+            }
+            guard !Self.attributeNames.contains(lowered) else { continue }
+            changes[name] = value.isEmpty ? .delete : .set(value)
+        }
 
         lock.lock()
         defer { lock.unlock() }
-        lastWrittenHostKey = key
+        lastWrittenHostKey = host
 
-        var jar = Self.parse(store[key] ?? "")
-        let incoming = cookieString.split(separator: ";", omittingEmptySubsequences: true)
-            .map { $0.trimmingCharacters(in: .whitespaces) }
+        if expiresEverything {
+            hosts.removeValue(forKey: host)
+            persistLocked()
+            return
+        }
+        guard !changes.isEmpty else { return }
 
-        var expireAll = false
-        for segment in incoming {
-            guard let eq = segment.firstIndex(of: "=") else { continue }
-            let name = String(segment[..<eq]).trimmingCharacters(in: .whitespaces)
-            let value = String(segment[segment.index(after: eq)...]).trimmingCharacters(in: .whitespaces)
-            guard !name.isEmpty else { continue }
-
-            if name.lowercased() == "max-age" {
-                if value == "0" { expireAll = true }
-                continue
-            }
-            if Self.attributeNames.contains(name.lowercased()) { continue }
-            if value.isEmpty {
-                jar.removeValue(forKey: name)
-            } else {
-                jar[name] = value
+        var jar = hosts[host] ?? [:]
+        for (name, change) in changes {
+            switch change {
+            case .set(let value): jar[name] = value
+            case .delete: jar.removeValue(forKey: name)
             }
         }
-        if expireAll { jar.removeAll() }
-
         if jar.isEmpty {
-            store.removeValue(forKey: key)
+            hosts.removeValue(forKey: host)
         } else {
-            store[key] = Self.serialize(jar)
+            hosts[host] = jar
         }
-        defaultsWrite()
+        persistLocked()
     }
 
     public func value(for url: String, name: String) -> String? {
-        let key = Self.hostKey(for: url)
-        guard !key.isEmpty else { return nil }
+        let host = Self.hostKey(for: url)
+        guard !host.isEmpty else { return nil }
         lock.lock()
-        defer { lock.unlock() }
-        return Self.parse(store[key] ?? "")[name]
+        let value = hosts[host]?[name]
+        lock.unlock()
+        return value
     }
 
     public func remove(for url: String) {
-        let key = Self.hostKey(for: url)
-        guard !key.isEmpty else { return }
+        let host = Self.hostKey(for: url)
+        guard !host.isEmpty else { return }
         lock.lock()
-        defer { lock.unlock() }
-        store.removeValue(forKey: key)
-        defaultsWrite()
+        hosts.removeValue(forKey: host)
+        persistLocked()
+        lock.unlock()
     }
 
     public func removeAll() {
         lock.lock()
-        defer { lock.unlock() }
-        store.removeAll()
-        defaultsWrite()
+        hosts.removeAll(keepingCapacity: false)
+        lastWrittenHostKey = nil
+        persistLocked()
+        lock.unlock()
     }
 
-    // MARK: - 序列化
+    // MARK: - Host 归一
 
-    static func parse(_ cookieString: String) -> [String: String] {
-        var out: [String: String] = [:]
-        for segment in cookieString.split(separator: ";", omittingEmptySubsequences: true) {
-            let trimmed = segment.trimmingCharacters(in: .whitespaces)
-            guard let eq = trimmed.firstIndex(of: "=") else { continue }
-            let name = String(trimmed[..<eq]).trimmingCharacters(in: .whitespaces)
-            let value = String(trimmed[trimmed.index(after: eq)...]).trimmingCharacters(in: .whitespaces)
-            guard !name.isEmpty, !value.isEmpty else { continue }
-            if attributeNames.contains(name.lowercased()) { continue }
-            out[name] = value
+    /// 完整 URL、host、带端口的 host 都收敛成同一个 key。
+    static func hostKey(for url: String) -> String {
+        var text = url.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { return "" }
+
+        if let scheme = text.range(of: "://") {
+            text = String(text[scheme.upperBound...])
         }
-        return out
+        if let stop = text.firstIndex(where: { $0 == "/" || $0 == "?" || $0 == "#" }) {
+            text = String(text[..<stop])
+        }
+        if let at = text.lastIndex(of: "@") {
+            text = String(text[text.index(after: at)...])
+        }
+        if text.hasPrefix("["), let close = text.firstIndex(of: "]") {
+            text = String(text[text.index(after: text.startIndex)..<close])
+        } else if text.filter({ $0 == ":" }).count == 1, let colon = text.lastIndex(of: ":") {
+            text = String(text[..<colon])
+        }
+        return text.lowercased()
     }
 
-    static func serialize(_ jar: [String: String]) -> String {
-        jar.keys.sorted().map { "\($0)=\(jar[$0] ?? "")" }.joined(separator: "; ")
+    // MARK: - 编解码
+
+    private static func encode(_ jar: [String: String]) -> String {
+        jar.keys.sorted()
+            .compactMap { name in jar[name].map { "\(name)=\($0)" } }
+            .joined(separator: "; ")
     }
 
-    private func defaultsWrite() {
-        UserDefaults.standard.set(store, forKey: defaultsKey)
+    private static func decode(_ raw: String) -> [String: String] {
+        var jar: [String: String] = [:]
+        for part in raw.split(separator: ";", omittingEmptySubsequences: true) {
+            let segment = part.trimmingCharacters(in: .whitespaces)
+            guard let separator = segment.firstIndex(of: "=") else { continue }
+            let name = String(segment[..<separator]).trimmingCharacters(in: .whitespaces)
+            let value = String(segment[segment.index(after: separator)...])
+                .trimmingCharacters(in: .whitespaces)
+            guard !name.isEmpty, !value.isEmpty else { continue }
+            guard !attributeNames.contains(name.lowercased()) else { continue }
+            jar[name] = value
+        }
+        return jar
+    }
+
+    private static func load(defaults: UserDefaults,
+                             storageKey: String,
+                             legacyKey: String?) -> [String: [String: String]] {
+        if let data = defaults.data(forKey: storageKey),
+           let decoded = try? JSONDecoder().decode([String: [String: String]].self, from: data) {
+            return decoded
+        }
+        guard let legacyKey,
+              let legacy = defaults.dictionary(forKey: legacyKey) as? [String: String] else {
+            return [:]
+        }
+        var migrated: [String: [String: String]] = [:]
+        for (host, raw) in legacy {
+            let jar = decode(raw)
+            if !jar.isEmpty { migrated[host] = jar }
+        }
+        if !migrated.isEmpty, let data = try? JSONEncoder().encode(migrated) {
+            defaults.set(data, forKey: storageKey)
+        }
+        defaults.removeObject(forKey: legacyKey)
+        return migrated
+    }
+
+    private func persistLocked() {
+        guard let data = try? JSONEncoder().encode(hosts) else { return }
+        defaults.set(data, forKey: storageKey)
     }
 }
