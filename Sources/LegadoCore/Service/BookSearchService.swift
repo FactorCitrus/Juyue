@@ -96,12 +96,15 @@ public class BookSearchService {
                 rateLimit: source.rateLimit
             )
         } catch {
-            diagnostics?(SourceRequestDiagnostic(
+            DiagnosticHub.emit(SourceRequestDiagnostic(
                 step: "搜索",
+                sourceName: source.bookSourceName,
                 url: parsedReq.url.absoluteString,
                 elapsedMs: Int64(Date().timeIntervalSince(requestStarted) * 1000),
+                headersSummary: DiagnosticFailure.summarize(parsedReq.headers),
+                failureKind: DiagnosticFailure.classify(error),
                 note: "请求失败：\(error.localizedDescription)"
-            ))
+            ), to: diagnostics)
             throw error
         }
         let elapsedMs = Int64(Date().timeIntervalSince(requestStarted) * 1000)
@@ -128,17 +131,22 @@ public class BookSearchService {
             jsEngine: jsEngine
         )
 
+        let ruleStarted = Date()
         let bookElements = analyzer.getElements(searchRule.bookList)
-        diagnostics?(SourceRequestDiagnostic(
+        let ruleEvalMs = Int64(Date().timeIntervalSince(ruleStarted) * 1000)
+        DiagnosticHub.emit(SourceRequestDiagnostic(
             step: "搜索",
+            sourceName: source.bookSourceName,
             url: parsedReq.url.absoluteString,
             statusCode: response.statusCode,
             elapsedMs: elapsedMs,
             responseBytes: response.data.count,
             responsePreview: DiagnosticPreview.make(response.bodyString),
             ruleHits: bookElements.count,
+            ruleEvalMs: ruleEvalMs,
+            headersSummary: DiagnosticFailure.summarize(parsedReq.headers),
             note: "解析出 \(bookElements.count) 个候选"
-        ))
+        ), to: diagnostics)
         LegadoLog.log("[Search] [\(source.bookSourceName)] 候选条目 \(bookElements.count) 个")
         var searchBooks: [SearchBook] = []
 

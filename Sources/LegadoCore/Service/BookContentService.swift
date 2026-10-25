@@ -56,13 +56,14 @@ public class BookContentService {
                 }
             }
             bodyString = detail
-            diagnostics?(SourceRequestDiagnostic(
+            DiagnosticHub.emit(SourceRequestDiagnostic(
                 step: "详情",
+                sourceName: source.bookSourceName,
                 url: targetUrl,
                 responseBytes: detail.utf8.count,
                 responsePreview: DiagnosticPreview.make(detail),
                 note: "data: 载荷，由 init 脚本取回"
-            ))
+            ), to: diagnostics)
         } else {
             guard let parsedReq = NetworkClient.parseLegadoUrl(targetUrl, defaultHeader: headerToUse, baseUrl: source.bookSourceUrl) else {
                 LegadoLog.log("[BookDetail] ❌ [\(source.bookSourceName)] 详情 URL 解析失败 host=\(URL(string: targetUrl)?.host ?? "-")")
@@ -78,23 +79,28 @@ public class BookContentService {
                     rateLimit: source.rateLimit
                 )
             } catch {
-                diagnostics?(SourceRequestDiagnostic(
+                DiagnosticHub.emit(SourceRequestDiagnostic(
                     step: "详情",
+                    sourceName: source.bookSourceName,
                     url: parsedReq.url.absoluteString,
                     elapsedMs: Int64(Date().timeIntervalSince(started) * 1000),
+                    headersSummary: DiagnosticFailure.summarize(parsedReq.headers),
+                    failureKind: DiagnosticFailure.classify(error),
                     note: "请求失败：\(error.localizedDescription)"
-                ))
+                ), to: diagnostics)
                 throw error
             }
             let elapsed = Int64(Date().timeIntervalSince(started) * 1000)
-            diagnostics?(SourceRequestDiagnostic(
+            DiagnosticHub.emit(SourceRequestDiagnostic(
                 step: "详情",
+                sourceName: source.bookSourceName,
                 url: parsedReq.url.absoluteString,
                 statusCode: response.statusCode,
                 elapsedMs: elapsed,
                 responseBytes: response.data.count,
-                responsePreview: DiagnosticPreview.make(response.bodyString)
-            ))
+                responsePreview: DiagnosticPreview.make(response.bodyString),
+                headersSummary: DiagnosticFailure.summarize(parsedReq.headers)
+            ), to: diagnostics)
             bodyString = response.bodyString
             pageBaseUrl = parsedReq.url.absoluteString
             jsEngine = JSEngine(bookSource: source, baseUrl: pageBaseUrl, book: book)
@@ -211,12 +217,13 @@ public class BookContentService {
         if includeChapters {
             updatedBook.totalChapterNum = chapters.count
         }
-        diagnostics?(SourceRequestDiagnostic(
+        DiagnosticHub.emit(SourceRequestDiagnostic(
             step: "目录",
+            sourceName: source.bookSourceName,
             url: pageBaseUrl,
             ruleHits: chapters.count,
             note: "目录 \(chapters.count) 章"
-        ))
+        ), to: diagnostics)
         if includeChapters, let lastCh = chapters.last, updatedBook.latestChapterTitle == nil || updatedBook.latestChapterTitle?.isEmpty == true {
             updatedBook.latestChapterTitle = lastCh.title
         }
@@ -504,23 +511,28 @@ public class BookContentService {
                     rateLimit: source.rateLimit
                 )
             } catch {
-                diagnostics?(SourceRequestDiagnostic(
+                DiagnosticHub.emit(SourceRequestDiagnostic(
                     step: "正文",
+                    sourceName: source.bookSourceName,
                     url: parsedReq.url.absoluteString,
                     elapsedMs: Int64(Date().timeIntervalSince(started) * 1000),
+                    headersSummary: DiagnosticFailure.summarize(parsedReq.headers),
+                    failureKind: DiagnosticFailure.classify(error),
                     note: "请求失败：\(error.localizedDescription)"
-                ))
+                ), to: diagnostics)
                 throw error
             }
             let elapsed = Int64(Date().timeIntervalSince(started) * 1000)
-            diagnostics?(SourceRequestDiagnostic(
+            DiagnosticHub.emit(SourceRequestDiagnostic(
                 step: "正文",
+                sourceName: source.bookSourceName,
                 url: parsedReq.url.absoluteString,
                 statusCode: response.statusCode,
                 elapsedMs: elapsed,
                 responseBytes: response.data.count,
-                responsePreview: DiagnosticPreview.make(response.bodyString)
-            ))
+                responsePreview: DiagnosticPreview.make(response.bodyString),
+                headersSummary: DiagnosticFailure.summarize(parsedReq.headers)
+            ), to: diagnostics)
             jsEngine = JSEngine(bookSource: source, baseUrl: parsedReq.url.absoluteString, book: book)
             pageBaseUrl = parsedReq.url.absoluteString
             bodyString = response.bodyString
@@ -572,15 +584,16 @@ public class BookContentService {
         if !contentText.isEmpty {
             saveCachedChapterContent(bookUrl: chapter.bookUrl, chapterIndex: chapter.index, content: contentText)
         }
-        diagnostics?(SourceRequestDiagnostic(
+        DiagnosticHub.emit(SourceRequestDiagnostic(
             step: "正文",
+            sourceName: source.bookSourceName,
             url: pageBaseUrl,
             statusCode: 0,
             elapsedMs: 0,
             responseBytes: contentText.utf8.count,
             ruleHits: contentText.isEmpty ? 0 : 1,
             note: "规则命中 \(contentText.count) 字"
-        ))
+        ), to: diagnostics)
 
         return contentText
     }

@@ -4729,7 +4729,8 @@ struct OPDSBrowserView: View {
 /// 极简应用日志：写在沙盒 Documents/AppLogs/app.log，最多保留 512KB。
 /// 挂未捕获异常处理器，崩溃时留下一条日志。
 enum AppLog {
-    static let defaultMaxLines = 100
+    /// 单个文件上限，按字节算。行数没有意义：一行响应摘要能顶十几行。
+    static let defaultMaxKilobytes = 64
 
     /// 是否记录常规日志（崩溃标记不受它影响，永远写）
     static var isEnabled: Bool {
@@ -4737,32 +4738,50 @@ enum AppLog {
         set { UserDefaults.standard.set(newValue, forKey: "app_log_enabled") }
     }
 
-    /// 保留多少行，默认 100
-    static var maxLines: Int {
+    static var maxKilobytes: Int {
         get {
-            let value = UserDefaults.standard.integer(forKey: "app_log_max_lines")
-            return value > 0 ? value : defaultMaxLines
+            let value = UserDefaults.standard.integer(forKey: "app_log_max_kb")
+            if value >= 8 { return min(2048, value) }
+            // 旧版本按行数设置，迁移成字节：一行按 200 字节估
+            let legacyLines = UserDefaults.standard.integer(forKey: "app_log_max_lines")
+            if legacyLines > 0 { return min(2048, max(8, legacyLines * 200 / 1024)) }
+            return defaultMaxKilobytes
         }
-        set { UserDefaults.standard.set(max(20, newValue), forKey: "app_log_max_lines") }
+        set { UserDefaults.standard.set(min(2048, max(8, newValue)), forKey: "app_log_max_kb") }
     }
 
-    static var fileURL: URL {
-        let base = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
-        return base.appendingPathComponent("AppLogs", isDirectory: true).appendingPathComponent("app.log")
+    static var directoryURL: URL {
+        FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("AppLogs", isDirectory: true)
     }
+
+    static var fileURL: URL { directoryURL.appendingPathComponent("app.log") }
+
+    /// 崩溃记录单独一份，永不裁剪。跟运行日志放一起的话，用户崩溃后再点两下，
+    /// 崩溃标记会被 trim 从头砍掉，而那正是唯一想看的行。
+    static var crashFileURL: URL { directoryURL.appendingPathComponent("crash.log") }
+
+    // 写盘全在这个串行队列上做：调用者可能是任意线程的 async 任务，
+    // 以前直接在调用线程开句柄，两章并发时行会交错。
+    private static let queue = DispatchQueue(label: "com.factorcitrus.juyue.applog", qos: .utility)
+    private static let queueKey = DispatchSpecificKey<Void>()
+    private static var pending: [String] = []
+    private static var flushScheduled = false
+    /// 攒够这么多行就先落一次
+    private static let flushBatch = 16
+    private static let flushDelay: TimeInterval = 0.25
 
     static func install() {
+        queue.setSpecific(key: queueKey, value: ())
+
         NSSetUncaughtExceptionHandler { exception in
             let stacks = exception.callStackSymbols.prefix(14).joined(separator: " | ")
-            AppLog.writeSync("💥 未捕获异常 \(exception.name.rawValue): \(exception.reason ?? "") || \(stacks)")
+            AppLog.writeCrash("💥 未捕获异常 \(exception.name.rawValue): \(exception.reason ?? "") || \(stacks)")
         }
         // 信号处理里不能分配内存，提前把目录和路径准备好
-        try? FileManager.default.createDirectory(
-            at: fileURL.deletingLastPathComponent(),
-            withIntermediateDirectories: true
-        )
+        try? FileManager.default.createDirectory(at: directoryURL, withIntermediateDirectories: true)
         if crashPath == nil {
-            crashPath = strdup(fileURL.path)
+            crashPath = strdup(crashFileURL.path)
         }
         // Swift 运行时的 fatalError / 前提条件失败 / 野指针走的是信号，不走 NSException，
         // 所以要单独接一层：只写一行标记再交还给系统，保持原本的崩溃行为
@@ -4773,12 +4792,26 @@ enum AppLog {
                 raise(received)
             })
         }
+        // 进后台 / 退出前把攒着的行落盘，否则最后几行随进程一起没了
+        #if canImport(UIKit)
+        observe(UIApplication.didEnterBackgroundNotification)
+        observe(UIApplication.willTerminateNotification)
+        #elseif canImport(AppKit)
+        observe(NSApplication.willTerminateNotification)
+        #endif
+
         let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "?"
         let build = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "?"
         // Core 层的日志出口接到这里：LegadoCore 不依赖 App 层，只能运行时注入
         LegadoLog.handler = { line in AppLog.write(line) }
-        // 启动行属于常规日志，跟着开关走
         write("—— 启动 v\(version) (\(build)) ——")
+        DiagnosticHub.shared.loadFromDiskIfNeeded()
+    }
+
+    private static func observe(_ name: Notification.Name) {
+        NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) { _ in
+            flushNow()
+        }
     }
 
     /// 信号处理专用：只用 open/write/close，不建目录、不做字符串插值
@@ -4799,37 +4832,23 @@ enum AppLog {
         default: message = "💥 SIGNAL\n"
         }
         _ = Darwin.write(fd, message.utf8Start, message.utf8CodeUnitCount)
-        _ = Darwin.write(fd, "\n", 1)
         Darwin.close(fd)
     }
 
-    /// 落盘前的隐私过滤。
-    ///
-    /// 规矩：日志只记「操作类型 / 序数 / 耗时 / 状态码 / 字节数 / 错误类型」，
-    /// 不记搜索词、书名作者、章节标题、正文、URL 的 path 与 query、任何凭据、
-    /// 设备名、绝对路径的兜底过滤，命中就整行不写。
-    static func sanitize(_ line: String) -> String {
-        let banned = [
-            "password", "passwd", "secret", "apikey", "api_key", "appid", "app_id",
-            "serial", "token", "authorization", "key=", "keyword=", "/users/", "/var/"
-        ]
-        let lowered = line.lowercased()
-        if banned.contains(where: { lowered.contains($0) }) {
-            return "[已过滤] 这一行命中隐私关键词，未写入"
-        }
-        return line
-    }
-
-    /// 信号处理里能安全调用的写盘方式（只有 open/write/close）
-    static func writeSync(_ line: String) {
-        let stamp = ISO8601DateFormatter().string(from: Date())
-        let text = "[\(stamp)] \(sanitize(line))\n"
-        let dir = fileURL.deletingLastPathComponent()
-        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        let fd = Darwin.open(fileURL.path, O_WRONLY | O_APPEND | O_CREAT, 0o644)
+    /// 未捕获异常 / 崩溃前同步写：先把缓冲刷掉，再写崩溃行。
+    static func writeCrash(_ line: String) {
+        flushNow()
+        let text = "[\(stamp())] \(LogRedaction.redact(line))\n"
+        try? FileManager.default.createDirectory(at: directoryURL, withIntermediateDirectories: true)
+        let fd = Darwin.open(crashFileURL.path, O_WRONLY | O_APPEND | O_CREAT, 0o644)
         guard fd >= 0 else { return }
         _ = text.withCString { Darwin.write(fd, $0, strlen($0)) }
         Darwin.close(fd)
+    }
+
+    /// 旧名保留，语义变成「写崩溃文件」。
+    static func writeSync(_ line: String) {
+        writeCrash(line)
     }
 
     static func signalName(_ sig: Int32) -> String {
@@ -4846,47 +4865,141 @@ enum AppLog {
 
     static func write(_ line: String) {
         guard isEnabled else { return }
-        let stamp = ISO8601DateFormatter().string(from: Date())
-        let text = "[\(stamp)] \(sanitize(line))\n"
-        let dir = fileURL.deletingLastPathComponent()
-        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        if let handle = try? FileHandle(forWritingTo: fileURL) {
-            defer { try? handle.close() }
-            _ = try? handle.seekToEnd()
-            try? handle.write(contentsOf: Data(text.utf8))
-        } else {
-            try? Data(text.utf8).write(to: fileURL)
-        }
-        trimToLines()
+        // 只入队，不在调用者线程上碰文件
+        queue.async { enqueue(line) }
     }
 
-    /// 超过保留行数就从前面砍
-    private static func trimToLines() {
-        guard let text = try? String(contentsOf: fileURL, encoding: .utf8) else { return }
-        var lines = text.split(separator: "\n", omittingEmptySubsequences: false)
-        guard lines.count > maxLines else { return }
-        lines = Array(lines.suffix(maxLines))
-        try? Data((lines.joined(separator: "\n")).utf8).write(to: fileURL)
+    /// 把缓冲立刻落盘。已经在队列上时直接执行，避免自己等自己。
+    static func flushNow() {
+        if DispatchQueue.getSpecific(key: queueKey) != nil {
+            flush()
+        } else {
+            queue.sync { flush() }
+        }
+    }
+
+    private static func enqueue(_ line: String) {
+        pending.append("[\(stamp())] \(LogRedaction.redact(line))\n")
+        if pending.count >= flushBatch {
+            flush()
+        } else {
+            scheduleFlush()
+        }
+    }
+
+    private static func scheduleFlush() {
+        guard !flushScheduled else { return }
+        flushScheduled = true
+        queue.asyncAfter(deadline: .now() + flushDelay) { flush() }
+    }
+
+    private static func flush() {
+        flushScheduled = false
+        guard !pending.isEmpty else { return }
+        let text = pending.joined()
+        pending.removeAll(keepingCapacity: true)
+        try? FileManager.default.createDirectory(at: directoryURL, withIntermediateDirectories: true)
+        append(text, to: fileURL)
+        trimIfNeeded()
+    }
+
+    private static func append(_ text: String, to url: URL) {
+        let data = Data(text.utf8)
+        if let handle = try? FileHandle(forWritingTo: url) {
+            defer { try? handle.close() }
+            _ = try? handle.seekToEnd()
+            try? handle.write(contentsOf: data)
+        } else {
+            try? data.write(to: url)
+        }
+    }
+
+    /// 超过上限只留尾部：读文件尾一段写回去，不再整文件解成行数组。
+    private static func trimIfNeeded() {
+        let limit = maxKilobytes * 1024
+        guard let attrs = try? FileManager.default.attributesOfItem(atPath: fileURL.path),
+              let size = attrs[.size] as? Int,
+              size > limit,
+              let handle = try? FileHandle(forReadingFrom: fileURL)
+        else { return }
+        defer { try? handle.close() }
+        guard (try? handle.seek(toOffset: UInt64(size - limit))) != nil,
+              var tail = try? handle.readToEnd() else { return }
+        // 砍在半个字符或半行上都会让日志难读，挪到下一个换行之后
+        if let newline = tail.firstIndex(of: 0x0A) {
+            tail = tail[tail.index(after: newline)...]
+        }
+        try? Data(tail).write(to: fileURL, options: .atomic)
+    }
+
+    private static func stamp() -> String {
+        ISO8601DateFormatter().string(from: Date())
     }
 
     static func read() -> String {
-        (try? String(contentsOf: fileURL, encoding: .utf8)) ?? "（还没有日志）"
+        var parts: [String] = []
+        if let crash = try? String(contentsOf: crashFileURL, encoding: .utf8), !crash.isEmpty {
+            parts.append("—— 崩溃记录（不裁剪）——\n" + crash)
+        }
+        if let log = try? String(contentsOf: fileURL, encoding: .utf8), !log.isEmpty {
+            parts.append("—— 运行日志 ——\n" + log)
+        }
+        return parts.isEmpty ? "（还没有日志）" : parts.joined(separator: "\n\n")
     }
 
     static func clear() {
+        flushNow()
         try? FileManager.default.removeItem(at: fileURL)
+        try? FileManager.default.removeItem(at: crashFileURL)
     }
 }
 
 /// 日志查看：崩溃后进来复制一份发我就够定位了
 struct LogViewerView: View {
+    private enum Mode: String, CaseIterable, Identifiable {
+        case log = "运行日志"
+        case diagnostics = "请求诊断"
+        var id: String { rawValue }
+    }
+
     @Environment(\.appTheme) private var theme
+    @State private var mode: Mode = .log
     @State private var text = ""
+    @State private var diagnostics: [SourceRequestDiagnostic] = []
     @State private var copied = false
     @State private var logEnabled = AppLog.isEnabled
-    @State private var lineLimit = AppLog.maxLines
+    @State private var maxKilobytes = AppLog.maxKilobytes
+
+    private static let timeFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "MM-dd HH:mm:ss"
+        return formatter
+    }()
 
     var body: some View {
+        VStack(spacing: 0) {
+            Picker("", selection: $mode) {
+                ForEach(Mode.allCases) { item in
+                    Text(item.rawValue).tag(item)
+                }
+            }
+            .pickerStyle(.segmented)
+            .padding(.horizontal, 12)
+            .padding(.top, 8)
+
+            if mode == .log {
+                logPane
+            } else {
+                diagnosticsPane
+            }
+        }
+        .background(theme.palette.background)
+        .appThemedPage()
+        .navigationTitle("诊断日志")
+        .onAppear { load() }
+    }
+
+    private var logPane: some View {
         VStack(spacing: 0) {
             HStack(spacing: 12) {
                 Toggle("记录日志", isOn: $logEnabled)
@@ -4895,13 +5008,12 @@ struct LogViewerView: View {
                         load()
                     }
                 Spacer()
-                Stepper(value: $lineLimit, in: 20...2000, step: 20) {
-                    Text("保留 \(lineLimit) 行")
+                Stepper(value: $maxKilobytes, in: 8...1024, step: 8) {
+                    Text("保留 \(maxKilobytes) KB")
                         .font(.caption)
                 }
-                .onChange(of: lineLimit) { newValue in
-                    AppLog.maxLines = newValue
-                    load()
+                .onChange(of: maxKilobytes) { newValue in
+                    AppLog.maxKilobytes = newValue
                 }
             }
             .padding(.horizontal, 12)
@@ -4915,41 +5027,141 @@ struct LogViewerView: View {
                     .textSelection(.enabled)
             }
             Divider()
-            HStack(spacing: 12) {
-                Button(copied ? "已复制" : "复制全部") {
-                    #if os(iOS)
-                    UIPasteboard.general.string = text
-                    #else
-                    NSPasteboard.general.clearContents()
-                    NSPasteboard.general.setString(text, forType: .string)
-                    #endif
-                    copied = true
-                }
-                if #available(iOS 16.0, macOS 13.0, *) {
-                    ShareLink(item: AppLog.fileURL) {
-                        Image(systemName: "square.and.arrow.up")
+            footer(payload: text, charCount: text.count)
+        }
+    }
+
+    private var diagnosticsPane: some View {
+        VStack(spacing: 0) {
+            HStack {
+                Text("本机最近 \(diagnostics.count) 条请求记录，搜索和阅读路径都在里面")
+                    .font(.caption)
+                    .foregroundColor(theme.palette.secondaryInk)
+                Spacer()
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+            Divider()
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 10) {
+                    ForEach(diagnostics.reversed()) { item in
+                        diagnosticRow(item)
+                        Divider()
                     }
                 }
-                Button("刷新") { load() }
-                Button("清空", role: .destructive) {
-                    AppLog.clear()
-                    load()
+                .padding(12)
+            }
+            Divider()
+            footer(payload: diagnosticsText(), charCount: diagnostics.count)
+        }
+    }
+
+    private func diagnosticRow(_ item: SourceRequestDiagnostic) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            HStack(spacing: 6) {
+                Text(item.step)
+                    .font(.caption)
+                    .bold()
+                if !item.sourceName.isEmpty {
+                    Text(item.sourceName)
+                        .font(.caption2)
+                        .lineLimit(1)
                 }
                 Spacer()
-                Text("\(text.count) 字符")
+                if !item.failureKind.isEmpty {
+                    Text(item.failureKind)
+                        .font(.caption2)
+                        .foregroundColor(.red)
+                }
+                Text(item.statusCode > 0 ? "HTTP \(item.statusCode)" : "无 HTTP")
                     .font(.caption2)
+            }
+            Text(timingLine(item))
+                .font(.system(size: 11, design: .monospaced))
+            if !item.headersSummary.isEmpty {
+                Text(item.headersSummary)
+                    .font(.system(size: 11, design: .monospaced))
+            }
+            Text(item.url)
+                .font(.system(size: 11, design: .monospaced))
+                .textSelection(.enabled)
+            if !item.note.isEmpty {
+                Text(item.note)
+                    .font(.caption2)
+            }
+            if !item.responsePreview.isEmpty {
+                Text(item.responsePreview)
+                    .font(.system(size: 11, design: .monospaced))
+                    .textSelection(.enabled)
                     .foregroundColor(theme.palette.secondaryInk)
             }
-            .padding(12)
         }
-        .background(theme.palette.background)
-        .appThemedPage()
-        .navigationTitle("诊断日志")
-        .onAppear { load() }
+    }
+
+    private func timingLine(_ item: SourceRequestDiagnostic) -> String {
+        var parts = [
+            Self.timeFormatter.string(from: item.at),
+            "\(item.elapsedMs) ms"
+        ]
+        if item.ruleEvalMs > 0 {
+            parts.append("规则 \(item.ruleEvalMs) ms")
+        }
+        parts.append("\(item.responseBytes) B")
+        parts.append("命中 \(item.ruleHits)")
+        return parts.joined(separator: " · ")
+    }
+
+    private func footer(payload: String, charCount: Int) -> some View {
+        HStack(spacing: 12) {
+            Button(copied ? "已复制" : "复制全部") {
+                copyToPasteboard(payload)
+                copied = true
+            }
+            if #available(iOS 16.0, macOS 13.0, *), mode == .log {
+                ShareLink(item: AppLog.fileURL) {
+                    Image(systemName: "square.and.arrow.up")
+                }
+            }
+            Button("刷新") { load() }
+            Button("清空", role: .destructive) {
+                if mode == .log {
+                    AppLog.clear()
+                } else {
+                    DiagnosticHub.shared.clear()
+                }
+                load()
+            }
+            Spacer()
+            Text(mode == .log ? "\(charCount) 字符" : "\(charCount) 条")
+                .font(.caption2)
+                .foregroundColor(theme.palette.secondaryInk)
+        }
+        .padding(12)
+    }
+
+    private func copyToPasteboard(_ value: String) {
+        #if os(iOS)
+        UIPasteboard.general.string = value
+        #else
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(value, forType: .string)
+        #endif
+    }
+
+    private func diagnosticsText() -> String {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        encoder.dateEncodingStrategy = .iso8601
+        guard let data = try? encoder.encode(diagnostics),
+              let string = String(data: data, encoding: .utf8)
+        else { return "（还没有诊断记录）" }
+        return string
     }
 
     private func load() {
         copied = false
         text = AppLog.read()
+        diagnostics = DiagnosticHub.shared.snapshot()
+        maxKilobytes = AppLog.maxKilobytes
     }
 }
