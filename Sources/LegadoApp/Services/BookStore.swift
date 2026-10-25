@@ -332,7 +332,8 @@ public class BookStore: ObservableObject {
         // Load sources
         if let data = UserDefaults.standard.data(forKey: sourcesKey),
            let decoded = try? JSONDecoder().decode([BookSource].self, from: data) {
-            self.sources = decoded
+            // 从侧载包装过商店版时 UserDefaults 里留着旧书源，这里按版本清掉。
+            self.sources = BookSourceGate.admitted(decoded, appStore: AppEdition.isAppStoreClean) ?? []
         }
 
         // Merge or populate bundled default sources
@@ -389,7 +390,9 @@ public class BookStore: ObservableObject {
     }
 
     public func saveSources() {
-        if let data = try? JSONEncoder().encode(sources) {
+        // 商店包不落盘书源：内存里被别的路径塞进来也不该活过重启。
+        let payload = BookSourceGate.admitted(sources, appStore: AppEdition.isAppStoreClean) ?? []
+        if let data = try? JSONEncoder().encode(payload) {
             UserDefaults.standard.set(data, forKey: sourcesKey)
         }
     }
@@ -443,7 +446,7 @@ public class BookStore: ObservableObject {
             saveBookshelf()
         }
 
-        if let newSources = sources {
+        if let newSources = BookSourceGate.admitted(sources, appStore: AppEdition.isAppStoreClean) {
             for s in newSources {
                 if let idx = self.sources.firstIndex(where: { $0.bookSourceUrl == s.bookSourceUrl }) {
                     self.sources[idx] = s

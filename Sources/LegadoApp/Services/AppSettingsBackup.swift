@@ -122,7 +122,7 @@ public enum AppSettingsRestoreMode: Hashable {
 public enum AppSettingsBackup {
     /// 当前运行时设置快照，供导出与预览共用。
     public static func makePayload(sanitizeCredentials: Bool = false) -> AppSettingsPayload {
-        var sources = BookStore.shared.sources
+        var sources = BookSourceGate.admitted(BookStore.shared.sources, appStore: AppEdition.isAppStoreClean) ?? []
         if sanitizeCredentials {
             sources = sources.map { source in
                 var cleaned = source
@@ -202,7 +202,7 @@ public enum AppSettingsBackup {
             parts.append("替换规则 \(rules.count) 条")
         }
 
-        if let sources = payload.sources {
+        if let sources = BookSourceGate.admitted(payload.sources, appStore: AppEdition.isAppStoreClean) {
             switch mode {
             case .replace:
                 BookStore.shared.sources = sources
