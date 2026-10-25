@@ -15,10 +15,8 @@ public struct SourceManagerView: View {
     @Environment(\.appTheme) private var theme
 
     @State private var showImportSheet: Bool = false
-    @State private var showDisclaimer: Bool = false
-    @State private var pendingImportAfterDisclaimer: Bool = false
-    /// 须知同意状态：撤回或同意后由 sheet 的 onDismiss 回写，否则工具行会显示旧值
-    @State private var disclaimerAccepted: Bool = BookSourceDisclaimer.hasAccepted
+    /// 导入须知勾选状态：不勾选，导入面板里三个入口都是灰的（侧载版默认已勾）
+    @State private var importConsent: Bool = BookSourceDisclaimer.initiallyAgreed
     /// 书源导出（存到「文件」）
     @State private var showSourceExporter: Bool = false
     @State private var sourceExportDocument: ExportedFile?
@@ -135,19 +133,6 @@ public struct SourceManagerView: View {
             .appThemedRows()
 
             Section(header: Text("工具")) {
-                Button {
-                    pendingImportAfterDisclaimer = false
-                    showDisclaimer = true
-                } label: {
-                    HStack {
-                        Label("书源导入须知", systemImage: "text.badge.checkmark")
-                        Spacer()
-                        Text(disclaimerStatusText)
-                            .font(.caption)
-                            .foregroundColor(theme.palette.secondaryInk)
-                    }
-                }
-
                 NavigationLink(destination: SourceCheckView()) {
                     HStack {
                         Label("校验书源", systemImage: "checkmark.shield")
@@ -363,18 +348,6 @@ public struct SourceManagerView: View {
             .sheet(isPresented: $showImportSheet) {
                 importSourceSheet
             }
-            .sheet(isPresented: $showDisclaimer, onDismiss: {
-                disclaimerAccepted = BookSourceDisclaimer.hasAccepted
-                // 同意了才继续开导入面板；关掉或返回就不往下走
-                if pendingImportAfterDisclaimer {
-                    pendingImportAfterDisclaimer = false
-                    showImportSheet = true
-                }
-            }) {
-                BookSourceDisclaimerSheet(onAccept: {
-                    pendingImportAfterDisclaimer = true
-                })
-            }
             .sheet(item: $groupEditTarget) { target in
                 groupEditor(for: target)
             }
@@ -443,20 +416,9 @@ public struct SourceManagerView: View {
             }
     }
 
-    /// 导出全部书源成 JSON（和导入同一套格式，导回来能直接用）
-    private var disclaimerStatusText: String {
-        guard BookSourceDisclaimer.requiresConsent else { return "侧载版不强制" }
-        return disclaimerAccepted ? "已同意" : "首次导入需同意"
-    }
-
-    /// 导入总入口：商店版首次要先同意须知，同意过就直接开面板。
+    /// 导入总入口：须知挪进面板里了，这里只管把面板打开。
     private func openImportFlow() {
-        if BookSourceDisclaimer.needsConsent {
-            pendingImportAfterDisclaimer = true
-            showDisclaimer = true
-        } else {
-            showImportSheet = true
-        }
+        showImportSheet = true
     }
 
     private func exportSources(_ list: [BookSource], namePrefix: String = "bookSource") {
@@ -838,6 +800,11 @@ enum SourceDocumentPicker {
     private var importSourceSheet: some View {
         NavigationView {
             Form {
+                Section(header: Text("书源导入须知")) {
+                    BookSourceDisclaimerContent(agreed: $importConsent)
+                }
+                .appThemedRows()
+
                 Section(header: Text("本地文件导入")) {
                     Button {
 #if os(iOS)
@@ -854,6 +821,7 @@ enum SourceDocumentPicker {
                     } label: {
                         Label("从本地文件导入 (.json)", systemImage: "doc.badge.plus")
                     }
+                    .disabled(importConsent == false)
                 }
                 .appThemedRows()
 
@@ -866,7 +834,7 @@ enum SourceDocumentPicker {
                     Button("从网络获取并导入") {
                         importFromUrl()
                     }
-                    .disabled(importUrl.trimmingCharacters(in: .whitespaces).isEmpty)
+                    .disabled(importConsent == false || importUrl.trimmingCharacters(in: .whitespaces).isEmpty)
                 }
                 .appThemedRows()
 
@@ -876,7 +844,7 @@ enum SourceDocumentPicker {
                     Button("导入 JSON 文本") {
                         importFromText()
                     }
-                    .disabled(importText.trimmingCharacters(in: .whitespaces).isEmpty)
+                    .disabled(importConsent == false || importText.trimmingCharacters(in: .whitespaces).isEmpty)
                 }
                 .appThemedRows()
             }

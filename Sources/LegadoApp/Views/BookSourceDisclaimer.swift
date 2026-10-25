@@ -1,25 +1,23 @@
 import SwiftUI
 
-/// 书源导入须知：商店版首次导入前必须明确同意，侧载版只做展示。
+/// 书源导入须知：条款写死在代码里，导入面板里勾了才允许导入。
 ///
-/// 做法照开元阅读：不内置目录，导入前把责任边界讲清楚，并留一份可撤回的记录。
-/// 同意状态存 `UserDefaults`，文案改了就抬 `currentVersion`，已同意的人会被再问一次。
+/// 商店版必须自己勾；侧载版是自用包，面板一进来就是勾好的（但取消勾选照样锁住入口）。
+/// 同意记录存 `UserDefaults`，条款改了就抬 `currentVersion`，已同意的人下次打开导入面板
+/// 会看到勾选框回落到未勾选——不同意就不给导入。
 enum BookSourceDisclaimer {
-    /// 文案版本。改条款就加一。
+    /// 条款版本。改文案就加一。
     static let currentVersion = 1
     private static let key = "juyue.bookSourceDisclaimer.version"
 
-    /// 侧载版是自用包，不拦；商店版必须过这一关。
-    static var requiresConsent: Bool { AppEdition.isAppStoreClean }
-
     static var acceptedVersion: Int { UserDefaults.standard.integer(forKey: key) }
     static var hasAccepted: Bool { acceptedVersion >= currentVersion }
-    static var needsConsent: Bool { requiresConsent && !hasAccepted }
 
-    static var statusText: String {
-        guard requiresConsent else { return "侧载版不强制" }
-        return hasAccepted ? "已同意" : "首次导入需同意"
-    }
+    /// 强制同意的范围：只有商店包要过这一关，侧载包不拦。
+    static var requiresConsent: Bool { AppEdition.isAppStoreClean }
+
+    /// 打开导入面板时的初始勾选态：商店版看历史同意记录，侧载版直接当已同意。
+    static var initiallyAgreed: Bool { requiresConsent ? hasAccepted : true }
 
     static func accept() {
         UserDefaults.standard.set(currentVersion, forKey: key)
@@ -30,21 +28,14 @@ enum BookSourceDisclaimer {
         UserDefaults.standard.removeObject(forKey: key)
         AppLog.write("[书源] 撤回导入须知同意")
     }
-}
 
-/// 须知正文。条款写死在代码里，跟着版本号一起审阅。
-struct BookSourceDisclaimerSheet: View {
-    /// 点了「同意并继续」时回调；为 nil 表示只读查看。
-    var onAccept: (() -> Void)? = nil
-    @Environment(\.dismiss) private var dismiss
-    @Environment(\.appTheme) private var theme
-
-    private struct Clause: Identifiable {
+    struct Clause: Identifiable {
         let id: String
         let lines: [String]
     }
 
-    private let clauses: [Clause] = [
+    /// 四条边界：不提供源、源只是规则、授权自负、责任自担。
+    static let clauses: [Clause] = [
         Clause(id: "一、本 App 不提供书源", lines: [
             "应用不内置、不推荐、不自动更新任何书源目录，也不存储、不缓存书籍正文。",
             "你看到的每一条书源，都是你自己寻找并导入的。"
@@ -62,62 +53,50 @@ struct BookSourceDisclaimerSheet: View {
             "权利人如认为内容侵权，应直接向对应站点主张；本 App 只提供中立的解析工具，你可以在书源管理里随时清空全部书源。"
         ])
     ]
+}
+
+/// 导入面板顶部的须知区：读完打勾，勾上才解锁下面三个导入入口。
+struct BookSourceDisclaimerContent: View {
+    @Binding var agreed: Bool
+    @Environment(\.appTheme) private var theme
+
+    /// 勾选即落盘：撤销勾选等于撤回同意，下次进来还是灰的。
+    private var consent: Binding<Bool> {
+        Binding(
+            get: { agreed },
+            set: { newValue in
+                agreed = newValue
+                if newValue {
+                    BookSourceDisclaimer.accept()
+                } else {
+                    BookSourceDisclaimer.revoke()
+                }
+            }
+        )
+    }
 
     var body: some View {
-        NavigationView {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 18) {
-                    Text("书源导入须知")
-                        .font(.system(size: 22, weight: .bold))
+        VStack(alignment: .leading, spacing: 12) {
+            ForEach(BookSourceDisclaimer.clauses) { clause in
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(clause.id)
+                        .font(.footnote.weight(.semibold))
                         .foregroundColor(theme.palette.ink)
-                    Text("导入前请读完这四条。点「同意并继续」才会打开导入面板。")
-                        .font(.footnote)
-                        .foregroundColor(theme.palette.secondaryInk)
-
-                    ForEach(clauses) { clause in
-                        VStack(alignment: .leading, spacing: 6) {
-                            Text(clause.id)
-                                .font(.subheadline.weight(.semibold))
-                                .foregroundColor(theme.palette.ink)
-                            ForEach(clause.lines, id: \.self) { line in
-                                Text(line)
-                                    .font(.footnote)
-                                    .foregroundColor(theme.palette.secondaryInk)
-                                    .fixedSize(horizontal: false, vertical: true)
-                            }
-                        }
-                    }
-
-                    if BookSourceDisclaimer.hasAccepted {
-                        Button("撤回同意（下次导入需重新确认）") {
-                            BookSourceDisclaimer.revoke()
-                            dismiss()
-                        }
-                        .font(.footnote)
-                        .foregroundColor(.red)
+                    ForEach(clause.lines, id: \.self) { line in
+                        Text(line)
+                            .font(.caption)
+                            .foregroundColor(theme.palette.secondaryInk)
+                            .fixedSize(horizontal: false, vertical: true)
                     }
                 }
-                .padding(20)
-                .frame(maxWidth: .infinity, alignment: .leading)
             }
-            .navigationTitle("书源导入须知")
-            #if os(iOS)
-            .navigationBarTitleDisplayMode(.inline)
-            #endif
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("关闭") { dismiss() }
-                }
-                ToolbarItem(placement: .confirmationAction) {
-                    if let accept = onAccept {
-                        Button("同意并继续") {
-                            BookSourceDisclaimer.accept()
-                            accept()
-                            dismiss()
-                        }
-                    }
-                }
+
+            Toggle(isOn: consent) {
+                Text("我已阅读并同意以上须知")
+                    .font(.footnote.weight(.semibold))
+                    .foregroundColor(theme.palette.ink)
             }
         }
+        .padding(.vertical, 2)
     }
 }
