@@ -505,13 +505,28 @@ public class BookStore: ObservableObject {
         )
     }
 
+    /// 新书插到书架最前面并存盘。导入路径都走这里，免得每处重复「插入 + 保存」。
+    private func prependToShelf(_ book: Book) {
+        bookshelf.insert(book, at: 0)
+        saveBookshelf()
+    }
+
+    /// 有就整条替换、没有就插到最前。EPUB / TXT 导入共用。
+    private func upsertShelf(_ book: Book) {
+        if let existing = bookshelf.firstIndex(where: { $0.bookUrl == book.bookUrl }) {
+            bookshelf[existing] = book
+            saveBookshelf()
+        } else {
+            prependToShelf(book)
+        }
+    }
+
     @discardableResult
     /// overwriteCover 为 true 时才用传入的封面覆盖本地封面。
     /// 刷新详情这类更新不传封面，不能覆盖用户自己设的封面。
     public func saveOrUpdateBook(_ book: Book, overwriteCover: Bool = false) -> Book {
         guard let index = bookshelf.firstIndex(where: { $0.bookUrl == book.bookUrl }) else {
-            bookshelf.insert(book, at: 0)
-            saveBookshelf()
+            prependToShelf(book)
             return book
         }
         bookshelf[index] = mergingDetails(of: book, into: bookshelf[index], overwriteCover: overwriteCover)
@@ -839,11 +854,15 @@ public class BookStore: ObservableObject {
         saveSources()
     }
 
+    /// 按地址改一份书源再存回；找不到就什么都不做。
+    private func mutateSource(_ sourceUrl: String, _ change: (inout BookSource) -> Void) {
+        guard let idx = sources.firstIndex(where: { $0.bookSourceUrl == sourceUrl }) else { return }
+        change(&sources[idx])
+        saveSources()
+    }
+
     public func updateSourceHeader(sourceUrl: String, header: String) {
-        if let idx = sources.firstIndex(where: { $0.bookSourceUrl == sourceUrl }) {
-            sources[idx].loginHeader = header
-            saveSources()
-        }
+        mutateSource(sourceUrl) { $0.loginHeader = header }
     }
 
     /// 表单登录：跑 loginUrl，再跑 loginUi 里挑出来的登录按钮 action。
@@ -1005,10 +1024,9 @@ public class BookStore: ObservableObject {
     }
 
     public func logoutSource(sourceUrl: String) {
-        if let idx = sources.firstIndex(where: { $0.bookSourceUrl == sourceUrl }) {
-            sources[idx].loginHeader = nil
-            sources[idx].loginInfo = nil
-            saveSources()
+        mutateSource(sourceUrl) {
+            $0.loginHeader = nil
+            $0.loginInfo = nil
         }
         CookieJar.shared.remove(for: sourceUrl)
         if let host = CookieJar.shared.lastWrittenHostKey, !host.isEmpty {
@@ -1020,19 +1038,23 @@ public class BookStore: ObservableObject {
     // MARK: - EPUB & Chapter Storage
     private var chaptersCache: [String: [BookChapter]] = [:]
 
+    /// 目录落盘文件名按书地址的 md5 取，避免书名里有斜杠或冒号。
+    private func chapterFileURL(for bookUrl: String) -> URL {
+        getDocumentsDirectory()
+            .appendingPathComponent("chapters_\(CryptoUtils.md5(bookUrl)).json")
+    }
+
     public func saveChapters(_ chapters: [BookChapter], for bookUrl: String) {
         chaptersCache[bookUrl] = chapters
-        let chapterFile = getDocumentsDirectory().appendingPathComponent("chapters_\(CryptoUtils.md5(bookUrl)).json")
-        if let data = try? JSONEncoder().encode(chapters) {
-            try? data.write(to: chapterFile)
-        }
+        guard let data = try? JSONEncoder().encode(chapters) else { return }
+        try? data.write(to: chapterFileURL(for: bookUrl))
     }
 
     public func getChapters(for bookUrl: String) -> [BookChapter] {
         if let memory = chaptersCache[bookUrl] {
             return memory
         }
-        let chapterFile = getDocumentsDirectory().appendingPathComponent("chapters_\(CryptoUtils.md5(bookUrl)).json")
+        let chapterFile = chapterFileURL(for: bookUrl)
         if let data = try? Data(contentsOf: chapterFile),
            var list = try? JSONDecoder().decode([BookChapter].self, from: data) {
             var needsRepair = false
@@ -1058,20 +1080,25 @@ public class BookStore: ObservableObject {
     public func importEpub(from fileUrl: URL) throws -> Book {
         let parsed = try EpubParser.shared.parse(epubUrl: fileUrl)
         saveChapters(parsed.chapters, for: parsed.book.bookUrl)
-        if let idx = bookshelf.firstIndex(where: { $0.bookUrl == parsed.book.bookUrl }) {
-            bookshelf[idx] = parsed.book
-        } else {
-            bookshelf.insert(parsed.book, at: 0)
-        }
-        saveBookshelf()
+        upsertShelf(parsed.book)
         return parsed.book
+    }
+
+    /// TXT 编码没有统一约定：先按 UTF-8 试，再按 GB18030（老小说站主流），
+    /// 最后按 UTF-8 容错解，保证任何字节都能出文本。
+    private func decodeTxt(_ data: Data) -> String {
+        if let utf8 = String(data: data, encoding: .utf8) { return utf8 }
+        let gbRaw = CFStringConvertEncodingToNSStringEncoding(
+            CFStringEncoding(CFStringEncodings.GB_18030_2000.rawValue))
+        if let legacy = String(data: data, encoding: String.Encoding(rawValue: gbRaw)) { return legacy }
+        return String(decoding: data, as: UTF8.self)
     }
 
     public func importTxt(from fileUrl: URL) throws -> Book {
         guard let data = try? Data(contentsOf: fileUrl) else {
             throw NSError(domain: "BookStore", code: 1, userInfo: [NSLocalizedDescriptionKey: "无法读取TXT文件内容"])
         }
-        let content = String(data: data, encoding: .utf8) ?? String(data: data, encoding: .init(rawValue: CFStringConvertEncodingToNSStringEncoding(CFStringEncoding(CFStringEncodings.GB_18030_2000.rawValue)))) ?? String(decoding: data, as: UTF8.self)
+        let content = decodeTxt(data)
 
         let bookTitle = fileUrl.deletingPathExtension().lastPathComponent
         let bookUrl = "txt://\(CryptoUtils.md5(fileUrl.absoluteString))"
@@ -1122,21 +1149,19 @@ public class BookStore: ObservableObject {
             name: bookTitle,
             author: "本地书籍",
             kind: "TXT 本地书籍",
+            // 本地书没有封面；简介用固定文案，详情页不显示空行
             coverUrl: nil,
             intro: "本地导入的TXT小说",
+            // 来源标记本地，详情页据此隐藏「换源」
             origin: "local",
+            // 显示名走本地导入，目录由 TXT 切章自己生成
             originName: "本地导入",
             tocUrl: "",
             totalChapterNum: chapters.count
         )
 
         saveChapters(chapters, for: bookUrl)
-        if let idx = bookshelf.firstIndex(where: { $0.bookUrl == bookUrl }) {
-            bookshelf[idx] = book
-        } else {
-            bookshelf.insert(book, at: 0)
-        }
-        saveBookshelf()
+        upsertShelf(book)
         return book
     }
 
@@ -1456,12 +1481,7 @@ public extension BookStore {
         let name = fileUrl.deletingPathExtension().lastPathComponent
         let book = Book(bookUrl: bookUrl, name: name, author: "", intro: "", origin: "local", originName: "本地漫画", tocUrl: "", latestChapterTitle: chapters.last?.title, totalChapterNum: chapters.count)
         saveChapters(chapters, for: bookUrl)
-        if let idx = bookshelf.firstIndex(where: { $0.bookUrl == bookUrl }) {
-            bookshelf[idx] = book
-        } else {
-            bookshelf.insert(book, at: 0)
-        }
-        saveBookshelf()
+        upsertShelf(book)
         return book
     }
 
@@ -1504,12 +1524,7 @@ public extension BookStore {
         let name = fileUrl.deletingPathExtension().lastPathComponent
         let book = Book(bookUrl: bookUrl, name: name, author: "", intro: "", origin: "local", originName: "本地 PDF", tocUrl: "", latestChapterTitle: chapters.last?.title, totalChapterNum: chapters.count)
         saveChapters(chapters, for: bookUrl)
-        if let idx = bookshelf.firstIndex(where: { $0.bookUrl == bookUrl }) {
-            bookshelf[idx] = book
-        } else {
-            bookshelf.insert(book, at: 0)
-        }
-        saveBookshelf()
+        upsertShelf(book)
         return book
         #else
         throw NSError(domain: "Legado", code: 5, userInfo: [NSLocalizedDescriptionKey: "这个平台不支持 PDF"])
