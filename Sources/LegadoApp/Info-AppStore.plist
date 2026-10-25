@@ -15,6 +15,36 @@
 	<false/>
 	<key>NSHumanReadableCopyright</key>
 	<string>© 2026 FactorCitrus. 橘阅名称与图标保留所有权利。</string>
+	<!-- 换图标要用 setAlternateIconName，备选图标必须在 Info.plist 里声明，否则运行时报
+	     "the requested operation couldn't be completed because the icon is not declared"。
+	     商店包用的是这份 plist，漏了这两段就等于商店版换图标功能直接失效。 -->
+	<key>CFBundleIcons</key>
+	<dict>
+		<key>CFBundleAlternateIcons</key>
+		<dict>
+			<key>AppIconClassic</key>
+			<dict>
+				<key>CFBundleIconFiles</key>
+				<array>
+					<string>AppIconClassic60x60</string>
+				</array>
+			</dict>
+		</dict>
+	</dict>
+	<key>CFBundleIcons~ipad</key>
+	<dict>
+		<key>CFBundleAlternateIcons</key>
+		<dict>
+			<key>AppIconClassic</key>
+			<dict>
+				<key>CFBundleIconFiles</key>
+				<array>
+					<string>AppIconClassic76x76</string>
+					<string>AppIconClassic83.5x83.5</string>
+				</array>
+			</dict>
+		</dict>
+	</dict>
 	<key>UISupportedInterfaceOrientations~ipad</key>
 	<array>
 		<string>UIInterfaceOrientationPortrait</string>
