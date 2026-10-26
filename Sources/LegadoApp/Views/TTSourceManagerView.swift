@@ -8,7 +8,8 @@ public struct TTSourceManagerView: View {
     @Environment(\.appTheme) private var theme
     @State private var sources: [HttpTTS] = []
     @State private var activeSourceId: Int64? = TTSourceSelection.activeId
-    @State private var showImportSheet = false
+    // 验收用：JUYUE_TTS_IMPORT=1 时直接展开导入区，省得手点。
+    @State private var showImportSheet = ProcessInfo.processInfo.environment["JUYUE_TTS_IMPORT"] == "1"
     @State private var importText = ""
     @State private var statusMessage: String?
     @State private var errorMessage: String?
@@ -17,17 +18,30 @@ public struct TTSourceManagerView: View {
 
     public var body: some View {
         List {
-            Section(header: Text("朗读设置")) {
-                NavigationLink(destination: VoiceCastSettingsView()) {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("音色与朗读参数")
-                        Text("多角色音色、语速、分段、试听、百度语音授权")
-                            .font(.caption2)
-                            .foregroundColor(theme.palette.secondaryInk)
+            if showImportSheet {
+                Section(header: Text("导入语音源")) {
+                    TextEditor(text: $importText)
+                        .font(.system(.footnote, design: .monospaced))
+                        .frame(minHeight: 120)
+                    Text("把语音源 JSON 粘在这里，比如 {\"name\":\"有道\",\"url\":\"https://dict.youdao.com/dictvoice?audio={{java.encodeURI(speakText)}}&le=zh\",\"contentType\":\"audio/mpeg\"}")
+                        .font(.caption2)
+                        .foregroundColor(theme.palette.secondaryInk)
+                    HStack {
+                        Button("取消") {
+                            showImportSheet = false
+                            importText = ""
+                        }
+                        Spacer()
+                        Button("导入") {
+                            importSource(importText)
+                            showImportSheet = false
+                        }
+                        .disabled(importText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                     }
+                    .font(.footnote)
                 }
+                .appThemedRows()
             }
-            .appThemedRows()
 
             Section(header: Text("当前引擎")) {
                 HStack {
@@ -119,44 +133,8 @@ public struct TTSourceManagerView: View {
             }
         }
         .appThemedList()
-        .navigationTitle("朗读引擎")
+        .navigationTitle("语音源")
         .task { reload() }
-        .sheet(isPresented: $showImportSheet) {
-            NavigationView {
-                VStack(spacing: 12) {
-                    TextEditor(text: $importText)
-                        .font(.system(.footnote, design: .monospaced))
-                        .overlay(
-                            RoundedRectangle(cornerRadius: 8)
-                                .stroke(theme.palette.divider.opacity(0.3))
-                        )
-                        .padding(.horizontal)
-                    Text("把语音源 JSON 粘在这里，比如 {\"name\":\"有道\",\"url\":\"https://dict.youdao.com/dictvoice?audio={{java.encodeURI(speakText)}}&le=zh\",\"contentType\":\"audio/mpeg\"}")
-                        .font(.caption2)
-                        .foregroundColor(theme.palette.secondaryInk)
-                        .padding(.horizontal)
-                }
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-                .background(AppThemeBackdrop())
-                .appThemedPage()
-                .navigationTitle("导入语音源")
-                #if os(iOS)
-                .navigationBarTitleDisplayMode(.inline)
-                #endif
-                .toolbar {
-                    ToolbarItem(placement: .cancellationAction) {
-                        Button("取消") { showImportSheet = false }
-                    }
-                    ToolbarItem(placement: .confirmationAction) {
-                        Button("导入") {
-                            importSource(importText)
-                            showImportSheet = false
-                        }
-                        .disabled(importText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                    }
-                }
-            }
-        }
     }
 
     private func host(of rule: String) -> String {
@@ -258,12 +236,5 @@ public enum TTSourceSelection {
             return loaded
         }
         return "在线语音源（已失效）"
-    }
-}
-
-/// 从「朗读引擎」页进听书设置：把整套音色与朗读参数放到同一个入口下
-struct VoiceCastSettingsView: View {
-    var body: some View {
-        TTSSettingsSheet()
     }
 }

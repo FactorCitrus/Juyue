@@ -30,7 +30,20 @@ public struct LegadoApp: App {
     }
 
     private var effectiveColorScheme: ColorScheme? {
-        themeManager.theme.forcedColorScheme ?? selectedColorScheme
+        renderTheme.forcedColorScheme ?? selectedColorScheme
+    }
+
+    /// 验收用：`JUYUE_THEME=lunarTerminal` 只换这一轮渲染的调色板与列表样式，
+    /// 不写持久化里的主题选择。Release 里没有这段。
+    private var renderTheme: AppThemeTokens {
+        #if DEBUG || targetEnvironment(simulator)
+        switch ProcessInfo.processInfo.environment["JUYUE_THEME"] {
+        case "lunarTerminal": return .lunarTerminal
+        case "standard": return .standard
+        default: break
+        }
+        #endif
+        return themeManager.theme
     }
 
     public init() {
@@ -39,7 +52,41 @@ public struct LegadoApp: App {
         preloadDefaultSources()
         // 导入过的自定义字体要在用之前注册进进程，否则 CoreText 认不出来
         CustomFontService.shared.loadAll()
+        // 模拟器验收用：灌一份真机备份，省得每次手点文件选择器
+        #if DEBUG || targetEnvironment(simulator)
+        importDebugBackupIfPresent()
+        #endif
     }
+
+    #if DEBUG || targetEnvironment(simulator)
+    /// `JUYUE_IMPORT_BACKUP=<zip 路径>` 启动时整包替换书架与书源。
+    /// 只活在 Debug 里：Release 包连这段符号都不生成，不会被误触。
+    private func importDebugBackupIfPresent() {
+        guard let path = ProcessInfo.processInfo.environment["JUYUE_IMPORT_BACKUP"], !path.isEmpty else {
+            return
+        }
+        let url = URL(fileURLWithPath: path)
+        guard FileManager.default.fileExists(atPath: url.path) else {
+            AppLog.write("[调试] 备份包不存在 \(path)")
+            return
+        }
+        do {
+            let result = try WebDAVService.shared.restoreFromZip(fileUrl: url)
+            guard let books = result.books else {
+                AppLog.write("[调试] 备份包里没有可用的 bookshelf.json")
+                return
+            }
+            let (bookCount, sourceCount) = BookStore.shared.restoreFromWebDAV(
+                books: books,
+                sources: result.sources,
+                mode: .replace
+            )
+            AppLog.write("[调试] 导入备份 \(books.count) 本 / \(result.sources?.count ?? 0) 源，落盘 \(bookCount) / \(sourceCount)")
+        } catch {
+            AppLog.write("[调试] 导入备份失败 \(error.localizedDescription)")
+        }
+    }
+    #endif
 
     public var body: some Scene {
         WindowGroup {
@@ -57,17 +104,23 @@ public struct LegadoApp: App {
         // 保留这一行是因为脚本浏览器的 present 回调挂在它自己的 init 里，取一次 shared
         // 才能保证脚本还没弹过网页时宿主就已经接好。
         MainTabView()
+            // 钩子挂在环境注入的内层：sheet 只会继承挂载点上方的环境，
+            // 放到 .environment(\.appTheme,) 外面就拿不到主题了。
+            .modifier(DebugTTSLauncher())
             .environmentObject(bookStore)
             .environmentObject(themeManager)
-            .environment(\.appTheme, themeManager.theme)
-            .tint(themeManager.theme.palette.accent)
+            .environment(\.appTheme, renderTheme)
+            .tint(renderTheme.palette.accent)
             .preferredColorScheme(effectiveColorScheme)
         #else
         MainTabView()
+            // 钩子挂在环境注入的内层：sheet 只会继承挂载点上方的环境，
+            // 放到 .environment(\.appTheme,) 外面就拿不到主题了。
+            .modifier(DebugTTSLauncher())
             .environmentObject(bookStore)
             .environmentObject(themeManager)
-            .environment(\.appTheme, themeManager.theme)
-            .tint(themeManager.theme.palette.accent)
+            .environment(\.appTheme, renderTheme)
+            .tint(renderTheme.palette.accent)
             .preferredColorScheme(effectiveColorScheme)
         #endif
     }
@@ -82,6 +135,31 @@ public struct LegadoApp: App {
                 AppLog.write("[启动] 预装书源导入 \(count ?? 0) 条")
             }
         }
+    }
+}
+
+/// `JUYUE_OPEN_TTS=1` 启动即弹出听书设置，验收 UI 时省掉「设置 → 听书」两级手点。
+/// 只活在 Debug / 模拟器里；Release 包里这个修饰器是空壳，不生成 sheet。
+private struct DebugTTSLauncher: ViewModifier {
+    #if DEBUG || targetEnvironment(simulator)
+    @State private var openTarget = ProcessInfo.processInfo.environment["JUYUE_OPEN_TTS"]
+    @State private var isPresented = {
+        let v = ProcessInfo.processInfo.environment["JUYUE_OPEN_TTS"] ?? "0"
+        return v != "0"
+    }()
+    #endif
+
+    func body(content: Content) -> some View {
+        #if DEBUG || targetEnvironment(simulator)
+        content.sheet(isPresented: $isPresented) {
+            switch openTarget {
+            case "sources": NavigationView { TTSourceManagerView() }
+            default: TTSSettingsSheet()
+            }
+        }
+        #else
+        content
+        #endif
     }
 }
 

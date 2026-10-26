@@ -9,7 +9,6 @@ import LegadoCore
 public struct TTSSettingsSheet: View {
     @Environment(\.appTheme) private var theme
     @ObservedObject private var audio = AudioBookService.shared
-    @Environment(\.dismiss) private var dismiss
 
     @State private var sources: [HttpTTS] = []
     @State private var activeId: Int64? = TTSourceSelection.activeId
@@ -21,210 +20,57 @@ public struct TTSSettingsSheet: View {
     @State private var baiduVoiceId: String? = BaiduOfflineTTS.activeVoiceId
     @State private var baiduSpeakerId: String? = BaiduOnlineTTS.activeSpeakerId
     @State private var baiduVoices: [BaiduOfflineTTS.Voice] = BaiduOfflineTTS.allVoices
-    @State private var diagLines: [String] = []
-    @State private var showImporter = false
-    @State private var showVoiceManager = false
-    @State private var importMessage: String?
     #endif
+    @State private var engineTab: TTSEngineTab = .system
     @State private var systemVoiceId: String? = SystemVoiceSelection.identifier
-    @State private var customSpeakerId: String = ""
     @ObservedObject private var cast = TTSCastStore.shared
 
     public init() {}
 
     public var body: some View {
-        NavigationView {
-            Form {
+        TTSPageShell(
+            code: "READ / VOICE",
+            title: "听书设置",
+            detail: "引擎 / 音色 / 多角色",
+            doneLabel: "完成"
+        ) {
+
+                // 引擎放最外层：四类并行，点一下就换下面那栏音色，不再靠 subtitle 前缀猜归属。
                 Section {
-                    TerminalPageHeader(code: "READ / VOICE", title: "听书设置", detail: "系统语音 / HTTP 语音 / 多角色")
-                        .listRowInsets(EdgeInsets(top: 8, leading: 12, bottom: 8, trailing: 12))
-                        .listRowBackground(Color.clear)
-                }
-                .appThemedRows()
-                Section(header: Text("引擎")) {
-                    engineRow(name: "系统语音", subtitle: "iOS 内置，离线可用", selected: activeId == nil) {
-                        select(nil)
-                    }
-
-                    ForEach(SystemVoiceSelection.chineseVoices, id: \.identifier) { voice in
-                        engineRow(
-                            name: voice.name,
-                            subtitle: "系统音色 · \(languageLabel(voice.language)) · \(SystemVoiceSelection.qualityLabel(voice))",
-                            selected: systemVoiceId == voice.identifier && activeId == nil
-                        ) {
-                            selectSystem(voice)
+                    HStack(spacing: 8) {
+                        ForEach(engineTabs) { tab in
+                            engineCard(tab)
                         }
                     }
-
-                    Text(systemVoiceHint)
-                        .font(.caption2)
-                        .foregroundColor(theme.palette.secondaryInk)
-
-                    #if os(iOS) && !NO_BAIDU_TTS
-                    ForEach(baiduVoices) { voice in
-                        engineRow(
-                            name: voice.name,
-                            subtitle: "百度离线 · \(voice.note)",
-                            selected: baiduVoiceId == voice.id
-                        ) {
-                            selectBaidu(voice)
-                        }
-                    }
-
-                    ForEach(BaiduOnlineTTS.speakers) { speaker in
-                        engineRow(
-                            name: speaker.name,
-                            subtitle: "\(speaker.note)",
-                            selected: baiduSpeakerId == speaker.id
-                        ) {
-                            selectBaiduOnline(speaker)
-                        }
-                    }
-                    #endif
-
-                    ForEach(sources, id: \.id) { source in
-                        engineRow(
-                            name: source.name,
-                            subtitle: host(of: source.url),
-                            selected: activeId == source.id
-                        ) {
-                            select(source.id)
-                        }
-                    }
-
-                    NavigationLink(destination: TTSourceManagerView()) {
-                        Label("管理 / 导入语音源", systemImage: "square.and.arrow.down")
-                    }
-                }
-                .appThemedRows()
-
-                #if os(iOS) && !NO_BAIDU_TTS
-                Section(header: Text("百度离线引擎")) {
-                    HStack {
-                        Text(baidu.statusText)
-                        Spacer()
-                        if baidu.isPreparing {
-                            ProgressView()
-                        }
-                    }
-                    .font(.footnote)
-
-                    Button("加载 / 激活引擎") {
-                        guard let voice = BaiduOfflineTTS.voice(id: baiduVoiceId) ?? baiduVoices.first else { return }
-                        baidu.preload(voice: voice)
-                    }
-                    .font(.footnote)
-
-                    Button("诊断音库文件") {
-                        diagLines = baiduVoices.flatMap { voice -> [String] in
-                            ["【\(voice.name)】"] + baidu.diagnose(voice: voice)
-                        }
-                    }
-                    .font(.footnote)
-
-                    Button {
-                        showImporter = true
-                    } label: {
-                        Label("导入音库包（zip）", systemImage: "square.and.arrow.down")
-                    }
-                    .font(.footnote)
-
-                    if !BaiduOfflineTTS.userVoices.isEmpty {
-                        Button {
-                            showVoiceManager = true
-                        } label: {
-                            Label("管理自备音色（\(BaiduOfflineTTS.userVoices.count)）", systemImage: "trash")
-                        }
-                        .font(.footnote)
-                    }
-
-                    if let importMessage {
-                        Text(importMessage)
-                            .font(.caption2)
-                            .foregroundColor(theme.palette.secondaryInk)
-                    }
-
-                    ForEach(diagLines, id: \.self) { line in
-                        Text(line)
-                            .font(.system(.caption2, design: .monospaced))
-                            .foregroundColor(theme.palette.secondaryInk)
-                    }
-
-                    if let error = baidu.lastError {
-                        Text(error)
-                            .font(.caption2)
-                            .foregroundColor(theme.palette.danger)
-                    }
-
-                    Text("首次激活要联网，SDK 会拿 APP ID + 序列号换授权文件，之后可以断网用。")
-                        .font(.caption2)
-                        .foregroundColor(theme.palette.secondaryInk)
-                }
-                .appThemedRows()
-
-                Section(header: Text("百度在线引擎")) {
-                    HStack {
-                        Text(baiduOnline.statusText)
-                        Spacer()
-                        if baiduOnline.isPreparing {
-                            ProgressView()
-                        }
-                    }
-                    .font(.footnote)
-
-                    Button("取 token / 加载在线引擎") {
-                        guard let speaker = BaiduOnlineTTS.speaker(id: baiduSpeakerId) ?? BaiduOnlineTTS.speakers.first else { return }
-                        baiduOnline.preload(speaker: speaker)
-                    }
-                    .font(.footnote)
-
-                    HStack {
-                        TextField("自定义音色 ID", text: $customSpeakerId)
-                            .font(.footnote)
-                            .textInputAutocapitalization(.never)
-                            .disableAutocorrection(true)
-                        Button("用这个") {
-                            let id = customSpeakerId.trimmingCharacters(in: .whitespacesAndNewlines)
-                            guard !id.isEmpty, let speaker = BaiduOnlineTTS.speaker(id: id) else { return }
-                            selectBaiduOnline(speaker)
-                        }
-                        .font(.footnote)
-                    }
-
-                    if let error = baiduOnline.lastError {
-                        Text(error)
-                            .font(.caption2)
-                            .foregroundColor(theme.palette.danger)
-                    }
-
-                    Text("在线合成走网络，不吃序列号。access_token 有效期 30 天，过期自动重取。精品音色要在控制台开通过才能用。")
-                        .font(.caption2)
-                        .foregroundColor(theme.palette.secondaryInk)
-                }
-                .appThemedRows()
-                #endif
-
-                #if os(iOS) && !NO_BAIDU_TTS
-                Section {
-                    NavigationLink(destination: BaiduCredentialView()) {
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text("百度语音授权")
-                            Text(BaiduCredentials.hasCustomValues ? "用的是自己填的凭据" : "用的 App 内置默认凭据")
-                                .font(.caption2)
-                                .foregroundColor(theme.palette.secondaryInk)
-                        }
-                    }
+                    .padding(.vertical, 2)
+                    .listRowInsets(EdgeInsets(top: 6, leading: 12, bottom: 6, trailing: 12))
+                    .listRowBackground(Color.clear)
+                } header: {
+                    Text("引擎")
                 } footer: {
-                    Text("APP ID / API Key / Secret Key / 离线序列号。填了就以填的为准，留空回落到内置默认。")
+                    Text(engineFooter)
                 }
                 .appThemedRows()
-                #endif
 
-                Section(header: Text("语速")) {
+                Section(header: Text(engineTab.voiceSectionTitle)) {
+                    voiceRows
+
+                    if engineTab != .custom {
+                        Text(engineStatusLine)
+                            .font(.caption2)
+                            .foregroundColor(isEngineError ? theme.palette.danger : theme.palette.secondaryInk)
+                    }
+                }
+                .appThemedRows()
+
+                Section(header: Text("朗读参数")) {
                     HStack {
+                        Text("语速")
+                            .font(.footnote)
+                            .frame(width: 36, alignment: .leading)
                         Text("\(String(format: "%.1f", audio.speechRate / AVSpeechUtteranceDefaultSpeechRate))×")
-                            .font(.system(.body, design: .monospaced))
-                            .frame(width: 48, alignment: .leading)
+                            .font(.system(.footnote, design: .monospaced))
+                            .frame(width: 42, alignment: .trailing)
                         Slider(
                             value: Binding(
                                 get: { Double(audio.speechRate) },
@@ -234,18 +80,13 @@ public struct TTSSettingsSheet: View {
                             step: 0.01
                         )
                     }
-                    Button("恢复默认语速") {
-                        audio.speechRate = AVSpeechUtteranceDefaultSpeechRate
-                    }
-                    .font(.footnote)
-                }
-                .appThemedRows()
-
-                Section(header: Text("分段")) {
                     HStack {
+                        Text("分段")
+                            .font(.footnote)
+                            .frame(width: 36, alignment: .leading)
                         Text("\(audio.chunkLength) 字")
-                            .font(.system(.body, design: .monospaced))
-                            .frame(width: 72, alignment: .leading)
+                            .font(.system(.footnote, design: .monospaced))
+                            .frame(width: 42, alignment: .trailing)
                         Slider(
                             value: Binding(
                                 get: { Double(audio.chunkLength) },
@@ -255,8 +96,8 @@ public struct TTSSettingsSheet: View {
                             step: 10
                         )
                     }
-                    Text("在线语音源会按这个长度切段再合成。太长容易超时或被服务器截断。")
-                        .font(.caption)
+                    Text("在线引擎按这个长度切段再合成，太长容易超时或被服务器截断。")
+                        .font(.caption2)
                         .foregroundColor(theme.palette.secondaryInk)
                 }
                 .appThemedRows()
@@ -300,6 +141,33 @@ public struct TTSSettingsSheet: View {
                 }
                 .appThemedRows()
 
+                // 管理类的东西全部塞进这一页，主页面只留选择。
+                // 商店构建没有百度编译，这一栏就退化成语音源管理，别留死引用。
+                #if os(iOS) && !NO_BAIDU_TTS
+                Section {
+                    NavigationLink(destination: TTSEngineAdvancedView(onVoicesChanged: {
+                        baiduVoices = BaiduOfflineTTS.allVoices
+                    })) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("引擎高级设置")
+                            Text(advancedSubtitle)
+                                .font(.caption2)
+                                .foregroundColor(theme.palette.secondaryInk)
+                        }
+                    }
+                } footer: {
+                    Text("激活与诊断、音库导入、百度授权、自定义语音源都在这一层里，主页面不再铺开。")
+                }
+                .appThemedRows()
+                #else
+                Section {
+                    NavigationLink(destination: TTSourceManagerView()) {
+                        Label("管理 / 导入语音源", systemImage: "square.and.arrow.down")
+                    }
+                }
+                .appThemedRows()
+                #endif
+
                 Section {
                     Button {
                         audio.stop()
@@ -318,55 +186,162 @@ public struct TTSSettingsSheet: View {
                     Text("当前：\(audio.currentEngineName)")
                 }
                 .appThemedRows()
-            }
-            .appThemedList()
-            .navigationTitle("听书设置")
-            #if os(iOS)
-            .navigationBarTitleDisplayMode(.inline)
-            #endif
-            .toolbar {
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("完成") { dismiss() }
-                }
-            }
-            .task { reloadSources() }
-            #if os(iOS)
-            .fileImporter(
-                isPresented: $showImporter,
-                allowedContentTypes: [.archive, .zip, .item],
-                allowsMultipleSelection: false
-            ) { result in
-                handleImport(result)
-            }
-            .sheet(isPresented: $showVoiceManager) {
-                BaiduVoiceManagerSheet { deleted in
-                    baiduVoices = BaiduOfflineTTS.allVoices
-                    importMessage = "删掉了 \(deleted) 条自备音色"
-                }
-            }
-            #endif
+        }
+        .onAppear {
+            reloadSources()
+            syncEngineTab()
         }
     }
 
-    #if os(iOS)
-    private func handleImport(_ result: Result<[URL], Error>) {
-        switch result {
-        case .failure(let error):
-            importMessage = "导入失败：\(error.localizedDescription)"
-        case .success(let urls):
-            guard let url = urls.first else { return }
-            let scoped = url.startAccessingSecurityScopedResource()
-            defer { if scoped { url.stopAccessingSecurityScopedResource() } }
-            do {
-                let count = try BaiduOfflineTTS.importPackage(from: url)
-                baiduVoices = BaiduOfflineTTS.allVoices
-                importMessage = "导入了 \(url.lastPathComponent)，现在共 \(count) 条自备音色"
-            } catch {
-                importMessage = "导入失败：\(error.localizedDescription)"
+    // MARK: - 引擎切换
+
+    /// 商店包没有百度编译，卡片列表也得跟着少两张。
+    private var engineTabs: [TTSEngineTab] {
+        var list: [TTSEngineTab] = [.system]
+        #if os(iOS) && !NO_BAIDU_TTS
+        list += [.baiduOffline, .baiduOnline]
+        #endif
+        list.append(.custom)
+        return list
+    }
+
+    private var engineFooter: String {
+        switch engineTab {
+        case .system: return "iOS 内置合成，离线可用，不占账号。"
+        case .baiduOffline: return "本地模型，首次激活要联网换授权，之后断网可用。"
+        case .baiduOnline: return "走网络合成，只吃 API Key，不吃离线序列号。"
+        case .custom: return "自己填接口模板，接各家在线 TTS。"
+        }
+    }
+
+    private var engineStatusLine: String {
+        switch engineTab {
+        case .system:
+            return systemVoiceHint
+        case .baiduOffline:
+            #if os(iOS) && !NO_BAIDU_TTS
+            return baidu.statusText
+            #else
+            return "这个构建没带百度离线引擎。"
+            #endif
+        case .baiduOnline:
+            #if os(iOS) && !NO_BAIDU_TTS
+            return baiduOnline.statusText
+            #else
+            return "这个构建没带百度在线引擎。"
+            #endif
+        case .custom:
+            return "共 \(sources.count) 个语音源"
+        }
+    }
+
+    private var isEngineError: Bool {
+        #if os(iOS) && !NO_BAIDU_TTS
+        switch engineTab {
+        case .baiduOffline: return baidu.lastError != nil
+        case .baiduOnline: return baiduOnline.lastError != nil
+        default: return false
+        }
+        #else
+        return false
+        #endif
+    }
+
+    private var advancedSubtitle: String {
+        #if os(iOS) && !NO_BAIDU_TTS
+        return "\(baidu.statusText) · \(baiduOnline.statusText)"
+        #else
+        return "自定义语音源 · 分段"
+        #endif
+    }
+
+    /// 只显示当前引擎的音色，不再把四类混在一个列表里。
+    @ViewBuilder
+    private var voiceRows: some View {
+        switch engineTab {
+        case .system:
+            ForEach(SystemVoiceSelection.chineseVoices, id: \.identifier) { voice in
+                engineRow(
+                    name: voice.name,
+                    subtitle: "系统音色 · \(languageLabel(voice.language)) · \(SystemVoiceSelection.qualityLabel(voice))",
+                    selected: systemVoiceId == voice.identifier && activeId == nil
+                ) {
+                    selectSystem(voice)
+                }
+            }
+        case .baiduOffline:
+            #if os(iOS) && !NO_BAIDU_TTS
+            ForEach(baiduVoices) { voice in
+                engineRow(name: voice.name, subtitle: voice.note, selected: baiduVoiceId == voice.id) {
+                    selectBaidu(voice)
+                }
+            }
+            #endif
+        case .baiduOnline:
+            #if os(iOS) && !NO_BAIDU_TTS
+            ForEach(BaiduOnlineTTS.speakers) { speaker in
+                engineRow(name: speaker.name, subtitle: speaker.note, selected: baiduSpeakerId == speaker.id) {
+                    selectBaiduOnline(speaker)
+                }
+            }
+            #endif
+        case .custom:
+            if sources.isEmpty {
+                Text("还没有自定义语音源，去「引擎高级设置」里导入。")
+                    .font(.caption)
+                    .foregroundColor(theme.palette.secondaryInk)
+            }
+            ForEach(sources, id: \.id) { source in
+                engineRow(name: source.name, subtitle: host(of: source.url), selected: activeId == source.id) {
+                    select(source.id)
+                }
             }
         }
     }
-    #endif
+
+    private func engineCard(_ tab: TTSEngineTab) -> some View {
+        let active = engineTab == tab
+        return Button {
+            withAnimation(.easeOut(duration: 0.16)) { engineTab = tab }
+        } label: {
+            VStack(spacing: 5) {
+                Image(systemName: tab.icon)
+                    .font(.system(size: 17, weight: .medium))
+                Text(tab.title)
+                    .font(.system(size: 11, weight: .medium))
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.8)
+            }
+            .frame(maxWidth: .infinity)
+            .frame(height: 56)
+            .foregroundColor(active ? theme.palette.accent : theme.palette.ink.opacity(0.72))
+            .background(
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .fill(active ? theme.palette.accent.opacity(0.12) : theme.palette.surface)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .stroke(active ? theme.palette.accent.opacity(0.55) : theme.palette.divider.opacity(0.6),
+                            lineWidth: 1)
+            )
+        }
+        .buttonStyle(.plain)
+    }
+
+    /// 进页面时把标签落到当前实际在用的引擎上，免得「选了百度却显示系统」。
+    private func syncEngineTab() {
+        #if os(iOS) && !NO_BAIDU_TTS
+        if baiduVoiceId != nil {
+            engineTab = .baiduOffline
+            return
+        }
+        if baiduSpeakerId != nil {
+            engineTab = .baiduOnline
+            return
+        }
+        #endif
+        engineTab = activeId == nil ? .system : .custom
+    }
 
     @ViewBuilder
     private func engineRow(name: String, subtitle: String, selected: Bool, action: @escaping () -> Void) -> some View {
@@ -481,7 +456,6 @@ public struct TTSSettingsSheet: View {
 /// 自备音色管理：多选、批量删。
 struct BaiduVoiceManagerSheet: View {
     @Environment(\.appTheme) private var theme
-    @Environment(\.dismiss) private var dismiss
 
     @State private var voices: [BaiduOfflineTTS.Voice] = BaiduOfflineTTS.userVoices
     @State private var selected: Set<String> = []
@@ -491,8 +465,7 @@ struct BaiduVoiceManagerSheet: View {
     let onDeleted: (Int) -> Void
 
     var body: some View {
-        NavigationView {
-            List {
+        List {
                 if voices.isEmpty {
                     Text("还没有导进来的音色。用「导入音库包（zip）」加。")
                         .font(.footnote)
@@ -522,40 +495,38 @@ struct BaiduVoiceManagerSheet: View {
                     }
                 }
             }
-            .appThemedList()
-            .navigationTitle("自备音色")
-            #if os(iOS)
-            .navigationBarTitleDisplayMode(.inline)
-            #endif
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button(isSelecting ? "取消" : "编辑") {
-                        isSelecting.toggle()
-                        if !isSelecting { selected.removeAll() }
+        .appThemedList()
+        .navigationTitle("自备音色")
+        #if os(iOS)
+        .navigationBarTitleDisplayMode(.inline)
+        #endif
+        .toolbar {
+            // push 之后左上角是返回键，编辑态的两个按钮都放右边，不再抢取消位。
+            ToolbarItemGroup(placement: .navigationBarTrailing) {
+                if isSelecting {
+                    Button("取消") {
+                        isSelecting = false
+                        selected.removeAll()
                     }
-                    .disabled(voices.isEmpty)
-                }
-                ToolbarItem(placement: .confirmationAction) {
-                    if isSelecting {
-                        Button(selected.isEmpty ? "全选" : "删除 \(selected.count)") {
-                            if selected.isEmpty {
-                                selected = Set(voices.map { $0.id })
-                            } else {
-                                showDeleteAlert = true
-                            }
+                    Button(selected.isEmpty ? "全选" : "删除 \(selected.count)") {
+                        if selected.isEmpty {
+                            selected = Set(voices.map { $0.id })
+                        } else {
+                            showDeleteAlert = true
                         }
-                        .foregroundColor(selected.isEmpty ? .accentColor : .red)
-                    } else {
-                        Button("完成") { dismiss() }
                     }
+                    .foregroundColor(selected.isEmpty ? .accentColor : .red)
+                } else {
+                    Button("编辑") { isSelecting = true }
+                        .disabled(voices.isEmpty)
                 }
             }
-            .alert("删除选中的音色？", isPresented: $showDeleteAlert) {
-                Button("取消", role: .cancel) {}
-                Button("删除", role: .destructive) { deleteSelected() }
-            } message: {
-                Text("会把这些音色的文件从设备上删掉。SDK 自带的音色不在这个列表里，删不了。")
-            }
+        }
+        .alert("删除选中的音色？", isPresented: $showDeleteAlert) {
+            Button("取消", role: .cancel) {}
+            Button("删除", role: .destructive) { deleteSelected() }
+        } message: {
+            Text("会把这些音色的文件从设备上删掉。SDK 自带的音色不在这个列表里，删不了。")
         }
     }
 
@@ -726,5 +697,296 @@ private func castVoiceLabel(_ role: TTSCastRole) -> String {
         #else
         return "在线发音人"
         #endif
+    }
+}
+
+/// 听书面板的引擎标签。主页面四张卡片就是它，多一个都不放。
+enum TTSEngineTab: String, CaseIterable, Identifiable {
+    case system
+    case baiduOffline
+    case baiduOnline
+    case custom
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .system: return "系统"
+        case .baiduOffline: return "百度离线"
+        case .baiduOnline: return "百度在线"
+        case .custom: return "自定义"
+        }
+    }
+
+    var icon: String {
+        switch self {
+        case .system: return "iphone"
+        case .baiduOffline: return "internaldrive"
+        case .baiduOnline: return "cloud"
+        case .custom: return "square.stack.3d.up"
+        }
+    }
+
+    var voiceSectionTitle: String {
+        switch self {
+        case .system: return "系统音色"
+        case .baiduOffline: return "百度离线音色"
+        case .baiduOnline: return "百度在线音色"
+        case .custom: return "自定义语音源"
+        }
+    }
+}
+
+/// 引擎的管理面：激活、诊断、导入、授权、源管理。
+/// 主页面只负责选，脏活全收在这里，避免一进设置就看见一堆按钮。
+#if os(iOS) && !NO_BAIDU_TTS
+struct TTSEngineAdvancedView: View {
+    @Environment(\.appTheme) private var theme
+    @ObservedObject private var baidu = BaiduOfflineTTS.shared
+    @ObservedObject private var baiduOnline = BaiduOnlineTTS.shared
+
+    @State private var diagLines: [String] = []
+    @State private var showImporter = false
+    @State private var importMessage: String?
+    @State private var customSpeakerId = ""
+
+    /// 导入或删除音库后通知上一层刷新列表，不然返回主页要重启才看见。
+    var onVoicesChanged: () -> Void = {}
+
+    var body: some View {
+        Form {
+            Section(header: Text("百度离线")) {
+                HStack {
+                    Text(baidu.statusText)
+                    Spacer()
+                    if baidu.isPreparing { ProgressView() }
+                }
+                .font(.footnote)
+
+                Button("加载 / 激活当前音色") {
+                    let list = BaiduOfflineTTS.allVoices
+                    guard let voice = BaiduOfflineTTS.voice(id: BaiduOfflineTTS.activeVoiceId) ?? list.first else { return }
+                    baidu.preload(voice: voice)
+                }
+                .font(.footnote)
+
+                Button("诊断音库文件") {
+                    diagLines = BaiduOfflineTTS.allVoices.flatMap { voice in
+                        ["【\(voice.name)】"] + baidu.diagnose(voice: voice)
+                    }
+                }
+                .font(.footnote)
+
+                Button {
+                    showImporter = true
+                } label: {
+                    Label("导入音库包（zip）", systemImage: "square.and.arrow.down")
+                }
+                .font(.footnote)
+
+                if !BaiduOfflineTTS.userVoices.isEmpty {
+                    // 以前是 sheet：已经在推入的页面里再开一套导航。现在同栈 push。
+                    NavigationLink(destination: BaiduVoiceManagerSheet(onDeleted: { deleted in
+                        onVoicesChanged()
+                        importMessage = "删掉了 \(deleted) 条自备音色"
+                    })) {
+                        Label("管理自备音色（\(BaiduOfflineTTS.userVoices.count)）", systemImage: "trash")
+                    }
+                    .font(.footnote)
+                }
+
+                if let importMessage {
+                    Text(importMessage)
+                        .font(.caption2)
+                        .foregroundColor(theme.palette.secondaryInk)
+                }
+
+                if !diagLines.isEmpty {
+                    ForEach(diagLines, id: \.self) { line in
+                        Text(line)
+                            .font(.system(.caption2, design: .monospaced))
+                            .foregroundColor(theme.palette.secondaryInk)
+                    }
+                    Button("收起诊断") { diagLines = [] }
+                        .font(.caption2)
+                }
+
+                if let error = baidu.lastError {
+                    Text(error)
+                        .font(.caption2)
+                        .foregroundColor(theme.palette.danger)
+                }
+
+                Text("首次激活要联网，SDK 拿 APP ID + 序列号换授权文件，之后断网可用。")
+                    .font(.caption2)
+                    .foregroundColor(theme.palette.secondaryInk)
+            }
+            .appThemedRows()
+
+            Section(header: Text("百度在线")) {
+                HStack {
+                    Text(baiduOnline.statusText)
+                    Spacer()
+                    if baiduOnline.isPreparing { ProgressView() }
+                }
+                .font(.footnote)
+
+                Button("取 token / 加载在线引擎") {
+                    guard let speaker = BaiduOnlineTTS.speaker(id: BaiduOnlineTTS.activeSpeakerId)
+                        ?? BaiduOnlineTTS.speakers.first else { return }
+                    baiduOnline.preload(speaker: speaker)
+                }
+                .font(.footnote)
+
+                HStack {
+                    TextField("自定义音色 ID", text: $customSpeakerId)
+                        .font(.footnote)
+                        .textInputAutocapitalization(.never)
+                        .disableAutocorrection(true)
+                    Button("用这个") {
+                        let id = customSpeakerId.trimmingCharacters(in: .whitespacesAndNewlines)
+                        guard !id.isEmpty, BaiduOnlineTTS.speaker(id: id) != nil else { return }
+                        BaiduOnlineTTS.activeSpeakerId = id
+                    }
+                    .font(.footnote)
+                }
+
+                if let error = baiduOnline.lastError {
+                    Text(error)
+                        .font(.caption2)
+                        .foregroundColor(theme.palette.danger)
+                }
+
+                Text("在线合成走网络，不吃序列号。access_token 30 天有效，过期自动重取。精品音色要先在控制台开通。")
+                    .font(.caption2)
+                    .foregroundColor(theme.palette.secondaryInk)
+            }
+            .appThemedRows()
+
+            Section {
+                NavigationLink(destination: BaiduCredentialView()) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("百度语音授权")
+                        Text(BaiduCredentials.hasCustomValues ? "用的是自己填的凭据" : "用的是 App 内置默认凭据")
+                            .font(.caption2)
+                            .foregroundColor(theme.palette.secondaryInk)
+                    }
+                }
+            } footer: {
+                Text("APP ID / API Key / Secret Key / 离线序列号，填了以填的为准。")
+            }
+            .appThemedRows()
+
+            Section {
+                NavigationLink(destination: TTSourceManagerView()) {
+                    Label("管理 / 导入语音源", systemImage: "square.and.arrow.down")
+                }
+            } footer: {
+                Text("自定义引擎的接口模板与音色。")
+            }
+            .appThemedRows()
+        }
+        .appThemedList()
+        .navigationTitle("引擎高级设置")
+        #if os(iOS)
+        .navigationBarTitleDisplayMode(.inline)
+        #endif
+        .fileImporter(
+            isPresented: $showImporter,
+            allowedContentTypes: [.archive, .zip, .item],
+            allowsMultipleSelection: false
+        ) { result in
+            handleImport(result)
+        }
+    }
+
+    private func handleImport(_ result: Result<[URL], Error>) {
+        switch result {
+        case .failure(let error):
+            importMessage = "导入失败：\(error.localizedDescription)"
+        case .success(let urls):
+            guard let url = urls.first else { return }
+            let scoped = url.startAccessingSecurityScopedResource()
+            defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+            do {
+                let count = try BaiduOfflineTTS.importPackage(from: url)
+                onVoicesChanged()
+                importMessage = "导入了 \(url.lastPathComponent)，现在共 \(count) 条自备音色"
+            } catch {
+                importMessage = "导入失败：\(error.localizedDescription)"
+            }
+        }
+    }
+}
+#endif
+
+/// 听书 / 引擎这一族的统一外壳。
+///
+/// 每页各自写 NavigationView + Form + 头部卡片时，顶距、标题、列表样式就要每页抄一遍，
+/// 四十点那道灰就是这么漏的：iOS 26 给 Form 的 scrollContent 补了约 29pt 上边距，
+/// 抄漏一次清零就多一道灰。收成一处之后，改一次六页一起动。
+struct TTSPageShell<Content: View>: View {
+    let code: String
+    let title: String
+    let detail: String
+    /// 非 nil 才在右上角给按钮；靠返回键退出的子页面传 nil。
+    var doneLabel: String?
+    @ViewBuilder var content: () -> Content
+
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationView {
+            Form {
+                // 头部卡片固定是表单第一段，跟着内容一起滚。
+                Section {
+                    TerminalPageHeader(code: code, title: title, detail: detail)
+                        .listRowInsets(EdgeInsets(top: 0, leading: 12, bottom: 6, trailing: 12))
+                        .listRowBackground(Color.clear)
+                }
+                .appThemedRows()
+
+                content()
+            }
+            .appThemedList()
+            .modifier(ZeroSectionSpacing())
+            .modifier(TopContentFlush())
+            .navigationTitle(title)
+            #if os(iOS)
+            .navigationBarTitleDisplayMode(.inline)
+            #endif
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    if let doneLabel {
+                        Button(doneLabel) { dismiss() }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Form 的段间距只有 iOS 17 起能压到 0；15/16 保留系统默认，别硬塞负 padding。
+struct ZeroSectionSpacing: ViewModifier {
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if #available(iOS 17.0, macOS 14.0, *) {
+            content.listSectionSpacing(0)
+        } else {
+            content
+        }
+    }
+}
+
+/// iOS 26 的 Form 会在安全区下沿再留一条约 29pt 的 scrollContent 上边距，头部卡片因此贴不住导航栏。
+/// 这条边距只有 iOS 17+ 的 contentMargins 清得掉；15/16 本来就没有，走原样即可。
+struct TopContentFlush: ViewModifier {
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if #available(iOS 17.0, macOS 14.0, *) {
+            content.contentMargins(.top, 0, for: .scrollContent)
+        } else {
+            content
+        }
     }
 }
