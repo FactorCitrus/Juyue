@@ -1434,7 +1434,9 @@ public struct SettingsView: View {
                 value: TTSourceSelection.displayName(in: HttpTTSStore.shared.sources),
                 detail: "HTTP TTS 与系统语音"
             ) {
-                TTSourceManagerView()
+                // 内嵌进设置这条导航栈：音色、朗读参数、语音源都从这一页往下推，
+                // 不再各开一套导航，也不再有「语音源再推回听书设置」的循环。
+                TTSSettingsSheet(embedded: true)
             }
         }
 

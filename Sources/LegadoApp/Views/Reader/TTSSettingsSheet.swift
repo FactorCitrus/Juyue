@@ -25,14 +25,18 @@ public struct TTSSettingsSheet: View {
     @State private var systemVoiceId: String? = SystemVoiceSelection.identifier
     @ObservedObject private var cast = TTSCastStore.shared
 
-    public init() {}
+    /// 已经被包在别人的导航栈里（设置页推进来）时传 true，外壳不再自造 NavigationView。
+    private let embedded: Bool
+
+    public init(embedded: Bool = false) { self.embedded = embedded }
 
     public var body: some View {
         TTSPageShell(
             code: "READ / VOICE",
             title: "听书设置",
             detail: "引擎 / 音色 / 多角色",
-            doneLabel: "完成"
+            doneLabel: embedded ? nil : "完成",
+            embedsNavigation: !embedded
         ) {
 
                 // 引擎放最外层：四类并行，点一下就换下面那栏音色，不再靠 subtitle 前缀猜归属。
@@ -931,12 +935,21 @@ struct TTSPageShell<Content: View>: View {
     let detail: String
     /// 非 nil 才在右上角给按钮；靠返回键退出的子页面传 nil。
     var doneLabel: String?
+    /// 已经处在别人的导航栈里就传 false，别再造一层 NavigationView。
+    var embedsNavigation: Bool = true
     @ViewBuilder var content: () -> Content
 
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
-        NavigationView {
+        if embedsNavigation {
+            NavigationView { chrome }
+        } else {
+            chrome
+        }
+    }
+
+    private var chrome: some View {
             Form {
                 // 头部卡片固定是表单第一段，跟着内容一起滚。
                 Section {
@@ -962,7 +975,6 @@ struct TTSPageShell<Content: View>: View {
                     }
                 }
             }
-        }
     }
 }
 
