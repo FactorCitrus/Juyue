@@ -940,6 +940,7 @@ struct TTSPageShell<Content: View>: View {
     @ViewBuilder var content: () -> Content
 
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.appTheme) private var theme
 
     var body: some View {
         if embedsNavigation {
@@ -951,13 +952,28 @@ struct TTSPageShell<Content: View>: View {
 
     private var chrome: some View {
             Form {
-                // 头部卡片固定是表单第一段，跟着内容一起滚。
+                // 导航栏已经写着页名，这里不再放一张重复标题的大卡片：
+                // 米色主题下工具栏和卡片同色，两块贴一起就是一整片空米色，标题还写两遍。
+                // 只留一条细标尺，红杠 + 编号 + 副标题，当这页的身份标记。
                 Section {
-                    TerminalPageHeader(code: code, title: title, detail: detail)
-                        .listRowInsets(EdgeInsets(top: 0, leading: 12, bottom: 6, trailing: 12))
+                    HStack(spacing: 10) {
+                        Rectangle()
+                            .fill(theme.palette.accent)
+                            .frame(width: 3, height: 15)
+                        Text(code)
+                            .font(theme.typography.label)
+                        Text(detail)
+                            .font(theme.typography.mono)
+                        Spacer(minLength: 8)
+                        Text("MODULE")
+                            .font(theme.typography.mono)
+                    }
+                    .foregroundColor(theme.palette.secondaryInk)
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 9)
+                    .listRowInsets(EdgeInsets())
                         .listRowBackground(Color.clear)
                 }
-                .appThemedRows()
 
                 content()
             }
