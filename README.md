@@ -1,4 +1,4 @@
-# Legado iOS (开源阅读 iOS 版)
+# JueYue iOS 
 
 [![iOS](https://img.shields.io/badge/Platform-iOS%2015.0%2B-blue.svg)](https://developer.apple.com/ios/)
 [![Swift](https://img.shields.io/badge/Swift-5.0%2B-orange.svg)](https://swift.org)
@@ -6,7 +6,7 @@
 [![Release](https://img.shields.io/github/v/release/FactorCitrus/Legado-iOS?label=Release&color=green)](https://github.com/FactorCitrus/Legado-iOS/releases)
 [![License](https://img.shields.io/badge/License-GPLv3-lightgrey.svg)](LICENSE)
 
-> **Legado iOS** 是一个用 SwiftUI 和 Swift 编写的开源阅读器，兼容 Android 端 **Legado（开源阅读 3.0）** 的书源规则和 WebDAV 同步格式。
+> **JueYue iOS** 是一个用 SwiftUI 和 Swift 编写的开源阅读器，兼容 Android 端 **Legado（开源阅读 3.0）** 的书源规则和 WebDAV 同步格式。
 
 ## Fork 与品牌
 
