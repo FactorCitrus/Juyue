@@ -8,7 +8,7 @@ on:
       - 'VERSION'
       - 'CHANGELOG.md'
       - 'Sources/**'
-      - 'Legado.xcodeproj/**'
+      - 'Juyue.xcodeproj/**'
       - 'Package.swift'
   workflow_dispatch:
 
@@ -53,7 +53,7 @@ jobs:
           # 工程里有两个 target：LegadoApp（侧载，版本跟 VERSION 走）和
           # JuyueReader（商店版，独立排 1.x）。全局 grep 会把两者混在一起，
           # 这里只读 LegadoApp 的 Release 配置。
-          SETTINGS=$(xcodebuild -project Legado.xcodeproj -target LegadoApp -configuration Release -showBuildSettings 2>/dev/null)
+          SETTINGS=$(xcodebuild -project Juyue.xcodeproj -target LegadoApp -configuration Release -showBuildSettings 2>/dev/null)
           MARKETING=$(echo "$SETTINGS" | sed -n 's/^ *MARKETING_VERSION = //p' | sort -u)
           BUILD=$(echo "$SETTINGS" | sed -n 's/^ *CURRENT_PROJECT_VERSION = //p' | sort -u)
           echo "MARKETING_VERSION=$MARKETING"
@@ -107,7 +107,7 @@ jobs:
           # 仓库里没有 Vendor/ 的百度语音 SDK（248MB，走 .gitignore），
           # 所以 CI 构建关掉百度那套：清空桥接头 + 打开 NO_BAIDU_TTS，
           # 两份百度实现会走同形状的空桩。CI 出的包只有系统语音与 HTTP 语音源。
-          xcodebuild -project Legado.xcodeproj \
+          xcodebuild -project Juyue.xcodeproj \
             -scheme LegadoApp \
             -configuration Release \
             -destination 'generic/platform=iOS' \
@@ -180,7 +180,7 @@ jobs:
         with:
           tag_name: ${{ env.TAG }}
           target_commitish: ${{ github.sha }}
-          name: "Legado iOS ${{ env.TAG }}"
+          name: "橘阅 ${{ env.TAG }}"
           prerelease: false
           draft: false
           overwrite_files: true

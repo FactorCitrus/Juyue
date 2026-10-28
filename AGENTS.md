@@ -21,7 +21,7 @@
 - 本地编不过先看是不是缺文件登记（新 `.swift` 必须进 `project.pbxproj`），别先怀疑代码。
 - push 后只报 `databaseId + status`，不要 `gh run watch` 干等；CI 红了再 `gh run view <id> --log-failed`。
 - 两个 `xcodebuild` 不能并发（共用 DerivedData）；`legado.sh` 已加 `/tmp/legado-legado.lock` 互斥。
-- 测试报「函数体字符串 != 正文」这类断言差异，先看被测接口的契约（例：`body` 是 `/Volumes/APFS/legado-build/app/Legado-iOS/Sources/LegadoCore/Engine/JSEngine.swift` 里的方法，不是属性），改测试别改实现。
+- 测试报「函数体字符串 != 正文」这类断言差异，先看被测接口的契约（例：`body` 是 `/Volumes/APFS/legado-build/app/Juyue/Sources/LegadoCore/Engine/JSEngine.swift` 里的方法，不是属性），改测试别改实现。
 
 ## 技术查证
 

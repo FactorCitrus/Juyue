@@ -183,7 +183,7 @@ public final class WebDAVService {
         static let passwordAccount = "webdav_password"
     }
 
-    private static let userAgent = "Legado-iOS/1.0"
+    private static let userAgent = "Juyue/1.0"
 
     private let session: URLSession
 

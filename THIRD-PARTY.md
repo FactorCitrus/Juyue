@@ -1,6 +1,6 @@
 # 第三方来源与授权清单
 
-本仓库（Legado iOS / 开源阅读 iOS 版）的第三方来源，按类别列出，便于发布前自查。
+本仓库（橘阅 Juyue / 开源阅读 iOS 版）的第三方来源，按类别列出，便于发布前自查。
 
 ## 1. 上游工程
 
@@ -42,7 +42,7 @@
 对 `Sources/` 下与上游同名的 32 个 Swift 文件统计仍然逐行一致的行数：
 
 ```
-$ python3 scripts/gpl_audit.py --repo app/Legado-iOS --top 5
+$ python3 scripts/gpl_audit.py --repo app/Juyue --top 5
 baseline d21903c | files compared 32 | surviving upstream lines 8026
  upstream   lines   ratio  file
      1709    9793   17.5%  Sources/LegadoApp/Views/Reader/ReaderView.swift

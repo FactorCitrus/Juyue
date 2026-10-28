@@ -2,9 +2,9 @@
 """GPL 剥离审计：逐文件比对当前树与上游基线，统计仍存活的上游代码行。
 
 用法:
-  python3 scripts/gpl_audit.py --repo app/Legado-iOS [--baseline d21903c] [--top 30]
-  python3 scripts/gpl_audit.py --repo app/Legado-iOS --budget 4000   # 只允许 4000 行以内
-  python3 scripts/gpl_audit.py --repo app/Legado-iOS --strict         # 任何残留即失败
+  python3 scripts/gpl_audit.py --repo app/Juyue [--baseline d21903c] [--top 30]
+  python3 scripts/gpl_audit.py --repo app/Juyue --budget 4000   # 只允许 4000 行以内
+  python3 scripts/gpl_audit.py --repo app/Juyue --strict         # 任何残留即失败
 退出码: 0 达标；1 超标；2 环境错误。
 """
 import argparse

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""把 Sources/**/*.swift 同步进 Legado.xcodeproj 的 LegadoApp target。
+"""把 Sources/**/*.swift 同步进 Juyue.xcodeproj 的 LegadoApp target。
 
 工程用的是显式文件列表（PBXFileReference + PBXBuildFile + PBXSourcesBuildPhase），
 不是 SPM 的 glob，所以新增源文件必须同时挂四处，否则编译到引用处才报
@@ -15,7 +15,7 @@ import re
 import sys
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
-PBX = ROOT / "Legado.xcodeproj" / "project.pbxproj"
+PBX = ROOT / "Juyue.xcodeproj" / "project.pbxproj"
 ANCHOR_FILE_REF = "7560F3034B738FD64AA2D8E9"  # Sources/LegadoApp/LegadoApp.swift
 
 

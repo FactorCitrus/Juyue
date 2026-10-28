@@ -21,7 +21,7 @@ if [ "$MODE" = "sideload" ] && [[ "$DESTINATION" == *Simulator* ]]; then
 fi
 
 args=(
-  -project "$ROOT/Legado.xcodeproj"
+  -project "$ROOT/Juyue.xcodeproj"
   -scheme "$scheme"
   -configuration "$configuration"
   -destination "$DESTINATION"

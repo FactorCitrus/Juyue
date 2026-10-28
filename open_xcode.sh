@@ -1,5 +1,5 @@
 #!/bin/bash
-# Open Legado iOS project in Xcode
+# Open Juyue project in Xcode
 cd "$(dirname "$0")"
-echo "Opening Legado iOS project in Xcode..."
-open Legado.xcodeproj
+echo "Opening Juyue (橘阅) project in Xcode..."
+open Juyue.xcodeproj

@@ -1448,10 +1448,10 @@ public struct SettingsView: View {
 
         sectionCard("关于", tag: "ABOUT") {
             VStack(alignment: .leading, spacing: 4) {
-                Text("Legado iOS")
+                Text("橘阅")
                     .font(.system(size: 20, weight: .bold))
                     .foregroundColor(theme.palette.ink)
-                Text("橘阅 · 开源阅读")
+                Text("Juyue · 开源阅读 iOS")
                     .font(theme.typography.mono)
                     .foregroundColor(theme.palette.secondaryInk)
             }
@@ -1463,8 +1463,8 @@ public struct SettingsView: View {
             cardDivider
             settingRow("内核引擎", icon: "cpu", value: "Swift + JavaScriptCore")
             cardDivider
-            Link(destination: URL(string: "https://github.com/FactorCitrus/Legado-iOS")!) {
-                settingLabel("GitHub", icon: "link", value: "FactorCitrus/Legado-iOS", detail: nil, chevron: true)
+            Link(destination: URL(string: "https://github.com/FactorCitrus/Juyue")!) {
+                settingLabel("GitHub", icon: "link", value: "FactorCitrus/Juyue", detail: nil, chevron: true)
             }
             .buttonStyle(.plain)
         }

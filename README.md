@@ -1,12 +1,12 @@
-# Legado iOS (开源阅读 iOS 版)
+# 橘阅 Juyue (开源阅读 iOS 版)
 
 [![iOS](https://img.shields.io/badge/Platform-iOS%2015.0%2B-blue.svg)](https://developer.apple.com/ios/)
 [![Swift](https://img.shields.io/badge/Swift-5.0%2B-orange.svg)](https://swift.org)
 [![Xcode](https://img.shields.io/badge/Xcode-14.0%2B-blue.svg)](https://developer.apple.com/xcode/)
-[![Release](https://img.shields.io/github/v/release/FactorCitrus/Legado-iOS?label=Release&color=green)](https://github.com/FactorCitrus/Legado-iOS/releases)
+[![Release](https://img.shields.io/github/v/release/FactorCitrus/Juyue?label=Release&color=green)](https://github.com/FactorCitrus/Juyue/releases)
 [![License](https://img.shields.io/badge/License-GPLv3-lightgrey.svg)](LICENSE)
 
-> **Legado iOS** 是一个用 SwiftUI 和 Swift 编写的开源阅读器，兼容 Android 端 **Legado（开源阅读 3.0）** 的书源规则和 WebDAV 同步格式。
+> **橘阅（Juyue）** 是一个用 SwiftUI 和 Swift 编写的开源阅读器，兼容 Android 端 **Legado（开源阅读 3.0）** 的书源规则和 WebDAV 同步格式。
 
 ## Fork 与品牌
 
@@ -66,7 +66,7 @@
 项目采用轻量模块化结构，将底层业务逻辑与上层 UI 视图彻底解耦：
 
 ```text
-Legado-iOS/
+Juyue/
 ├── Sources/
 │   ├── LegadoCore/               # 独立核心框架（跨平台纯 Swift 逻辑）
 │   │   ├── Engine/               # 规则引擎（JSEngine, RuleAnalyzer, RuleTokenizer）
@@ -84,7 +84,7 @@ Legado-iOS/
 │           ├── SourceManagerView.swift   # 书源管理（本地文件导入、长按管理）
 │           └── SettingsView.swift        # 设置页（WebDAV 同步与历史备份选择、外观主题）
 ├── Tests/                        # 单元测试套件（覆盖率高，持续集成）
-└── Legado.xcodeproj              # Xcode 工程文件
+└── Juyue.xcodeproj               # Xcode 工程文件
 ```
 
 ---
@@ -99,8 +99,8 @@ Legado-iOS/
 ### 本地编译
 1. 克隆代码仓库：
    ```bash
-   git clone https://github.com/FactorCitrus/Legado-iOS.git
-   cd Legado-iOS
+   git clone https://github.com/FactorCitrus/Juyue.git
+   cd Juyue
    ```
 2. 运行单元测试（使用 Swift Package Manager）：
    ```bash
@@ -108,7 +108,7 @@ Legado-iOS/
    ```
 3. 打开并运行 Xcode 工程：
    ```bash
-   open Legado.xcodeproj
+   open Juyue.xcodeproj
    ```
    在 Xcode 中选择模拟器或真机目标设备，按 `Cmd + R` 即可运行。
 
@@ -180,14 +180,14 @@ Legado-iOS/
 
 - **邮箱**：**Deathandfly@outlook.com** —— 本人亲收，最直接
 - **QQ 群**：**1128675417**
-- **GitHub Issues**：https://github.com/FactorCitrus/Legado-iOS/issues
+- **GitHub Issues**：https://github.com/FactorCitrus/Juyue/issues
 - 装了 App 的也可以从「设置 → 关于」点进 GitHub 仓库
 
 反馈时带上这几样，能省一半来回：**应用版本**（设置 → 关于，形如 `4.7.8.7 (4.7.8.7)`）、**机型 + iOS 版本**、**复现步骤**，再加一段**诊断日志**（设置 → 诊断日志 → 复制全部）。
 
 ## 支持项目
 
-如果 Legado-iOS 对你有帮助，欢迎自愿赞助，支持项目持续维护与开发。
+如果橘阅对你有帮助，欢迎自愿赞助，支持项目持续维护与开发。
 
 赞助完全自愿，不影响软件使用，也不影响用户依据 GPL-3.0 许可证享有的权利。
 请我喝茶🍵
