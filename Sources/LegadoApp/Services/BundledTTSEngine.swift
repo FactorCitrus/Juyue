@@ -69,7 +69,10 @@ final class BundledTTSEngine {
                                         onFinish: onFinish, onFailure: onFailure)
             return
         }
-        guard let voice = BaiduOfflineTTS.activeVoice ?? BaiduOfflineTTS.allVoices.first else {
+        // 多角色按段换音色时 modelId 就是百度音色的 id；没给就退回全局选中的那条。
+        // 以前这里只认 activeVoice，角色里选了别的声音也没用，整章还是一个人念。
+        let picked = BaiduOfflineTTS.voice(id: modelId)
+        guard let voice = picked ?? BaiduOfflineTTS.activeVoice ?? BaiduOfflineTTS.allVoices.first else {
             onFailure("百度离线引擎没有可用音色")
             return
         }

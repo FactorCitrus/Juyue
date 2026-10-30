@@ -18,6 +18,8 @@ public struct TTSSettingsSheet: View {
     @State private var systemVoiceId: String? = SystemVoiceSelection.identifier
     @State private var voiceExpanded = false
     @State private var paramsExpanded = false
+    /// 授权自检那几屏日志默认收起，展开才占地方
+    @State private var authExpanded = false
     @State private var importingModel = false
     @State private var importNote: String?
     @State private var showCloudPicker = false
@@ -372,6 +374,15 @@ public struct TTSSettingsSheet: View {
         }
     }
 
+    /// 折叠状态下的授权详情摘要：多少行、最后一条结论。收起来也知道跑没跑、跑出什么。
+    private var authReportSummary: String {
+        guard !baidu.authReport.isEmpty else { return "未跑自检" }
+        let lines = baidu.authReport.split(separator: "\n")
+        let tail = lines.last.map(String.init) ?? ""
+        let head = tail.count > 22 ? String(tail.prefix(22)) + "…" : tail
+        return "\(lines.count) 行 · \(head)"
+    }
+
     private var engineStatusLine: String {
         switch engineTab {
         case .builtIn:
@@ -481,38 +492,56 @@ public struct TTSSettingsSheet: View {
         case .builtIn:
             if BundledTTSEngine.isBaidu {
                 Button {
+                    // 点了就把结果摊开，跑完还得再点一次才看见，等于白跑
+                    authExpanded = true
                     baidu.authorizationProbe()
                 } label: {
                     Label("跑一次授权自检", systemImage: "checkmark.shield")
                 }
                 .accessibilityIdentifier("tts.baidu.authprobe")
                 // 容器里（LiveContainer 之类）接不到 console，这几行就是唯一能看见的证据。
-                // 上面那行是「引擎实际拿去换授权」的名字，下面是容器塞给系统的那串。
-                Text("授权用：APP ID \(BaiduOfflineTTS.appId) · 包名 \(BaiduBundleShim.pinned)")
-                    .font(.system(size: 10, design: .monospaced))
-                    .foregroundColor(theme.palette.secondaryInk)
-                Text("容器里的真包名：\(Bundle.main.bundleIdentifier ?? "?")")
-                    .font(.system(size: 10, design: .monospaced))
-                    .foregroundColor(theme.palette.secondaryInk)
-                if BaiduCredentials.hasCustomValues {
-                    Button {
-                        BaiduCredentials.resetToBuiltin()
-                        baidu.authorizationProbe()
-                    } label: {
-                        Label("清掉自填凭据，改用包内那套", systemImage: "arrow.counterclockwise")
+                // 但一份自检能吐几十行，铺在音色列表底下整页都是字，所以默认收起来。
+                DisclosureGroup(isExpanded: $authExpanded) {
+                    VStack(alignment: .leading, spacing: 6) {
+                        // 上面那行是「引擎实际拿去换授权」的名字，下面是容器塞给系统的那串。
+                        Text("授权用：APP ID \(BaiduOfflineTTS.appId) · 包名 \(BaiduBundleShim.pinned)")
+                            .font(.system(size: 10, design: .monospaced))
+                            .foregroundColor(theme.palette.secondaryInk)
+                        Text("容器里的真包名：\(Bundle.main.bundleIdentifier ?? "?")")
+                            .font(.system(size: 10, design: .monospaced))
+                            .foregroundColor(theme.palette.secondaryInk)
+                        if BaiduCredentials.hasCustomValues {
+                            Button {
+                                BaiduCredentials.resetToBuiltin()
+                                baidu.authorizationProbe()
+                            } label: {
+                                Label("清掉自填凭据，改用包内那套", systemImage: "arrow.counterclockwise")
+                            }
+                            .accessibilityIdentifier("tts.baidu.resetcreds")
+                        }
+                        if baidu.authReport.isEmpty {
+                            Text("还没跑过自检。音色由百度离线引擎合成，全在包内；序列号授权只在激活时用一次，之后断网照念。")
+                                .font(.caption2)
+                                .foregroundColor(theme.palette.secondaryInk)
+                        } else {
+                            Text(baidu.authReport)
+                                .font(.system(size: 10, design: .monospaced))
+                                .foregroundColor(theme.palette.secondaryInk)
+                                .textSelection(.enabled)
+                        }
                     }
-                    .accessibilityIdentifier("tts.baidu.resetcreds")
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.top, 2)
+                } label: {
+                    HStack(spacing: 6) {
+                        Text("授权详情")
+                        Spacer(minLength: 6)
+                        Text(authReportSummary)
+                            .font(.caption2)
+                            .foregroundColor(theme.palette.secondaryInk)
+                    }
                 }
-                if baidu.authReport.isEmpty {
-                    Text("音色由百度离线引擎合成，全在包内。序列号授权只在激活时用一次，之后断网照念。")
-                        .font(.caption2)
-                        .foregroundColor(theme.palette.secondaryInk)
-                } else {
-                    Text(baidu.authReport)
-                        .font(.system(size: 10, design: .monospaced))
-                        .foregroundColor(theme.palette.secondaryInk)
-                        .textSelection(.enabled)
-                }
+                .accessibilityIdentifier("tts.baidu.authdetails")
             } else {
                 Button {
                     importingModel = true
@@ -918,20 +947,31 @@ struct TTSCastRoleEditor: View {
                         }
                     }
                 case .builtin:
-                    Picker("离线模型", selection: $role.voiceId) {
-                        Text("跟随全局设置").tag("")
-                        ForEach(modelStore.models) { model in
-                            Text(model.name).tag(model.id)
+                    if BundledTTSEngine.isBaidu {
+                        // 百度这边一条音色就是一个发音人，没有「模型里再挑发音人」那一层：
+                        // 角色表原来只列 onnx 模型，包里换成百度之后这一栏是空的，选不了人。
+                        Picker("百度音色", selection: $role.voiceId) {
+                            Text("跟随全局设置").tag("")
+                            ForEach(BaiduOfflineTTS.allVoices) { voice in
+                                Text(voice.name).tag(voice.id)
+                            }
                         }
-                    }
-                    // 单发声人模型（melo、华言）恒为 1，这一行直接不出现
-                    if speakers(of: role.voiceId) > 1 {
-                        Picker("发音人", selection: Binding(
-                            get: { role.speakerIndex ?? 0 },
-                            set: { role.speakerIndex = $0 }
-                        )) {
-                            ForEach(0..<speakers(of: role.voiceId), id: \.self) { index in
-                                Text("第 \(index + 1) 个").tag(index)
+                    } else {
+                        Picker("离线模型", selection: $role.voiceId) {
+                            Text("跟随全局设置").tag("")
+                            ForEach(modelStore.models) { model in
+                                Text(model.name).tag(model.id)
+                            }
+                        }
+                        // 单发声人模型（melo、华言）恒为 1，这一行直接不出现
+                        if speakers(of: role.voiceId) > 1 {
+                            Picker("发音人", selection: Binding(
+                                get: { role.speakerIndex ?? 0 },
+                                set: { role.speakerIndex = $0 }
+                            )) {
+                                ForEach(0..<speakers(of: role.voiceId), id: \.self) { index in
+                                    Text("第 \(index + 1) 个").tag(index)
+                                }
                             }
                         }
                     }
@@ -976,6 +1016,9 @@ struct TTSCastRoleEditor: View {
         case .system:
             return "选「跟随全局设置」时使用听书设置中的当前音色。"
         case .builtin:
+            if BundledTTSEngine.isBaidu {
+                return "百度离线一个音色就是一个人，选哪条这一段就用谁；「跟随全局设置」用听书设置里选中的那个。"
+            }
             return speakers(of: role.voiceId) > 1
                 ? "离线模型自带多个发音人，可以只给这条角色换人。"
                 : "这个模型只有一个发音人，换角色就得换模型。"
@@ -992,6 +1035,10 @@ private func castVoiceLabel(_ role: TTSCastRole) -> String {
         guard !role.voiceId.isEmpty else { return "跟随全局" }
         return AVSpeechSynthesisVoice(identifier: role.voiceId)?.name ?? "未知音色"
     case .builtin:
+        if BundledTTSEngine.isBaidu {
+            guard !role.voiceId.isEmpty else { return "跟随全局" }
+            return BaiduOfflineTTS.voice(id: role.voiceId)?.name ?? "已删除的音色"
+        }
         guard !role.voiceId.isEmpty else { return "全局模型" }
         let name = LocalTTSModelStore.shared.models
             .first { $0.id == role.voiceId }?.name ?? "已删除的模型"
