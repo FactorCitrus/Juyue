@@ -107,6 +107,41 @@ jobs:
           # 仓库里没有 Vendor/ 的百度语音 SDK（248MB，走 .gitignore），
           # 所以 CI 构建关掉百度那套：清空桥接头 + 打开 NO_BAIDU_TTS，
           # 两份百度实现会走同形状的空桩。CI 出的包只有系统语音与 HTTP 语音源。
+          #
+          # sherpa-onnx 的两个 xcframework 同样不在仓库里（190MB，Vendor/ 整块忽略）。
+          # 工程把它们写在 Frameworks 构建阶段里，文件不存在时 xcodebuild 直接报
+          # "There is no XCFramework found at …"，连归档都进不去。这里造一对合法的
+          # 空壳：结构、Info.plist、arm64 空静态库都是真的，只是不含任何符号。
+          # 没有 include 目录 → canImport(CSherpaOnnx) 为假 → LocalTTSEngine 走空桩，
+          # 没有任何代码引用它的符号，链接阶段不会缺符号。
+          SHERPA=Vendor/sherpa-onnx
+          mkdir -p "$SHERPA/include"
+          cc -arch arm64 -c /tmp/empty.c -o /tmp/empty_arm64.o
+          ar rcs /tmp/libempty.a /tmp/empty_arm64.o
+          for NAME in sherpa-onnx onnxruntime; do
+            XCF="$SHERPA/$NAME.xcframework"
+            mkdir -p "$XCF/ios-arm64"
+            cp /tmp/libempty.a "$XCF/ios-arm64/lib$NAME.a"
+            cat > "$XCF/Info.plist" <<PLIST
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>AvailableLibraries</key>
+            <array>
+              <dict>
+                <key>LibraryIdentifier</key><string>ios-arm64</string>
+                <key>LibraryPath</key><string>lib$NAME.a</string>
+                <key>SupportedArchitectures</key><array><string>arm64</string></array>
+                <key>SupportedPlatform</key><string>ios</string>
+              </dict>
+            </array>
+            <key>CFBundlePackageType</key><string>XFWK</string>
+            <key>XCFrameworkFormatVersion</key><string>1.0</string>
+          </dict>
+          </plist>
+          PLIST
+          done
           xcodebuild -project Juyue.xcodeproj \
             -scheme LegadoApp \
             -configuration Release \
