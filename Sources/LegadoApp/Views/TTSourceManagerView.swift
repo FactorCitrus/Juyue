@@ -461,7 +461,9 @@ struct TTSOnlinePresetPicker: View {
             }
             .appThemedList()
             .navigationTitle("在线服务")
+            #if os(iOS)
             .navigationBarTitleDisplayMode(.inline)
+            #endif
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("取消") { dismiss() }
@@ -745,7 +747,12 @@ struct TTSOnlinePresetSheet: View {
                         switch field.kind {
                         case .text:
                             TextField(field.placeholder, text: binding(for: field.key))
+                                // textInputAutocapitalization 只在 iOS 的 SwiftUI 里有，
+                                // macOS 侧（swift build / swift test）没有这个类型，报出来的
+                                // 还是 ForEach 泛型推不出来的错，找不到根。
+                                #if os(iOS)
                                 .textInputAutocapitalization(.never)
+                                #endif
                                 .autocorrectionDisabled()
                                 .font(.system(.footnote, design: .monospaced))
                                 .accessibilityIdentifier("tts.preset.\(field.key)")
@@ -798,7 +805,9 @@ struct TTSOnlinePresetSheet: View {
                 }
             }
             .navigationTitle("添加 \(preset.brand)·\(preset.name)")
+            #if os(iOS)
             .navigationBarTitleDisplayMode(.inline)
+            #endif
             // 表单也得跟着主题走，不然弹出来一块白
             .themedScrollBackground()
             .background(theme.palette.background)
@@ -913,7 +922,9 @@ struct TTSVoicePickerView: View {
             if allowCustom {
                 Section {
                     TextField("数字", text: $manual)
+                        #if os(iOS)
                         .keyboardType(.numberPad)
+                        #endif
                         .font(.system(.footnote, design: .monospaced))
                         .accessibilityIdentifier("tts.per.manual")
                     Button("用这个编号") {
@@ -931,9 +942,15 @@ struct TTSVoicePickerView: View {
                 }
             }
         }
+        #if os(iOS)
         .listStyle(.insetGrouped)
+        #else
+        .listStyle(.inset)
+        #endif
         .navigationTitle("挑发音人")
+        #if os(iOS)
         .navigationBarTitleDisplayMode(.inline)
+        #endif
         .themedScrollBackground()
     }
 }

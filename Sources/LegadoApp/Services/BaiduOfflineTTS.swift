@@ -1,5 +1,7 @@
-#if !NO_BAIDU_TTS
-#if os(iOS)
+// 只有「真机 + 带百度 SDK」这一种组合编真实现，其余一律走桩：
+// 以前写成 `#if !NO_BAIDU_TTS` 套 `#if os(iOS)`，macOS 上（swift test / SPM）
+// 两个条件都不满足，整个文件什么都不产出，引用它的视图直接「cannot find type」。
+#if !NO_BAIDU_TTS && os(iOS)
 import Foundation
 import AVFoundation
 import Combine
@@ -689,8 +691,6 @@ extension BaiduOfflineTTS: BDSSpeechSynthesizerDelegate {
         }
     }
 }
-#endif
-
 #else
 // 没有百度离线 SDK 的构建（比如 CI）：只提供同形状的空实现，功能关掉
 import Foundation

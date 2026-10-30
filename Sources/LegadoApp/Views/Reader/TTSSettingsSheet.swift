@@ -1204,11 +1204,17 @@ struct TTSPageShell<Content: View>: View {
 struct ZeroSectionSpacing: ViewModifier {
     @ViewBuilder
     func body(content: Content) -> some View {
+        // listSectionSpacing 是 iOS 17 / macOS 14 才有的 API，而包最低支持 macOS 12，
+        // 在 macOS 上直接编不过；那边本来也不用这条（只有 iOS 端的 Form 需要压间距）。
+        #if os(iOS)
         if #available(iOS 17.0, macOS 14.0, *) {
             content.listSectionSpacing(0)
         } else {
             content
         }
+        #else
+        content
+        #endif
     }
 }
 

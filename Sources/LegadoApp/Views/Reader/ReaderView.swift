@@ -3059,7 +3059,13 @@ public struct ReaderView: View {
                 // 听书翻到下一段：那一段已经离开屏幕中心就把它滚回来，
                 // 差得不多就不动 —— 每段都跳一下会晕。
                 guard readerConfig.pageMode == .scroll, let blockId, readingChapterIndex >= 0 else { return }
+                // UIScreen 只有 iOS 有；macOS 那边（SPM 的 swift build / swift test）只是
+                // 过一遍类型检查，不跑这段逻辑，给 0 就够了。
+                #if os(iOS)
                 let screenCenter = UIScreen.main.bounds.midY
+                #else
+                let screenCenter: CGFloat = 0
+                #endif
                 if let rect = scrollHitRegistry.rect(forBlockId: blockId, chapterIndex: readingChapterIndex),
                    abs(rect.midY - screenCenter) < 40 {
                     AppLog.write("[听书] 段 \(blockId) 还在视野里（偏差 \(Int(rect.midY - screenCenter))pt），不回中")
@@ -9336,6 +9342,10 @@ public struct CoreTextPageView: NSViewRepresentable {
     public var annotationRanges: [(start: Int, count: Int, style: ReaderBlockStyle)] = []
     /// 长按回调：页内行号 + 该行内的字符偏移（UTF-16）
     public var onLongPressLine: ((Int, Int) -> Void)?
+    /// 正在朗读的段（页内序号）和它的底色。macOS 这边不画朗读高亮，
+    /// 留着这两项只是为了让 iOS 的调用点能在 macOS 上编过（参数顺序要对齐）。
+    public var readingBlockId: Int? = nil
+    public var readingTintColor: Color = .clear
     public var commentMap: [Int: (count: Int, url: String)] = [:]
     public var pageBackgroundColor: Color = .clear
     /// 热评段落跟随阅读主题的强调色；普通正文仍用 textColor。
