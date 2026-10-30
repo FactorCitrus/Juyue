@@ -46,19 +46,199 @@ public struct LegadoApp: App {
         return themeManager.theme
     }
 
+    /// 机型标识（iPhone18,1 这种）比 UIDevice.model 的「iPhone」有用。
+    private static var deviceModel: String {
+        #if targetEnvironment(simulator)
+        // 模拟器里 uname 只回 arm64，机型得从环境变量拿（iPhone18,1 这种）
+        return "sim-" + (ProcessInfo.processInfo.environment["SIMULATOR_MODEL_IDENTIFIER"] ?? "unknown")
+        #else
+        var info = utsname()
+        uname(&info)
+        // 先拷一份再取地址：直接 &info.machine 会在同一个表达式里读写同一块内存
+        var machine = info.machine
+        let capacity = MemoryLayout.size(ofValue: machine)
+        return withUnsafePointer(to: &machine) { pointer in
+            pointer.withMemoryRebound(to: CChar.self, capacity: capacity) { String(cString: $0) }
+        }
+        #endif
+    }
+
+    /// 磁盘剩多少，听书缓存和模型撑爆沙盒时这条能对上号。
+    private static var freeDiskGB: String {
+        let attrs = try? FileManager.default.attributesOfFileSystem(forPath: NSHomeDirectory())
+        let bytes = (attrs?[.systemFreeSize] as? NSNumber)?.int64Value ?? 0
+        return String(format: "%.1f", Double(bytes) / 1_073_741_824)
+    }
+
     public init() {
         AppLog.install()
-        AppLog.write("[启动] iOS \(ProcessInfo.processInfo.operatingSystemVersionString) uptime=\(Int(ProcessInfo.processInfo.systemUptime / 60))m")
+        // 启动这一条带齐环境：出问题先把这份头几行发过来，机型、系统、剩余空间、
+        // 当前挂在哪个引擎和语音源，四样都在里面，不用再问一轮。
+        AppLog.write("[启动] \(Self.deviceModel) · iOS \(ProcessInfo.processInfo.operatingSystemVersionString) · 可用 \(Self.freeDiskGB)GB · 引擎=\(TTSEngineChoice.current.rawValue) 源=\(TTSEngineChoice.current == .http ? (TTSourceSelection.activeId.map(String.init) ?? "-") : "不使用") · uptime=\(Int(ProcessInfo.processInfo.systemUptime / 60))m")
         preloadDefaultSources()
         // 导入过的自定义字体要在用之前注册进进程，否则 CoreText 认不出来
         CustomFontService.shared.loadAll()
         // 模拟器验收用：灌一份真机备份，省得每次手点文件选择器
         #if DEBUG || targetEnvironment(simulator)
         importDebugBackupIfPresent()
+        runTTSSelfTestIfPresent()
         #endif
     }
 
     #if DEBUG || targetEnvironment(simulator)
+    /// `JUYUE_TTS_SELFTEST=<文本>` 启动 1.5 秒后直接让内置引擎念一句，不经过听书面板，
+    /// 验收时省掉点屏；`JUYUE_TTS_MODEL=melo` 一并把音色定死，不看上次留下的选择。
+    private func runTTSSelfTestIfPresent() {
+        runCastSelfTestIfPresent()
+        runHTTPFailureSelfTestIfPresent()
+        guard let text = ProcessInfo.processInfo.environment["JUYUE_TTS_SELFTEST"], !text.isEmpty else { return }
+        let store = LocalTTSModelStore.shared
+        // `JUYUE_TTS_SEQ=melo,huayan,melo`：同一进程里连着换音色念同一句，
+        // 专门验「采样率差 >1Hz 就重建音频图」这条修复，比每次冷启动更能说明问题。
+        if let seq = ProcessInfo.processInfo.environment["JUYUE_TTS_SEQ"], !seq.isEmpty {
+            switchTest(names: seq.split(separator: ",").map(String.init), text: text)
+            return
+        }
+        if let want = ProcessInfo.processInfo.environment["JUYUE_TTS_MODEL"], !want.isEmpty {
+            if let model = store.models.first(where: { $0.id.contains(want) || $0.name.contains(want) }) {
+                store.select(model)
+                AppLog.write("[调试] 自测选定 · \(model.id) · \(model.name)")
+            } else {
+                AppLog.write("[调试] 自测没匹配到 · \(want) · 现有 \(store.models.map(\.id).joined(separator: ","))")
+            }
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+            AppLog.write("[调试] 自测朗读开始")
+            LocalTTSEngine.shared.speak(text: text, speed: 1.0) {
+                AppLog.write("[调试] 自测朗读结束")
+            } onFailure: { message in
+                AppLog.write("[调试] 自测朗读失败 · \(message)")
+            }
+        }
+    }
+
+    /// `JUYUE_TTS_HTTP_SELFTEST=<文本>`：把引擎按死在一条在线源上，整段走「取音失败 → 改系统语音」。
+    /// 文本超过块长会切好几块，专门验「某一块失败，剩下的块不被悄悄跳过去」。
+    /// `JUYUE_TTS_HTTP_SOURCE=<id>` 指定源，不写就用 900001（测试用的死源）。
+    private func runHTTPFailureSelfTestIfPresent() {
+        guard let text = ProcessInfo.processInfo.environment["JUYUE_TTS_HTTP_SELFTEST"],
+              !text.isEmpty else { return }
+        let rawId = ProcessInfo.processInfo.environment["JUYUE_TTS_HTTP_SOURCE"] ?? "900001"
+        guard let id = Int64(rawId) else {
+            AppLog.write("[调试] 在线源失败自测 id 读不出来 · \(rawId)")
+            return
+        }
+        TTSEngineChoice.current = .http
+        TTSourceSelection.activeId = id
+        let resolved = TTSourceSelection.activeSource
+        AppLog.write("[调试] 在线源失败自测开始 · 源 \(id) · 解析到 \(resolved?.name ?? "nil") · \(text.count) 字 · 块长 \(AudioBookService.shared.chunkLength)")
+        guard resolved != nil else {
+            // 源没解析出来，走的根本不是在线的失败分支，别拿这份日志当验收
+            AppLog.write("[调试] 在线源失败自测中止 · 源 \(id) 没在 httpTTS.json 里")
+            return
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+            AudioBookService.shared.speak(text: text)
+        }
+    }
+
+    /// `JUYUE_TTS_CAST_SELFTEST=<文本>`：直接灌一份多角色配置就开念，
+    /// 验的是「同一章里按段换引擎」。
+    ///
+    /// `JUYUE_TTS_CAST_ENGINES=builtin:meló,system:Tingting` 按「旁白 → 对话 →
+    /// 关键词」的顺序套，冒号后面是该引擎的音色：内置填模型 id 或名字片段、
+    /// 系统填语音名片段、在线填源 id。`JUYUE_TTS_CAST_KEYWORD` 给第三条角色的关键词。
+    private func runCastSelfTestIfPresent() {
+        guard let text = ProcessInfo.processInfo.environment["JUYUE_TTS_CAST_SELFTEST"],
+              !text.isEmpty else { return }
+        let spec = ProcessInfo.processInfo.environment["JUYUE_TTS_CAST_ENGINES"] ?? "builtin,system"
+        let keyword = ProcessInfo.processInfo.environment["JUYUE_TTS_CAST_KEYWORD"] ?? ""
+
+        var roles: [TTSCastRole] = []
+        for (index, piece) in spec.split(separator: ",").enumerated() {
+            let parts = piece.split(separator: ":", maxSplits: 1, omittingEmptySubsequences: false)
+            let engineName = String(parts.first ?? "system")
+            let voice = parts.count > 1 ? String(parts[1]) : ""
+            let engine: TTSCastRole.Engine
+            switch engineName {
+            case "builtin": engine = .builtin
+            case "http": engine = .http
+            default: engine = .system
+            }
+
+            var role: TTSCastRole
+            switch index {
+            case 0: role = TTSCastRole(name: "旁白", match: .narration, engine: engine)
+            case 1: role = TTSCastRole(name: "对话", match: .dialogue, engine: engine)
+            default: role = TTSCastRole(name: "关键词", match: .keyword, keyword: keyword, engine: engine)
+            }
+
+            switch engine {
+            case .builtin:
+                if !voice.isEmpty {
+                    let store = LocalTTSModelStore.shared
+                    if let model = store.models.first(where: {
+                        $0.id.localizedCaseInsensitiveContains(voice) || $0.name.contains(voice)
+                    }) {
+                        role.voiceId = model.id
+                    } else {
+                        AppLog.write("[调试] 自测没匹配到模型 · \(voice) · 现有 \(store.models.map(\.id).joined(separator: ","))")
+                    }
+                }
+            case .system:
+                if !voice.isEmpty {
+                    let hit = SystemVoiceSelection.chineseVoices.first {
+                        $0.name.localizedCaseInsensitiveContains(voice) || $0.identifier.contains(voice)
+                    }
+                    role.voiceId = hit?.identifier ?? ""
+                    if hit == nil {
+                        AppLog.write("[调试] 自测没匹配到系统音色 · \(voice)")
+                    }
+                }
+            case .http:
+                role.sourceId = Int64(voice)
+            }
+            roles.append(role)
+        }
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+            TTSCastStore.shared.roles = roles
+            TTSCastStore.shared.enabled = true
+            AppLog.write("[调试] 多角色自测开始 · " + roles.map {
+                "\($0.name)=\($0.engine.rawValue)\($0.voiceId.isEmpty ? "" : "(\($0.voiceId))")"
+            }.joined(separator: " / "))
+            AudioBookService.shared.speakWithCast(text)
+        }
+    }
+
+    private func switchTest(names: [String], text: String) {
+        let store = LocalTTSModelStore.shared
+        var index = 0
+        func step() {
+            guard index < names.count else {
+                AppLog.write("[调试] 换色序列结束")
+                return
+            }
+            let name = names[index]
+            index += 1
+            guard let model = store.models.first(where: { $0.id.contains(name) || $0.name.contains(name) }) else {
+                AppLog.write("[调试] 换色序列没匹配到 · \(name)")
+                step()
+                return
+            }
+            store.select(model)
+            AppLog.write("[调试] 换色序列第 \(index) 段 · \(model.id) · \(model.name)")
+            LocalTTSEngine.shared.speak(text: text, speed: 1.0) {
+                AppLog.write("[调试] 换色序列第 \(index) 段结束 · \(model.name)")
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { step() }
+            } onFailure: { message in
+                AppLog.write("[调试] 换色序列失败 · \(model.name) · \(message)")
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { step() }
+            }
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { step() }
+    }
+
     /// `JUYUE_IMPORT_BACKUP=<zip 路径>` 启动时整包替换书架与书源。
     /// 只活在 Debug 里：Release 包连这段符号都不生成，不会被误触。
     private func importDebugBackupIfPresent() {
@@ -107,6 +287,11 @@ public struct LegadoApp: App {
             // 钩子挂在环境注入的内层：sheet 只会继承挂载点上方的环境，
             // 放到 .environment(\.appTheme,) 外面就拿不到主题了。
             .modifier(DebugTTSLauncher())
+            .task {
+                #if !NO_BAIDU_TTS
+                BaiduOfflineTTS.probeIfNeeded()
+                #endif
+            }
             .environmentObject(bookStore)
             .environmentObject(themeManager)
             .environment(\.appTheme, renderTheme)

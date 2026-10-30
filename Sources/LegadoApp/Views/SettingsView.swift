@@ -155,6 +155,8 @@ public struct SettingsView: View {
     @Environment(\.appTheme) private var theme
 
     @AppStorage("legado_app_theme") private var appTheme: String = "system"
+    /// 缓存章节时顺手抓书评（段评 / 本章说）首页
+    @AppStorage("reader_cache_reviews") private var cacheReviews: Bool = false
 
     @State private var showRestoreAlert: Bool = false
     @State private var restoreSuccessMessage: String? = nil
@@ -228,7 +230,8 @@ public struct SettingsView: View {
             #endif
             .onAppear {
                 let cfg = WebDAVService.shared.loadConfig()
-                if cfg.url.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                // 只看地址会把默认服务器当成「填过了」，账号密码空着也叫已配置
+                if !cfg.isConfigured {
                     webDAVStatusText = "未配置"
                 } else {
                     webDAVStatusText = cfg.lastSyncTime != nil ? "已同步" : "已配置"
@@ -253,6 +256,7 @@ public struct SettingsView: View {
                     AppLog.write("[设置] 清理阅读缓存")
                     let count = BookContentService.shared.getTotalCacheCount()
                     BookContentService.shared.clearAllChapterCaches()
+                    ReviewCache.clearAll()
                     URLCache.shared.removeAllCachedResponses()
                     clearCacheMessage = count > 0 ? "已清理 \(count) 章缓存" : "没有需要清理的章节缓存"
                 }
@@ -924,7 +928,7 @@ public struct SettingsView: View {
                         .disabled(appIcon.isSwitching)
                     }
                     if showAppIconOptions {
-                        Text("切换后系统桌面图标会更新；若没变化，回桌面或重启 App。")
+                        Text("换完桌面图标会跟着变。没变的话，回一趟桌面，或者重启 App。")
                             .font(.caption2)
                             .foregroundColor(theme.palette.secondaryInk)
                             .frame(maxWidth: .infinity, alignment: .leading)
@@ -1385,6 +1389,34 @@ public struct SettingsView: View {
             cardDivider
             settingRow("缓存章数上限", icon: "internaldrive", value: "\(readerConfig.cachedChapterCount) 章")
             cardDivider
+            Toggle(isOn: $cacheReviews) {
+                HStack(spacing: 12) {
+                    Image(systemName: "text.bubble")
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundColor(theme.palette.ink)
+                        .frame(width: 30, height: 30)
+                        .background(
+                            RoundedRectangle(cornerRadius: max(6, theme.metrics.cornerRadius - 3), style: .continuous)
+                                .fill(theme.palette.divider.opacity(0.25))
+                        )
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("缓存时一起抓书评")
+                            .font(theme.typography.body)
+                            .foregroundColor(theme.palette.ink)
+                        Text("段评和本章说只抓首页，没登录、断了网也翻得动。")
+                            .font(.system(size: 11))
+                            .foregroundColor(theme.palette.secondaryInk)
+                    }
+                    Spacer(minLength: 0)
+                }
+                .padding(.horizontal, 14)
+                .padding(.vertical, 9)
+            }
+            .toggleStyle(SwitchToggleStyle(tint: theme.palette.accent))
+            .onChange(of: cacheReviews) { newValue in
+                AppLog.write("[设置] 缓存书评 \(newValue ? "开" : "关")")
+            }
+            cardDivider
             Button {
                 showClearCacheAlert = true
             } label: {
@@ -1432,7 +1464,7 @@ public struct SettingsView: View {
                 "朗读引擎",
                 icon: "speaker.wave.2",
                 value: TTSourceSelection.displayName(in: HttpTTSStore.shared.sources),
-                detail: "HTTP TTS 与系统语音"
+                detail: "内置离线 · 系统语音 · 在线源"
             ) {
                 // 内嵌进设置这条导航栈：音色、朗读参数、语音源都从这一页往下推，
                 // 不再各开一套导航，也不再有「语音源再推回听书设置」的循环。
@@ -1451,7 +1483,7 @@ public struct SettingsView: View {
                 Text("橘阅")
                     .font(.system(size: 20, weight: .bold))
                     .foregroundColor(theme.palette.ink)
-                Text("Juyue · 开源阅读 iOS")
+                Text("Juyue · 阅读 iOS")
                     .font(theme.typography.mono)
                     .foregroundColor(theme.palette.secondaryInk)
             }
@@ -1469,7 +1501,7 @@ public struct SettingsView: View {
             .buttonStyle(.plain)
         }
 
-        Text("© 2026 FactorCitrus。橘阅名称、图标与截图保留所有权利；非官方分支请改名换标。")
+        Text("© 2026 FactorCitrus。橘阅的名称、图标与截图保留所有权利。")
             .font(.caption2)
             .foregroundColor(theme.palette.secondaryInk)
             .padding(.horizontal, 4)
@@ -1606,7 +1638,7 @@ struct FontManageView: View {
         }
         if imported.isEmpty {
             var text = "没导入成功：" + rejected.joined(separator: "、")
-            text += "\n只支持 ttf / otf / ttc；如果是 iCloud 里的文件，先下载到本机再选。"
+            text += "\n只认 ttf / otf / ttc。iCloud 里的文件，先下到本机再选。"
             if !reasons.isEmpty { text += "\n原因：" + reasons.joined(separator: "；") }
             message = text
         } else if rejected.isEmpty {
@@ -1717,7 +1749,7 @@ struct ReplacementRulesView: View {
                             .foregroundColor(theme.palette.secondaryInk)
                         Text("还没有替换规则")
                             .font(theme.typography.body.weight(.semibold))
-                        Text("新增一条规则，去掉广告、水印或站点名。")
+                        Text("添一条规则，把广告、水印、站点名去掉。")
                             .font(theme.typography.mono)
                             .foregroundColor(theme.palette.secondaryInk)
                     }
@@ -1761,7 +1793,7 @@ struct ReplacementRulesView: View {
             .appThemedRows()
 
             Section {
-                Text("留空替换内容＝直接删掉匹配到的文字。正则用 NSRegularExpression 语法，$1 表示第一个捕获组。")
+                Text("替换那栏留空，就是把匹配到的字直接删掉。正则走 NSRegularExpression 语法，$1 指第一个捕获组。")
                     .font(.footnote)
                     .foregroundColor(theme.palette.secondaryInk)
             }
@@ -1785,7 +1817,7 @@ struct ReplacementRulesView: View {
     private var importSheet: some View {
         NavigationView {
             VStack(alignment: .leading, spacing: 12) {
-                Text("把替换净化的 JSON 贴进来，或者从文件里选。认安卓导出的那套键：name / pattern / replacement / isRegex / enabled。")
+                Text("把替换规则的 JSON 贴进来，或者从文件里挑。安卓导出的那套键都认：name / pattern / replacement / isRegex / enabled。")
                     .font(.footnote)
                     .foregroundColor(theme.palette.secondaryInk)
 
@@ -2078,7 +2110,7 @@ struct DownloadManagerView: View {
                         .foregroundColor(theme.palette.secondaryInk)
                     Text("没有下载任务")
                         .font(theme.typography.body.weight(.semibold))
-                    Text("在书籍详情页右上「⋯」里缓存全本或未读章节。")
+                    Text("缓存全本或者未读章节，在书籍详情页右上角「⋯」里。")
                         .font(theme.typography.mono)
                         .foregroundColor(theme.palette.secondaryInk)
                         .multilineTextAlignment(.center)
@@ -2418,7 +2450,7 @@ struct SubscribeExternalSourceView: View {
                 .font(.system(size: 11, design: .monospaced))
                 .foregroundColor(theme.palette.secondaryInk)
                 .multilineTextAlignment(.center)
-            Text("这个订阅源使用外部 App 深链，不能在应用内直接抓取。")
+            Text("这个源走的是外部 App 的深链，应用里抓不到内容。")
                 .font(.caption)
                 .foregroundColor(theme.palette.secondaryInk)
                 .multilineTextAlignment(.center)
@@ -3857,7 +3889,7 @@ struct SubscribeImportSheet: View {
                         Label("从文件导入", systemImage: "folder")
                     }
                 } footer: {
-                    Text("跟安卓版 Legado 的订阅源文件互通：数组或单个对象都认。")
+                    Text("兼容安卓版 Legado 订阅源文件，数组与单个对象两种结构均可。")
                 }
                 .appThemedRows()
             }
@@ -4377,7 +4409,7 @@ struct SubscribeFavoritesView: View {
                         Text("还没有收藏文章")
                             .font(theme.typography.body.weight(.semibold))
                             .foregroundColor(theme.palette.ink)
-                        Text("在文章列表左滑，或正文右上角点星标。")
+                        Text("文章列表里左滑，或者点正文右上角那颗星。")
                             .font(.caption)
                             .foregroundColor(theme.palette.secondaryInk)
                     }
@@ -4609,7 +4641,7 @@ struct OPDSCatalogsView: View {
             .appThemedRows()
             Section(header: Text("OPDS / Calibre 书库")) {
                 if store.catalogs.isEmpty {
-                    Text("填 OPDS 地址即可，例如 Calibre-Web 的 /opds 或 Calibre 内容服务器的 /opds。")
+                    Text("填写 OPDS 地址，例如 Calibre-Web 的 /opds，或 Calibre 内容服务器的 /opds。")
                         .font(.footnote)
                         .foregroundColor(theme.palette.secondaryInk)
                 }

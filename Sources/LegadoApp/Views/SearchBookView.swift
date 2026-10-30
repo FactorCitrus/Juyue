@@ -310,7 +310,7 @@ public struct SearchBookView: View {
             Image(systemName: "books.vertical")
                 .font(.system(size: 40))
                 .foregroundColor(theme.palette.secondaryInk.opacity(0.5))
-            Text("输入关键词开启全网搜索")
+            Text("输入关键词，全网搜。")
                 .font(.subheadline)
                 .foregroundColor(theme.palette.secondaryInk)
         }

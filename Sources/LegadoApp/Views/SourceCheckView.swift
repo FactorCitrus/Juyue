@@ -86,7 +86,7 @@ struct SourceCheckView: View {
                 }
                 .foregroundColor(running ? .red : .accentColor)
             } footer: {
-                Text("每个源都会跑一遍搜索、详情、目录和正文，不改书源。源多会慢一些，可以随时停。")
+                Text("逐源执行搜索、详情、目录、正文，不修改书源本身。源数量多时耗时较长，可随时停止。")
             }
             .appThemedRows()
 

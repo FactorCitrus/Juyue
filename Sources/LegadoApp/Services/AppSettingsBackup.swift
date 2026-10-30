@@ -7,7 +7,7 @@ import LegadoCore
 ///
 /// 只装「用户自己攒出来的东西」：阅读排版、书架外观、外观主题、替换净化规则、
 /// 书源、朗读设置、多角色音色表。独立设置备份默认还会去掉书源登录态。
-/// 不含凭据：百度语音的 appId / apiKey / secretKey 一律不写入。
+/// 不含凭据：语音源地址、WebDAV 账号密码一律不写入。
 /// 安卓版 Legado 读到不认识的条目会直接忽略，不影响它继续读 bookshelf.json / bookSource.json。
 public struct AppSettingsPayload: Codable {
     /// 结构版本，日后加字段时靠它决定怎么迁移
@@ -95,6 +95,9 @@ public struct TTSSettingsSnapshot: Codable, Equatable {
     public var activeSourceId: Int64?
     public var castEnabled: Bool
     public var castRoles: [TTSCastRole]
+    /// 引擎选择（builtin / system / http）。老备份里没有这个键，解出来是 nil，
+    /// 恢复时按 nil 处理，保持原来的行为。
+    public var engineChoice: String?
 
     public init(
         speechRate: Double,
@@ -102,7 +105,8 @@ public struct TTSSettingsSnapshot: Codable, Equatable {
         systemVoiceIdentifier: String?,
         activeSourceId: Int64?,
         castEnabled: Bool,
-        castRoles: [TTSCastRole]
+        castRoles: [TTSCastRole],
+        engineChoice: String? = nil
     ) {
         self.speechRate = speechRate
         self.chunkLength = chunkLength
@@ -110,6 +114,7 @@ public struct TTSSettingsSnapshot: Codable, Equatable {
         self.activeSourceId = activeSourceId
         self.castEnabled = castEnabled
         self.castRoles = castRoles
+        self.engineChoice = engineChoice
     }
 }
 
@@ -158,7 +163,8 @@ public enum AppSettingsBackup {
                 systemVoiceIdentifier: SystemVoiceSelection.identifier,
                 activeSourceId: TTSourceSelection.activeId,
                 castEnabled: TTSCastStore.shared.enabled,
-                castRoles: TTSCastStore.shared.roles
+                castRoles: TTSCastStore.shared.roles,
+                engineChoice: TTSEngineChoice.current.rawValue
             )
         )
     }
@@ -262,6 +268,10 @@ public enum AppSettingsBackup {
             AudioBookService.shared.chunkLength = max(1, tts.chunkLength)
             SystemVoiceSelection.identifier = tts.systemVoiceIdentifier
             TTSourceSelection.activeId = tts.activeSourceId
+            // 老备份没有引擎字段，不动当前选择
+            if let raw = tts.engineChoice, let choice = TTSEngineChoice(rawValue: raw) {
+                TTSEngineChoice.current = choice
+            }
             TTSCastStore.shared.enabled = tts.castEnabled
             switch mode {
             case .replace:

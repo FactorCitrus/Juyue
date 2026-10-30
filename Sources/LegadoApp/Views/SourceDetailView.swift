@@ -97,7 +97,7 @@ public struct SourceDetailView: View {
                     HStack {
                         Image(systemName: "checkmark.circle")
                             .foregroundColor(theme.palette.secondaryInk)
-                        Text("这个源不用登录，或者还没配登录脚本。")
+                        Text("这个源不用登录，也可能还没配登录脚本。")
                             .font(.subheadline)
                             .foregroundColor(theme.palette.secondaryInk)
                     }
@@ -210,7 +210,7 @@ public struct SourceDetailView: View {
                         Image(systemName: "square.grid.2x2")
                             .font(.title2)
                             .foregroundColor(theme.palette.secondaryInk.opacity(0.5))
-                        Text("这个源还没有发现分类。")
+                        Text("这个源还没分出分类。")
                             .font(.caption)
                             .foregroundColor(theme.palette.secondaryInk)
                     }

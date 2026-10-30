@@ -56,10 +56,15 @@ public struct PageCurlPager: UIViewControllerRepresentable {
     public var selectedRange: (start: Int, count: Int)? = nil
     /// 段内逐字选择
     public var charSelection: ReaderCharSelection? = nil
+    /// 朗读会话中：正文任意位置点一下都是呼菜单（不按 30% 条带翻页）
+    public var isReadingSession: () -> Bool = { false }
     /// 段内逐字标注
     public var charAnnotations: [ReaderCharAnnotation] = []
     /// 已加标注的段落：下划线 / 底色
     public var annotationRanges: [(start: Int, count: Int, style: ReaderBlockStyle)] = []
+    /// 正在朗读的段 + 底色（仿真翻页也要高亮跟随）
+    public var readingBlockId: Int? = nil
+    public var readingTintColor: Color? = nil
     public let customDatePattern: String
     public let customBarText: String
     public let titleHTMLTemplate: String
@@ -122,8 +127,11 @@ public struct PageCurlPager: UIViewControllerRepresentable {
         onSelectParagraph: (([ContentBlock], Int, Int) -> Void)? = nil,
         selectedRange: (start: Int, count: Int)? = nil,
         charSelection: ReaderCharSelection? = nil,
+        isReadingSession: @escaping () -> Bool = { false },
         charAnnotations: [ReaderCharAnnotation] = [],
         annotationRanges: [(start: Int, count: Int, style: ReaderBlockStyle)] = [],
+        readingBlockId: Int? = nil,
+        readingTintColor: Color? = nil,
         customDatePattern: String,
         customBarText: String,
         titleHTMLTemplate: String,
@@ -183,8 +191,11 @@ public struct PageCurlPager: UIViewControllerRepresentable {
         self.onSelectParagraph = onSelectParagraph
         self.selectedRange = selectedRange
         self.charSelection = charSelection
+        self.isReadingSession = isReadingSession
         self.charAnnotations = charAnnotations
         self.annotationRanges = annotationRanges
+        self.readingBlockId = readingBlockId
+        self.readingTintColor = readingTintColor
         self.customDatePattern = customDatePattern
         self.customBarText = customBarText
         self.titleHTMLTemplate = titleHTMLTemplate
@@ -299,13 +310,23 @@ public struct PageCurlPager: UIViewControllerRepresentable {
         context.coordinator.lastLoadedChapterIndex = loadedChapterIndex
 
         if context.coordinator.lastSignature != signature {
-            context.coordinator.lastSignature = signature
-            apply(
-                context.coordinator.pagePair(at: context.coordinator.index),
-                to: controller,
-                direction: .forward,
-                animated: false
-            )
+            if context.coordinator.isTurning {
+                // 手指还压着、页面正在卷：这一下刷新会掐掉转场，等落了地再补
+                context.coordinator.pendingSignatureRefresh = true
+            } else {
+                context.coordinator.lastSignature = signature
+                // 朗读换段和翻页常常同一帧到：刷新用的下标要跟 startIndex 走，
+                // 老下标会把刚翻过去的那页又画回原来那张
+                let target = clampedIndex
+                let forward = target >= context.coordinator.index
+                context.coordinator.index = target
+                apply(
+                    context.coordinator.pagePair(at: target),
+                    to: controller,
+                    direction: forward ? .forward : .reverse,
+                    animated: false
+                )
+            }
             return
         }
 
@@ -372,6 +393,8 @@ public struct PageCurlPager: UIViewControllerRepresentable {
         parts.append(annotationRanges.map {
             "\($0.start)+\($0.count):\($0.style.underline ? "u\($0.style.underlineHex ?? "")" : "")\($0.style.highlightHex ?? "")"
         }.joined(separator: ","))
+        // 朗读中的段落也要进指纹：换段了得重建当前页，不然底色一直停在上一次那条
+        parts.append("read:\(readingBlockId.map(String.init) ?? "-")")
         return parts.joined(separator: "|")
     }
 
@@ -379,6 +402,11 @@ public struct PageCurlPager: UIViewControllerRepresentable {
         var parent: PageCurlPager
         var index: Int
         var lastSignature: String = ""
+        /// 手势翻页正在跑的时候，朗读换段引起的签名刷新不许插进去：
+        /// 转场中途 setViewControllers 会把卷到一半的页面直接弹回原来那页，
+        /// 用户看到的就是「一翻页自己翻回来」。先记账，落地后再补一次刷新。
+        var isTurning = false
+        var pendingSignatureRefresh = false
 
         init(_ parent: PageCurlPager) {
             self.parent = parent
@@ -446,6 +474,8 @@ public struct PageCurlPager: UIViewControllerRepresentable {
                 charSelection: parent.charSelection,
                 charAnnotations: parent.charAnnotations,
                 annotationRanges: parent.annotationRanges,
+                readingBlockId: parent.readingBlockId,
+                readingTintColor: parent.readingTintColor,
                 commentMap: parent.commentMap,
                 onCommentTap: parent.onCommentTap,
                 chapterTitle: index == 0 ? parent.chapterTitle : nil,
@@ -709,6 +739,12 @@ public struct PageCurlPager: UIViewControllerRepresentable {
                 let point = view.convert(gesture.location(in: view), to: nil)
                 if CoreTextUIView.triggerCommentTap(atWindowPoint: point) { return }
             }
+            // 朗读会话中：正文任意位置点一下都是呼菜单，不再按左右 30% 翻页。
+            // 正文几乎铺满整行，左右 30% 里全是字，想叫菜单结果翻页、还把朗读锚点拽走。
+            if parent.isReadingSession() {
+                parent.onTapCenter()
+                return
+            }
             switch gesture.view?.tag {
             case 0:
                 step(forward: false)
@@ -767,15 +803,36 @@ public struct PageCurlPager: UIViewControllerRepresentable {
 
         public func pageViewController(
             _ pageViewController: UIPageViewController,
+            willTransitionTo pendingViewControllers: [UIViewController]
+        ) {
+            isTurning = true
+        }
+
+        public func pageViewController(
+            _ pageViewController: UIPageViewController,
             didFinishAnimating finished: Bool,
             previousViewControllers: [UIViewController],
             transitionCompleted completed: Bool
         ) {
-            guard completed, let controllers = pageViewController.viewControllers, !controllers.isEmpty else { return }
+            // 手势结束（不管落没落地）先放开闸门，否则取消一次手势就把刷新卡死
+            isTurning = false
+            guard completed, let controllers = pageViewController.viewControllers, !controllers.isEmpty else {
+                flushPendingSignatureRefresh(on: pageViewController)
+                return
+            }
             // 双面模式下 viewControllers 可能同时含正面和背面，取正面那页的页码
             let front = controllers.first { $0 is UIHostingController<PageCurlContent> } ?? controllers[0]
             index = front.view.tag
             parent.onIndexChange(index)
+            flushPendingSignatureRefresh(on: pageViewController)
+        }
+
+        /// 转场期间攒下的刷新在这里一次性补上：朗读底色、选中块都靠它落到新页
+        private func flushPendingSignatureRefresh(on pager: UIPageViewController) {
+            guard pendingSignatureRefresh else { return }
+            pendingSignatureRefresh = false
+            lastSignature = parent.renderSignature
+            parent.apply(pagePair(at: index), to: pager, direction: .forward, animated: false)
         }
     }
 }
@@ -790,6 +847,8 @@ struct PageCurlContent: View {
     var charSelection: ReaderCharSelection? = nil
     var charAnnotations: [ReaderCharAnnotation] = []
     var annotationRanges: [(start: Int, count: Int, style: ReaderBlockStyle)] = []
+    var readingBlockId: Int? = nil
+    var readingTintColor: Color? = nil
     var commentMap: [Int: (count: Int, url: String)] = [:]
     var onCommentTap: ((String) -> Void)? = nil
     let chapterTitle: String?
@@ -1109,6 +1168,8 @@ struct PageCurlContent: View {
                         charAnnotations: charAnnotations,
                         annotationRanges: annotationRanges,
                         onLongPressLine: onLongPressLine,
+                        readingBlockId: readingBlockId,
+                        readingTintColor: readingTintColor,
                         commentMap: commentMap,
                         pageBackgroundColor: backgroundColor,
                         reviewAccentColor: accentColor,

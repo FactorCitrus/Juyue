@@ -10,6 +10,24 @@
 	<string>54</string>
 	<key>objects</key>
 	<dict>
+		<key>C9A65C4EBBE51CD4295A8CA7</key>
+		<dict>
+			<key>isa</key>
+			<string>PBXFileReference</string>
+			<key>lastKnownFileType</key>
+			<string>sourcecode.swift</string>
+			<key>path</key>
+			<string>Sources/LegadoApp/Services/LocalTTSModelStore.swift</string>
+			<key>sourceTree</key>
+			<string>&lt;group&gt;</string>
+		</dict>
+		<key>B1F34540D7CF45F565065863</key>
+		<dict>
+			<key>fileRef</key>
+			<string>C9A65C4EBBE51CD4295A8CA7</string>
+			<key>isa</key>
+			<string>PBXBuildFile</string>
+		</dict>
 		<key>D490C1B48204AFC3A8C09FB5</key>
 		<dict>
 			<key>isa</key>
@@ -244,42 +262,6 @@
 			<key>sourceTree</key>
 			<string>&lt;group&gt;</string>
 		</dict>
-		<key>BB01AA0000000000000001A1</key>
-		<dict>
-			<key>isa</key>
-			<string>PBXFileReference</string>
-			<key>lastKnownFileType</key>
-			<string>archive.ar</string>
-			<key>path</key>
-			<string>Vendor/BaiduSpeech/libBDSpeechTTSBaseKit.a</string>
-			<key>sourceTree</key>
-			<string>&lt;group&gt;</string>
-		</dict>
-		<key>BB01AA0000000000000002A2</key>
-		<dict>
-			<key>fileRef</key>
-			<string>BB01AA0000000000000001A1</string>
-			<key>isa</key>
-			<string>PBXBuildFile</string>
-		</dict>
-		<key>BB01AA0000000000000003A3</key>
-		<dict>
-			<key>isa</key>
-			<string>PBXFileReference</string>
-			<key>lastKnownFileType</key>
-			<string>folder</string>
-			<key>path</key>
-			<string>Sources/LegadoApp/Resources/BaiduTTS</string>
-			<key>sourceTree</key>
-			<string>&lt;group&gt;</string>
-		</dict>
-		<key>BB01AA0000000000000004A4</key>
-		<dict>
-			<key>fileRef</key>
-			<string>BB01AA0000000000000003A3</string>
-			<key>isa</key>
-			<string>PBXBuildFile</string>
-		</dict>
 		<key>BB01AA0000000000000008B8</key>
 		<dict>
 			<key>isa</key>
@@ -295,6 +277,24 @@
 		<dict>
 			<key>fileRef</key>
 			<string>BB01AA0000000000000008B8</string>
+			<key>isa</key>
+			<string>PBXBuildFile</string>
+		</dict>
+		<key>CE00E00000000000000001A1</key>
+		<dict>
+			<key>isa</key>
+			<string>PBXFileReference</string>
+			<key>lastKnownFileType</key>
+			<string>sourcecode.swift</string>
+			<key>path</key>
+			<string>Sources/LegadoApp/Views/Reader/QwenTTSSetupView.swift</string>
+			<key>sourceTree</key>
+			<string>&lt;group&gt;</string>
+		</dict>
+		<key>CE00E00000000000000002A2</key>
+		<dict>
+			<key>fileRef</key>
+			<string>CE00E00000000000000001A1</string>
 			<key>isa</key>
 			<string>PBXBuildFile</string>
 		</dict>
@@ -334,53 +334,6 @@
 			<key>isa</key>
 			<string>PBXBuildFile</string>
 		</dict>
-		<key>BB01AA0000000000000005A5</key>
-		<dict>
-			<key>isa</key>
-			<string>PBXFileReference</string>
-			<key>lastKnownFileType</key>
-			<string>sourcecode.swift</string>
-			<key>path</key>
-			<string>Sources/LegadoApp/Services/BaiduOfflineTTS.swift</string>
-			<key>sourceTree</key>
-			<string>&lt;group&gt;</string>
-		</dict>
-		<key>BB01AA0000000000000006A6</key>
-		<dict>
-			<key>fileRef</key>
-			<string>BB01AA0000000000000005A5</string>
-			<key>isa</key>
-			<string>PBXBuildFile</string>
-		</dict>
-		<key>BB01AA0000000000000007A7</key>
-		<dict>
-			<key>isa</key>
-			<string>PBXFileReference</string>
-			<key>lastKnownFileType</key>
-			<string>sourcecode.c.h</string>
-			<key>path</key>
-			<string>Vendor/BaiduSpeech/BaiduSpeech-Bridging-Header.h</string>
-			<key>sourceTree</key>
-			<string>&lt;group&gt;</string>
-		</dict>
-		<key>BB01AA0000000000000008A8</key>
-		<dict>
-			<key>isa</key>
-			<string>PBXFileReference</string>
-			<key>lastKnownFileType</key>
-			<string>sourcecode.swift</string>
-			<key>path</key>
-			<string>Sources/LegadoApp/Services/BaiduOnlineTTS.swift</string>
-			<key>sourceTree</key>
-			<string>&lt;group&gt;</string>
-		</dict>
-		<key>BB01AA0000000000000009A9</key>
-		<dict>
-			<key>fileRef</key>
-			<string>BB01AA0000000000000008A8</string>
-			<key>isa</key>
-			<string>PBXBuildFile</string>
-		</dict>
 		<key>00A53D3303BC693F605060C5</key>
 		<dict>
 			<key>fileRef</key>
@@ -405,15 +358,15 @@
 				<string>1ADA90710EF9AC0F0170D6CE</string>
 				<string>58F4DD9F18FFD2E853399AD6</string>
 				<string>AA11BB22CC33DD44EE55FF66</string>
+				<string>AA11BB22CC33DD44EE55FF6C</string>
 				<string>F7D8DE57A44495342278811B</string>
 				<string>9E009C4C103DE998A87C5276</string>
 				<string>1879949E281D92B487685A97</string>
-				<string>BB01AA0000000000000001A1</string>
-				<string>BB01AA0000000000000003A3</string>
-				<string>BB01AA0000000000000005A5</string>
-				<string>BB01AA0000000000000007A7</string>
-				<string>BB01AA0000000000000008A8</string>
+				<string>CE00E00000000000000001A1</string>
 				<string>A1C0DE00000000000000A11C</string>
+				<string>EE55FF00000000000000C001</string>
+				<string>EE55FF00000000000000C005</string>
+				<string>EE55FF00000000000000C007</string>
 			</array>
 			<key>isa</key>
 			<string>PBXGroup</string>
@@ -499,28 +452,28 @@
 			<key>productName</key>
 			<string>SwiftSoup</string>
 		</dict>
-			<key>19545F1A0E67955825D76F05</key>
-			<dict>
-				<key>isa</key>
-				<string>PBXFileReference</string>
-				<key>lastKnownFileType</key>
-				<string>sourcecode.swift</string>
-				<key>path</key>
-				<string>Sources/LegadoCore/Utils/CryptoUtils.swift</string>
-				<key>sourceTree</key>
-				<string>&lt;group&gt;</string>
-			</dict>
-			<key>CC02BB0000000000000001A1</key>
-			<dict>
-				<key>isa</key>
-				<string>PBXFileReference</string>
-				<key>lastKnownFileType</key>
-				<string>sourcecode.swift</string>
-				<key>path</key>
-				<string>Sources/LegadoCore/Utils/CookieJar.swift</string>
-				<key>sourceTree</key>
-				<string>&lt;group&gt;</string>
-			</dict>
+		<key>19545F1A0E67955825D76F05</key>
+		<dict>
+			<key>isa</key>
+			<string>PBXFileReference</string>
+			<key>lastKnownFileType</key>
+			<string>sourcecode.swift</string>
+			<key>path</key>
+			<string>Sources/LegadoCore/Utils/CryptoUtils.swift</string>
+			<key>sourceTree</key>
+			<string>&lt;group&gt;</string>
+		</dict>
+		<key>CC02BB0000000000000001A1</key>
+		<dict>
+			<key>isa</key>
+			<string>PBXFileReference</string>
+			<key>lastKnownFileType</key>
+			<string>sourcecode.swift</string>
+			<key>path</key>
+			<string>Sources/LegadoCore/Utils/CookieJar.swift</string>
+			<key>sourceTree</key>
+			<string>&lt;group&gt;</string>
+		</dict>
 		<key>1BABC9FE70385367B81EC546</key>
 		<dict>
 			<key>children</key>
@@ -659,7 +612,7 @@
 				<key>CODE_SIGN_STYLE</key>
 				<string>Automatic</string>
 				<key>CURRENT_PROJECT_VERSION</key>
-				<string>5.0.8</string>
+				<string>5.0.26</string>
 				<key>DEVELOPMENT_TEAM</key>
 				<string></string>
 				<key>ENABLE_PREVIEWS</key>
@@ -681,7 +634,7 @@
 				<key>LD_RUNPATH_SEARCH_PATHS</key>
 				<string>$(inherited) @executable_path/Frameworks</string>
 				<key>MARKETING_VERSION</key>
-				<string>5.0.8</string>
+				<string>5.0.26</string>
 				<key>PRODUCT_BUNDLE_IDENTIFIER</key>
 				<string>com.factorcitrus.juyue</string>
 				<key>PRODUCT_NAME</key>
@@ -690,25 +643,12 @@
 				<string>5.0</string>
 				<key>TARGETED_DEVICE_FAMILY</key>
 				<string>1,2</string>
-				<key>SWIFT_OBJC_BRIDGING_HEADER</key>
-				<string>Vendor/BaiduSpeech/BaiduSpeech-Bridging-Header.h</string>
-				<key>HEADER_SEARCH_PATHS</key>
-				<array>
-					<string>$(inherited)</string>
-					<string>$(SRCROOT)/Vendor/BaiduSpeech/include</string>
-				</array>
-				<key>LIBRARY_SEARCH_PATHS</key>
-				<array>
-					<string>$(inherited)</string>
-					<string>$(SRCROOT)/Vendor/BaiduSpeech</string>
-				</array>
 				<key>OTHER_LDFLAGS</key>
 				<array>
 					<string>$(inherited)</string>
 					<string>-ObjC</string>
 					<string>-lz</string>
 					<string>-lc++</string>
-					<string>-lBDSpeechTTSBaseKit</string>
 					<string>-framework</string>
 					<string>Accelerate</string>
 					<string>-framework</string>
@@ -720,6 +660,21 @@
 					<string>-framework</string>
 					<string>Security</string>
 				</array>
+				<key>SWIFT_INCLUDE_PATHS</key>
+				<string>"$(SRCROOT)/Vendor/sherpa-onnx/include"</string>
+				<key>HEADER_SEARCH_PATHS</key>
+				<array>
+					<string>$(inherited)</string>
+					<string>$(SRCROOT)/Vendor/BaiduSpeech/include</string>
+					<string>$(SRCROOT)/Vendor/BaiduSpeech</string>
+				</array>
+				<key>LIBRARY_SEARCH_PATHS</key>
+				<array>
+					<string>$(inherited)</string>
+					<string>$(SRCROOT)/Vendor/BaiduSpeech</string>
+				</array>
+				<key>SWIFT_OBJC_BRIDGING_HEADER</key>
+				<string>$(SRCROOT)/Vendor/BaiduSpeech/BaiduSpeech-Bridging-Header.h</string>
 			</dict>
 			<key>isa</key>
 			<string>XCBuildConfiguration</string>
@@ -790,27 +745,6 @@
 			<key>runOnlyForDeploymentPostprocessing</key>
 			<string>0</string>
 		</dict>
-		<key>C0DE00000000000000BA1D01</key>
-		<dict>
-			<key>buildActionMask</key>
-			<string>2147483647</string>
-			<key>files</key>
-			<array/>
-			<key>inputPaths</key>
-			<array/>
-			<key>isa</key>
-			<string>PBXShellScriptBuildPhase</string>
-			<key>name</key>
-			<string>Copy Optional BaiduTTS</string>
-			<key>outputPaths</key>
-			<array/>
-			<key>runOnlyForDeploymentPostprocessing</key>
-			<string>0</string>
-			<key>shellPath</key>
-			<string>/bin/sh</string>
-			<key>shellScript</key>
-			<string>if [ &quot;$CONFIGURATION&quot; != &quot;AppStore&quot; ] &amp;&amp; [ -d &quot;$SRCROOT/Sources/LegadoApp/Resources/BaiduTTS&quot; ] &amp;&amp; find &quot;$SRCROOT/Sources/LegadoApp/Resources/BaiduTTS&quot; -type f | grep -q .; then mkdir -p &quot;$TARGET_BUILD_DIR/$UNLOCALIZED_RESOURCES_FOLDER_PATH&quot;; cp -R &quot;$SRCROOT/Sources/LegadoApp/Resources/BaiduTTS&quot; &quot;$TARGET_BUILD_DIR/$UNLOCALIZED_RESOURCES_FOLDER_PATH/&quot;; fi</string>
-		</dict>
 		<key>66F32E672C0230504DDD4CA3</key>
 		<dict>
 			<key>isa</key>
@@ -849,7 +783,7 @@
 				<string>9CD1113D1A0440D90EF379BC</string>
 				<string>C92DD416700C675A2583C93A</string>
 				<string>5D678E4AC7BCF177A1D9373C</string>
-				<string>C0DE00000000000000BA1D01</string>
+				<string>BD0000000000000000BA1D01</string>
 			</array>
 			<key>buildRules</key>
 			<array/>
@@ -972,6 +906,7 @@
 				<string>6C127C12D8AD7B160F6CC0F3</string>
 				<string>E1BD9F822CAA81583692CC4A</string>
 				<string>D490C1B48204AFC3A8C09FB5</string>
+				<string>C9A65C4EBBE51CD4295A8CA7</string>
 			</array>
 			<key>isa</key>
 			<string>PBXGroup</string>
@@ -1164,12 +1099,12 @@
 				<string>CAA9CB4A5E1A991D6894AC1D</string>
 				<string>46981FEC0E60691EF058FE58</string>
 				<string>AA11BB22CC33DD44EE55FF67</string>
+				<string>AA11BB22CC33DD44EE55FF6D</string>
 				<string>AA11BB22CC33DD44EE55FF6B</string>
 				<string>49894AE7A79E3943DC288583</string>
 				<string>6D66130FEFCB34F929D68B79</string>
 				<string>782B4C6BAD3FD51D78E1607C</string>
-				<string>BB01AA0000000000000006A6</string>
-				<string>BB01AA0000000000000009A9</string>
+				<string>CE00E00000000000000002A2</string>
 				<string>BB01AA000000000000001B52</string>
 				<string>BB01AA000000000000000AC2</string>
 				<string>AA11BB22CC33DD44EE55FF98</string>
@@ -1188,19 +1123,25 @@
 				<string>8B84D7F338D473FCF8456CF4</string>
 				<string>8E7D37EBCCCFCC8C6BD79009</string>
 				<string>2EECD649955D8AFCBE7650CD</string>
+				<string>EE55FF00000000000000C006</string>
+				<string>B1F34540D7CF45F565065863</string>
+				<string>BD0200000000000000BF11E02</string>
+				<string>BD0200000000000000BF11E04</string>
+				<string>BD0200000000000000BF11E06</string>
+				<string>BD0200000000000000BF11E08</string>
 			</array>
 			<key>isa</key>
 			<string>PBXSourcesBuildPhase</string>
 			<key>runOnlyForDeploymentPostprocessing</key>
 			<string>0</string>
 		</dict>
-			<key>A17D23166431189F8B5F0FC7</key>
-			<dict>
-				<key>fileRef</key>
-				<string>19545F1A0E67955825D76F05</string>
-				<key>isa</key>
-				<string>PBXBuildFile</string>
-			</dict>
+		<key>A17D23166431189F8B5F0FC7</key>
+		<dict>
+			<key>fileRef</key>
+			<string>19545F1A0E67955825D76F05</string>
+			<key>isa</key>
+			<string>PBXBuildFile</string>
+		</dict>
 		<key>AA11BB22CC33DD44EE55FF97</key>
 		<dict>
 			<key>isa</key>
@@ -1435,13 +1376,13 @@
 			<key>isa</key>
 			<string>PBXBuildFile</string>
 		</dict>
-			<key>CC02BB0000000000000001A2</key>
-			<dict>
-				<key>fileRef</key>
-				<string>CC02BB0000000000000001A1</string>
-				<key>isa</key>
-				<string>PBXBuildFile</string>
-			</dict>
+		<key>CC02BB0000000000000001A2</key>
+		<dict>
+			<key>fileRef</key>
+			<string>CC02BB0000000000000001A1</string>
+			<key>isa</key>
+			<string>PBXBuildFile</string>
+		</dict>
 		<key>A28EB252C1E67213AA584A69</key>
 		<dict>
 			<key>fileRef</key>
@@ -1576,6 +1517,8 @@
 			<array>
 				<string>56A0F6E7B159B88C9BE3A1DD</string>
 				<string>7B54E4C3682E2D192F748519</string>
+				<string>EE55FF00000000000000C002</string>
+				<string>EE55FF00000000000000C008</string>
 			</array>
 			<key>isa</key>
 			<string>PBXFrameworksBuildPhase</string>
@@ -1760,7 +1703,7 @@
 				<key>CODE_SIGN_STYLE</key>
 				<string>Automatic</string>
 				<key>CURRENT_PROJECT_VERSION</key>
-				<string>5.0.8</string>
+				<string>5.0.26</string>
 				<key>DEVELOPMENT_TEAM</key>
 				<string></string>
 				<key>ENABLE_PREVIEWS</key>
@@ -1782,7 +1725,7 @@
 				<key>LD_RUNPATH_SEARCH_PATHS</key>
 				<string>$(inherited) @executable_path/Frameworks</string>
 				<key>MARKETING_VERSION</key>
-				<string>5.0.8</string>
+				<string>5.0.26</string>
 				<key>PRODUCT_BUNDLE_IDENTIFIER</key>
 				<string>com.factorcitrus.juyue</string>
 				<key>PRODUCT_NAME</key>
@@ -1791,25 +1734,12 @@
 				<string>5.0</string>
 				<key>TARGETED_DEVICE_FAMILY</key>
 				<string>1,2</string>
-				<key>SWIFT_OBJC_BRIDGING_HEADER</key>
-				<string>Vendor/BaiduSpeech/BaiduSpeech-Bridging-Header.h</string>
-				<key>HEADER_SEARCH_PATHS</key>
-				<array>
-					<string>$(inherited)</string>
-					<string>$(SRCROOT)/Vendor/BaiduSpeech/include</string>
-				</array>
-				<key>LIBRARY_SEARCH_PATHS</key>
-				<array>
-					<string>$(inherited)</string>
-					<string>$(SRCROOT)/Vendor/BaiduSpeech</string>
-				</array>
 				<key>OTHER_LDFLAGS</key>
 				<array>
 					<string>$(inherited)</string>
 					<string>-ObjC</string>
 					<string>-lz</string>
 					<string>-lc++</string>
-					<string>-lBDSpeechTTSBaseKit</string>
 					<string>-framework</string>
 					<string>Accelerate</string>
 					<string>-framework</string>
@@ -1820,7 +1750,23 @@
 					<string>SystemConfiguration</string>
 					<string>-framework</string>
 					<string>Security</string>
+					<string>-lBDSpeechTTSBaseKit</string>
 				</array>
+				<key>SWIFT_INCLUDE_PATHS</key>
+				<string>"$(SRCROOT)/Vendor/sherpa-onnx/include"</string>
+				<key>HEADER_SEARCH_PATHS</key>
+				<array>
+					<string>$(inherited)</string>
+					<string>$(SRCROOT)/Vendor/BaiduSpeech/include</string>
+					<string>$(SRCROOT)/Vendor/BaiduSpeech</string>
+				</array>
+				<key>LIBRARY_SEARCH_PATHS</key>
+				<array>
+					<string>$(inherited)</string>
+					<string>$(SRCROOT)/Vendor/BaiduSpeech</string>
+				</array>
+				<key>SWIFT_OBJC_BRIDGING_HEADER</key>
+				<string>$(SRCROOT)/Vendor/BaiduSpeech/BaiduSpeech-Bridging-Header.h</string>
 			</dict>
 			<key>isa</key>
 			<string>XCBuildConfiguration</string>
@@ -1838,7 +1784,7 @@
 				<key>CODE_SIGN_STYLE</key>
 				<string>Automatic</string>
 				<key>CURRENT_PROJECT_VERSION</key>
-				<string>5.0.8</string>
+				<string>5.0.26</string>
 				<key>DEVELOPMENT_TEAM</key>
 				<string></string>
 				<key>ENABLE_PREVIEWS</key>
@@ -1862,7 +1808,7 @@
 				<key>LD_RUNPATH_SEARCH_PATHS</key>
 				<string>$(inherited) @executable_path/Frameworks</string>
 				<key>MARKETING_VERSION</key>
-				<string>5.0.8</string>
+				<string>5.0.26</string>
 				<key>PRODUCT_BUNDLE_IDENTIFIER</key>
 				<string>com.factorcitrus.juyue.reader</string>
 				<key>PRODUCT_NAME</key>
@@ -1872,19 +1818,7 @@
 				<key>TARGETED_DEVICE_FAMILY</key>
 				<string>1,2</string>
 				<key>SWIFT_ACTIVE_COMPILATION_CONDITIONS</key>
-				<string>$(inherited) JUYUE_APPSTORE NO_BAIDU_TTS</string>
-				<key>SWIFT_OBJC_BRIDGING_HEADER</key>
-				<string>Vendor/BaiduSpeech/BaiduSpeech-Bridging-Header.h</string>
-				<key>HEADER_SEARCH_PATHS</key>
-				<array>
-					<string>$(inherited)</string>
-					<string>$(SRCROOT)/Vendor/BaiduSpeech/include</string>
-				</array>
-				<key>LIBRARY_SEARCH_PATHS</key>
-				<array>
-					<string>$(inherited)</string>
-					<string>$(SRCROOT)/Vendor/BaiduSpeech</string>
-				</array>
+				<string>$(inherited) JUYUE_APPSTORE</string>
 				<key>OTHER_LDFLAGS</key>
 				<array>
 					<string>$(inherited)</string>
@@ -1901,7 +1835,10 @@
 					<string>SystemConfiguration</string>
 					<string>-framework</string>
 					<string>Security</string>
+					<string>-lBDSpeechTTSBaseKit</string>
 				</array>
+				<key>SWIFT_INCLUDE_PATHS</key>
+				<string>"$(SRCROOT)/Vendor/sherpa-onnx/include"</string>
 			</dict>
 			<key>isa</key>
 			<string>XCBuildConfiguration</string>
@@ -2210,6 +2147,24 @@
 			<key>fileRef</key>
 			<string>AA11BB22CC33DD44EE55FF66</string>
 		</dict>
+		<key>AA11BB22CC33DD44EE55FF6C</key>
+		<dict>
+			<key>isa</key>
+			<string>PBXFileReference</string>
+			<key>lastKnownFileType</key>
+			<string>sourcecode.swift</string>
+			<key>path</key>
+			<string>Sources/LegadoApp/Views/Reader/ReaderScrollTextMetrics.swift</string>
+			<key>sourceTree</key>
+			<string>&lt;group&gt;</string>
+		</dict>
+		<key>AA11BB22CC33DD44EE55FF6D</key>
+		<dict>
+			<key>isa</key>
+			<string>PBXBuildFile</string>
+			<key>fileRef</key>
+			<string>AA11BB22CC33DD44EE55FF6C</string>
+		</dict>
 		<key>F7D8DE57A44495342278811B</key>
 		<dict>
 			<key>isa</key>
@@ -2263,6 +2218,153 @@
 			<string>PBXBuildFile</string>
 			<key>fileRef</key>
 			<string>1879949E281D92B487685A97</string>
+		</dict>
+		<key>EE55FF00000000000000C001</key>
+		<dict>
+			<key>isa</key>
+			<string>PBXFileReference</string>
+			<key>lastKnownFileType</key>
+			<string>wrapper.xcframework</string>
+			<key>path</key>
+			<string>Vendor/sherpa-onnx/sherpa-onnx.xcframework</string>
+			<key>sourceTree</key>
+			<string>&lt;group&gt;</string>
+		</dict>
+		<key>EE55FF00000000000000C002</key>
+		<dict>
+			<key>isa</key>
+			<string>PBXBuildFile</string>
+			<key>fileRef</key>
+			<string>EE55FF00000000000000C001</string>
+		</dict>
+		<key>EE55FF00000000000000C005</key>
+		<dict>
+			<key>isa</key>
+			<string>PBXFileReference</string>
+			<key>lastKnownFileType</key>
+			<string>sourcecode.swift</string>
+			<key>path</key>
+			<string>Sources/LegadoApp/Services/LocalTTSEngine.swift</string>
+			<key>sourceTree</key>
+			<string>&lt;group&gt;</string>
+		</dict>
+		<key>EE55FF00000000000000C006</key>
+		<dict>
+			<key>isa</key>
+			<string>PBXBuildFile</string>
+			<key>fileRef</key>
+			<string>EE55FF00000000000000C005</string>
+		</dict>
+		<key>EE55FF00000000000000C007</key>
+		<dict>
+			<key>isa</key>
+			<string>PBXFileReference</string>
+			<key>lastKnownFileType</key>
+			<string>wrapper.xcframework</string>
+			<key>path</key>
+			<string>Vendor/sherpa-onnx/onnxruntime.xcframework</string>
+			<key>sourceTree</key>
+			<string>&lt;group&gt;</string>
+		</dict>
+		<key>EE55FF00000000000000C008</key>
+		<dict>
+			<key>isa</key>
+			<string>PBXBuildFile</string>
+			<key>fileRef</key>
+			<string>EE55FF00000000000000C007</string>
+		</dict>
+		<key>BD0200000000000000F11E01</key>
+		<dict>
+			<key>isa</key>
+			<string>PBXFileReference</string>
+			<key>lastKnownFileType</key>
+			<string>sourcecode.swift</string>
+			<key>path</key>
+			<string>Sources/LegadoApp/Services/BaiduOfflineTTS.swift</string>
+			<key>sourceTree</key>
+			<string>&lt;group&gt;</string>
+		</dict>
+		<key>BD0200000000000000BF11E02</key>
+		<dict>
+			<key>isa</key>
+			<string>PBXBuildFile</string>
+			<key>fileRef</key>
+			<string>BD0200000000000000F11E01</string>
+		</dict>
+		<key>BD0200000000000000F11E03</key>
+		<dict>
+			<key>isa</key>
+			<string>PBXFileReference</string>
+			<key>lastKnownFileType</key>
+			<string>sourcecode.swift</string>
+			<key>path</key>
+			<string>Sources/LegadoApp/Services/BaiduCredentials.swift</string>
+			<key>sourceTree</key>
+			<string>&lt;group&gt;</string>
+		</dict>
+		<key>BD0200000000000000BF11E04</key>
+		<dict>
+			<key>isa</key>
+			<string>PBXBuildFile</string>
+			<key>fileRef</key>
+			<string>BD0200000000000000F11E03</string>
+		</dict>
+		<key>BD0200000000000000F11E05</key>
+		<dict>
+			<key>isa</key>
+			<string>PBXFileReference</string>
+			<key>lastKnownFileType</key>
+			<string>sourcecode.swift</string>
+			<key>path</key>
+			<string>Sources/LegadoApp/Services/BundledTTSEngine.swift</string>
+			<key>sourceTree</key>
+			<string>&lt;group&gt;</string>
+		</dict>
+		<key>BD0200000000000000BF11E06</key>
+		<dict>
+			<key>isa</key>
+			<string>PBXBuildFile</string>
+			<key>fileRef</key>
+			<string>BD0200000000000000F11E05</string>
+		</dict>
+		<key>BD0200000000000000F11E07</key>
+		<dict>
+			<key>isa</key>
+			<string>PBXFileReference</string>
+			<key>lastKnownFileType</key>
+			<string>sourcecode.swift</string>
+			<key>path</key>
+			<string>Sources/LegadoApp/Services/BaiduBundleShim.swift</string>
+			<key>sourceTree</key>
+			<string>&lt;group&gt;</string>
+		</dict>
+		<key>BD0200000000000000BF11E08</key>
+		<dict>
+			<key>isa</key>
+			<string>PBXBuildFile</string>
+			<key>fileRef</key>
+			<string>BD0200000000000000F11E07</string>
+		</dict>
+		<key>BD0000000000000000BA1D01</key>
+		<dict>
+			<key>buildActionMask</key>
+			<string>2147483647</string>
+			<key>files</key>
+			<array/>
+			<key>inputPaths</key>
+			<array/>
+			<key>isa</key>
+			<string>PBXShellScriptBuildPhase</string>
+			<key>name</key>
+			<string>Copy Optional BaiduTTS</string>
+			<key>outputPaths</key>
+			<array/>
+			<key>runOnlyForDeploymentPostprocessing</key>
+			<string>0</string>
+			<key>shellPath</key>
+			<string>/bin/sh</string>
+			<key>shellScript</key>
+			<string>echo &quot;[BaiduTTS] copying&quot;; if [ &quot;$CONFIGURATION&quot; != &quot;AppStore&quot; ] &amp;&amp; [ -d &quot;$SRCROOT/Sources/LegadoApp/Resources/BaiduTTS&quot; ]; then mkdir -p &quot;$TARGET_BUILD_DIR/$UNLOCALIZED_RESOURCES_FOLDER_PATH/BaiduTTS&quot;; cp -R &quot;$SRCROOT/Sources/LegadoApp/Resources/BaiduTTS/.&quot; &quot;$TARGET_BUILD_DIR/$UNLOCALIZED_RESOURCES_FOLDER_PATH/BaiduTTS/&quot;; echo &quot;[BaiduTTS] done $(ls &quot;$TARGET_BUILD_DIR/$UNLOCALIZED_RESOURCES_FOLDER_PATH/BaiduTTS&quot; | wc -l) files&quot;; fi</string>
 		</dict>
 	</dict>
 	<key>rootObject</key>

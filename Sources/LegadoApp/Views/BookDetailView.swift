@@ -846,7 +846,7 @@ struct BookCoverPickerSheet: View {
             }
         } else if candidates.isEmpty {
             Section {
-                Text("书源里没搜到封面，用手填地址或相册吧。")
+                Text("书源里没找到封面，手填一个地址，或者从相册挑。")
                     .font(.caption)
                     .foregroundColor(.secondary)
             }

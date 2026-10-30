@@ -227,7 +227,7 @@ public struct WebDAVSyncView: View {
         } header: {
             Text("WebDAV 服务器设置")
         } footer: {
-            Text("坚果云这类服务，要先在网页端生成「应用专用密码」再填进来。备份包是 backupYYYY-MM-DD-设备名称.zip，安卓 Legado 也能恢复。")
+            Text("坚果云需先在网页端生成应用专用密码。备份包命名 backupYYYY-MM-DD-设备名.zip，安卓 Legado 可直接读取。")
         }
         .appThemedRows()
     }
@@ -378,7 +378,7 @@ public struct WebDAVSyncView: View {
                 }
             }
 
-            Text("导出：把书架、书源和应用设置打成和安卓一致的 backup*.zip，存到本机「文件」里 —— 不用配 WebDAV 也能备份。导入：支持选取 Android 版阅读器导出的 backup*.zip（可配合 bookProgress 进度目录），自动恢复书籍、书源与阅读进度。")
+            Text("导出：把书架、书源、应用设置打成一个和安卓同款的 backup*.zip，放进本机「文件」里 —— 不配 WebDAV 也能备份。导入：认得安卓阅读器导出的 backup*.zip（配合 bookProgress 进度目录），书籍、书源、阅读进度一起恢复。")
                 .font(.caption2)
                 .foregroundColor(theme.palette.secondaryInk)
         }

@@ -91,7 +91,7 @@ public struct SourceWebLoginView: View {
                 .foregroundColor(theme.palette.secondaryInk)
             Text("这个书源没有可直接打开的网页登录地址")
                 .font(.subheadline.weight(.medium))
-            Text("它的 loginUrl 是一段脚本、bookSourceUrl 也不是网址。\n上面地址栏里是从脚本里扒出来的主机，填上真实登录页地址点「打开」即可；也可以直接「手动粘贴 Cookie」，或者回上一页走「表单脚本登录」。")
+            Text("它的 loginUrl 是一段脚本，bookSourceUrl 也不是网址。\n上面地址栏里填的是从脚本里扒出来的主机名。把真正的登录页地址补上，点「打开」；也可以直接「手动粘贴 Cookie」，或者退回去走「表单脚本登录」。")
                 .font(.caption)
                 .foregroundColor(theme.palette.secondaryInk)
                 .multilineTextAlignment(.center)
@@ -273,7 +273,7 @@ public struct SourceWebLoginView: View {
                     TextEditor(text: $manualCookieInput)
                         .frame(minHeight: 140)
                         .font(.system(.caption, design: .monospaced))
-                    Text("如果已经在 Safari 或电脑上登录过，可以直接把浏览器的 Cookie 复制过来（如 ews_key=...; ews_token=...; PHPSESSID=...）。")
+                    Text("已在他处登录时，可粘贴浏览器 Cookie，形如 ews_key=...; ews_token=...; PHPSESSID=...。")
                         .font(.caption2)
                         .foregroundColor(theme.palette.secondaryInk)
                 }

@@ -328,6 +328,17 @@ struct ReaderPullDownCatcher: UIViewRepresentable {
     var onCharHandleHit: ((CGPoint) -> Bool)? = nil
     /// 字选手柄拖动中的窗口坐标
     var onCharHandleDrag: ((CGPoint) -> Void)? = nil
+    /// 单击（窗口坐标）。只旁听，不取消触摸；听书状态在回调里自己判
+    var onTap: ((CGPoint) -> Void)? = nil
+
+    /// `.background` 里这层只是个占位，进窗口后由它把识别器挪到 UIWindow 上。
+    final class CatcherHostView: UIView {
+        var onWindow: ((UIWindow) -> Void)?
+        override func didMoveToWindow() {
+            super.didMoveToWindow()
+            if let window { onWindow?(window) }
+        }
+    }
 
     final class Coordinator: NSObject, UIGestureRecognizerDelegate {
         var isEnabled: () -> Bool = { true }
@@ -337,9 +348,11 @@ struct ReaderPullDownCatcher: UIViewRepresentable {
         var onLongPress: (CGPoint) -> Void = { _ in }
         var onCharHandleHit: ((CGPoint) -> Bool)?
         var onCharHandleDrag: ((CGPoint) -> Void)?
+        var onTap: ((CGPoint) -> Void)?
         private var charDragging = false
         weak var recognizer: UIPanGestureRecognizer?
         weak var longPress: UILongPressGestureRecognizer?
+        weak var tap: UITapGestureRecognizer?
         /// 这一次拖拽已经判定成「下拉」：判定一次就认到底，避免慢速下拉时逐帧反复翻转
         private var startedAsPull = false
 
@@ -361,11 +374,21 @@ struct ReaderPullDownCatcher: UIViewRepresentable {
             press.cancelsTouchesInView = false
             host.addGestureRecognizer(press)
             longPress = press
+
+            // 单击不再挂在这一层：分页器的零位移收尾、滚动视图自己的点按都已经在管，
+            // window 层再挂一个会和它们对拼，一次点按 toggle 两回、菜单一闪就没。
+        }
+
+        @objc private func handleTap(_ gesture: UITapGestureRecognizer) {
+            AppLog.write("[下拉] tap 收到 · coord=\(ObjectIdentifier(self))")
+            onTap?(gesture.location(in: gesture.view))
         }
 
         @objc private func handlePress(_ gesture: UILongPressGestureRecognizer) {
             guard gesture.state == .began else { return }
-            onLongPress(gesture.location(in: gesture.view))
+            let point = gesture.location(in: gesture.view)
+            AppLog.write("[下拉] 长按收到（真触摸）· \(Int(point.x)),\(Int(point.y))")
+            onLongPress(point)
         }
 
         @objc private func handle(_ gesture: UIPanGestureRecognizer) {
@@ -426,7 +449,8 @@ struct ReaderPullDownCatcher: UIViewRepresentable {
     func makeCoordinator() -> Coordinator { Coordinator() }
 
     func makeUIView(context: Context) -> UIView {
-        let view = UIView()
+        let view = CatcherHostView()
+        // 只旁听，不吃触摸。真正接触摸的是挂在 window 上的识别器。
         view.isUserInteractionEnabled = false
         view.backgroundColor = .clear
         let coordinator = context.coordinator
@@ -437,11 +461,14 @@ struct ReaderPullDownCatcher: UIViewRepresentable {
         coordinator.onLongPress = onLongPress
         coordinator.onCharHandleHit = onCharHandleHit
         coordinator.onCharHandleDrag = onCharHandleDrag
-        DispatchQueue.main.async { [weak view] in
-            // 挂到 window 上：正文区（尤其仿真那套 UIKit 翻页）的触摸才会经过这里。
-            // 挂在 SwiftUI 的内部小容器上时，正文区的拖拽根本不会送到这个识别器。
-            guard let host = view?.window ?? view?.superview else { return }
-            coordinator.attach(to: host)
+        coordinator.onTap = onTap
+        // 这是整个问题的根：.background 里的这个 view 是正文的**兄弟**，不是祖先。
+        // UIKit 只把触摸送给命中视图的祖先链，兄弟永远收不到——挂在它（或它的 superview）上
+        // 等于没挂，真手指长按一辈子进不来。所以改成等它进窗口后挂到 UIWindow 上。
+        view.onWindow = { [weak coordinator] window in
+            guard let coordinator else { return }
+            coordinator.attach(to: window)
+            AppLog.write("[下拉] 识别器挂到 window · coord=\(ObjectIdentifier(coordinator))")
         }
         return view
     }
@@ -454,6 +481,14 @@ struct ReaderPullDownCatcher: UIViewRepresentable {
         context.coordinator.onLongPress = onLongPress
         context.coordinator.onCharHandleHit = onCharHandleHit
         context.coordinator.onCharHandleDrag = onCharHandleDrag
+        context.coordinator.onTap = onTap
+        // makeUIView 那一刻背景层还没进视图层级，window 和 superview 都可能还是 nil，
+        // 识别器就没挂上；之后屏幕上的点击会落到上一次那个已经销毁的实例的识别器上，
+        // 日志照写、改的却是死状态，界面一动不动。这里补挂一次。
+        if context.coordinator.recognizer == nil, let window = uiView.window {
+            context.coordinator.attach(to: window)
+            AppLog.write("[下拉] 补挂识别器到 window · coord=\(ObjectIdentifier(context.coordinator))")
+        }
     }
 
     static func dismantleUIView(_ uiView: UIView, coordinator: Coordinator) {
@@ -462,6 +497,9 @@ struct ReaderPullDownCatcher: UIViewRepresentable {
         }
         if let press = coordinator.longPress {
             press.view?.removeGestureRecognizer(press)
+        }
+        if let tap = coordinator.tap {
+            tap.view?.removeGestureRecognizer(tap)
         }
     }
 }
@@ -1359,6 +1397,15 @@ private struct NativeCommentListSheet: View {
             return
         }
         do {
+            // 缓存优先：书源没登录或断网时，之前抓过的评论还能看
+            if reset, let cachedData = ReviewCache.load(for: api),
+               let cachedEnvelope = try? JSONDecoder().decode(ReviewEnvelope.self, from: cachedData) {
+                comments = cachedEnvelope.data?.comments ?? []
+                total = cachedEnvelope.data?.total ?? comments.count
+                cursor = cachedEnvelope.data?.next_cursor ?? ""
+                hasMore = cachedEnvelope.data?.has_more == true && cursor != ""
+                AppLog.write("[评论] 先给缓存 title=\(target.title) \(comments.count) 条")
+            }
             let (data, _) = try await URLSession.shared.data(from: api)
             let envelope = try JSONDecoder().decode(ReviewEnvelope.self, from: data)
             let page = envelope.data?.comments ?? []
@@ -1367,10 +1414,16 @@ private struct NativeCommentListSheet: View {
             total = envelope.data?.total ?? comments.count
             cursor = envelope.data?.next_cursor ?? ""
             hasMore = envelope.data?.has_more == true && cursor != ""
+            ReviewCache.store(data, for: api)
             AppLog.write("[评论] 加载完成 title=\(target.title) 当前 \(comments.count) 条 / 总数 \(total)")
         } catch {
-            AppLog.write("[评论] 加载失败 title=\(target.title) error=\(error.localizedDescription)")
-            errorText = "加载失败：\(error.localizedDescription)"
+            // 有缓存就留在缓存上，别拿一条报错把内容顶掉
+            if comments.isEmpty {
+                AppLog.write("[评论] 加载失败 title=\(target.title) error=\(error.localizedDescription)")
+                errorText = "加载失败：\(error.localizedDescription)"
+            } else {
+                AppLog.write("[评论] 网络失败，继续用缓存 title=\(target.title) \(comments.count) 条 error=\(error.localizedDescription)")
+            }
         }
         isLoading = false
         isLoadingMore = false
@@ -1685,6 +1738,10 @@ public struct ReaderView: View {
     @State private var currentReadingBlockId: Int = 0
     /// 滚动模式的长按命中表（引用类型：更新不触发视图刷新）
     @State private var scrollHitRegistry = ReaderScrollHitRegistry()
+    /// 按段朗读是从哪一章起的：读到下一章时 currentChapterIndex 会跟着滚走，起点得单独留
+    @State private var readingChapterIndex: Int = -1
+    /// 上一次「点段起读」的时间：同一根手指会被两套识别器各报一次
+    @State private var lastReadingTapAt: Date = .distantPast
     /// 长按选中段落之后这段时间里，松手不再当点击处理
     @State private var tapSuppressor = ReaderTapSuppressor()
     @State private var chapterCache: [Int: LoadedChapter] = [:]
@@ -1773,6 +1830,33 @@ public struct ReaderView: View {
     /// 选中那一刻这一章的标注快照：按「取消」就还原成它
     @State private var annotationSnapshot: [BookBookmark]?
     @State private var showReplaceInput = false
+    /// 键盘占掉的高度（窗口坐标）：气泡和调色板的下边界要躲开它
+    @State private var keyboardInset: CGFloat = 0
+    /// 朗读条收成圆点 / 跟翻页读 / 朗读底色来源：都存盘，换书、重开都不丢
+    @AppStorage("tts_bar_collapsed") private var ttsBarCollapsed = false
+    /// 整个朗读条藏起来（连那颗圆点也不要）：面板里有开关能叫回来
+    @AppStorage("tts_bar_hidden") private var ttsBarHidden = false
+    @AppStorage("tts_follow_page") private var ttsFollowPage = false
+    /// 进度格跳转时把页码改到自己手里，别让「翻页跟读」把它当成用户翻页又拽回去
+    @State private var suppressFollowOnPageChange = false
+    /// 用户自己翻过页：朗读还在后面念，就别把页码拽回来。
+    /// 念到用户眼前这一页（页码 ≥ 当前页）时自动解除，重新接管。
+    @State private var autoFollowPausedByUser = false
+    /// 起读请求挂起：章节正文还没到就先记下，等 loadInitialChapter 落地再念。
+    /// 以前这里直接读 currentLoadedChapter，它查不到会退回 loadedChapters.first，
+    /// 快翻时就把上一章的正文当成这一章念出去，高亮还停在目标章——全错位。
+    private struct PendingReadingStart {
+        var chapter: Int
+        var blockId: Int?
+        var revealBar: Bool
+    }
+    @State private var pendingReadingStart: PendingReadingStart?
+    /// accent（主题强调色）/ highlight（底色标注色）/ underline（划线色）
+    @AppStorage("tts_tint_source") private var ttsTintSource = "accent"
+    /// 听书优先读本地缓存：源站没登录时正文可能是占位文，缓存里才是真内容
+    @AppStorage("tts_read_cache") private var ttsReadFromCache = false
+    /// 朗读面板：起读位置、跟页、底色都收在这张卡里
+    @State private var showReadingPanel = false
     @State private var replaceInput = ""
     @State private var showAggregateSearch = false
     @State private var showBackgroundImagePicker: Bool = false
@@ -1809,8 +1893,236 @@ public struct ReaderView: View {
         loadedChapters.first(where: { $0.chapter.index == currentChapterIndex }) ?? loadedChapters.first
     }
 
+    /// 只要这一章，查不到就是 nil。朗读路径全走它——
+    /// currentLoadedChapter 那条 `?? loadedChapters.first` 是好心给屏上兜底的，
+    /// 拿来朗读会把上一章的正文念出去。
+    private func loadedChapter(exactly index: Int) -> LoadedChapter? {
+        loadedChapters.first(where: { $0.chapter.index == index })
+    }
+
     private var currentChapterContent: String {
         currentLoadedChapter?.content ?? ""
+    }
+
+    // MARK: - 按段朗读
+
+    /// 本章能读的段：图片、分隔、热评卡片都跳过，段落 id 留着对高亮
+    private var readingItemsForCurrentChapter: [AudioBookService.ReadingItem] {
+        if ttsReadFromCache, let cachedItems = cachedReadingItemsForCurrentChapter() {
+            return cachedItems
+        }
+        guard let loaded = loadedChapter(exactly: currentChapterIndex) else { return [] }
+        return loaded.blocks.compactMap { block in
+            // 段评段落（commentCount > 0）正文照读，只有章评哨兵（-1）和热评卡片（-2）要跳过。
+            // 之前按 == 0 过滤，源站给每段挂了段评数，整章九十段只剩七段进队列。
+            guard !block.isImage, block.commentCount >= 0 else { return nil }
+            let text = applyingBookReplaceRules(block.text)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !text.isEmpty else { return nil }
+            return AudioBookService.ReadingItem(id: block.id, text: text)
+        }
+    }
+
+    /// 同一章从落盘缓存里重排一份可读段。
+    /// 开关打开时缓存就是正文口径：源站这会儿给的是不是占位文，跟听书无关。
+    private func cachedReadingItemsForCurrentChapter() -> [AudioBookService.ReadingItem]? {
+        guard let loaded = loadedChapter(exactly: currentChapterIndex) else { return nil }
+        let chapterIndex = loaded.chapter.index
+        guard let cached = BookContentService.shared.getCachedChapterContent(bookUrl: activeBook.bookUrl,
+                                                                            chapterIndex: chapterIndex),
+              !cached.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
+        let text = applyingBookReplaceRules(cached)
+        // 缓存和屏上正文一模一样的时候，别再拿缓存重排一遍：
+        // 两次解析在短句处切法不同，段与段会对歪，听的是上一段、亮的是下一段。
+        // 只有屏上正文确实不对（未登录拿到占位文、内容过期）才走缓存。
+        if text == loaded.content {
+            AppLog.write("[听书] 缓存与屏上一致 · 直接用屏上分段（不做缓存重排）")
+            return nil
+        }
+        let cachedBlocks = parseContentBlocks(from: text).filter { block in
+            guard !block.isImage, block.commentCount >= 0 else { return false }
+            return !block.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }
+        // 屏上那套 block 和缓存重排是两次解析，id 不一定同号（章标题也算一段时整条错开一格）。
+        // 高亮认的是屏上 id，所以朗读队列的 id 必须换成屏上那套，不能直接用缓存解析出来的。
+        let screenBlocks = loaded.blocks.filter { block in
+            guard !block.isImage, block.commentCount >= 0 else { return false }
+            return !block.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }
+        // 先按文字对位（缓存和屏上正文会在短句处切得不一样，按序数对会从那一处起整条错开），
+        // 对不上的再退回同序取 id。
+        var byIndex = 0, byText = 0, unmatched = 0
+        let sameCount = screenBlocks.count == cachedBlocks.count
+        var cursor = 0
+        let items: [AudioBookService.ReadingItem] = cachedBlocks.compactMap { block in
+            let spoken = block.text.trimmingCharacters(in: .whitespacesAndNewlines)
+            var id = block.id
+            if let hit = screenBlocks[cursor...].firstIndex(where: {
+                paragraphsLookAlike($0.text, spoken)
+            }) {
+                id = screenBlocks[hit].id
+                cursor = hit + 1
+                byText += 1
+            } else if sameCount, byIndex < screenBlocks.count {
+                id = screenBlocks[byIndex].id
+                byIndex += 1
+            } else {
+                unmatched += 1
+            }
+            return AudioBookService.ReadingItem(id: id, text: spoken)
+        }
+        guard !items.isEmpty else { return nil }
+        AppLog.write("[听书] 读本地缓存 · 第 \(chapterIndex + 1) 章 · \(items.count) 段 · 缓存 \(cached.count) 字"
+                     + (text == loaded.content ? " · 与屏上正文一致" : " · 与屏上正文不同")
+                     + " · 对位 按文\(byText)/按序\(byIndex)/未对上\(unmatched)")
+        return items
+    }
+
+    /// 两段是不是同一段：先比开头的字，缓存和屏上正文只在标点、空白上有差别
+    private func paragraphsLookAlike(_ lhs: String, _ rhs: String) -> Bool {
+        let a = lhs.trimmingCharacters(in: .whitespacesAndNewlines)
+        let b = rhs.trimmingCharacters(in: .whitespacesAndNewlines)
+        if a == b { return true }
+        let n = min(12, min(a.count, b.count))
+        guard n >= 6 else { return false }
+        return a.prefix(n) == b.prefix(n)
+    }
+
+    /// 朗读条上的进度格：跳回正在读的那一段，只挪位置，不重起读、不改进度。
+    private func jumpToReadingBlock() {
+        guard let blockId = audioService.readingBlockId else {
+            showBookmarkHint("这一章还没读到正文")
+            return
+        }
+        // 点进度格就是要回到朗读这一页：把「用户翻页」的挡板撤掉
+        autoFollowPausedByUser = false
+        // 起读的章节是单独记的：读到章尾时 currentChapterIndex 会被翻页带走
+        let chapter = readingChapterIndex >= 0 ? readingChapterIndex : currentChapterIndex
+        if readerConfig.pageMode == .scroll {
+            withAnimation(.easeInOut(duration: 0.3)) {
+                scrollToChapterId = "block_\(chapter)_\(blockId)"
+            }
+        } else if let cur = currentLoadedChapter, cur.chapter.index == chapter,
+                  let page = pageIndex(containing: blockId, in: cur) {
+            if page != currentPageIndex {
+                suppressFollowOnPageChange = true
+                withAnimation(.easeInOut(duration: 0.2)) { currentPageIndex = page }
+                updateReadingBlockIdFromCurrentPage()
+            }
+        } else if chapter != currentChapterIndex {
+            suppressFollowOnPageChange = true
+            jumpToChapter(chapter)
+        }
+        AppLog.write("[听书] 进度格跳转 · 第 \(chapter + 1) 章 block \(blockId)")
+    }
+
+    /// 从某一段开始读（不给就从本章开头）。
+    /// chapterIndex 给了就先切到那一章 —— 点的是下一章第一段时，currentChapterIndex 可能还停在前一章。
+    private func startReadingChapter(fromBlockId: Int? = nil, chapterIndex: Int? = nil,
+                                     revealBar: Bool = true) {
+        if let chapterIndex, chapterIndex != currentChapterIndex {
+            if loadedChapters.contains(where: { $0.chapter.index == chapterIndex }) {
+                currentChapterIndex = chapterIndex
+            } else {
+                // 目标章还没铺出来：挂起，别拿当前章的正文顶上去
+                pendingReadingStart = PendingReadingStart(chapter: chapterIndex,
+                                                          blockId: fromBlockId,
+                                                          revealBar: revealBar)
+                AppLog.write("[听书] 起读挂起 · 第 \(chapterIndex + 1) 章 正文未到 · 已载 \(loadedChapters.map { $0.chapter.index + 1 })")
+                return
+            }
+        }
+        // 目标章正文还没铺出来（刚换章、预取没回来）：挂起这一请求，等 loadInitialChapter 落地再念。
+        // 别在这里退回别的章去念——用户听到的会是上一章，而且还以为在听这一章。
+        if loadedChapter(exactly: currentChapterIndex) == nil {
+            pendingReadingStart = PendingReadingStart(chapter: currentChapterIndex,
+                                                      blockId: fromBlockId,
+                                                      revealBar: revealBar)
+            AppLog.write("[听书] 起读挂起 · 第 \(currentChapterIndex + 1) 章 正文未到 · 已载 \(loadedChapters.map { $0.chapter.index + 1 })")
+            return
+        }
+        let items = readingItemsForCurrentChapter
+        AppLog.write("[听书] 起读请求 · 第 \(currentChapterIndex + 1) 章 · 可读 \(items.count) 段 · 已载 \(loadedChapters.map { $0.chapter.index + 1 })")
+        guard !items.isEmpty else {
+            AppLog.write("[听书] 起读放弃：本章没有可朗读的正文（blocks=\(currentLoadedChapter?.blocks.count ?? -1)）")
+            showBookmarkHint("本章没有可朗读的正文")
+            return
+        }
+        let start = fromBlockId.flatMap { id in items.firstIndex { $0.id == id } } ?? 0
+        if fromBlockId != nil, !items.contains(where: { $0.id == fromBlockId }) {
+            // 点到图片、分隔线或还没铺出来的段：什么都不做，别把进度拽回章首
+            showBookmarkHint("这一段没有可读的正文")
+            return
+        }
+        // 出口不对就别起：起了也没声，用户只看到条子在动
+        if let audioIssue = audioService.audioIssueBeforeReading() {
+            AppLog.write("[听书] 起读被拦 · \(audioIssue)")
+            showBookmarkHint(audioIssue, seconds: 4)
+            return
+        }
+        readingChapterIndex = currentChapterIndex
+        // 重新起读就是一次新会话：跟页读接管权收回，别让上一轮的「用户翻页」标记一直挂着
+        autoFollowPausedByUser = false
+        // 手动起读才放出条子；跟页读这种自动行为不许掀开用户关掉的东西
+        if revealBar, ttsBarHidden {
+            withAnimation(.easeOut(duration: 0.18)) { ttsBarHidden = false }
+            AppLog.write("[听书] 起读叫回朗读条")
+        }
+        AppLog.write("[听书] 起读第 \(currentChapterIndex + 1) 章 · 第 \(start + 1)/\(items.count) 段")
+        // 本章读完的那一声：跟页读开着就接下一章
+        // ReaderView 是 struct，这里只能按值捕获；@State 背后是同一份存储，改得动
+        audioService.onReadingQueueFinished = { self.continueReadingAfterChapterEnd() }
+        if TTSCastStore.shared.enabled {
+            // 多角色还是整章切角色，起点只能到段首
+            let text = items[start...].map(\.text).joined(separator: "\n")
+            // 带上段号：多角色切碎了对白，高亮和翻页跟随还得认回原来那一段
+            audioService.speakWithCast(text, blocks: items[start...].map { (id: $0.id, text: $0.text) })
+        } else {
+            audioService.speakReadings(items, startAt: start)
+        }
+        showBookmarkHint("从第 \(start + 1) 段开始朗读")
+    }
+
+    /// 气泡里的「本段读」：从选中这一段起读。选中可能跨行，朗读队列按段走，取所属段 id。
+    private func readFromSelection() {
+        // 段落 id 从 0 起，不能再拿 > 0 当「有没有选」的判据
+        let blockId = charSelection?.paragraphId
+            ?? (selectedBlockRange != nil ? selectedParagraphId : nil)
+        guard let blockId else {
+            showBookmarkHint("没选中段落")
+            return
+        }
+        AppLog.write("[听书] 气泡本段读 block \(blockId)")
+        cancelParagraphSelection()
+        startReadingChapter(fromBlockId: blockId)
+    }
+
+    /// 菜单开关统一入口：哪条手势在拨它，日志里一眼看得出来。
+    /// 之前分页器和听书回调各有一套 toggle，菜单被反复开关时查不出是谁。
+    private func toggleControls(_ driver: String) {
+        withAnimation(.easeInOut(duration: 0.2)) { showControls.toggle() }
+        AppLog.write("[菜单] toggle ← \(driver) → controls=\(showControls)")
+    }
+
+    /// 听书状态下的单击：点到哪一段就从那一段起读。
+    /// 没在听书时什么都不做，翻页、呼出工具栏照旧（识别器只旁听，不取消触摸）。
+    private func handleTapWhileListening(at point: CGPoint) {
+        #if os(iOS)
+        guard !tapSuppressor.isActive else { return }
+        // 点正文不再直接起读：翻页、点空白时手指很容易落在字上，进度被悄悄拽走。
+        // 起读统一走长按气泡里的「本段读」。
+        // 但朗读中这一下要负责把菜单叫出来：球和展开的朗读条都挂在菜单那一层，
+        // 菜单唤不出来就没有暂停的入口。
+        // 同一根手指可能被窗口识别器和脚本各报一次，300ms 内只认第一次
+        let now = Date()
+        if now.timeIntervalSince(lastReadingTapAt) < 0.3 { return }
+        guard audioService.hasReadingSession else { return }
+        lastReadingTapAt = now
+        // 选段中点别处：先退选段，这一下不算呼菜单
+        if selectedBlockRange != nil || charSelection != nil { return }
+        toggleControls("listen-tap")
+        AppLog.write("[听书] 点正文唤起菜单 controls=\(showControls)（不起读）· \(Int(point.x)),\(Int(point.y))")
+        #endif
     }
 
     private var chapterCommentItems: [ReaderCommentItem] {
@@ -1889,9 +2201,7 @@ public struct ReaderView: View {
                             .frame(maxWidth: .infinity, maxHeight: .infinity)
                             .contentShape(Rectangle())
                             .onTapGesture {
-                                withAnimation(.easeInOut(duration: 0.2)) {
-                                    showControls.toggle()
-                                }
+                                toggleControls("loading-tap")
                             }
                         } else if let error = errorMessage {
                             VStack(spacing: 12) {
@@ -1929,9 +2239,7 @@ public struct ReaderView: View {
                             .frame(maxWidth: .infinity, maxHeight: .infinity)
                             .contentShape(Rectangle())
                             .onTapGesture {
-                                withAnimation(.easeInOut(duration: 0.2)) {
-                                    showControls.toggle()
-                                }
+                                toggleControls("error-tap")
                             }
                         } else {
                             ZStack {
@@ -1962,6 +2270,8 @@ public struct ReaderView: View {
                     Color.black.opacity(0.001)
                         .contentShape(Rectangle())
                         .onTapGesture {
+                            // 诊断用：球点下去没反应时，靠这行判断是不是被背景层吃了触摸。
+                            AppLog.write("[菜单] backdrop 吃掉一下 → controls=false")
                             withAnimation(.easeInOut(duration: 0.22)) {
                                 showControls = false
                             }
@@ -2039,6 +2349,8 @@ public struct ReaderView: View {
                     }
                 }
                 .onAppear {
+                    // 验收脚本：环境变量给了就往后台排一段长按/标注的重放
+                    Task { await runReaderDebugScriptIfNeeded() }
                     // 按页翻的时候整页是贴到屏幕物理边缘的，页眉页脚得自己把安全区让出来
                     let fromWindow = ReaderView.windowSafeInsets()
                     safeInsets = fromWindow.top > 0 || fromWindow.bottom > 0 ? fromWindow : outerGeo.safeAreaInsets
@@ -2058,6 +2370,8 @@ public struct ReaderView: View {
         .background(pullBackgroundLayer)
         .overlay(alignment: .topTrailing) { bookmarkRibbonOverlay }
         .overlay(alignment: .top) { bookmarkHintOverlay }
+        .overlay(alignment: .bottom) { listeningBallLayer }
+        .overlay { readingPanelOverlay }
         .overlay(alignment: .bottomTrailing) { chapterCommentPill }
         #if os(iOS)
         .navigationBarHidden(true)
@@ -2361,8 +2675,19 @@ public struct ReaderView: View {
 
     /// 两端对齐交给自定义排版控件，其余三档用原生 Text。
     @ViewBuilder
-    private func bodyTextView(_ text: String) -> some View {
-        if readerConfig.textAlignment.isJustify {
+    private func bodyTextView(_ text: String,
+                              chapterIndex: Int = -1,
+                              blockId: Int = -1,
+                              charAnnotations: [ReaderCharAnnotation] = [],
+                              selectionStart: Int = -1,
+                              selectionLength: Int = 0,
+                              readingStart: Int = -1,
+                              readingLength: Int = 0,
+                              readingTint: Color? = nil,
+                              useTextKit: Bool = false) -> some View {
+        // 滚动模式一律走 UIKit 文本控件：字选要字符坐标，逐字标注也要能画在区间上，
+        // SwiftUI Text 两样都给不了。对齐方式由 alignment 带过去。
+        if readerConfig.textAlignment.isJustify || useTextKit {
             JustifiedBodyText(
                 text: text,
                 fontSize: readerConfig.fontSize,
@@ -2372,11 +2697,91 @@ public struct ReaderView: View {
                 fontName: readerConfig.font.postScriptName,
                 underlineEnabled: readerConfig.underlineEnabled,
                 underlineColor: readerConfig.underlineColor,
-                underlineStyle: readerConfig.underlinePattern.nsUnderlineStyle
+                underlineStyle: readerConfig.underlinePattern.nsUnderlineStyle,
+                chapterIndex: chapterIndex,
+                blockId: blockId,
+                charAnnotations: charAnnotations,
+                selectionStart: selectionStart,
+                selectionLength: selectionLength,
+                readingStart: readingStart,
+                readingLength: readingLength,
+                readingTint: readingTint,
+                alignment: readerConfig.textAlignment.isJustify ? .justified : coreTextAlignment
             )
         } else {
             bodyText(text, alignment: nativeTextAlignment)
         }
+    }
+
+    /// 滚动模式的一段：禁则处理会插零宽连接符，字符下标跟着变，
+    /// 标注区间和字选都得先换算到显示文本上，不然会偏几个字。
+    private func scrollBody(block: ContentBlock, chapterIndex: Int) -> some View {
+        let rendered = applyingKinsoku(block.text)
+        let renderedNS = rendered as NSString
+        let marks: [ReaderCharAnnotation] = chapterIndex == currentChapterIndex
+            ? charAnnotationRangesForCurrentChapter
+                .filter { $0.paragraphId == block.id }
+                .compactMap { item in
+                    let start = renderedIndex(fromOriginal: item.start, in: renderedNS)
+                    let end = renderedIndex(fromOriginal: item.start + item.length, in: renderedNS)
+                    guard end > start else { return nil }
+                    return ReaderCharAnnotation(paragraphId: item.paragraphId,
+                                                start: start,
+                                                length: end - start,
+                                                style: item.style)
+                }
+            : []
+        var selStart = -1
+        var selLength = 0
+        if let sel = charSelection, sel.paragraphId == block.id, chapterIndex == currentChapterIndex {
+            let start = renderedIndex(fromOriginal: sel.start, in: renderedNS)
+            let end = renderedIndex(fromOriginal: sel.start + sel.length, in: renderedNS)
+            selStart = start
+            selLength = max(0, end - start)
+        }
+        // 朗读段整段都是底色范围；真正铺在哪几个字上由文本控件自己按字形算
+        var readingStart = -1
+        var readingLength = 0
+        if chapterIndex == currentChapterIndex, isReadingBlock(block.id) {
+            readingStart = 0
+            readingLength = renderedNS.length
+        }
+        return bodyTextView(rendered,
+                            chapterIndex: chapterIndex,
+                            blockId: block.id,
+                            charAnnotations: marks,
+                            selectionStart: selStart,
+                            selectionLength: selLength,
+                            readingStart: readingStart,
+                            readingLength: readingLength,
+                            readingTint: readingLength > 0 ? readingTint : nil,
+                            useTextKit: true)
+    }
+
+    /// 原文下标 → 显示文本下标（数一数前面插了几个零宽连接符）
+    private func renderedIndex(fromOriginal index: Int, in ns: NSString) -> Int {
+        guard ns.length > 0 else { return 0 }
+        var seen = 0
+        var cursor = 0
+        while cursor < ns.length {
+            if ns.character(at: cursor) != 0x2060 {
+                if seen == index { return cursor }
+                seen += 1
+            }
+            cursor += 1
+        }
+        return ns.length
+    }
+
+    /// 显示文本下标 → 原文下标（长按落点换算用）
+    private func originalIndex(fromRendered index: Int, in ns: NSString) -> Int {
+        var seen = 0
+        var cursor = 0
+        while cursor < ns.length && cursor < index {
+            if ns.character(at: cursor) != 0x2060 { seen += 1 }
+            cursor += 1
+        }
+        return seen
     }
 
     private var nativeTextAlignment: TextAlignment {
@@ -2511,7 +2916,7 @@ public struct ReaderView: View {
                                                 }
                                             )
                                     } else {
-                                        bodyTextView(applyingKinsoku(block.text))
+                                        scrollBody(block: block, chapterIndex: loadedCh.chapter.index)
                                             .padding(.leading, readerConfig.paddingLeft)
                                             .padding(.trailing, readerConfig.paddingRight)
                                             .padding(.bottom, readerConfig.paragraphSpacing)
@@ -2533,6 +2938,15 @@ public struct ReaderView: View {
                                                 }
                                             }
                                             .background(scrollAnnotationBackground(for: block, chapterIndex: loadedCh.chapter.index))
+                                            .overlay(alignment: .leading) {
+                                                // 朗读位置：段左一条竖线，比只铺底色更好找
+                                                if isReadingBlock(block.id) {
+                                                    Rectangle()
+                                                        .fill(nierPalette.accent.opacity(0.85))
+                                                        .frame(width: 3)
+                                                        .padding(.vertical, 1)
+                                                }
+                                            }
                                             .overlay(alignment: .bottom) {
                                                 scrollAnnotationUnderline(for: block, chapterIndex: loadedCh.chapter.index)
                                             }
@@ -2608,14 +3022,14 @@ public struct ReaderView: View {
             }
             .contentShape(Rectangle())
             .onTapGesture {
+                // 听书中这一下已经被「点段起读」用掉了，别再顺手把工具栏呼出来
+                if Date().timeIntervalSince(lastReadingTapAt) < 0.5 { return }
                 // 选段中点别处：退出选段、保留这次的更改
                 if selectedBlockRange != nil || charSelection != nil {
                     clearParagraphSelection()
                     return
                 }
-                withAnimation(.easeInOut(duration: 0.2)) {
-                    showControls.toggle()
-                }
+                toggleControls("scroll-tap")
             }
             .onAppear {
                 if let target = scrollToChapterId {
@@ -2639,6 +3053,21 @@ public struct ReaderView: View {
                             scrollToChapterId = nil
                         }
                     }
+                }
+            }
+            .onChange(of: audioService.readingBlockId) { blockId in
+                // 听书翻到下一段：那一段已经离开屏幕中心就把它滚回来，
+                // 差得不多就不动 —— 每段都跳一下会晕。
+                guard readerConfig.pageMode == .scroll, let blockId, readingChapterIndex >= 0 else { return }
+                let screenCenter = UIScreen.main.bounds.midY
+                if let rect = scrollHitRegistry.rect(forBlockId: blockId, chapterIndex: readingChapterIndex),
+                   abs(rect.midY - screenCenter) < 40 {
+                    AppLog.write("[听书] 段 \(blockId) 还在视野里（偏差 \(Int(rect.midY - screenCenter))pt），不回中")
+                    return
+                }
+                AppLog.write("[听书] 回中 block \(blockId) · 第 \(readingChapterIndex + 1) 章")
+                withAnimation(.easeInOut(duration: 0.35)) {
+                    proxy.scrollTo("block_\(readingChapterIndex)_\(blockId)", anchor: .center)
                 }
             }
         }
@@ -2761,8 +3190,11 @@ public struct ReaderView: View {
                 },
                 selectedRange: selectedBlockRange,
                 charSelection: charSelection,
+                isReadingSession: { audioService.hasReadingSession },
                 charAnnotations: charAnnotationRangesForCurrentChapter,
                 annotationRanges: annotationRangesForCurrentChapter,
+                readingBlockId: readingParagraphOrdinal,
+                readingTintColor: readingTint,
                 customDatePattern: readerConfig.customDatePattern,
                 customBarText: readerConfig.customBarText,
                 titleHTMLTemplate: readerConfig.chapterTitleHTMLTemplate,
@@ -2789,6 +3221,7 @@ public struct ReaderView: View {
                 onIndexChange: { newIndex in
                     currentPageIndex = newIndex
                     saveCurrentProgress()
+                    followReadingAfterPageChange()
                     // 翻到倒数第二页就把下一章拉起来，别等翻过头才现拉
                     if let cur = currentLoadedChapter, newIndex >= cur.pages.count - 2 {
                         preCacheNeighbors(around: currentChapterIndex)
@@ -2815,9 +3248,7 @@ public struct ReaderView: View {
                         clearParagraphSelection()
                         return
                     }
-                    withAnimation(.easeInOut(duration: 0.2)) {
-                        showControls.toggle()
-                    }
+                    toggleControls("pager-tap-center")
                 },
                 commentMap: commentMap,
                 onCommentTap: { url in
@@ -2829,6 +3260,11 @@ public struct ReaderView: View {
             // 仿真翻页整页也要贴屏幕物理边缘：只忽略底部的话，页眉那条会从安全区下面起算，
             // 距顶调不到灵动岛位置时，页脚贴底而顶部留空
             .ignoresSafeArea(edges: .all)
+            // 朗读往下走、那一段已经不在当前页了：跟页读开着就把页翻过去，
+            // 不然高亮跑到屏幕外，看着就像「高亮跟随没了」
+            .onChange(of: audioService.readingBlockId) { blockId in
+                followPageToReadingBlock(blockId)
+            }
         }
         #else
         pageByPageView
@@ -2952,6 +3388,8 @@ public struct ReaderView: View {
                                onLongPressLine: { line, charOffset in
                                    selectCharacters(atLine: line, charOffset: charOffset, in: pageBlocks)
                                },
+                               readingBlockId: readingParagraphOrdinal,
+                               readingTintColor: readingTint,
                                commentMap: commentMap,
                                pageBackgroundColor: readerConfig.backgroundColor,
                                reviewAccentColor: nierPalette.accent,
@@ -3073,14 +3511,20 @@ public struct ReaderView: View {
                                 }
                                 return
                             }
+                            // 朗读会话期间：正文哪儿点一下都是呼菜单，不再按左右 30% 翻页。
+                            // 正文几乎铺满整行，左右 30% 里全是字，用户想叫菜单结果翻页，
+                            // 顺带还把这页的朗读锚点拽走——上一版「开了朗读就点不出菜单」就是这个。
+                            // 翻页留给滑动和底栏，朗读不会因此被点没。
+                            if audioService.hasReadingSession {
+                                toggleControls("listen-tap")
+                                return
+                            }
                             if x < width * 0.3 {
                                 turnPage(forward: false)
                             } else if x > width * 0.7 {
                                 turnPage(forward: true)
                             } else {
-                                withAnimation(.easeInOut(duration: 0.2)) {
-                                    showControls.toggle()
-                                }
+                                toggleControls("pager-drag-center")
                             }
                             return
                         }
@@ -3126,6 +3570,62 @@ public struct ReaderView: View {
                 self.recomputePagination()
             }
         }
+    }
+
+    /// 当前页第一段的 block id：页首可能是图片、热评卡片，跳过去找第一段能读的。
+    /// 分页里的块是「行」——id 是行号（10000 起），paragraphId 才是正文段号；
+    /// 音频队列里存的是段号，所以先认 paragraphId，再退回 id。
+    /// 滚动模式没有「页」，就用视野里那一段。
+    private var currentPageFirstBlockId: Int? {
+        if readerConfig.pageMode == .scroll {
+            if currentReadingBlockId > 0 { return currentReadingBlockId }
+            return readingItemsForCurrentChapter.first?.id
+        }
+        guard let cur = currentLoadedChapter, currentPageIndex < cur.pages.count else { return nil }
+        let items = readingItemsForCurrentChapter
+        let page = cur.pages[currentPageIndex]
+        guard let firstLine = page.first else { return items.first?.id }
+        var anchor = firstLine
+        // 页顶那行常常是上一页延续下来的残段（charStart > 0 说明不是从段首开始）。
+        // 拿它当起点，就会「读的是上一段整段、高亮只涂在页顶一小角」，看着像差了一段。
+        // 本页真正的起点是下一个新段。
+        if firstLine.charStart > 0 {
+            let firstPid = firstLine.paragraphId > 0 ? firstLine.paragraphId : firstLine.id
+            if let next = page.first(where: { ($0.paragraphId > 0 ? $0.paragraphId : $0.id) != firstPid }) {
+                anchor = next
+            }
+        }
+        let anchorId = anchor.paragraphId > 0 ? anchor.paragraphId : anchor.id
+        // 1) 编号直接对得上：绝大多数情况下走这条
+        if items.contains(where: { $0.id == anchorId }) { return anchorId }
+        // 2) 编号对不上（缓存正文和线上正文各一套 id，或者页是旧分页留下的）：
+        //    按 blocks 的先后顺序数「这一页之前有多少段可读」，换算成队列里的第几段
+        guard let blockIndex = cur.blocks.firstIndex(where: { $0.id == anchorId }) else {
+            return items.first?.id
+        }
+        var ordinal = 0
+        for block in cur.blocks.prefix(blockIndex)
+        where !block.isImage && block.commentCount >= 0
+            && !block.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            ordinal += 1
+        }
+        return items.indices.contains(ordinal) ? items[ordinal].id : items.last?.id
+    }
+
+    /// 用户自己翻页：朗读这一侧只让路，不重起读。
+    /// 原来是「翻到哪页就从这页第一段重念」——正文一段动辄几百字，
+    /// 翻一页等于把正在念的长段腰斩，再听就像被谁按回去了。
+    private func followReadingAfterPageChange() {
+        // 进度格自己改的页码不算用户翻页
+        if suppressFollowOnPageChange {
+            suppressFollowOnPageChange = false
+            return
+        }
+        guard ttsFollowPage, readerConfig.pageMode != .scroll else { return }
+        // 暂停时翻页什么也不做：别把朗读重新点着
+        guard audioService.isPlaying else { return }
+        autoFollowPausedByUser = true
+        AppLog.write("[听书] 用户翻页 · 第 \(currentChapterIndex + 1) 章 · 第 \(currentPageIndex + 1) 页 · 朗读不重起，暂停自动跟页")
     }
 
     private func updateReadingBlockIdFromCurrentPage() {
@@ -3223,6 +3723,7 @@ public struct ReaderView: View {
                 }
                 updateReadingBlockIdFromCurrentPage()
                 saveCurrentProgress()
+                followReadingAfterPageChange()
                 // 快翻到头了就把下一章提前拉起来，换章才不用等
                 if currentPageIndex >= totalPages - 2 {
                     preCacheNeighbors(around: currentChapterIndex)
@@ -3257,6 +3758,7 @@ public struct ReaderView: View {
                 }
                 updateReadingBlockIdFromCurrentPage()
                 saveCurrentProgress()
+                followReadingAfterPageChange()
             } else {
                 // Return to previous chapter's last page!
                 if !isSwitchingChapter, currentChapterIndex > 0 {
@@ -3460,9 +3962,7 @@ public struct ReaderView: View {
         )
         .contentShape(Rectangle())
         .onTapGesture {
-            withAnimation(.easeInOut(duration: 0.2)) {
-                showControls.toggle()
-            }
+            toggleControls("header")
         }
     }
 
@@ -3615,9 +4115,7 @@ public struct ReaderView: View {
         .background(readerConfig.backgroundColor)
         .contentShape(Rectangle())
         .onTapGesture {
-            withAnimation(.easeInOut(duration: 0.2)) {
-                showControls.toggle()
-            }
+            toggleControls("footer")
         }
     }
 
@@ -3714,15 +4212,86 @@ public struct ReaderView: View {
         }
     }
 
-    private func jumpToChapter(_ targetIndex: Int, toEnd: Bool = false) {
+    private func jumpToChapter(_ targetIndex: Int, toEnd: Bool = false, forceResumeReading: Bool = false) {
         AppLog.write("[阅读] 换章 → 第 \(targetIndex + 1) 章 / 共 \(chapters.count) 章")
         guard targetIndex >= 0 && targetIndex < chapters.count else { return }
+        // 换章这一步会 stop()：原本在念的得记着，换完接着念，不然用户只看到声音没了
+        let wasReading = audioService.isPlaying || audioService.isPaused
         audioService.stop()
+        // 换章作废上一条挂起的起读：这一趟要么接读、要么不读，不带着旧请求走
+        if pendingReadingStart != nil {
+            pendingReadingStart = nil
+            AppLog.write("[听书] 换章作废旧挂起")
+        }
         currentChapterIndex = targetIndex
         currentPageIndex = 0
         currentReadingBlockId = 0
         scrollSessionId = UUID()
         loadInitialChapter(at: targetIndex, targetPageIndex: toEnd ? -1 : 0, scrollToTargetEnd: toEnd)
+        if wasReading || forceResumeReading {
+            resumeReadingAfterChapterJump(targetIndex)
+        }
+    }
+
+    /// 换章后接读：等这一章铺出来，从第一段起。跟页读关着就不自作主张。
+    private func resumeReadingAfterChapterJump(_ targetIndex: Int) {
+        guard ttsFollowPage else {
+            AppLog.write("[听书] 换章不接读 · 跟页读关着")
+            return
+        }
+        // 以前这里是「轮询 40×150ms，等不到就放弃」。快翻时正文 6 秒没到，
+        // 这条就判死、一声不吭地不读了；而且判据里那份 items 会退回上一章，非空，
+        // 于是又会出现「在念上一章」。现在改成挂起：loadInitialChapter 落地即唤醒，不设超时。
+        if loadedChapter(exactly: targetIndex) != nil {
+            AppLog.write("[听书] 换章接读 · 第 \(targetIndex + 1) 章（正文已在）")
+            startReadingChapter(chapterIndex: targetIndex, revealBar: false)
+        } else {
+            pendingReadingStart = PendingReadingStart(chapter: targetIndex, blockId: nil, revealBar: false)
+            AppLog.write("[听书] 换章接读挂起 · 第 \(targetIndex + 1) 章 等正文")
+        }
+    }
+
+    /// 找到某个朗读段所在的页。页里一行的 id 是行级伪 id（10000 起），
+    /// 跟朗读段的编号不是一套，认 paragraphId（原始段 id）才对得上。
+    private func pageIndex(containing blockId: Int, in chapter: LoadedChapter) -> Int? {
+        chapter.pages.firstIndex { page in
+            page.contains { ($0.paragraphId > 0 ? $0.paragraphId : $0.id) == blockId }
+        }
+    }
+
+    /// 分页模式的「朗读 → 翻页」：朗读段跑到别的页了就跟着翻，只翻页不重起读。
+    /// 这条是「高亮跟随」的另一半：底色跟着段走，页得跟着段走。
+    private func followPageToReadingBlock(_ blockId: Int?) {
+        guard ttsFollowPage, readerConfig.pageMode != .scroll else { return }
+        guard audioService.isPlaying else { return }
+        guard let blockId, let cur = currentLoadedChapter else { return }
+        guard let page = pageIndex(containing: blockId, in: cur) else { return }
+        guard page != currentPageIndex else { return }
+        // 用户自己往后翻过：朗读还在后头念，别把页码拽回去，不然一翻就弹回来。
+        // 等念到眼前这一页（page ≥ currentPageIndex）再接管，那一次是往前翻，符合预期。
+        if autoFollowPausedByUser, page < currentPageIndex {
+            AppLog.write("[听书] 跟页暂停中 · 朗读在第 \(page + 1) 页 · 用户停在第 \(currentPageIndex + 1) 页")
+            return
+        }
+        autoFollowPausedByUser = false
+        AppLog.write("[听书] 翻页跟读 · 第 \(currentChapterIndex + 1) 章 · 页 \(currentPageIndex + 1) → \(page + 1) block \(blockId)")
+        withAnimation(.easeInOut(duration: 0.25)) { currentPageIndex = page }
+        saveCurrentProgress()
+    }
+
+    /// 本章队列自然读完：跟页读开着就接下一章，睡前模式由播放端拦在前面
+    private func continueReadingAfterChapterEnd() {
+        let next = currentChapterIndex + 1
+        guard next < chapters.count else {
+            AppLog.write("[听书] 全书读完 · 已是最后一章")
+            return
+        }
+        guard ttsFollowPage else {
+            AppLog.write("[听书] 本章读完 · 跟页读关着，不自动翻章")
+            return
+        }
+        AppLog.write("[听书] 本章读完 → 自动接第 \(next + 1) 章")
+        jumpToChapter(next, forceResumeReading: true)
     }
 
     private func handlePageModeChange(to newMode: PageMode) {
@@ -3826,36 +4395,6 @@ public struct ReaderView: View {
                 }
                 .foregroundColor(readerConfig.textColor.opacity(chapterCommentItems.isEmpty ? 0.45 : 1))
                 .frame(maxWidth: .infinity)
-            }
-
-            // TTS (听书)
-            Button(action: {
-                if TTSCastStore.shared.enabled {
-                    // 多角色：整章按段切好、逐段换音色播
-                    if audioService.isPlaying {
-                        audioService.pause()
-                    } else if audioService.isPaused && !audioService.currentText.isEmpty {
-                        audioService.resume()
-                    } else {
-                        audioService.speakWithCast(currentChapterContent)
-                    }
-                } else {
-                    audioService.togglePlayPause(text: currentChapterContent)
-                }
-            }) {
-                VStack(spacing: 4) {
-                    Image(systemName: audioService.isPlaying ? "pause.circle.fill" : (audioService.isPaused ? "play.circle.fill" : "headphones"))
-                        .font(.system(size: 20))
-                        .foregroundColor(audioService.isPlaying ? .accentColor : readerConfig.textColor)
-                    Text(audioService.isPlaying ? "暂停" : (audioService.isPaused ? "继续" : "听书"))
-                        .font(.system(size: 11, weight: .medium))
-                        .foregroundColor(audioService.isPlaying ? .accentColor : readerConfig.textColor)
-                }
-                .foregroundColor(readerConfig.textColor)
-                .frame(maxWidth: .infinity)
-            }
-            .onLongPressGesture {
-                showTTSSettings = true
             }
 
             // Switch Book Source (换源)
@@ -4279,25 +4818,66 @@ public struct ReaderView: View {
                 let rect = selectionRect ?? CGRect(x: geo.size.width / 2 - 60, y: geo.size.height * 0.45,
                                                    width: 120, height: 24)
                 let origin = geo.frame(in: .global).origin
-                let bubbleWidth = min(392, max(300, geo.size.width - 12))
-                let x = min(max(rect.midX - origin.x, bubbleWidth / 2 + 6), max(bubbleWidth / 2 + 6, geo.size.width - bubbleWidth / 2 - 6))
-                let above = rect.minY - origin.y - 44
-                let y = above < 64 ? rect.maxY - origin.y + 44 : above
+                let bubbleWidth = Self.bubbleWidth(for: geo.size.width)
+                // 左右也按安全区让：横屏/刘海那点 inset 别把气泡推出去
+                let sideInset = max(max(safeInsets.leading, safeInsets.trailing), 6)
+                let x = min(max(rect.midX - origin.x, bubbleWidth / 2 + sideInset),
+                            max(bubbleWidth / 2 + sideInset, geo.size.width - bubbleWidth / 2 - sideInset))
+                // 安全区跟着阅读页自己的 safeInsets 走：刘海、底部横条、状态栏都算进去，
+                // 别再拿写死的 64 当门槛；键盘弹起来时按键盘顶边算，气泡不许钻到键盘底下
+                let safeTop = max(safeInsets.top, 8) + 8
+                let safeBottom = max(max(safeInsets.bottom, 8), keyboardInset) + 8
+                let half = Self.bubbleHeight / 2
+                let minY = safeTop + half
+                let maxY = max(minY, geo.size.height - safeBottom - half)
+                let above = rect.minY - origin.y - half - 10
+                let below = rect.maxY - origin.y + half + 10
+                let placedAbove = above >= minY
+                let y = placedAbove ? min(above, maxY) : max(min(below, maxY), minY)
                 paragraphBubble(width: bubbleWidth)
                     .frame(width: bubbleWidth)
                     .position(x: x, y: y)
                     .transition(.opacity)
+                // 尖角指回选中的那几个字：没有它，卡片就只是飘在纸上的浮块。
+                // 位置跟卡片一起夹在气泡宽度里，别让角戳出圆角外面。
+                let arrowX = min(max(rect.midX - origin.x, x - bubbleWidth / 2 + 24),
+                                 x + bubbleWidth / 2 - 24)
+                let arrowY = placedAbove
+                    ? y + Self.bubbleHeight / 2 + Self.bubblePointerHeight / 2 - 1
+                    : y - Self.bubbleHeight / 2 - Self.bubblePointerHeight / 2 + 1
+                bubblePointer(pointsDown: placedAbove)
+                    .position(x: arrowX, y: arrowY)
+                    .transition(.opacity)
                 if let kind = colorPickerKind {
-                    // 调色板放到气泡上方，别盖住刚选中的那段文字
-                    let paletteY = y - 52 < 70 ? y + 54 : y - 52
+                    // 调色板放到气泡上方；上方不够（贴着状态栏）才翻到下面，两头都不出安全区
+                    let paletteHalf: CGFloat = 20
+                    let paletteAbove = y - half - paletteHalf - 6
+                    let paletteBelow = y + half + paletteHalf + 6
+                    let paletteMin = safeTop + paletteHalf
+                    let paletteMax = max(paletteMin, geo.size.height - safeBottom - paletteHalf)
+                    let paletteY = paletteAbove >= paletteMin
+                        ? min(paletteAbove, paletteMax)
+                        : max(min(paletteBelow, paletteMax), paletteMin)
                     annotationColorRow(kind: kind)
                         .frame(width: bubbleWidth)
-                        .position(x: x, y: min(geo.size.height - 28, paletteY))
+                        .position(x: x, y: paletteY)
                         .transition(.opacity.combined(with: .move(edge: .top)))
                 }
             }
         }
         .allowsHitTesting(selectedBlockRange != nil)
+        #if os(iOS)
+        // 键盘只在「替换」弹窗时出现，但气泡和调色板不该等它盖上来才发现放不下
+        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillChangeFrameNotification)) { note in
+            guard let frame = note.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? CGRect,
+                  let scene = UIApplication.shared.connectedScenes.compactMap({ $0 as? UIWindowScene }).first,
+                  let window = scene.windows.first(where: { $0.isKeyWindow }) else { return }
+            keyboardInset = max(0, window.bounds.maxY - frame.minY)
+        }
+        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillHideNotification)) { _ in
+            keyboardInset = 0
+        }
+        #endif
     }
 
     /// 字选模式的两个圆形手柄：拖它们逐字伸缩
@@ -4348,51 +4928,143 @@ public struct ReaderView: View {
     }
     #endif
 
-    private func paragraphBubble(width: CGFloat) -> some View {
-        let actionCount = readerConfig.pageMode == .scroll ? 7 : 8
-        let actionWidth = max(34, (width - 9) / CGFloat(actionCount))
-        return HStack(spacing: 0) {
-            paragraphAction("复制", "doc.on.doc", width: actionWidth) { copySelectedParagraph() }
-            paragraphAction("搜索", "magnifyingglass", width: actionWidth) { searchSelectedParagraph() }
-            paragraphAction("书签", "bookmark", width: actionWidth) { addBookmarkForSelection() }
-            paragraphAction("下划线", "underline", width: actionWidth, tint: readerHexColor(underlineHex)) {
-                colorPickerKind = .underline
-            }
-            paragraphAction("底色", "highlighter", width: actionWidth, tint: readerHexColor(highlightHex)) {
-                colorPickerKind = .highlight
-            }
-            paragraphAction("替换", "arrow.left.arrow.right", width: actionWidth) {
-                replaceInput = ""
-                showReplaceInput = true
-            }
-            if readerConfig.pageMode != .scroll {
-                paragraphAction("整段", "text.alignleft", width: actionWidth) { resetToWholeParagraph() }
-            }
-            Divider().frame(height: 22)
-            paragraphAction("取消", "xmark", width: actionWidth) { cancelParagraphSelection() }
-        }
-        .frame(maxWidth: .infinity)
-        .padding(.horizontal, 4)
-        .padding(.vertical, 6)
-        .background {
-            if theme.choice == .lunarTerminal {
-                RoundedRectangle(cornerRadius: theme.metrics.cornerRadius, style: .continuous)
-                    .fill(theme.palette.surface)
-            } else {
-                RoundedRectangle(cornerRadius: 22, style: .continuous)
-                    .fill(.regularMaterial)
-            }
-        }
-        .overlay(
-            RoundedRectangle(cornerRadius: theme.choice == .lunarTerminal ? theme.metrics.cornerRadius : 22,
-                             style: .continuous)
-                .stroke(theme.choice == .lunarTerminal ? theme.palette.divider : Color.secondary.opacity(0.18),
-                        lineWidth: 0.5)
-        )
-        .shadow(color: Color.black.opacity(0.18), radius: 10, y: 4)
+    /// 气泡宽度：五个主操作一格，窄屏也不挤成 34pt
+    private static func bubbleWidth(for containerWidth: CGFloat) -> CGFloat {
+        min(352, max(300, containerWidth - 24))
     }
 
-    private func paragraphAction(_ title: String, _ icon: String, width: CGFloat, tint: Color? = nil,
+    /// 气泡高度（估）：定位和调色板让位都按它算。两行压到 40 + 26，比原来单行版没长高
+    private static let bubbleHeight: CGFloat = 76
+    /// 尖角高度：朝选文那一侧。7pt 太像描边毛刺，8pt 才看得出是个「角」
+    private static let bubblePointerHeight: CGFloat = 8
+
+    /// 气泡圆角跟主题走：月面终端用它自己的直角，标准主题给圆一点的卡面
+    private var bubbleCornerRadius: CGFloat {
+        theme.choice == .lunarTerminal ? max(6, theme.metrics.cornerRadius) : 20
+    }
+
+    /// 气泡尖角：底色跟卡片一模一样的两层填充，再只描两条斜边，
+    /// 这样底边不会多出一道横线，卡片和角看起来是同一个形状。
+    private func bubblePointer(pointsDown: Bool) -> some View {
+        let shape = BubblePointerShape(pointsDown: pointsDown)
+        return ZStack {
+            shape.fill(bubbleCardColor)
+            shape.fill(Color.white.opacity(bubbleLiftOpacity))
+            shape.stroke(bubbleDividerColor, lineWidth: 0.7)
+        }
+        .frame(width: 20, height: Self.bubblePointerHeight)
+    }
+
+    private struct BubblePointerShape: Shape {
+        var pointsDown: Bool
+
+        func path(in rect: CGRect) -> Path {
+            var path = Path()
+            if pointsDown {
+                path.move(to: CGPoint(x: rect.minX, y: rect.minY))
+                path.addLine(to: CGPoint(x: rect.midX, y: rect.maxY))
+                path.addLine(to: CGPoint(x: rect.maxX, y: rect.minY))
+            } else {
+                path.move(to: CGPoint(x: rect.minX, y: rect.maxY))
+                path.addLine(to: CGPoint(x: rect.midX, y: rect.minY))
+                path.addLine(to: CGPoint(x: rect.maxX, y: rect.maxY))
+            }
+            // 不闭合：stroke 只落在两条斜边上，底边交给填充去压住卡片那根描边
+            return path
+        }
+    }
+
+    private func paragraphBubble(width: CGFloat) -> some View {
+        // 第一行五个主操作，第二行是低频动作；每格都够宽，图标和字不再互相挤
+        // −16 是左右内边距，−0.5 给第一行中间那根细线，别让五格加起来顶出卡面
+        let actionWidth = max(50, (width - 16.5) / 5)
+        // 这一段已经有的标注：气泡上直接显示状态，别让人猜「刚才是加上了还是没加上」
+        let underlineNow = currentSelectionAnnotation(kind: .underline)
+        let highlightNow = currentSelectionAnnotation(kind: .highlight)
+        let shape = RoundedRectangle(cornerRadius: bubbleCornerRadius, style: .continuous)
+        return VStack(spacing: 0) {
+            HStack(spacing: 0) {
+                paragraphAction("复制", "doc.on.doc", width: actionWidth) { copySelectedParagraph() }
+                paragraphAction("搜索", "magnifyingglass", width: actionWidth) { searchSelectedParagraph() }
+                paragraphAction("书签", "bookmark", width: actionWidth) { addBookmarkForSelection() }
+                bubbleHairline
+                paragraphAction(underlineNow == nil ? "下划线" : "已划线", "underline", width: actionWidth,
+                                active: underlineNow != nil,
+                                dot: underlineNow.map { readerHexColor($0.color ?? "#2F7BF6") }) {
+                    colorPickerKind = .underline
+                }
+                paragraphAction(highlightNow == nil ? "底色" : "已底色", "highlighter", width: actionWidth,
+                                active: highlightNow != nil,
+                                dot: highlightNow.map { readerHexColor($0.color ?? "#FFF59D") }) {
+                    colorPickerKind = .highlight
+                }
+            }
+            .frame(maxWidth: .infinity)
+            .frame(height: 40)
+            .padding(.horizontal, 8)
+
+            Rectangle()
+                .fill(bubbleDividerColor.opacity(0.85))
+                .frame(height: 0.5)
+                .padding(.horizontal, 14)
+
+            HStack(spacing: 10) {
+                bubbleTextAction("替换", "arrow.left.arrow.right") {
+                    replaceInput = ""
+                    showReplaceInput = true
+                }
+                if readerConfig.pageMode != .scroll {
+                    bubbleTextAction("整段", "text.alignleft") { resetToWholeParagraph() }
+                }
+                // 从这一段起读：显式给一个动作，别让「点一下正文」偷偷把进度拽走
+                bubbleTextAction("本段读", "play.circle", emphasized: true) { readFromSelection() }
+                Spacer(minLength: 6)
+                // 选中多少字：字选和整段选一眼能分开，不用猜刚才选的是不是一整段
+                if !selectionCountLabel.isEmpty, width >= 330 {
+                    Text(selectionCountLabel)
+                        .font(.system(size: 10.5, weight: .medium))
+                        .foregroundColor(bubbleInkColor.opacity(0.55))
+                        .lineLimit(1)
+                        .fixedSize()
+                }
+                bubbleDoneChip { cancelParagraphSelection() }
+            }
+            .padding(.horizontal, 14)
+            .frame(height: 26)
+            .padding(.vertical, 4)
+        }
+        .frame(width: width)
+        .background {
+            // 不透明底：regularMaterial 会把背后的纸色、标注色采上来，气泡跟着变。
+            // surface 打底、再压一层白，四种主题都是同一种「纸上面一张卡」的关系。
+            ZStack {
+                shape.fill(bubbleCardColor)
+                shape.fill(Color.white.opacity(bubbleLiftOpacity))
+            }
+        }
+        .overlay(shape.stroke(bubbleDividerColor, lineWidth: 0.7))
+        // 内侧一道极淡的白：卡面跟纸是同一个色系，全靠这道高光把边界提出来
+        .overlay(shape.stroke(Color.white.opacity(colorScheme == .dark ? 0.05 : 0.4), lineWidth: 0.5).padding(0.6))
+        // 两层阴影：近处一层收边，远处一层压纸，比单层大模糊干净
+        .shadow(color: Color.black.opacity(0.13), radius: 18, y: 6)
+        .shadow(color: Color.black.opacity(0.05), radius: 2, y: 1)
+    }
+
+    /// 浮层压在纸上的提亮量：浅色主题压白多一点，夜间只提一点，免得整块发灰
+    private var bubbleLiftOpacity: Double {
+        colorScheme == .dark ? 0.05 : 0.55
+    }
+
+    // 气泡自己的一套颜色：跟阅读页的纸色、墨色、强调色走。
+    // 之前借 App 主题的 surface，羊皮纸正文上就浮出一张冷灰卡，跟纸不是一家。
+    private var bubbleCardColor: Color { readerConfig.backgroundColor }
+    private var bubbleInkColor: Color { readerConfig.textColor }
+    private var bubbleAccentColor: Color { readerConfig.theme.accentColor }
+    private var bubbleDividerColor: Color { readerConfig.textColor.opacity(0.16) }
+
+    /// 第一行的动作格：图标在上、标签在下；选中状态的图标和字改用主题强调色
+    private func paragraphAction(_ title: String, _ icon: String, width: CGFloat,
+                                 active: Bool = false, dot: Color? = nil,
                                  action: @escaping () -> Void) -> some View {
         Button {
             // 这一下也会落到页面那套「点一下开关工具栏」的手势上，先按住它，
@@ -4400,17 +5072,109 @@ public struct ReaderView: View {
             tapSuppressor.suppress()
             action()
         } label: {
-            VStack(spacing: 2) {
-                Image(systemName: icon)
-                    .font(.system(size: 16))
-                    .foregroundColor(tint ?? .primary)
+            VStack(spacing: 1) {
+                ZStack(alignment: .topTrailing) {
+                    Image(systemName: icon)
+                        .font(.system(size: 16, weight: active ? .semibold : .regular))
+                        .foregroundColor(active ? bubbleAccentColor : bubbleInkColor)
+                        .frame(width: 22, height: 17)
+                    if let dot {
+                        // 当前标注色做小圆点：图标本身不再被浅色染色，看不清的问题就没了
+                        Circle()
+                            .fill(dot)
+                            .frame(width: 6, height: 6)
+                            .overlay(Circle().stroke(Color.primary.opacity(0.3), lineWidth: 0.5))
+                            .offset(x: 7, y: -1)
+                    }
+                }
                 Text(title)
-                    .font(.system(size: 10, weight: .medium))
-                    .foregroundColor(.primary)
+                    .font(.system(size: 10, weight: active ? .semibold : .regular))
+                    .foregroundColor(active ? bubbleAccentColor : bubbleInkColor)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.85)
             }
-            .frame(width: width)
+            .frame(width: width, height: 40)
+            .background(
+                RoundedRectangle(cornerRadius: 9, style: .continuous)
+                    .fill(active ? bubbleAccentColor.opacity(0.10) : Color.clear)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 9, style: .continuous)
+                    .stroke(active ? bubbleAccentColor.opacity(0.22) : Color.clear, lineWidth: 0.6)
+            )
+            .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
+        .buttonStyle(BubbleActionButtonStyle())
+    }
+
+    /// 第一行里「文本类动作」和「标注类动作」之间的细线：不靠留白分组，省宽度
+    private var bubbleHairline: some View {
+        Rectangle()
+            .fill(bubbleDividerColor.opacity(0.8))
+            .frame(width: 0.5, height: 18)
+    }
+
+    /// 第二行的低频动作：图标文字横排，比第一行轻一档
+    private func bubbleTextAction(_ title: String, _ icon: String, emphasized: Bool = false,
+                                  action: @escaping () -> Void) -> some View {
+        Button {
+            tapSuppressor.suppress()
+            action()
+        } label: {
+            HStack(spacing: 4) {
+                Image(systemName: icon)
+                    .font(.system(size: 11, weight: .medium))
+                Text(title)
+                    .font(.system(size: 11.5, weight: emphasized ? .semibold : .medium))
+            }
+            // 「本段读」是这张卡的主操作：强调色，别跟替换、整段混成一片灰
+            .foregroundColor(emphasized ? bubbleAccentColor : bubbleInkColor.opacity(0.62))
+            .frame(height: 26)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(BubbleActionButtonStyle())
+    }
+
+    /// 选中字数：「已选 12 字」/「142 字」。字选和整段选看这一眼就分得清
+    private var selectionCountLabel: String {
+        if let sel = charSelection, sel.length > 0 { return "已选 \(sel.length) 字" }
+        let whole = selectedParagraphText.trimmingCharacters(in: .whitespacesAndNewlines).count
+        return whole > 0 ? "\(whole) 字" : ""
+    }
+
+    /// 收尾按钮：主题色浅底胶囊，比一根孤零零的「取消」更像能按的东西
+    private func bubbleDoneChip(action: @escaping () -> Void) -> some View {
+        Button {
+            tapSuppressor.suppress()
+            action()
+        } label: {
+            Text("完成")
+                .font(.system(size: 11.5, weight: .semibold))
+                .foregroundColor(bubbleAccentColor)
+                .padding(.horizontal, 10)
+                .frame(height: 22)
+                // 浅底 + 一道同色细边：纯色块在深色强调色主题里会跳成整张卡最响的东西
+                .background(
+                    Capsule(style: .continuous)
+                        .fill(bubbleAccentColor.opacity(colorScheme == .dark ? 0.18 : 0.09))
+                )
+                .overlay(
+                    Capsule(style: .continuous)
+                        .stroke(bubbleAccentColor.opacity(0.32), lineWidth: 0.6)
+                )
+                .contentShape(Capsule())
+        }
+        .buttonStyle(BubbleActionButtonStyle())
+    }
+
+    /// 气泡按钮按下去的回弹：0.94 缩一下 + 半透明，够轻，不抢动作本身
+    private struct BubbleActionButtonStyle: ButtonStyle {
+        func makeBody(configuration: Configuration) -> some View {
+            configuration.label
+                .opacity(configuration.isPressed ? 0.55 : 1)
+                .scaleEffect(configuration.isPressed ? 0.94 : 1)
+                .animation(.easeOut(duration: 0.12), value: configuration.isPressed)
+        }
     }
 
     /// 热评：源里的 SVG / 图片卡片换成原生样式，文字和插图都保留。
@@ -4473,16 +5237,40 @@ public struct ReaderView: View {
                     Circle()
                         .fill(readerHexColor(hex))
                         .frame(width: 22, height: 22)
-                        .overlay(Circle().stroke(Color.secondary.opacity(0.35), lineWidth: 0.5))
+                        // 双描边：内圈白把浅色块（#FFF59D 这种）从纸色里抠出来，
+                        // 外圈黑压住白纸上「白描边看不见」的问题
+                        .overlay(Circle().stroke(Color.white.opacity(0.9), lineWidth: 1))
+                        .overlay(Circle().stroke(Color.black.opacity(0.25), lineWidth: 0.7))
                         .overlay(
                             Circle()
                                 .stroke(readerConfig.textColor, lineWidth: selected == hex ? 2 : 0)
-                                .padding(-2)
+                                .padding(-3)
                         )
                 }
                 .buttonStyle(.plain)
             }
             Divider().frame(height: 20)
+            // 已经标过的段落：给一个明确的「清除」，不用再猜点同色能不能撤
+            if currentSelectionAnnotation(kind: kind) != nil {
+                Button {
+                    clearAnnotation(kind: kind)
+                } label: {
+                    HStack(spacing: 3) {
+                        Image(systemName: "eraser")
+                            .font(.system(size: 12, weight: .semibold))
+                        Text("清除")
+                            .font(.system(size: 11, weight: .medium))
+                    }
+                    .foregroundColor(readerConfig.textColor)
+                    .padding(.horizontal, 8)
+                    .frame(height: 22)
+                    .background(
+                        Capsule().stroke(readerConfig.textColor.opacity(0.35), lineWidth: 0.8)
+                    )
+                }
+                .buttonStyle(.plain)
+                Divider().frame(height: 20)
+            }
             Button {
                 colorPickerKind = nil
             } label: {
@@ -4495,8 +5283,14 @@ public struct ReaderView: View {
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 7)
-        .background(.regularMaterial, in: Capsule())
-        .overlay(Capsule().stroke(Color.secondary.opacity(0.18), lineWidth: 0.5))
+        .background {
+            // 与气泡同一块不透明底，别让调色板把标注色采上来
+            ZStack {
+                Capsule().fill(theme.palette.surface)
+                Capsule().fill(Color.white.opacity(bubbleLiftOpacity))
+            }
+        }
+        .overlay(Capsule().stroke(theme.palette.divider, lineWidth: 0.8))
         .shadow(color: Color.black.opacity(0.15), radius: 8, y: 3)
     }
 
@@ -4713,10 +5507,214 @@ public struct ReaderView: View {
         withAnimation(.easeInOut(duration: 0.15)) { showControls = false }
     }
 
+    /// 验收用：`JUYUE_READER_SCRIPT="wait:2;press:200,600;palette:underline;color:#2F7BF6;dump"`
+    /// 语义动作代替手点，长按这条流程能无人值守地重放；截图只当证据，不当输入。
+    private func runReaderDebugScriptIfNeeded() async {
+        #if DEBUG || targetEnvironment(simulator)
+        guard let raw = ProcessInfo.processInfo.environment["JUYUE_READER_SCRIPT"],
+              !raw.isEmpty else { return }
+        AppLog.write("[调试] 阅读页脚本开始：\(raw)")
+        for step in raw.split(separator: ";") {
+            let part = step.trimmingCharacters(in: .whitespaces)
+            guard !part.isEmpty else { continue }
+            let bits = part.split(separator: ":", maxSplits: 1).map(String.init)
+            let name = bits[0]
+            let arg = bits.count > 1 ? bits[1] : ""
+            switch name {
+            case "wait":
+                let seconds = Double(arg) ?? 1
+                try? await Task.sleep(nanoseconds: UInt64(max(0, seconds) * 1_000_000_000))
+            case "press":
+                #if os(iOS)
+                let xy = arg.split(separator: ",").compactMap { Double($0.trimmingCharacters(in: .whitespaces)) }
+                if xy.count == 2 {
+                    handleLongPressAtWindowPoint(CGPoint(x: xy[0], y: xy[1]))
+                    AppLog.write("[调试] press \(xy[0]),\(xy[1])")
+                }
+                #endif
+            case "palette":
+                colorPickerKind = arg == "highlight" ? .highlight : .underline
+                AppLog.write("[调试] palette \(arg)")
+            case "tap":
+                #if os(iOS)
+                let xy = arg.split(separator: ",").compactMap { Double($0.trimmingCharacters(in: .whitespaces)) }
+                if xy.count == 2 {
+                    handleTapWhileListening(at: CGPoint(x: xy[0], y: xy[1]))
+                    AppLog.write("[调试] tap \(xy[0]),\(xy[1])")
+                }
+                #endif
+            case "read":
+                startReadingChapter(fromBlockId: arg.isEmpty ? nil : Int(arg))
+            case "hint":
+                // 单验提示层：这条显示 30 秒，截图/控件树都来得及
+                showBookmarkHint(arg.isEmpty ? "提示层自测" : arg, seconds: 30)
+            case "chapter":
+                // 换章：复现「快翻后立刻起读」那条竞态（正文还在路上就点朗读）
+                if let n = Int(arg), n >= 1, n <= chapters.count {
+                    jumpToChapter(n - 1)
+                    AppLog.write("[调试] 换章 → 第 \(n) 章")
+                }
+            case "stopread":
+                audioService.stop()
+                AppLog.write("[调试] 停读")
+            case "pause":
+                // 截图要一帧稳定的朗读底色：暂停保留位置和底色，stop 会清掉
+                audioService.pause()
+                AppLog.write("[调试] 暂停朗读 block \(audioService.readingBlockId.map(String.init) ?? "nil")")
+            case "settingsrestart":
+                // 验收「改设置就不念了」：走设置面板同一条重启路径
+                AppLog.write("[调试] 设置变更重起 block \(audioService.readingBlockId.map(String.init) ?? "nil")")
+                audioService.applySettingsChangeRestart()
+            case "cast":
+                TTSCastStore.shared.enabled = (arg == "1")
+                AppLog.write("[调试] 多角色 \(TTSCastStore.shared.enabled ? "开" : "关")")
+            case "resume":
+                // 验完一轮暂停要接着放：脚本里没这一步就只能手点
+                audioService.resume()
+                AppLog.write("[调试] 继续朗读 block \(audioService.readingBlockId.map(String.init) ?? "nil") playing=\(audioService.isPlaying) paused=\(audioService.isPaused)")
+            case "pids":
+                // 行 → 段落 id 的对照：高亮偏一段时先看这张表
+                let blocks = currentLoadedChapter?.blocks ?? []
+                AppLog.write("[调试] 块 " + blocks.prefix(9).map { "\($0.id):\($0.text.prefix(6))" }.joined(separator: " | "))
+                #if os(iOS)
+                AppLog.write("[调试] 页 \(CoreTextUIView.debugDumpVisiblePages())")
+                #endif
+            case "mode":
+                // 验收脚本切翻页模式，省得手点设置页
+                let mode: PageMode = arg == "scroll" ? .scroll
+                    : (arg == "page" ? .pageByPage
+                       : (arg == "simulation" ? .simulation : .cover))
+                readerConfig.pageMode = mode
+                AppLog.write("[调试] 模式切到 \(mode.rawValue)")
+            case "color":
+                if let kind = colorPickerKind {
+                    applyAnnotation(kind: kind, color: arg)
+                    AppLog.write("[调试] color \(arg) 给 \(kind.rawValue)")
+                }
+            case "clear":
+                if let kind = colorPickerKind {
+                    clearAnnotation(kind: kind)
+                    AppLog.write("[调试] clear \(kind.rawValue)")
+                }
+            case "close":
+                colorPickerKind = nil
+            case "panel":
+                withAnimation(.easeOut(duration: 0.18)) { showReadingPanel = true }
+                AppLog.write("[调试] 朗读面板 open follow=\(ttsFollowPage) tint=\(ttsTintSource)")
+            case "collapse":
+                withAnimation(.easeOut(duration: 0.18)) { ttsBarCollapsed = true }
+                AppLog.write("[调试] 朗读条 collapsed=\(ttsBarCollapsed)")
+            case "expand":
+                withAnimation(.easeOut(duration: 0.18)) { ttsBarCollapsed = false }
+                AppLog.write("[调试] 朗读条 collapsed=\(ttsBarCollapsed)")
+            case "follow":
+                ttsFollowPage = arg == "0" ? false : (arg == "1" ? true : !ttsFollowPage)
+                AppLog.write("[调试] 跟页读 \(ttsFollowPage ? "开" : "关")")
+            case "ttscache":
+                ttsReadFromCache = arg == "0" ? false : true
+                AppLog.write("[调试] 听书读缓存 \(ttsReadFromCache ? "开" : "关") 本章已缓存=\(BookContentService.shared.hasCachedChapter(bookUrl: activeBook.bookUrl, chapterIndex: currentChapterIndex))")
+            case "turn":
+                turnPage(forward: arg != "0")
+                AppLog.write("[调试] 翻页 forward=\(arg != "0") 现在第 \(currentPageIndex + 1) 页")
+            case "pageinfo":
+                let page = (currentLoadedChapter.map { $0.pages.indices.contains(currentPageIndex) } == true)
+                    ? currentLoadedChapter!.pages[currentPageIndex] : []
+                let blocks = currentLoadedChapter?.blocks ?? []
+                let lineIds = page.prefix(6).map { "\($0.id)/p\($0.paragraphId)" }.joined(separator: ",")
+                let ids = readingItemsForCurrentChapter.map(\.id)
+                let readableBlocks = blocks.filter { !$0.isImage && $0.commentCount >= 0 }.count
+                AppLog.write("[调试] 页 \(currentPageIndex + 1) 行块 \(lineIds) · blocks \(blocks.count)(可读 \(readableBlocks)) · 可读 id \(ids.prefix(8)) · 页首段 \(currentPageFirstBlockId.map(String.init) ?? "nil")")
+            case "readpage":
+                if let blockId = currentPageFirstBlockId {
+                    AppLog.write("[调试] 从这一页读 block \(blockId) 页 \(currentPageIndex + 1)")
+                    startReadingChapter(fromBlockId: blockId)
+                } else {
+                    AppLog.write("[调试] 从这一页读 拿不到段落")
+                }
+            case "reviewcache":
+                UserDefaults.standard.set(arg != "0", forKey: ReviewCache.enabledKey)
+                let targets = ReviewCache.commentTargets(inContent: currentChapterContent, limit: 3)
+                let firstAPI = targets.first.flatMap { ReviewCache.apiURL(fromRaw: $0.raw, mode: $0.mode)?.absoluteString }
+                AppLog.write("[调试] 书评哨兵 \(targets.count) 条 · 开关=\(ReviewCache.enabled) · 首条接口=\(firstAPI ?? "无")")
+                Task { await ReviewCache.prefetchComments(inContent: currentChapterContent, limit: 2) }
+            case "tint":
+                ttsTintSource = arg.isEmpty ? "highlight" : arg
+                AppLog.write("[调试] 朗读底色来源 \(ttsTintSource)")
+            case "hidebar":
+                withAnimation(.easeOut(duration: 0.18)) { ttsBarHidden = arg != "0" }
+                AppLog.write("[调试] 朗读条 hidden=\(ttsBarHidden)")
+            case "menu":
+                toggleControls("script-menu")
+                AppLog.write("[调试] 底栏 controls=\(showControls)")
+            case "speed":
+                let times = Double(arg) ?? 1.0
+                audioService.speechRate = Float(times) * AVSpeechUtteranceDefaultSpeechRate
+                AppLog.write("[调试] 语速 \(times)×")
+            case "sleep":
+                if arg == "chapter" {
+                    audioService.setSleepStopAtChapterEnd(true)
+                } else if arg == "off" {
+                    audioService.cancelSleepTimer()
+                    audioService.setSleepStopAtChapterEnd(false)
+                } else {
+                    audioService.startSleepTimer(minutes: Int(arg) ?? 15)
+                }
+                AppLog.write("[调试] 定时 \(arg.isEmpty ? "15" : arg) · 剩 \(audioService.sleepRemaining)s · 章末停=\(audioService.sleepStopAtChapterEnd)")
+            case "readsel":
+                readFromSelection()
+            case "compare":
+                let curBlock = audioService.readingBlockId
+                let allBlocks = currentLoadedChapter?.blocks ?? []
+                let pageLines = (currentLoadedChapter.map { $0.pages.indices.contains(currentPageIndex) } == true)
+                    ? currentLoadedChapter!.pages[currentPageIndex] : []
+                // 页面上从上到下出现过哪几段（按 paragraphId 去重），每段只取前 14 字方便跟截图对照
+                var pids: [Int] = []
+                var lastPid = -1
+                for line in pageLines {
+                    let pid = line.paragraphId > 0 ? line.paragraphId : line.id
+                    if pid != lastPid { pids.append(pid); lastPid = pid }
+                }
+                let pageDesc = pids.prefix(4).map { pid -> String in
+                    let t = allBlocks.first(where: { $0.id == pid })?.text ?? "-"
+                    return "\(pid)『\(String(t.prefix(14)))』"
+                }.joined(separator: " ")
+                let queue = readingItemsForCurrentChapter
+                let curIdx = queue.firstIndex(where: { $0.id == curBlock })
+                let curText = queue.first(where: { $0.id == curBlock })?.text ?? "-"
+                AppLog.write("[调试] 页\(currentPageIndex + 1)段序 \(pageDesc)")
+                AppLog.write("[调试] 朗读段 \(curBlock.map(String.init) ?? "nil") 队列第\(curIdx.map { $0 + 1 } ?? -1)段『\(String(curText.prefix(14)))』")
+            case "dump":
+                let list = bookmarkStore.userAnnotations(bookUrl: activeBook.bookUrl,
+                                                         chapterIndex: currentChapterIndex)
+                let desc = list.map {
+                    "\($0.kind.rawValue)@\($0.blockId ?? -1)+\($0.charOffset)x\($0.length ?? 0)"
+                        + "/\($0.color ?? "-")/\($0.rangeUnitRaw ?? "block")"
+                }.joined(separator: " · ")
+                AppLog.write("[调试] 本章标注 \(list.count) 条：\(desc.isEmpty ? "无" : desc)")
+            default:
+                AppLog.write("[调试] 不认识的步骤 \(part)")
+            }
+        }
+        AppLog.write("[调试] 阅读页脚本结束")
+        #endif
+    }
+
     /// 窗口层长按落在滚动模式正文上：换算成段落再走同一条选择逻辑
     private func handleLongPressAtWindowPoint(_ point: CGPoint) {
         #if os(iOS)
-        guard !showControls else { return }
+        // 以前这里是一句 `guard !showControls else { return }`：菜单一开着，长按就静悄悄地没了。
+        // 朗读中点一下正文就会把菜单叫出来，长按极容易撞在这个状态上，看起来就是「没法长按选字」。
+        // 现在改成先收起菜单再继续走选字，两条手势不再互相挡。
+        if showControls {
+            withAnimation(.easeOut(duration: 0.15)) { showControls = false }
+            AppLog.write("[长按] 菜单开着 · 先收起再选字 · \(Int(point.x)),\(Int(point.y))")
+        }
+        // 朗读条整条藏起来之后，长按正文就是唯一的召回手势：
+        // 先把它叫回来，再照旧走选词/选段，不吞掉长按本身。
+        if ttsBarHidden, audioService.hasReadingSession {
+            withAnimation(.easeOut(duration: 0.18)) { ttsBarHidden = false }
+            AppLog.write("[听书] 长按叫回朗读条")
+        }
 
         // 分页 / 仿真：交给触点所在那一页自己判行
         if readerConfig.pageMode != .scroll {
@@ -4733,11 +5731,118 @@ public struct ReaderView: View {
               let block = loaded.blocks.first(where: { $0.id == hit.blockId }),
               !block.isImage else { return }
         AppLog.write("[长按] 滚动模式命中第 \(hit.chapterIndex + 1) 章 · block \(hit.blockId)")
-        selectScrollParagraph(block, chapterIndex: hit.chapterIndex)
+        // 长按点常落在行距/段间距里（段落框含内边距），上下再试几个偏移，
+        // 问到第一个字位就用；两条都不行才退回整段。
+        if let probe = scrollCharProbe(block: block, chapterIndex: hit.chapterIndex, point: point) {
+            AppLog.write("[长按] 字位 \(probe.offset) 走\(probe.metrics == nil ? "label" : "CoreText")")
+            selectScrollWord(block: block, chapterIndex: hit.chapterIndex,
+                             charOffset: probe.offset, metrics: probe.metrics)
+        } else {
+            AppLog.write("[长按] 两条路都没问到字位，退回整段")
+            selectScrollParagraph(block, chapterIndex: hit.chapterIndex)
+        }
         #endif
     }
 
+
+    /// 滚动模式的字位探针：UILabel（TextKit）优先，问不到再用 CoreText 复排。
+    /// 落点往上挪几档，是因为段落框把段间距也算进去了，手指常在文字下面几磅。
+    private func scrollCharProbe(block: ContentBlock, chapterIndex: Int,
+                                 point: CGPoint) -> (offset: Int, metrics: ReaderScrollMetricsContext?)? {
+        #if os(iOS)
+        let label = ReaderBodyLabel.label(chapterIndex: chapterIndex, blockId: block.id)
+        let ctx = scrollTextContext(for: block, chapterIndex: chapterIndex)
+        let rendered = applyingKinsoku(block.text) as NSString
+        for dy in [0.0, -6, -12, -18, -24, 10, 18] {
+            let probe = CGPoint(x: point.x, y: point.y + dy)
+            if let label, let index = label.charIndex(atWindowPoint: probe) {
+                return (originalIndex(fromRendered: index, in: rendered), nil)
+            }
+            if let ctx, let index = ReaderScrollTextMetrics.charIndex(atWindowPoint: probe, in: ctx) {
+                return (originalIndex(fromRendered: index, in: rendered), ctx)
+            }
+        }
+        return nil
+        #else
+        return nil
+        #endif
+    }
+
+    /// 非两端对齐时正文是 SwiftUI Text 画的：按同一套字体参数重排一遍，
+    /// 只回答「这个点在第几个字」。两端对齐走 ReaderBodyLabel，用不到这条。
+    private func scrollTextContext(for block: ContentBlock,
+                                   chapterIndex: Int) -> ReaderScrollMetricsContext? {
+        #if os(iOS)
+        guard let rect = scrollHitRegistry.rect(forBlockId: block.id, chapterIndex: chapterIndex) else { return nil }
+        // registry 的 frame 含左右内边距，减掉才是正文的排版宽度
+        let width = rect.width - readerConfig.paddingLeft - readerConfig.paddingRight
+        guard width > 10 else { return nil }
+        return ReaderScrollTextMetrics.Context(
+            text: applyingKinsoku(block.text),
+            fontSize: readerConfig.fontSize,
+            lineSpacing: readerConfig.lineSpacing,
+            kerning: readerConfig.letterSpacing,
+            alignment: coreTextAlignment,
+            origin: CGPoint(x: rect.minX + readerConfig.paddingLeft, y: rect.minY),
+            width: width
+        )
+        #else
+        return nil
+        #endif
+    }
+
+    private var coreTextAlignment: NSTextAlignment {
+        switch readerConfig.textAlignment {
+        case .center: return .center
+        case .trailing: return .right
+        default: return .left
+        }
+    }
+
+    /// 滚动模式选词：跟分页模式同一个口径（段内 UTF-16 偏移 + 系统分词）
+    private func selectScrollWord(block: ContentBlock, chapterIndex: Int, charOffset: Int,
+                                  metrics: ReaderScrollMetricsContext? = nil) {
+        if currentChapterIndex != chapterIndex { currentChapterIndex = chapterIndex }
+        selectedBlockRange = (start: block.id, count: 1)
+        selectedParagraphText = block.text.trimmingCharacters(in: .whitespacesAndNewlines)
+        selectedParagraphRawText = block.text
+        selectedParagraphId = block.id
+        selectedParagraphCharStart = 0
+        let word = selectedWordRange(in: block.text, around: charOffset)
+        charSelection = ReaderCharSelection(paragraphId: block.id,
+                                            start: word.location,
+                                            length: max(1, word.length))
+        colorPickerKind = nil
+        // 气泡贴着选中的词，别用整段的框
+        #if os(iOS)
+        if let label = ReaderBodyLabel.label(chapterIndex: chapterIndex, blockId: block.id) {
+            let rendered = applyingKinsoku(block.text) as NSString
+            let start = renderedIndex(fromOriginal: word.location, in: rendered)
+            let end = renderedIndex(fromOriginal: word.location + max(1, word.length), in: rendered)
+            selectionRect = label.windowRect(forCharRange: NSRange(location: start,
+                                                                   length: max(1, end - start)))
+                ?? scrollHitRegistry.rect(forBlockId: block.id, chapterIndex: chapterIndex)
+        } else if let metrics {
+            let rendered = applyingKinsoku(block.text) as NSString
+            let start = renderedIndex(fromOriginal: word.location, in: rendered)
+            let end = renderedIndex(fromOriginal: word.location + max(1, word.length), in: rendered)
+            selectionRect = ReaderScrollTextMetrics.rect(forRange: NSRange(location: start,
+                                                                          length: max(1, end - start)),
+                                                         in: metrics)
+                ?? scrollHitRegistry.rect(forBlockId: block.id, chapterIndex: chapterIndex)
+        } else {
+            selectionRect = scrollHitRegistry.rect(forBlockId: block.id, chapterIndex: chapterIndex)
+        }
+        #else
+        selectionRect = scrollHitRegistry.rect(forBlockId: block.id, chapterIndex: chapterIndex)
+        #endif
+        if annotationSnapshot == nil { annotationSnapshot = currentChapterAnnotations() }
+        tapSuppressor.suppress()
+        withAnimation(.easeInOut(duration: 0.15)) { showControls = false }
+    }
+
     /// 连续滚动模式下，段落的底色标注画在段落的背景上
+    /// 朗读段不走这里：整段背景会连缩进和行尾留白一起涂，改由 scrollBody 给逐字底色
     @ViewBuilder
     private func scrollAnnotationBackground(for block: ContentBlock, chapterIndex: Int) -> some View {
         // 选中的段落先铺一层淡蓝，长按下去能看出选的是哪一段
@@ -4751,6 +5856,74 @@ public struct ReaderView: View {
         } else {
             Color.clear
         }
+    }
+
+    /// 这一段是不是正在朗读（暂停也算，位置得留着）
+    private func isReadingBlock(_ blockId: Int) -> Bool {
+        guard let speaking = audioService.readingBlockId else { return false }
+        // 合成/缓冲那 1-2 秒里 playing 和 paused 都是 false，底色要是跟着消失，
+        // 每段之间就闪一下 —— 那正是「高亮跟随没了」最像的地方。
+        return speaking == blockId && (audioService.isPlaying || audioService.isPaused || audioService.isSynthesizing)
+    }
+
+    /// 翻页模式给正文视图的朗读段 id（没在听书就是 nil）
+    private var readingHighlightBlockId: Int? {
+        guard let id = audioService.readingBlockId, isReadingBlock(id) else { return nil }
+        return id
+    }
+
+    /// 朗读段的 block id：分页视图那层 `lineParagraphIds` 存的也是 ContentBlock.id，
+    /// 两边同一套编号，直接递 id。以前递的是数组下标，id 从 1 起时整条高亮落后一段。
+    private var readingParagraphOrdinal: Int? {
+        readingHighlightBlockId
+    }
+
+    /// 朗读底色：默认跟主题强调色，也可以跟底色标注 / 划线色走，让朗读和做过的标记同一色系。
+    /// 暂停时压到六成，跟阅读页那层竖线同一套口径。
+    private var readingTint: Color {
+        let base: Color
+        switch ttsTintSource {
+        case "highlight": base = readerHexColor(highlightHex)
+        case "underline": base = readerHexColor(underlineHex)
+        default: base = nierPalette.accent
+        }
+        // 浅色底（#FFF59D 这种）压 10% 在米白纸上根本看不出来，浅色得给厚一点；
+        // 深色（强调色、深蓝划线）薄薄一层就够，压厚了正文发脏。
+        let pale = isPaleColor(base)
+        // 浅色（米黄标注色）在米白纸上 0.26 根本看不出来，读一段跟没加一样
+        let alpha: Double = audioService.isPaused
+            ? (pale ? 0.18 : 0.07)
+            : (pale ? 0.36 : 0.12)
+        return base.opacity(alpha)
+    }
+
+    /// 亮度判浅色：给朗读底色挑透明度用
+    private func isPaleColor(_ color: Color) -> Bool {
+        #if os(iOS)
+        var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
+        if UIColor(color).getRed(&r, green: &g, blue: &b, alpha: &a) {
+            return 0.299 * r + 0.587 * g + 0.114 * b > 0.72
+        }
+        #endif
+        return false
+    }
+
+    /// 面板底色：从纸色推一层比正文更实的面。
+    /// 用 .regularMaterial 会采样背后的正文，浅色纸上图标糊成一片，颜色还会随翻页变。
+    private var readerPanelSurface: Color {
+        #if os(iOS)
+        let base = UIColor(readerConfig.backgroundColor)
+        let resolved = base.resolvedColor(with: UITraitCollection(userInterfaceStyle: .light))
+        var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
+        if resolved.getRed(&r, green: &g, blue: &b, alpha: &a) {
+            let luminance = 0.299 * r + 0.587 * g + 0.114 * b
+            // 亮纸压暗一点点、暗纸提亮一点点，跟正文拉出层次又不刺眼
+            let shift: CGFloat = luminance > 0.5 ? -0.055 : 0.12
+            func clamp(_ value: CGFloat) -> Double { Double(min(max(value, 0), 1)) }
+            return Color(red: clamp(r + shift), green: clamp(g + shift), blue: clamp(b + shift))
+        }
+        #endif
+        return readerConfig.backgroundColor
     }
 
     /// "#RRGGBB" → Color（标注底色）
@@ -4848,6 +6021,60 @@ public struct ReaderView: View {
         showBookmarkHint(added ? "已加\(name)" : "已取消\(name)")
     }
 
+    /// 当前选区上已有的标注（字选按区间、整段按 block），气泡和调色板拿它显示状态
+    private func currentSelectionAnnotation(kind: BookBookmark.Kind) -> BookBookmark? {
+        let list = bookmarkStore.userAnnotations(bookUrl: activeBook.bookUrl,
+                                                 chapterIndex: currentChapterIndex)
+            .filter { $0.kind == kind }
+        if let sel = charSelection {
+            return list.first {
+                $0.rangeUnitRaw == "char" && $0.blockId == sel.paragraphId
+                    && ($0.charOffset ?? 0) == sel.start && ($0.length ?? 0) == sel.length
+            }
+        }
+        guard let range = selectedBlockRange else { return nil }
+        return list.first {
+            $0.rangeUnitRaw == nil && $0.blockId == range.start
+                && ($0.length ?? 1) == range.count
+        }
+    }
+
+    /// 明确清除当前选区的标注：不看颜色，命中就删
+    private func clearAnnotation(kind: BookBookmark.Kind) {
+        guard let range = selectedBlockRange, let cur = currentLoadedChapter else { return }
+        let name = kind == .underline ? "下划线" : "底色"
+        guard currentSelectionAnnotation(kind: kind) != nil else {
+            showBookmarkHint("这里没有\(name)")
+            return
+        }
+        tapSuppressor.suppress()
+        if let sel = charSelection {
+            _ = bookmarkStore.toggleAnnotation(
+                bookUrl: activeBook.bookUrl,
+                chapterIndex: currentChapterIndex,
+                chapterTitle: cur.chapter.title,
+                blockId: sel.paragraphId,
+                charOffset: sel.start,
+                length: sel.length,
+                kind: kind,
+                charScoped: true,
+                forceRemove: true
+            )
+        } else {
+            _ = bookmarkStore.toggleAnnotation(
+                bookUrl: activeBook.bookUrl,
+                chapterIndex: currentChapterIndex,
+                chapterTitle: cur.chapter.title,
+                blockId: range.start,
+                length: range.count,
+                kind: kind,
+                forceRemove: true
+            )
+        }
+        colorPickerKind = nil
+        showBookmarkHint("已清除\(name)")
+    }
+
     /// 替换：把选中段落整段换成输入的词，规则按书存，加载正文时套用
     private func applyParagraphReplace() {
         guard let cur = currentLoadedChapter else { return }
@@ -4913,6 +6140,9 @@ public struct ReaderView: View {
             },
             onCharHandleDrag: { point in
                 updateCharSelection(isStart: isDraggingCharStart, at: point)
+            },
+            onTap: { point in
+                handleTapWhileListening(at: point)
             }
         )
         #endif
@@ -5007,10 +6237,11 @@ public struct ReaderView: View {
         }
     }
 
-    private func showBookmarkHint(_ text: String) {
+    /// 顶上那条短提示。默认 1.8 秒；「没声音」这种要用户动手的，给长一点（4 秒）
+    private func showBookmarkHint(_ text: String, seconds: Double = 1.8) {
         bookmarkHintText = text
         Task { @MainActor in
-            try? await Task.sleep(nanoseconds: 1_800_000_000)
+            try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
             if bookmarkHintText == text { bookmarkHintText = nil }
         }
     }
@@ -5118,6 +6349,423 @@ public struct ReaderView: View {
         }
         .allowsHitTesting(false)
         .animation(.easeInOut(duration: 0.2), value: bookmarkHintText)
+    }
+
+    /// 听书球：阅读界面唯一的听书入口。
+    ///
+    /// 它挂在菜单这一层：点正文唤出菜单时一起出现，菜单收起、开界面设置、开任何浮层，
+    /// 它跟着消失——正文层不再留听书控件。所有听书选项都从这颗球进朗读面板拿。
+    /// 点在听状态上是暂停/继续，没在听就开面板；长按也开面板。
+    private var listeningBallLayer: some View {
+        Group {
+            if showControls, !showSettings, !showReadingPanel, !readerOverlayPresented {
+                listeningBall
+            }
+        }
+        .animation(.easeInOut(duration: 0.2), value: showControls)
+        .animation(.easeInOut(duration: 0.2), value: audioService.playbackPhase)
+    }
+
+    private var listeningBall: some View {
+        Image(systemName: audioService.phaseGlyph)
+            .font(.system(size: 19, weight: .semibold))
+            .foregroundColor(audioService.isPlaying ? theme.palette.accent : readerConfig.textColor)
+            .frame(width: 46, height: 46)
+            .background(Circle().fill(readerPanelSurface))
+            .overlay(
+                Circle().stroke(audioService.isPlaying ? theme.palette.accent : theme.palette.divider,
+                                lineWidth: audioService.isPlaying ? 1.4 : 0.8)
+            )
+            .shadow(color: .black.opacity(0.16), radius: 7, y: 2)
+            .contentShape(Circle())
+            .onTapGesture {
+                tapSuppressor.suppress()
+                if audioService.isPlaying || audioService.isPaused {
+                    if audioService.isPlaying { audioService.pause() } else { audioService.resume() }
+                } else {
+                    withAnimation(.easeOut(duration: 0.18)) { showReadingPanel = true }
+                }
+                AppLog.write("[听书] 球 · 相位=\(audioService.playbackPhase.rawValue) 有会话=\(audioService.hasReadingSession)")
+            }
+            .highPriorityGesture(
+                LongPressGesture(minimumDuration: 0.45).onEnded { _ in
+                    tapSuppressor.suppress()
+                    withAnimation(.easeOut(duration: 0.18)) { showReadingPanel = true }
+                    AppLog.write("[听书] 长按球 · 打开朗读面板")
+                }
+            )
+            .frame(maxWidth: .infinity, alignment: .trailing)
+            .padding(.trailing, 20)
+            .padding(.bottom, screenBottomInset + 134)
+            .transition(.opacity.combined(with: .scale(scale: 0.9)))
+            .onAppear {
+                AppLog.write("[听书] 球出现 · 相位=\(audioService.playbackPhase.rawValue) 有会话=\(audioService.hasReadingSession)")
+            }
+            .onDisappear {
+                AppLog.write("[听书] 球消失 · controls=\(showControls)")
+            }
+    }
+
+    /// 朗读面板的浮层：点空白处、右上角 × 都能关，别挡着读正文
+    private var readingPanelOverlay: some View {
+        Group {
+            if showReadingPanel {
+                ZStack(alignment: .bottom) {
+                    Color.black.opacity(0.16)
+                        .ignoresSafeArea()
+                        .onTapGesture { dismissReadingPanel() }
+                    readingPanelCard
+                        .padding(.horizontal, 16)
+                        .padding(.bottom, max(safeInsets.bottom, 12) + 14)
+                }
+            }
+        }
+    }
+
+    /// 朗读面板：从哪起读、要不要跟页、底色跟谁走，三件事一张卡说完
+    private var readingPanelCard: some View {
+        let items = readingItemsForCurrentChapter
+        let pageCount = max(1, currentLoadedChapter?.pages.count ?? 1)
+        let pageDetail = readerConfig.pageMode == .scroll
+            ? "从视野里这一段起"
+            : "第 \(min(currentPageIndex + 1, pageCount))/\(pageCount) 页"
+        return VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 8) {
+                Image(systemName: "headphones")
+                    .font(.system(size: 14, weight: .semibold))
+                Text("朗读")
+                    .font(.system(size: 15, weight: .semibold))
+                if audioService.playbackPhase != .idle {
+                    Text("\(audioService.progressIndex)/\(audioService.progressTotal)")
+                        .font(.system(size: 12, weight: .medium))
+                        .monospacedDigit()
+                        .foregroundColor(theme.palette.secondaryInk)
+                }
+                Spacer(minLength: 0)
+                Button { dismissReadingPanel() } label: {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 11, weight: .semibold))
+                        .frame(width: 26, height: 26)
+                }
+                .buttonStyle(BubbleActionButtonStyle())
+            }
+            .foregroundColor(theme.palette.ink)
+
+            // 「现在到底哪个源在响」：多角色一段一个音色，面板上不写清楚，用户只能靠耳朵猜
+            if TTSCastStore.shared.enabled, !audioService.castNowLabel.isEmpty {
+                Text(audioService.castNowLabel)
+                    .font(.system(size: 11))
+                    .foregroundColor(theme.palette.secondaryInk)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.8)
+            }
+
+            // 底栏撤掉那格听书以后，「跳回正在读的那一页」就没人管了。
+            // 球上有会话时点一下是暂停，长按才开这张面板，所以入口放在这里最顺。
+            if audioService.hasReadingSession {
+                Button {
+                    jumpToReadingBlock()
+                    dismissReadingPanel()
+                } label: {
+                    readingPanelRow(icon: "scope",
+                                    title: "回到正在读的位置",
+                                    detail: "第 \(audioService.progressIndex)/\(audioService.progressTotal) 段")
+                }
+                .buttonStyle(BubbleActionButtonStyle())
+            }
+
+            Button {
+                startReadingChapter()
+                dismissReadingPanel()
+            } label: {
+                readingPanelRow(icon: "text.alignleft", title: "从本章开头读",
+                                detail: "第 \(currentChapterIndex + 1) 章 · \(items.count) 段")
+            }
+            .buttonStyle(BubbleActionButtonStyle())
+            .disabled(items.isEmpty)
+
+            Button {
+                if let blockId = currentPageFirstBlockId {
+                    startReadingChapter(fromBlockId: blockId)
+                } else {
+                    showBookmarkHint("这一页没有可读的正文")
+                }
+                dismissReadingPanel()
+            } label: {
+                readingPanelRow(icon: "doc.text", title: "从这一页读", detail: pageDetail)
+            }
+            .buttonStyle(BubbleActionButtonStyle())
+            .disabled(items.isEmpty)
+
+            Button {
+                dismissReadingPanel()
+                showTTSSettings = true
+            } label: {
+                readingPanelRow(icon: "gearshape", title: "听书设置", detail: "音色、语速、多角色")
+            }
+            .buttonStyle(BubbleActionButtonStyle())
+
+            Rectangle()
+                .fill(theme.palette.divider.opacity(0.7))
+                .frame(height: 0.5)
+
+            Toggle(isOn: Binding(
+                get: { ttsFollowPage },
+                set: { value in
+                    ttsFollowPage = value
+                    AppLog.write("[听书] 跟页读 \(value ? "开" : "关")")
+                }
+            )) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("翻到哪页读哪页")
+                        .font(.system(size: 13, weight: .medium))
+                    Text(readerConfig.pageMode == .scroll
+                         ? "滚动模式按段续读，不吃这个开关"
+                         : "翻页后从这一页第一段重新起读")
+                        .font(.system(size: 11))
+                        .foregroundColor(theme.palette.secondaryInk)
+                }
+            }
+            .toggleStyle(SwitchToggleStyle(tint: theme.palette.accent))
+            .disabled(readerConfig.pageMode == .scroll)
+            .foregroundColor(theme.palette.ink)
+
+            Rectangle()
+                .fill(theme.palette.divider.opacity(0.7))
+                .frame(height: 0.5)
+
+            Toggle(isOn: Binding(
+                get: { ttsReadFromCache },
+                set: { value in
+                    ttsReadFromCache = value
+                    AppLog.write("[听书] 读本地缓存 \(value ? "开" : "关")")
+                }
+            )) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("听书用本地缓存")
+                        .font(.system(size: 13, weight: .medium))
+                    Text(cachedChapterHint)
+                        .font(.system(size: 11))
+                        .foregroundColor(theme.palette.secondaryInk)
+                }
+            }
+            .toggleStyle(SwitchToggleStyle(tint: theme.palette.accent))
+            .foregroundColor(theme.palette.ink)
+
+            Rectangle()
+                .fill(theme.palette.divider.opacity(0.7))
+                .frame(height: 0.5)
+
+            VStack(alignment: .leading, spacing: 8) {
+                Text("语速")
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundColor(theme.palette.ink)
+                HStack(spacing: 8) {
+                    speedChip("0.8×", 0.8)
+                    speedChip("1.0×", 1.0)
+                    speedChip("1.2×", 1.2)
+                    speedChip("1.5×", 1.5)
+                    speedChip("2.0×", 2.0)
+                    Spacer(minLength: 0)
+                }
+            }
+
+            Rectangle()
+                .fill(theme.palette.divider.opacity(0.7))
+                .frame(height: 0.5)
+
+            // 定时朗读：睡前挂上就去睡，到点自己停，位置留着
+            VStack(alignment: .leading, spacing: 8) {
+                HStack(spacing: 6) {
+                    Text("定时朗读")
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundColor(theme.palette.ink)
+                    Spacer(minLength: 0)
+                    if audioService.sleepRemaining > 0 {
+                        Text("还剩 \(audioService.sleepRemainingLabel)")
+                            .font(.system(size: 11.5, weight: .medium))
+                            .monospacedDigit()
+                            .foregroundColor(theme.palette.accent)
+                    } else if audioService.sleepStopAtChapterEnd {
+                        Text("读完本章停")
+                            .font(.system(size: 11.5, weight: .medium))
+                            .foregroundColor(theme.palette.accent)
+                    }
+                }
+                HStack(spacing: 8) {
+                    sleepChip("15 分", 15)
+                    sleepChip("30 分", 30)
+                    sleepChip("60 分", 60)
+                    chapterEndSleepChip()
+                    sleepOffChip()
+                    Spacer(minLength: 0)
+                }
+            }
+
+            Rectangle()
+                .fill(theme.palette.divider.opacity(0.7))
+                .frame(height: 0.5)
+
+            VStack(alignment: .leading, spacing: 8) {
+                Text("朗读底色")
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundColor(theme.palette.ink)
+                HStack(spacing: 8) {
+                    tintChip("主题色", "accent")
+                    tintChip("跟底色", "highlight")
+                    tintChip("跟划线", "underline")
+                    Spacer(minLength: 0)
+                }
+            }
+        }
+        .padding(16)
+        .background(
+            ZStack {
+                RoundedRectangle(cornerRadius: 22, style: .continuous)
+                    .fill(theme.palette.surface)
+                RoundedRectangle(cornerRadius: 22, style: .continuous)
+                    .fill(Color.white.opacity(bubbleLiftOpacity))
+            }
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 22, style: .continuous)
+                .stroke(theme.palette.divider, lineWidth: 0.8)
+        )
+        .shadow(color: .black.opacity(0.18), radius: 18, y: 6)
+        .transition(.move(edge: .bottom).combined(with: .opacity))
+    }
+
+    private func dismissReadingPanel() {
+        withAnimation(.easeOut(duration: 0.18)) { showReadingPanel = false }
+    }
+
+    /// 「听书用本地缓存」下面的说明：缓存有没有，读者一眼就知道能不能靠它
+    private var cachedChapterHint: String {
+        let cached = BookContentService.shared.hasCachedChapter(bookUrl: activeBook.bookUrl,
+                                                             chapterIndex: currentChapterIndex)
+        return cached
+            ? "本章已缓存 · 源站没登录时也能听真正文"
+            : "这一章还没缓存，缓存后才会用这份正文"
+    }
+
+    /// 面板里的起读入口：一行图标 + 标题 + 说明 + 箭头
+    private func readingPanelRow(icon: String, title: String, detail: String) -> some View {
+        HStack(spacing: 10) {
+            Image(systemName: icon)
+                .font(.system(size: 13, weight: .medium))
+                .frame(width: 20)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(title)
+                    .font(.system(size: 13, weight: .medium))
+                Text(detail)
+                    .font(.system(size: 11))
+                    .foregroundColor(theme.palette.secondaryInk)
+                    .lineLimit(1)
+            }
+            Spacer(minLength: 0)
+            Image(systemName: "chevron.right")
+                .font(.system(size: 10, weight: .semibold))
+                .foregroundColor(theme.palette.secondaryInk)
+        }
+        .foregroundColor(theme.palette.ink)
+        .padding(.horizontal, 12)
+        .frame(height: 52)
+        .background(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .fill(theme.palette.divider.opacity(0.18))
+        )
+        .contentShape(Rectangle())
+    }
+
+    /// 语速：直接改 audioService.speechRate，正在读的段读完就按新速度接上
+    /// 定时朗读的几个胶囊：选中的那个亮起来，再点一次不取消，靠右边的「关」
+    private func sleepChip(_ title: String, _ minutes: Int) -> some View {
+        let active = audioService.sleepMinutes == minutes
+        return Button {
+            audioService.startSleepTimer(minutes: minutes)
+        } label: {
+            sleepChipLabel(title, active: active)
+        }
+        .buttonStyle(BubbleActionButtonStyle())
+    }
+
+    private func chapterEndSleepChip() -> some View {
+        Button {
+            audioService.setSleepStopAtChapterEnd(true)
+        } label: {
+            sleepChipLabel("读完本章", active: audioService.sleepStopAtChapterEnd)
+        }
+        .buttonStyle(BubbleActionButtonStyle())
+    }
+
+    private func sleepOffChip() -> some View {
+        let idle = audioService.sleepDeadline == nil && !audioService.sleepStopAtChapterEnd
+        return Button {
+            audioService.cancelSleepTimer()
+            audioService.setSleepStopAtChapterEnd(false)
+            AppLog.write("[听书] 定时关掉")
+        } label: {
+            sleepChipLabel("关", active: idle)
+        }
+        .buttonStyle(BubbleActionButtonStyle())
+    }
+
+    private func sleepChipLabel(_ title: String, active: Bool) -> some View {
+        Text(title)
+            .font(.system(size: 11.5, weight: active ? .semibold : .regular))
+            .monospacedDigit()
+            .foregroundColor(active ? theme.palette.accent : theme.palette.ink)
+            .padding(.horizontal, 9)
+            .frame(height: 28)
+            .background(Capsule().fill(active ? theme.palette.accent.opacity(0.16) : theme.palette.divider.opacity(0.22)))
+            .overlay(Capsule().stroke(active ? theme.palette.accent : theme.palette.divider,
+                                      lineWidth: active ? 1.2 : 0.6))
+    }
+
+    private func speedChip(_ title: String, _ times: Double) -> some View {
+        let active = abs(Double(audioService.speechRate / AVSpeechUtteranceDefaultSpeechRate) - times) < 0.001
+        return Button {
+            audioService.speechRate = Float(times) * AVSpeechUtteranceDefaultSpeechRate
+            AppLog.write("[听书] 语速 \(String(format: "%.1f", times))×")
+        } label: {
+            Text(title)
+                .font(.system(size: 11.5, weight: active ? .semibold : .regular))
+                .monospacedDigit()
+                .foregroundColor(active ? theme.palette.accent : theme.palette.ink)
+                .padding(.horizontal, 9)
+                .frame(height: 28)
+                .background(Capsule().fill(active ? theme.palette.accent.opacity(0.16) : theme.palette.divider.opacity(0.22)))
+                .overlay(Capsule().stroke(active ? theme.palette.accent : theme.palette.divider,
+                                          lineWidth: active ? 1.2 : 0.6))
+        }
+        .buttonStyle(BubbleActionButtonStyle())
+    }
+
+    /// 底色三选一：色点直接给出实际颜色，免得挑完才发现浅得看不见
+    private func tintChip(_ title: String, _ value: String) -> some View {
+        let color: Color = value == "highlight"
+            ? readerHexColor(highlightHex)
+            : (value == "underline" ? readerHexColor(underlineHex) : nierPalette.accent)
+        let active = ttsTintSource == value
+        return Button {
+            ttsTintSource = value
+            AppLog.write("[听书] 朗读底色来源 \(value)")
+        } label: {
+            HStack(spacing: 5) {
+                Circle()
+                    .fill(color)
+                    .frame(width: 9, height: 9)
+                    .overlay(Circle().stroke(Color.black.opacity(0.22), lineWidth: 0.5))
+                Text(title)
+                    .font(.system(size: 11.5, weight: active ? .semibold : .regular))
+            }
+            .foregroundColor(active ? theme.palette.accent : theme.palette.ink)
+            .padding(.horizontal, 10)
+            .frame(height: 28)
+            .background(Capsule().fill(active ? color.opacity(0.20) : theme.palette.divider.opacity(0.22)))
+            .overlay(Capsule().stroke(active ? color : theme.palette.divider, lineWidth: active ? 1.2 : 0.6))
+        }
+        .buttonStyle(BubbleActionButtonStyle())
     }
 
     private func addBookmarkHere() {
@@ -5754,7 +7402,7 @@ public struct ReaderView: View {
                 }
                 .toggleStyle(.switch)
             }
-            Text("开着：一页没排满时把余下的高度匀进段间距，正文铺到页脚，段间距看着会变宽。关掉：段间距就是你设的那个数，余白全留在页末。")
+            Text("开着的时候，一页没排满就把多出来的高度匀进段间距，正文一直铺到页脚，看着段距会宽一点。关掉，段距就是你填的那个数，剩下的空白全留在页尾。")
                 .font(.system(size: 11))
                 .foregroundColor(readerConfig.textColor.opacity(0.5))
             settingSlider("首行缩进", value: $readerConfig.firstLineIndent, range: 0...4, step: 1, suffix: " 字")
@@ -6129,7 +7777,7 @@ public struct ReaderView: View {
                     .foregroundColor(readerConfig.textColor.opacity(0.7))
             }
             .toggleStyle(.switch)
-            Text("有个别书源把整章塞成一行、没有空行。开着时按句末标点把这种超长行切成正常段落，已经分好段的正文不动。")
+            Text("有的书源把整章塞成一行，中间不带空行。开着就按句末标点把这种长行切开，已经是正常段落的正文不动。")
                 .font(.system(size: 11))
                 .foregroundColor(readerConfig.textColor.opacity(0.5))
 
@@ -6139,7 +7787,7 @@ public struct ReaderView: View {
                     .foregroundColor(readerConfig.textColor.opacity(0.7))
             }
             .toggleStyle(.switch)
-            Text("中文排版规矩：句号、逗号这类标点不甩到行首，开引号、开括号不留在行尾。按页翻和连续模式都生效。")
+            Text("按中文的规矩排：句号逗号这类标点不许落在行首，开引号、开括号不许留在行尾。按页翻和连续滚动都管用。")
                 .font(.system(size: 11))
                 .foregroundColor(readerConfig.textColor.opacity(0.5))
 
@@ -6676,6 +8324,18 @@ public struct ReaderView: View {
                     self.loadedChapters = [loaded]
                 }
 
+                // 挂起的起读请求：正文到了就念，用户不用再点一次。
+                // 期间用户又翻去别章的话（currentChapterIndex 已经不是 index）就别再把他拽回来。
+                if let pending = self.pendingReadingStart, pending.chapter == index {
+                    self.pendingReadingStart = nil
+                    if self.currentChapterIndex == index {
+                        AppLog.write("[听书] 挂起的起读唤醒 · 第 \(index + 1) 章 · 可读 \(self.readingItemsForCurrentChapter.count) 段")
+                        self.startReadingChapter(fromBlockId: pending.blockId, chapterIndex: index, revealBar: pending.revealBar)
+                    } else {
+                        AppLog.write("[听书] 挂起的起读作废 · 第 \(index + 1) 章（用户已翻到第 \(self.currentChapterIndex + 1) 章）")
+                    }
+                }
+
                 self.isLoadingInitial = false
                 self.isSwitchingChapter = false
                 let currentPos = self.currentChapterCharOffset()
@@ -6687,6 +8347,10 @@ public struct ReaderView: View {
                 }
             } catch {
                 AppLog.write("[阅读] 首章正文失败 第 \(index + 1) 章 error=\(error.localizedDescription)")
+                if self.pendingReadingStart?.chapter == index {
+                    self.pendingReadingStart = nil
+                    AppLog.write("[听书] 挂起的起读取消 · 第 \(index + 1) 章 正文失败")
+                }
                 self.errorMessage = "正文解析失败: \(error.localizedDescription)"
                 self.isLoadingInitial = false
                 self.isSwitchingChapter = false
@@ -7906,7 +9570,7 @@ struct ReplaceRulesView: View {
                 } header: {
                     Text("本书规则（\(bookName)）")
                 } footer: {
-                    Text("正文入库前按顺序跑一遍。正则写错的那条会被跳过，不会把整章弄没。改完重新进这一章或点阅读页的「刷新」就生效。")
+                    Text("按顺序作用于正文。单条正则无效时跳过该条，不影响整章。修改后需重新进入章节或点「刷新」。")
                 }
             }
             .appThemedList()
@@ -8008,7 +9672,7 @@ struct ReplaceRuleEditor: View {
                 } header: {
                     Text("试跑")
                 } footer: {
-                    Text(draft.isGlobal ? "这条是全局规则，所有书都跑。" : "这条只对当前这本书跑。")
+                    Text(draft.isGlobal ? "全局规则，作用于所有书籍。" : "仅作用于当前书籍。")
                 }
             }
             .navigationTitle(isNew ? "新建净化规则" : "编辑净化规则")
@@ -8069,6 +9733,9 @@ public struct CoreTextPageView: UIViewRepresentable {
     /// 已加标注的段落：下划线 / 底色
     public var annotationRanges: [(start: Int, count: Int, style: ReaderBlockStyle)] = []
     public var onLongPressLine: ((Int, Int) -> Void)?
+    /// 正在朗读的段（阅读页高亮跟随，翻页模式也画）
+    public var readingBlockId: Int? = nil
+    public var readingTintColor: Color? = nil
     public var commentMap: [Int: (count: Int, url: String)] = [:]
     public var pageBackgroundColor: Color = .clear
     /// 热评段落跟随阅读主题的强调色；普通正文仍用 textColor。
@@ -8110,6 +9777,11 @@ public struct CoreTextPageView: UIViewRepresentable {
         uiView.charAnnotations = charAnnotations
         uiView.annotationRanges = annotationRanges
         uiView.onLongPressLine = onLongPressLine
+        if uiView.readingBlockId != readingBlockId {
+            AppLog.write("[听书] 分页视图拿到朗读段 \(readingBlockId.map(String.init) ?? "nil")")
+        }
+        uiView.readingBlockId = readingBlockId
+        uiView.readingTintColor = readingTintColor.map { UIColor($0) }
         uiView.commentMap = commentMap
         uiView.bubbleFillColor = UIColor(pageBackgroundColor)
         uiView.reviewAccentColor = reviewAccentColor.map { UIColor($0) }
@@ -8151,6 +9823,13 @@ public class CoreTextUIView: UIView {
     public var annotationRanges: [(start: Int, count: Int, style: ReaderBlockStyle)] = []
     /// 长按命中某一行时回调（页内行号）
     public var onLongPressLine: ((Int, Int) -> Void)?
+    /// 正在朗读的段 + 那层底色：翻页模式也要能看出「读到哪」
+    public var readingBlockId: Int?
+    public var readingTintColor: UIColor?
+    /// 只记一次「到底画没画」，验收看日志就够，不用截图
+    private var hasLoggedReadingTint = false
+    /// 探针预算：查「段落 id 到底怎么编的」，定位完归零
+    private var probeBudget = 6
     /// 上一次绘制时记下的行矩形，命中测试用
     private var lineRects: [CGRect] = []
     /// 上一次绘制时记下的逐字边界
@@ -8316,7 +9995,17 @@ public class CoreTextUIView: UIView {
     @discardableResult
     public static func triggerLongPress(atWindowPoint point: CGPoint) -> Bool {
         guard let index = activePageIndex(atWindowPoint: point),
-              let view = activePages[index].view else { return false }
+              let view = activePages[index].view else {
+            // 没命中就先把登记表摊开：几页、在哪、可不可见。不然只能猜
+            let snapshot = activePages.map { box -> String in
+                guard let v = box.view else { return "nil" }
+                let f = v.convert(v.bounds, to: nil)
+                return "\(Int(f.minX)),\(Int(f.minY)) \(Int(f.width))x\(Int(f.height))"
+                    + "/win=\(v.window != nil ? 1 : 0)/hidden=\(v.isHidden ? 1 : 0)/alpha=\(String(format: "%.2f", v.alpha))"
+            }
+            AppLog.write("[长按] 登记表 \(activePages.count) 页 · \(snapshot.joined(separator: " | "))")
+            return false
+        }
         let local = view.convert(point, from: nil)
         guard let line = view.lineIndex(at: local) else {
             AppLog.write("[长按] 分页模式落在页内但没命中行 · 行数 \(view.lines.count)/\(view.lineRects.count)")
@@ -8348,6 +10037,33 @@ public class CoreTextUIView: UIView {
             }
         }
         return false
+    }
+
+    /// 听书时点正文：窗口坐标 → 落在哪一段。问不到就返回 nil，调用方什么都不做。
+    /// 注意返回的是段落 id（lineParagraphIds），不是行级伪 block（lineBlockIds，10000 起）——
+    /// 听书队列按章节里真正的 ContentBlock.id 建，拿行 id 去查会查空，点段起读就静默不动。
+    public static func readingBlockId(atWindowPoint point: CGPoint) -> Int? {
+        guard let index = activePageIndex(atWindowPoint: point),
+              let view = activePages[index].view else { return nil }
+        let local = view.convert(point, from: nil)
+        guard let line = view.lineIndex(at: local) else { return nil }
+        if line < view.lineParagraphIds.count { return view.lineParagraphIds[line] }
+        return line < view.lineBlockIds.count ? view.lineBlockIds[line] : nil
+    }
+
+    /// 验收用：把在屏上的页逐行打出来（行号 / pid / 行 block / 前六个字）
+    public static func debugDumpVisiblePages() -> String {
+        let views = activePages.compactMap(\.view).filter { $0.window != nil && !$0.isHidden && $0.alpha > 0.01 }
+        guard !views.isEmpty else { return "无在屏页" }
+        return views.map { view in
+            let head = "帧\(Int(view.frame.minX)),\(Int(view.frame.minY)) \(Int(view.bounds.width))x\(Int(view.bounds.height))"
+            let rows = (0..<min(8, view.lines.count)).map { i -> String in
+                let pid = i < view.lineParagraphIds.count ? view.lineParagraphIds[i] : -9
+                let bid = i < view.lineBlockIds.count ? view.lineBlockIds[i] : -9
+                return "行\(i)[pid\(pid) bid\(bid) \(view.lines[i].prefix(6))]"
+            }
+            return head + " " + rows.joined(separator: " ")
+        }.joined(separator: " || ")
     }
 
     /// 触点落在哪一页：可见、且局部坐标在页内；多页重叠时取面积最小的
@@ -8388,6 +10104,7 @@ public class CoreTextUIView: UIView {
         parts.append(annotationRanges.map {
             "\($0.start)+\($0.count):\($0.style.underline ? "u\($0.style.underlineHex ?? "")" : "")\($0.style.highlightHex ?? "")"
         }.joined(separator: ","))
+        parts.append("read:\(readingBlockId.map(String.init) ?? "-"):\(readingTintColor?.description ?? "-")")
         return parts.joined(separator: "\u{1}")
     }
 
@@ -8647,6 +10364,31 @@ public class CoreTextUIView: UIView {
             layouts[index] = layout
 
             let style = annotationRanges.first { blockId >= $0.start && blockId < $0.start + max(1, $0.count) }?.style
+            // 朗读中的段落：先铺一层淡强调色，用户的标注再压在上面。
+            // 分页模式的行是重新编号过的段落（10000 起），原文段 id 在 paragraphId 里，两个都要比。
+            if let readingBlockId, probeBudget > 0 {
+                probeBudget -= 1
+                AppLog.write("[听书] 探针 · 朗读 \(readingBlockId) · block \(blockId) · pid \(paragraphId) · 行 \(index) · 底色 \(readingTintColor == nil ? "nil" : "有")")
+            }
+            if let readingBlockId, blockId == readingBlockId || paragraphId == readingBlockId,
+               let tint = readingTintColor {
+                ctx.saveGState()
+                ctx.setFillColor(tint.cgColor)
+                // 只涂本行真正有字的那一段：行首缩进、行尾对齐留白都露纸色
+                let span = glyphSpanX(layout: layout, text: index < lines.count ? lines[index] : "")
+                if let (x1, x2) = span {
+                    ctx.fill(CGRect(x: x1, y: lineRect.minY, width: x2 - x1, height: lineRect.height))
+                }
+                ctx.restoreGState()
+                if !hasLoggedReadingTint || probeBudget > 0 {
+                    hasLoggedReadingTint = true
+                    let spanText = span.map { "\(Int($0.0))..\(Int($0.1)) 宽\(Int($0.1 - $0.0))" } ?? "无字"
+                    var tr: CGFloat = 0, tg: CGFloat = 0, tb: CGFloat = 0, ta: CGFloat = 0
+                    _ = tint.getRed(&tr, green: &tg, blue: &tb, alpha: &ta)
+                    let rgba = "\(Int(tr * 255)),\(Int(tg * 255)),\(Int(tb * 255)) a\(String(format: "%.2f", ta))"
+                    AppLog.write("[听书] 绘到朗读底色 · 原文段 \(readingBlockId) · 行 \(index) y\(Int(lineRect.minY))..\(Int(lineRect.maxY)) x\(spanText) 行框\(Int(lineRect.minX))..\(Int(lineRect.maxX)) 色\(rgba) 视图\(Int(bounds.width))x\(Int(bounds.height)) 上窗\(window != nil ? 1 : 0)")
+                }
+            }
             if blockId >= 0, let style {
                 if let hex = style.highlightHex, let color = UIColor(readerHex: hex) {
                     ctx.saveGState()
@@ -8829,6 +10571,24 @@ public class CoreTextUIView: UIView {
         ctx.setFillColor(color.cgColor)
         ctx.fill(CGRect(x: x1, y: layout.rect.minY, width: x2 - x1, height: layout.rect.height))
         ctx.restoreGState()
+    }
+
+    /// 本行有字的那段 x 区间：跳过缩进和行尾留白，只算字形本身
+    private func glyphSpanX(layout: LineLayout, text: String) -> (CGFloat, CGFloat)? {
+        let units = Array(text.utf16)
+        guard !units.isEmpty else { return nil }
+        // 半角空格、制表、全角空格、不换行空格、零宽连接符都算空白，不给它们铺底色
+        func isBlank(_ unit: UInt16) -> Bool {
+            unit == 0x20 || unit == 0x09 || unit == 0x3000 || unit == 0x00A0 || unit == 0x200B
+        }
+        guard let first = units.firstIndex(where: { !isBlank($0) }) else { return nil }
+        var last = units.count - 1
+        while last > first, isBlank(units[last]) { last -= 1 }
+        guard first < layout.boundaries.count, last + 1 < layout.boundaries.count else { return nil }
+        let x1 = layout.boundaries[first]
+        let x2 = layout.boundaries[last + 1]
+        guard x2 > x1 else { return nil }
+        return (x1, x2)
     }
 
     private func underlineCharRange(_ ctx: CGContext, layout: LineLayout, start: Int, end: Int, hex: String?) {
@@ -9276,7 +11036,7 @@ struct ReaderAssetsSheet: View {
         Form {
                 if #available(iOS 16.0, *) {
                     Section(header: Text("下拉背景图"),
-                            footer: Text("下拉加书签时，正文页下面露出来的就是这张图。缩放滑块前 70% 覆盖 0.05–1，后 30% 覆盖 1–12，便于细调。")) {
+                            footer: Text("下拉加书签时，正文页底下露出来的就是这张图。缩放滑块前 70% 管 0.05–1，后 30% 管 1–12，细调方便。")) {
                         assetPicker(
                             key: ReaderAssetStorage.pullBackgroundKey,
                             picked: $pickedBackground,

@@ -55,7 +55,19 @@ public final class HttpTTSEngine {
     /// 取一段文字的音频。校验逻辑对齐安卓端 HttpReadAloudService。
     public func fetchAudio(source: HttpTTS, text: String, speed: Int? = nil) async throws -> TTSAudio {
         let parsed = try makeRequest(source: source, text: text, speed: speed)
-        let response = try await client.request(parsed: parsed)
+        // 计时放在请求两侧：出问题时先看这条，host 对不对、状态码是不是 4xx、耗时是不是卡在超时上
+        let started = Date()
+        let response: NetworkResponse
+        do {
+            response = try await client.request(parsed: parsed)
+        } catch {
+            let ms = Int(Date().timeIntervalSince(started) * 1000)
+            LegadoLog.log("[TTS请求] 失败 \(parsed.url.host ?? "-") \(ms)ms · \(error.localizedDescription) · 文本 \(text.count) 字")
+            throw error
+        }
+        let elapsedMs = Int(Date().timeIntervalSince(started) * 1000)
+        let headerType = response.headers["Content-Type"] ?? response.headers["content-type"] ?? "-"
+        LegadoLog.log("[TTS请求] \(parsed.url.host ?? "-") \(elapsedMs)ms code=\(response.statusCode) ct=\(headerType) \(response.data.count)B · 文本 \(text.count) 字")
 
         let contentType = HttpTTSEngine.baseContentType(response.headers["Content-Type"])
             ?? HttpTTSEngine.baseContentType(response.headers["content-type"])

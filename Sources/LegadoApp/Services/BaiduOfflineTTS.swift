@@ -40,6 +40,9 @@ final class BaiduOfflineTTS: NSObject, ObservableObject {
                           textPath: text, speechPath: bundlePath("duxiaomei") ?? ""))
         list.append(Voice(id: "duxiaoyu", name: "度小宇", note: "SDK 自带 · 男声",
                           textPath: text, speechPath: bundlePath("duxiaoyu") ?? ""))
+        // 包里多放的声学模型也算音色：往 Resources/BaiduTTS 里丢 .dat 就行
+        let known = Set(["duxiaomei", "duxiaoyu"])
+        list.append(contentsOf: scannedVoices(text: text).filter { !known.contains($0.id) })
         return list.filter { !$0.speechPath.isEmpty }
     }()
 
@@ -81,6 +84,8 @@ final class BaiduOfflineTTS: NSObject, ObservableObject {
     @Published private(set) var loadedVoiceId: String?
     @Published private(set) var isPreparing = false
     @Published private(set) var statusText = "未加载"
+    /// 授权自检的逐行结果。LiveContainer 这类容器里没法接 console，只能让用户在 App 里看。
+    @Published private(set) var authReport: String = ""
 
     var onFinish: (() -> Void)?
 
@@ -95,11 +100,176 @@ final class BaiduOfflineTTS: NSObject, ObservableObject {
     private override init() {
         super.init()
         BaiduOfflineTTS.refreshUserVoices()
+        // 自检由 BaiduOfflineTTS.probeIfNeeded() 在启动时触发
     }
 
     // MARK: - 资源
 
     /// bundle 内 Resources/BaiduTTS 下的资源，名字不带扩展名
+
+    // MARK: - 授权自检（跑通授权用）
+
+    /// 启动时调一次。跑过就跳过；JUYUE_BAIDU_AUTH_PROBE 可强制（=1）或禁用（=0）。
+    static func probeIfNeeded() {
+        // 引擎取包名会缓存，先装垫片再让任何 SDK 调用发生
+        BaiduBundleShim.install()
+        let env = ProcessInfo.processInfo.environment["JUYUE_BAIDU_AUTH_PROBE"]
+        guard env != "0" else { NSLog("[BaiduAuth] skipped by env"); return }
+        // 以前用布尔标记，跑过一次以后换包也不跑了，日志里就永远静悄悄。
+        // 改成按版本号记：每换一版自动跑一次，同版本里不重复。
+        let stamp = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "?"
+        let doneFor = UserDefaults.standard.string(forKey: "baidu_auth_probe_version")
+        guard env == "1" || doneFor != stamp else { return }
+        UserDefaults.standard.set(stamp, forKey: "baidu_auth_probe_version")
+        // 从旧备份恢复过来的 APP ID 会盖住包内那套（见过 124571480），授权永远对不上。
+        // 这里只在值和包内不一致时清一次，用户自己填的其它值也会被清，但这台机器上没有第二套。
+        let storedAppId = UserDefaults.standard.string(forKey: "baidu_app_id") ?? ""
+        if !storedAppId.isEmpty, storedAppId != BaiduCredentials.LocalDefaults.appId {
+            BaiduCredentials.resetToBuiltin()
+            AppLog.write("[BaiduAuth] 清掉旧 APP ID \(storedAppId)，改用 \(BaiduCredentials.LocalDefaults.appId)")
+        }
+        shared.authorizationProbe()
+    }
+
+    /// 只跑一次 loadOfflineEngine，不放音。每条序列号的结果都用 NSLog 打出来。
+    /// 触发方式：`xcrun devicectl device process launch --console --environment JUYUE_BAIDU_AUTH_PROBE=1 <bundleid>`
+    /// 或者设置里填过凭据后自动在后台跑一次（App 冷启动时）。
+    func authorizationProbe() {
+        let appId = BaiduOfflineTTS.appId
+        let serials = BaiduOfflineTTS.serialNumbers
+        let voices = BaiduOfflineTTS.builtinVoices
+        let bundle = Bundle.main.bundleIdentifier ?? "?"
+        DispatchQueue.main.async { self.authReport = "" }
+        probeLog(String(format: "[BaiduAuth] start appId=%@ bundle=%@ serials=%d voices=%d",
+                        appId, bundle, serials.count, voices.count))
+        probeLog("[BaiduAuth] 引擎将看到的包名 = "
+                 + (BaiduBundleShim.withOverride { Bundle.main.bundleIdentifier ?? "?" }))
+        guard appId.isEmpty == false else { probeLog("[BaiduAuth] 没有 APP ID，停止"); return }
+        guard let voice = voices.first else { probeLog("[BaiduAuth] 包里没有内置音色，停止"); return }
+
+        let model: [String: String] = [
+            BDSSpeechSynthesizerParams.ttsTextModelFile: voice.textPath,
+            BDSSpeechSynthesizerParams.ttsSpeechModelFile: voice.speechPath,
+        ]
+        guard let data = try? JSONSerialization.data(withJSONObject: model),
+              let modelJSON = String(data: data, encoding: .utf8) else {
+            probeLog("[BaiduAuth] 模型 JSON 组不出来，停止")
+            return
+        }
+
+        DispatchQueue.global(qos: .userInitiated).async {
+            // 引擎自己那套网络栈不吐东西就只能猜。verbose 打开，把 URL 和错误码直接抓下来。
+            var logCount = 0
+            if let level = BDSSpeechLogLevel(rawValue: 1) {
+                BDSSpeechLogger.sharedInstance().setLogLevel(level, path: nil) { [weak self] message in
+                    guard let self else { return }
+                    logCount += 1
+                    guard logCount <= 150 else { return }
+                    self.probeLog("[BdsLog] \(message)")
+                }
+            }
+            self.probeNetworkSync()
+            guard serials.isEmpty == false else {
+                self.probeLog("[BaiduAuth] 没有序列号，停止")
+                return
+            }
+            for (index, serial) in serials.enumerated() {
+                let synth = BDSSpeechSynthesizer(delegate: self)
+                _ = synth.setParam(BDSSpeechSynthesizerParams.paramAppId, value: appId)
+                _ = synth.setParam(BDSSpeechSynthesizerParams.paramAuthSerialNumber, value: serial)
+                _ = synth.setParam(BDSSpeechSynthesizerParams.paramOfflineModel, value: modelJSON)
+                let result = BaiduBundleShim.withOverride { synth.loadOfflineEngine() }
+                self.probeLog(String(format: "[BaiduAuth] serial#%d len=%d -> code=%d desc=%@",
+                                     index, serial.count, Int(result.code), result.desc))
+                synth.releaseEngine()
+                if result.code == 0 {
+                    self.probeLog(String(format: "[BaiduAuth] 授权通过，序列号 %@ 可用", serial))
+                    break
+                }
+            }
+            self.probeLog("[BaiduAuth] done")
+        }
+    }
+
+    /// 探针的输出去三个地方：NSLog（接 console 时）、AppLog（用户能翻日志）、authReport（设置页直接显示）。
+    private func probeLog(_ line: String) {
+        NSLog("%@", line)
+        AppLog.write(line)
+        DispatchQueue.main.async {
+            self.authReport += (self.authReport.isEmpty ? "" : "\n") + line
+        }
+    }
+
+    /// 网络自检：先 DNS，再 HTTPS。
+    ///
+    /// 容器里最常见的死法是引擎自己那套 DoH（httpsdns.baidu.com/v4/resolve）挂了，
+    /// 报 `download error -1003`（cannotFindHost），跟包名、序列号都无关。
+    /// 先用系统解析加一条真请求把这一层摘干净，免得后面白折腾。
+    private func probeNetworkSync() {
+        var hints = addrinfo()
+        hints.ai_family = AF_UNSPEC
+        hints.ai_socktype = SOCK_STREAM
+        var res: UnsafeMutablePointer<addrinfo>?
+        let rc = getaddrinfo("tts.baidu.com", "443", &hints, &res)
+        var ips: [String] = []
+        if rc == 0, let head = res {
+            var node: UnsafeMutablePointer<addrinfo>? = head
+            while let cur = node {
+                var buf = [CChar](repeating: 0, count: Int(NI_MAXHOST))
+                if getnameinfo(cur.pointee.ai_addr, cur.pointee.ai_addrlen,
+                               &buf, socklen_t(buf.count), nil, 0, NI_NUMERICHOST) == 0 {
+                    ips.append(String(cString: buf))
+                }
+                node = cur.pointee.ai_next
+            }
+            freeaddrinfo(head)
+        }
+        probeLog("[BaiduNet] getaddrinfo tts.baidu.com rc=\(rc) ips=\(ips.prefix(4).joined(separator: ","))")
+
+        guard let url = URL(string: "https://tts.baidu.com/offline/auth") else { return }
+        var request = URLRequest(url: url)
+        request.timeoutInterval = 8
+        let done = DispatchSemaphore(value: 0)
+        URLSession.shared.dataTask(with: request) { data, response, error in
+            let code = (response as? HTTPURLResponse)?.statusCode ?? -1
+            let headText = data.flatMap { String(data: $0.prefix(100), encoding: .utf8) } ?? ""
+            self.probeLog("[BaiduNet] GET /offline/auth http=\(code) err=\(error?.localizedDescription ?? "none") head=\(headText)")
+            done.signal()
+        }.resume()
+        _ = done.wait(timeout: .now() + 10)
+    }
+
+    /// 音色 ID → 显示名。没登记的按 ID 原样显示。
+    static func displayName(for id: String) -> String {
+        let table = [
+            "duxiaomei": "度小美", "duxiaoyu": "度小宇",
+            "duxiaolu": "度小鹿", "duxiaowen": "度小雯",
+            "duxiaoqiao": "度小乔", "duxiaojiao": "度小娇",
+            "dumiduo": "度米朵", "duxiaotai": "度小台",
+            "duxiaoyao": "度小遥", "duxiaomeng": "度小萌",
+            "duyaya": "度丫丫", "duxiaoxian": "度小贤",
+        ]
+        return table[id] ?? id
+    }
+
+    /// 扫包内 BaiduTTS 目录，除文本模型外的 .dat 都当声学模型
+    static private func scannedVoices(text: String) -> [Voice] {
+        let candidates = ([Bundle.main] + Bundle.allBundles)
+            .compactMap { $0.resourceURL?.appendingPathComponent("BaiduTTS").path }
+        guard let dir = candidates.first(where: { FileManager.default.fileExists(atPath: $0) }) else {
+            return []
+        }
+        let files = (try? FileManager.default.contentsOfDirectory(atPath: dir)) ?? []
+        return files
+            .filter { $0.hasSuffix(".dat") && !$0.hasPrefix("text_") }
+            .sorted()
+            .map { file in
+                let id = String(file.dropLast(4))
+                return Voice(id: id, name: BaiduOfflineTTS.displayName(for: id),
+                             note: "精品音色", textPath: text, speechPath: dir + "/" + file)
+            }
+    }
+
     static func bundlePath(_ name: String) -> String? {
         let bundles = [Bundle.main] + Bundle.allBundles
         for bundle in bundles {
@@ -315,7 +485,7 @@ final class BaiduOfflineTTS: NSObject, ObservableObject {
                     _ = synth.setParam(BDSSpeechSynthesizerParams.paramAppId, value: BaiduOfflineTTS.appId)
                     _ = synth.setParam(BDSSpeechSynthesizerParams.paramAuthSerialNumber, value: serial)
                     _ = synth.setParam(BDSSpeechSynthesizerParams.paramOfflineModel, value: modelJSON)
-                    let result = synth.loadOfflineEngine()
+                    let result = BaiduBundleShim.withOverride { synth.loadOfflineEngine() }
                     if result.code == 0 {
                         self.synthesizer = synth
                         loaded = true
@@ -368,6 +538,7 @@ final class BaiduOfflineTTS: NSObject, ObservableObject {
     }
 
     func resetEngine() {
+        clearError()
         workQueue.async { [weak self] in
             guard let self else { return }
             self.synthesizer?.releaseEngine()
@@ -377,6 +548,11 @@ final class BaiduOfflineTTS: NSObject, ObservableObject {
                 self.statusText = "未加载"
             }
         }
+    }
+
+    /// 门面每次起播前清一次错误位。lastError 是 private(set)，外面改不了。
+    func clearError() {
+        if lastError != nil { lastError = nil }
     }
 
     // MARK: - 播放
@@ -455,7 +631,7 @@ final class BaiduOfflineTTS: NSObject, ObservableObject {
         let utteranceId = UUID().uuidString
         pendingUtteranceId = utteranceId
         let entity = BDSSpeechEntity(text: chunks[index], mode: .offline, utteranceId: utteranceId, params: nil)
-        let result = synthesizer.speak(entity)
+        let result = BaiduBundleShim.withOverride { synthesizer.speak(entity) }
         if result.code != 0 {
             DispatchQueue.main.async {
                 self.lastError = "合成失败 \(result.code)：\(result.desc)"
@@ -542,11 +718,16 @@ public final class BaiduOfflineTTS: ObservableObject {
     @Published public private(set) var loadedVoiceId: String?
     @Published public private(set) var isPreparing = false
     @Published public private(set) var statusText = "未编译百度离线引擎"
+    @Published public private(set) var authReport: String = ""
 
     public var onFinish: (() -> Void)?
 
     public static var allVoices: [Voice] { [] }
     public static var userVoices: [Voice] { [] }
+    // 真机那边这两项读 BaiduCredentials；桩实现也得有同形状的成员，
+    // 否则设置页里「授权用：APP ID …」那段在模拟器/CI 编不过。
+    public static var appId: String { "" }
+    public static var serialNumbers: [String] { [] }
     public static var activeVoiceId: String? {
         get { nil }
         set { }
@@ -557,6 +738,11 @@ public final class BaiduOfflineTTS: ObservableObject {
     public static func refreshUserVoices() -> [Voice] { [] }
     @discardableResult public static func importPackage(from zipURL: URL) throws -> Int { 0 }
     public func preload(voice: Voice) {}
+    public func authorizationProbe() {
+        authReport = "这个构建没带百度离线引擎。"
+    }
+    public func resetEngine() {}
+    public func clearError() {}
     public func diagnose(voice: Voice) -> [String] { ["这个构建没带百度离线引擎，无法诊断。"] }
     public static func enableVoice(_ id: String) { }
     public static func setActiveVoiceId(_ id: String?) { }

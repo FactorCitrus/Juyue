@@ -475,7 +475,7 @@ public struct CategoryExploreView: View {
                     .padding(.horizontal)
                 // 401/403 一般是这个分类要登录，附带一个不用登录也能看的分类
                 if isAuthError(error), let publicCategory {
-                    Text("这个分类要登录这个书源才能看。登录完再回来这句就不见了。")
+                    Text("该分类需要登录此来源后可见。")
                         .font(.caption)
                         .foregroundColor(.secondary)
                         .multilineTextAlignment(.center)
@@ -680,7 +680,7 @@ public struct CategoryExploreView: View {
             Text("暂无可用分类书源")
                 .font(.headline)
                 .foregroundColor(.secondary)
-            Text("请在「设置 - 书源管理」中导入并启用支持预设分类的书源")
+            Text("请在「设置 - 书源管理」中导入并启用支持预设分类的书籍来源。")
                 .font(.caption)
                 .foregroundColor(.secondary)
                 .multilineTextAlignment(.center)
