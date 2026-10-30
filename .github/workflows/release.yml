@@ -10,6 +10,8 @@ on:
       - 'Sources/**'
       - 'Juyue.xcodeproj/**'
       - 'Package.swift'
+      # 改发布流程本身也得跑一遍，不然 workflow 的修补要等下次改源码才验证得到
+      - '.github/workflows/release.yml'
   workflow_dispatch:
 
 concurrency:
