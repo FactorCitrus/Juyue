@@ -21,7 +21,9 @@ concurrency:
 jobs:
   build-and-release:
     name: Build & Release IPA
-    runs-on: macos-14
+    # 必须能装 Xcode 26：iOS 26 的玻璃底栏、玻璃工具栏是 SDK 26 才编出来的，
+    # 用 15.4 编出来的包在 iOS 26 设备上整回旧外观，底栏变成一条满宽不透明条。
+    runs-on: macos-15
     timeout-minutes: 30
     if: github.ref == 'refs/heads/main'
     permissions:
@@ -33,10 +35,16 @@ jobs:
 
       - name: Select Xcode
         run: |
-          sudo xcode-select -s /Applications/Xcode_15.4.app
+          # 固定 26.3（17C529）：跟开发机同一个版本，归档行为可复现。
+          # 镜像里找不到就列出来再退，别悄悄换回旧 SDK。
+          sudo xcode-select -s /Applications/Xcode_26.3.app || {
+            echo "可用的 Xcode："
+            ls /Applications | grep -i '^Xcode'
+            exit 1
+          }
           xcodebuild -version
-          xcodebuild -version | grep -q 'Xcode 15.4' || {
-            echo "Xcode 15.4 不可用，停止发布"
+          xcodebuild -version | grep -q 'Xcode 26\.' || {
+            echo "选中的不是 Xcode 26，旧 SDK 编出来的包底栏不悬浮，停止发布"
             exit 1
           }
 
