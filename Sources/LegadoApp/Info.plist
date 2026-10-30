@@ -9,6 +9,8 @@
 	</dict>
 	<key>NSHumanReadableCopyright</key>
 	<string>© 2026 FactorCitrus. 橘阅名称与图标保留所有权利。</string>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>用于连接你本机或局域网内的离线语音服务、OPDS / Calibre 书库。</string>
 	<key>CFBundleIcons</key>
 	<dict>
 		<key>CFBundleAlternateIcons</key>

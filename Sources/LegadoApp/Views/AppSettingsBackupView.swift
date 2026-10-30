@@ -89,7 +89,7 @@ struct AppSettingsBackupView: View {
             .appThemedRows()
 
             Section {
-                Text("不含书架正文、阅读进度、百度语音密钥和 WebDAV 密码。")
+                Text("书架正文、阅读进度、语音源地址、WebDAV 密码，这些都不带走。")
                     .font(.caption2)
                     .foregroundColor(theme.palette.secondaryInk)
             }

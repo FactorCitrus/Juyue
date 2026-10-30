@@ -23,6 +23,16 @@
 | Moveable 0.53.0 | MIT | https://github.com/daybrush/moveable | `Sources/LegadoApp/Resources/ChapterTitleDesigner/moveable.min.js`（文件头已保留版权与许可声明） |
 | ZIPFoundation | MIT | https://github.com/weichsel/ZIPFoundation.git | SwiftPM 依赖 |
 | SwiftSoup | MIT | https://github.com/scinfu/SwiftSoup.git | SwiftPM 依赖 |
+| sherpa-onnx v1.13.4 | Apache-2.0 | https://github.com/k2-fsa/sherpa-onnx | `Vendor/sherpa-onnx/sherpa-onnx.xcframework`（静态库，含 iOS 设备与模拟器切片） |
+| ONNX Runtime 1.27.0 | MIT | https://github.com/microsoft/onnxruntime | `Vendor/sherpa-onnx/onnxruntime.xcframework` |
+| VITS/piper 中文声 `zh_CN-huayan-medium` | **Unknown（待确认）** | https://github.com/PlayVoice/HuaYan_TTS | `Sources/LegadoApp/Resources/TTSModel/huayan/`（61MB onnx + 18MB espeak-ng-data） |
+
+### 3.1 离线语音包的授权待办
+
+- `zh_CN-huayan-medium` 的 MODEL_CARD 只写 `License: Unknown`，sherpa-onnx 发的是同一份权重。
+  自用、侧载无碍；**上架前必须换成许可证明确的权重，或拿到作者书面许可**。
+  候选：`vits-zh-aishell3`（AISHELL-3 数据集 Apache-2.0，权重页同样未标）、Kokoro-82M（Apache-2.0，中文音色较弱）。
+- espeak-ng-data 来自 espeak-ng（GPL-3.0），随 piper 权重一起分发；本仓库整体已按 GPL-3.0 发布，不冲突。
 
 ## 4. 设计参考（非代码复制，待确认）
 

@@ -996,7 +996,7 @@ public struct SourceLoginSheet: View {
 
                 Section(header: Text("账号登录表单")) {
                     if fields.isEmpty {
-                        Text("这个源不用填账号，点下面的按钮登录。")
+                        Text("该来源需要账号，使用下方按钮登录。")
                             .font(.caption)
                             .foregroundColor(theme.palette.secondaryInk)
                     } else {

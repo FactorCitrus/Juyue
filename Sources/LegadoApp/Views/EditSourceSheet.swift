@@ -175,7 +175,7 @@ public struct EditSourceSheet: View {
                 Section {
                     NavigationLink("配置测试") { SourceTestView(source: draft) }
                 } footer: {
-                    Text("用当前编辑中的规则跑一遍搜索 / 详情 / 目录 / 正文，不用先保存。")
+                    Text("试跑当前编辑中的规则：搜索、详情、目录、正文四个环节，结果只在本页显示。")
                         .font(.caption2)
                 }
                 .appThemedRows()
@@ -224,7 +224,7 @@ public struct EditSourceSheet: View {
                     .disableAutocorrection(true)
                     #endif
             } footer: {
-                Text("导入 JSON 后，会覆盖上面的表单。").font(.caption2)
+                Text("导入 JSON 会覆盖上方表单已填的内容。").font(.caption2)
             }
             .appThemedRows()
 
@@ -413,7 +413,7 @@ struct LoginEditor: View {
                 RuleFieldRow(label: "登录检测 JS", key: "loginCheckJs", hint: "判断是否登录成功", multiline: true,
                              value: optionalText($source.loginCheckJs))
             } footer: {
-                Text("保存后，书源登录面板里的脚本按钮就是跑这里的 loginUi。")
+                Text("保存后，书源登录面板的脚本按钮执行这段 loginUi。")
                     .font(.caption2)
             }
             .appThemedRows()

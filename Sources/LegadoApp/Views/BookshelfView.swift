@@ -1324,6 +1324,53 @@ public struct BookshelfView: View {
         #endif
     }
 
+    /// 验收用：`JUYUE_OPEN_BOOK=<序号 或 书名片段>` 启动后直接翻开一本书，
+    /// 省掉「书架里手点封面」这一步。只活在 Debug / 模拟器里。
+    /// 验收用：`JUYUE_IMPORT_TXT=<容器里的绝对路径>` 启动时先导一本本地书，
+    /// 省得每次手点「+」。只在 DEBUG / 模拟器里生效。
+    private func importDebugBookIfRequested() {
+        #if DEBUG || targetEnvironment(simulator)
+        guard let path = ProcessInfo.processInfo.environment["JUYUE_IMPORT_TXT"], !path.isEmpty else { return }
+        guard FileManager.default.fileExists(atPath: path) else {
+            AppLog.write("[调试] 导入文件不存在：\(path)")
+            return
+        }
+        do {
+            let book = try bookStore.importFile(from: URL(fileURLWithPath: path))
+            AppLog.write("[调试] 本地导入成功《\(book.name)》\(book.totalChapterNum) 章")
+        } catch {
+            AppLog.write("[调试] 本地导入失败 \(error.localizedDescription)")
+        }
+        #endif
+    }
+
+    private func openDebugBookIfRequested() {
+        #if DEBUG || targetEnvironment(simulator)
+        guard selectedBook == nil else { return }
+        guard let needle = ProcessInfo.processInfo.environment["JUYUE_OPEN_BOOK"],
+              !needle.isEmpty else { return }
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 1_200_000_000)
+            let pool = bookStore.bookshelf
+            guard !pool.isEmpty else {
+                AppLog.write("[调试] 书架为空，JUYUE_OPEN_BOOK 没处落")
+                return
+            }
+            if let index = Int(needle), pool.indices.contains(index) {
+                AppLog.write("[调试] 直接翻开第 \(index) 本 \(pool[index].name)")
+                selectedBook = pool[index]
+                return
+            }
+            if let hit = pool.first(where: { $0.name.contains(needle) || $0.bookUrl.contains(needle) }) {
+                AppLog.write("[调试] 直接翻开《\(hit.name)》")
+                selectedBook = hit
+            } else {
+                AppLog.write("[调试] JUYUE_OPEN_BOOK 没匹配到：\(needle)")
+            }
+        }
+        #endif
+    }
+
     public var body: some View {
         ZStack {
             NavigationView {
@@ -1380,6 +1427,10 @@ public struct BookshelfView: View {
                     dragCover = nil
                     dragSnapshot = nil
                 }
+            }
+            .onAppear {
+                importDebugBookIfRequested()
+                openDebugBookIfRequested()
             }
             .alert("删除选中的书籍", isPresented: $showDeleteSelectedAlert) {
                 Button("取消", role: .cancel) {}

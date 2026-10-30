@@ -59,6 +59,24 @@ public struct HttpTTS: Equatable, Codable {
     }
 }
 
+public extension HttpTTS {
+    /// 出厂内置的在线源：GET 直接回 mp3，免 Key，中文女声。
+    /// 不用写进 httpTTS.json —— 用户删得掉存档里的源，删不掉这一条。
+    /// 负 id 保证不会和时间戳生成的 id 撞车。
+    static let builtinOnlineId: Int64 = -1001
+
+    static var builtinOnline: HttpTTS {
+        HttpTTS(
+            id: builtinOnlineId,
+            name: "内置·在线（中文）",
+            url: "https://tts-api.vercel.app/api/tts?text={{java.encodeURI(speakText)}}&voice=zh-CN-XiaoxiaoNeural",
+            contentType: nil
+        )
+    }
+
+    var isBuiltinOnline: Bool { id == HttpTTS.builtinOnlineId }
+}
+
 public enum HttpTTSImportError: Error, LocalizedError {
     case emptyInput
     case notJSON

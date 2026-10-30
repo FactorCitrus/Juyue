@@ -110,6 +110,15 @@ public struct WebDAVConfig: Codable, Equatable {
         return URL(string: raw)
     }
 
+    /// 真配好了才算配好：地址、账号、密码三样齐了才可能同步成功。
+    /// 之前只看地址——默认服务器地址本身非空，于是没填账号也显示「已配置」。
+    public var isConfigured: Bool {
+        let address = url.trimmingCharacters(in: .whitespacesAndNewlines)
+        let account = username.trimmingCharacters(in: .whitespacesAndNewlines)
+        let secret = password.trimmingCharacters(in: .whitespacesAndNewlines)
+        return !address.isEmpty && !account.isEmpty && !secret.isEmpty
+    }
+
     /// 服务器根，不含 remotePath。
     public var serverRootURL: URL? {
         guard let raw = baseComponents?.rest else { return nil }

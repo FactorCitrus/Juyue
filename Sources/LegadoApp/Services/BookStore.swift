@@ -124,9 +124,22 @@ public class BookStore: ObservableObject {
         kind: BookBookmark.Kind,
         color: String? = nil,
         snippet: String = "",
-        charScoped: Bool = false
+        charScoped: Bool = false,
+        forceRemove: Bool = false
     ) -> Bool {
         if charScoped {
+            // 明确「清除」：不比较颜色，命中同段同区间的那条就删
+            if forceRemove {
+                let before = bookmarks.count
+                bookmarks.removeAll {
+                    $0.bookUrl == bookUrl && $0.chapterIndex == chapterIndex
+                        && $0.blockId == blockId && $0.kind == kind
+                        && $0.charOffset == charOffset && $0.length == length
+                        && $0.rangeUnitRaw == "char"
+                }
+                if bookmarks.count != before { saveBookmarks() }
+                return false
+            }
             // 逐字标注：同一段可以有多个区间。同区间点同色 = 取消，点别的色 = 换色
             let sameRange = bookmarks.firstIndex {
                 $0.bookUrl == bookUrl && $0.chapterIndex == chapterIndex
@@ -158,6 +171,16 @@ public class BookStore: ObservableObject {
             ))
             saveBookmarks()
             return true
+        }
+        // 整段标注的「清除」：这一段这一类标注全部撤掉，不看颜色
+        if forceRemove {
+            let before = bookmarks.count
+            bookmarks.removeAll {
+                $0.bookUrl == bookUrl && $0.chapterIndex == chapterIndex
+                    && $0.blockId == blockId && $0.kind == kind && $0.rangeUnitRaw == nil
+            }
+            if bookmarks.count != before { saveBookmarks() }
+            return false
         }
         let existing = bookmarks.firstIndex {
             $0.bookUrl == bookUrl && $0.chapterIndex == chapterIndex
@@ -218,6 +241,53 @@ public class BookStore: ObservableObject {
         bookmarks.filter {
             $0.bookUrl == bookUrl && $0.chapterIndex == chapterIndex && $0.kind != .bookmark
         }
+    }
+
+    /// 选中范围里已有的标注：逐字选只认和选区有交集的逐字标注（段级标注也算）,
+    /// 不给 charStart 就是整段口径。
+    public func annotationsOverlapping(
+        bookUrl: String,
+        chapterIndex: Int,
+        blockId: Int,
+        charStart: Int? = nil,
+        charLength: Int? = nil
+    ) -> [BookBookmark] {
+        bookmarks.filter {
+            $0.bookUrl == bookUrl && $0.chapterIndex == chapterIndex
+                && $0.blockId == blockId && $0.kind != .bookmark
+                && overlap($0, charStart: charStart, charLength: charLength)
+        }
+    }
+
+    private func overlap(_ item: BookBookmark, charStart: Int?, charLength: Int?) -> Bool {
+        // 整段口径：这一段上的标注全算
+        guard let charStart, let charLength else { return true }
+        // 段级标注（rangeUnitRaw == nil）覆盖整段，逐字选区也算命中
+        guard item.rangeUnitRaw == "char" else { return true }
+        let start = item.charOffset
+        let end = item.charOffset + max(1, item.length ?? 1)
+        return start < charStart + max(1, charLength) && charStart < end
+    }
+
+    /// 撤标注：不看颜色、不挑种类，选中范围里有就删。
+    /// 之前只认「同区间同色」才取消，改过颜色的标注于是永远撤不掉。
+    @discardableResult
+    public func removeAnnotations(
+        bookUrl: String,
+        chapterIndex: Int,
+        blockId: Int,
+        charStart: Int? = nil,
+        charLength: Int? = nil
+    ) -> Int {
+        let before = bookmarks.count
+        bookmarks.removeAll {
+            $0.bookUrl == bookUrl && $0.chapterIndex == chapterIndex
+                && $0.blockId == blockId && $0.kind != .bookmark
+                && overlap($0, charStart: charStart, charLength: charLength)
+        }
+        let removed = before - bookmarks.count
+        if removed > 0 { saveBookmarks() }
+        return removed
     }
 
     // MARK: - 正文替换（阅读页选中一段做替换，按书生效）
@@ -1341,11 +1411,20 @@ public final class ChapterDownloadManager: ObservableObject {
                 guard index >= 0, index < chapters.count else { continue }
                 let chapter = chapters[index]
                 if BookContentService.shared.hasCachedChapter(bookUrl: book.bookUrl, chapterIndex: chapter.index) {
+                    // 已缓存的章也顺手补评论：上次缓存时开关可能还没开
+                    if ReviewCache.enabled,
+                       let cached = BookContentService.shared.getCachedChapterContent(bookUrl: book.bookUrl, chapterIndex: chapter.index) {
+                        await ReviewCache.prefetchComments(inContent: cached)
+                    }
                     await self.mark(jobId, finished: 1)
                 } else {
                     await self.setCurrentChapter(jobId, chapter.title)
                     do {
-                        _ = try await BookContentService.shared.fetchChapterContent(chapter: chapter, source: source, book: book)
+                        let content = try await BookContentService.shared.fetchChapterContent(chapter: chapter, source: source, book: book)
+                        // 书评一起缓存（可选）：只在抓到正文后补评论首页，别抢正文的带宽
+                        if ReviewCache.enabled, !content.isEmpty {
+                            await ReviewCache.prefetchComments(inContent: content)
+                        }
                         await self.mark(jobId, finished: 1)
                     } catch {
                         await self.mark(jobId, failed: 1)
@@ -1529,5 +1608,120 @@ public extension BookStore {
         #else
         throw NSError(domain: "Legado", code: 5, userInfo: [NSLocalizedDescriptionKey: "这个平台不支持 PDF"])
         #endif
+    }
+}
+
+// MARK: - 书评缓存（段评 / 本章说 / 热评首页）
+
+/// 评论接口的 JSON 落盘：书源没登录、断网时，之前抓过的评论还能翻。
+/// 开关 `reader_cache_reviews`（设置 → 存储），默认关；只在缓存章节时顺手抓首页。
+public enum ReviewCache {
+    public static let enabledKey = "reader_cache_reviews"
+
+    public static var enabled: Bool {
+        UserDefaults.standard.object(forKey: enabledKey) as? Bool ?? false
+    }
+
+    private static var root: URL {
+        let base = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
+        let folder = base.appendingPathComponent("ReviewCache", isDirectory: true)
+        if !FileManager.default.fileExists(atPath: folder.path) {
+            try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        }
+        return folder
+    }
+
+    private static func file(for url: URL) -> URL {
+        root.appendingPathComponent(CryptoUtils.md5(url.absoluteString) + ".json")
+    }
+
+    /// 评论面板抓到内容就存；开关关掉时不写盘，读还是照读（老缓存别丢）
+    public static func store(_ data: Data, for url: URL) {
+        guard enabled, !data.isEmpty else { return }
+        try? data.write(to: file(for: url), options: .atomic)
+    }
+
+    public static func load(for url: URL) -> Data? {
+        guard FileManager.default.fileExists(atPath: file(for: url).path) else { return nil }
+        return try? Data(contentsOf: file(for: url))
+    }
+
+    public static func hasCache(for url: URL) -> Bool {
+        FileManager.default.fileExists(atPath: file(for: url).path)
+    }
+
+    public static func count() -> Int {
+        (try? FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: nil).count) ?? 0
+    }
+
+    public static func clearAll() {
+        try? FileManager.default.removeItem(at: root)
+    }
+
+    /// 评论接口地址：跟阅读页评论面板同一套拼法（/para_review + hot=1 + 首页无 cursor）
+    public static func apiURL(fromRaw raw: String, mode: String = "chapter") -> URL? {
+        guard var components = URLComponents(string: raw) else { return nil }
+        let query = components.queryItems ?? []
+        let para = query.first(where: { $0.name == "para" || $0.name == "paragraph_id" })?.value ?? "0"
+        components.path = "/para_review"
+        components.queryItems = [
+            URLQueryItem(name: "book_id", value: query.first(where: { $0.name == "book_id" })?.value ?? ""),
+            URLQueryItem(name: "item_id", value: query.first(where: { $0.name == "item_id" })?.value ?? ""),
+            URLQueryItem(name: "item_version", value: query.first(where: { $0.name == "item_version" })?.value ?? ""),
+            URLQueryItem(name: "para", value: para),
+            URLQueryItem(name: "source", value: query.first(where: { $0.name == "source" })?.value ?? "番茄"),
+            URLQueryItem(name: "mode", value: mode),
+            URLQueryItem(name: "hot", value: "1")
+        ]
+        return components.url
+    }
+
+    /// 正文里的评论哨兵：段评（C）带地址和条数，本章说（H）只带地址。
+    /// 神评论（G）正文和插图都在哨兵里，不需要再请求。
+    public static func commentTargets(inContent content: String, limit: Int) -> [(raw: String, mode: String)] {
+        var candidates: [(String, String)] = []
+        let ns = content as NSString
+        let range = NSRange(location: 0, length: ns.length)
+        if let rx = try? NSRegularExpression(pattern: "\u{E000}C\u{1F}\\d+\u{1F}([^\u{E001}]*)\u{E001}") {
+            for match in rx.matches(in: content, range: range) {
+                let raw = ns.substring(with: match.range(at: 1))
+                if !raw.isEmpty { candidates.append((raw, "paragraph")) }
+            }
+        }
+        if let rx = try? NSRegularExpression(pattern: "\u{E000}H\u{1F}([^\u{E001}]*)\u{E001}") {
+            for match in rx.matches(in: content, range: range) {
+                let raw = ns.substring(with: match.range(at: 1))
+                if !raw.isEmpty { candidates.append((raw, "chapter")) }
+            }
+        }
+        var seen = Set<String>()
+        var result: [(raw: String, mode: String)] = []
+        for item in candidates where seen.insert(item.0).inserted {
+            result.append((raw: item.0, mode: item.1))
+            if result.count >= limit { break }
+        }
+        return result
+    }
+
+    /// 缓存章节时顺手抓评论首页。一条失败不影响其它，正文缓存才是主目标。
+    public static func prefetchComments(inContent content: String, limit: Int = 3) async {
+        guard enabled, !content.isEmpty else { return }
+        let targets = commentTargets(inContent: content, limit: limit)
+        guard !targets.isEmpty else { return }
+        var saved = 0
+        for target in targets {
+            guard let api = apiURL(fromRaw: target.raw, mode: target.mode) else { continue }
+            if hasCache(for: api) { continue }
+            do {
+                let (data, _) = try await URLSession.shared.data(from: api)
+                guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                      object["data"] != nil else { continue }
+                try? data.write(to: file(for: api), options: .atomic)
+                saved += 1
+            } catch {
+                continue
+            }
+        }
+        AppLog.write("[书评] 缓存评论 \(saved)/\(targets.count) 条 · 抓取上限 \(limit)")
     }
 }
