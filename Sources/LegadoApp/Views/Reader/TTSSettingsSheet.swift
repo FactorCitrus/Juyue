@@ -762,7 +762,6 @@ public struct TTSSettingsSheet: View {
         activeId = nil
         BundledTTSEngine.shared.invalidate()
         audio.applySettingsChangeRestart()
-        withAnimation { voiceExpanded = false }
     }
 
     /// 百度离线当前音色。没选过就按第一条算，跟门面那边的兜底保持一致。
@@ -780,7 +779,6 @@ public struct TTSSettingsSheet: View {
         activeId = nil
         BundledTTSEngine.shared.invalidate()
         audio.applySettingsChangeRestart()
-        withAnimation { voiceExpanded = false }
     }
 
     private func selectSystem(_ voice: AVSpeechSynthesisVoice) {
@@ -790,7 +788,6 @@ public struct TTSSettingsSheet: View {
         TTSourceSelection.activeId = nil
         activeId = nil
         audio.applySettingsChangeRestart()
-        withAnimation { voiceExpanded = false }
     }
 
     /// 系统音色区上方的说明文字。
@@ -830,7 +827,6 @@ public struct TTSSettingsSheet: View {
         TTSourceSelection.activeId = id
         activeId = id
         audio.applySettingsChangeRestart()
-        withAnimation { voiceExpanded = false }
     }
 }
 

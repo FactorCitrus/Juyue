@@ -1,25 +1,22 @@
 import Foundation
 
-// 百度语音凭据 · 侧载版内置值
-// APP ID 124589494 / 包名 com.factorcitrus.juyue.app（文字识别 + 语音技术）
-// 序列号写死在下面，运行时可被设置页覆盖。
+// 百度语音凭据 · 公开版内置值为空
+// APP ID / API Key / Secret Key / 离线序列号都在设置页里填。
+// 不要把真实值提交到这个文件，凭据会留在 Git 历史里。
 
 /// 百度语音的四件套凭据。
 ///
 /// 运行顺序：先看设置里填的（UserDefaults），没填才用这里的本地默认值。
-/// 本机侧载版：APP ID 与序列号已写在 LocalDefaults 里，别把这份文件推到公开仓库。
+/// 公开版本保持为空，凭据在设置页里填。
 enum BaiduCredentials {
     /// 本地默认凭据。公开版本保持为空，凭据在设置页里填。
     ///
     /// 不要在这里提交真实值，凭据会留在 Git 历史里。
     enum LocalDefaults {
-        static let appId = "124589494"
-        static let apiKey = "Knj0wxLjA1EyblnEbPi1X8Db"
-        static let secretKey = "aAjnZ5LnIDXBddlHkgUjNDqwHHFXePU"
-        static let serials: [String] = [
-            "a375da77-825f866a-2f94-022b-a665e-00",
-            "81b18ed3-68ea6767-2f94-022c-a665f-00",
-        ]
+        static let appId = ""
+        static let apiKey = ""
+        static let secretKey = ""
+        static let serials: [String] = []
     }
 
     private static var defaults: UserDefaults { .standard }

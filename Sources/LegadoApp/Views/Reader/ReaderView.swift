@@ -6407,7 +6407,7 @@ public struct ReaderView: View {
             .accessibilityLabel("听书")
             .accessibilityIdentifier("reader.listeningBall")
             .accessibilityAddTraits(.isButton)
-            .accessibilityHint("轻点打开朗读面板；播放中轻点暂停或继续")
+            .accessibilityHint("轻点从当前页起读；播放中轻点暂停或继续；长按打开面板")
             .accessibilityValue(audioService.isPaused ? "已暂停"
                                 : (audioService.isPlaying ? "正在朗读" : "未开始"))
             .accessibilityAction { handleListeningBallTap() }
@@ -6423,13 +6423,21 @@ public struct ReaderView: View {
             }
     }
 
-    /// 轻点听书球：没在听就开面板，在听就暂停/继续。
+    /// 轻点听书球：没在听就从当前页起读；在听就暂停/继续；准备中开面板。
     private func handleListeningBallTap() {
         tapSuppressor.suppress()
-        if audioService.isPlaying || audioService.isPaused {
-            if audioService.isPlaying { audioService.pause() } else { audioService.resume() }
-        } else {
+        if audioService.isPlaying {
+            audioService.pause()
+        } else if audioService.isPaused {
+            audioService.resume()
+        } else if audioService.hasReadingSession {
+            // 正在准备合成：别把起读再点一遍，交给面板显示进度
             withAnimation(.easeOut(duration: 0.18)) { showReadingPanel = true }
+        } else if let blockId = currentPageFirstBlockId {
+            // 单击球直接从当前页第一段起读；长按仍打开朗读面板
+            startReadingChapter(fromBlockId: blockId)
+        } else {
+            showBookmarkHint("这一页没有可读的正文")
         }
         AppLog.write("[听书] 球 · 相位=\(audioService.playbackPhase.rawValue) 有会话=\(audioService.hasReadingSession)")
     }
@@ -6504,6 +6512,17 @@ public struct ReaderView: View {
                     readingPanelRow(icon: "scope",
                                     title: "回到正在读的位置",
                                     detail: "第 \(audioService.progressIndex)/\(audioService.progressTotal) 段")
+                }
+                .buttonStyle(BubbleActionButtonStyle())
+
+                Button {
+                    audioService.stop()
+                    dismissReadingPanel()
+                    showBookmarkHint("已退出朗读")
+                } label: {
+                    readingPanelRow(icon: "stop.circle",
+                                    title: "退出朗读",
+                                    detail: "停止并清空本次朗读")
                 }
                 .buttonStyle(BubbleActionButtonStyle())
             }
