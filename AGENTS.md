@@ -11,6 +11,7 @@
 |---|---|
 | 改完代码 | `scripts/legado.sh check`（编模拟器，自动换/还原百度库） |
 | 想验某一块 | `scripts/legado.sh test ScriptBrowser`（`--filter`，只跑匹配的） |
+| 验证界面 | `scripts/legado.sh uitest`（模拟器 XCUITest，自动换/还原百度库） |
 | 出测试包 | `scripts/legado.sh pkg 5.0.3` → `outputs/` + `.sha256` |
 | 推 git | `scripts/legado.sh push`（pull --rebase + push + 打印 run id） |
 | 全套 | `scripts/legado.sh release 5.0.3` |

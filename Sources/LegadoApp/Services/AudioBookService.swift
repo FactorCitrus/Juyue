@@ -910,10 +910,7 @@ public class AudioBookService: NSObject, ObservableObject, AVSpeechSynthesizerDe
                 self.speakWithAVSpeech(text, language: language)
             }
         )
-        DispatchQueue.main.async {
-            self.isPlaying = true
-            self.isPaused = false
-        }
+        markPlaybackStarted()
     }
 
     private func handleLocalSpeechFinished() {
@@ -945,10 +942,7 @@ public class AudioBookService: NSObject, ObservableObject, AVSpeechSynthesizerDe
         currentAVUtterance = utterance
         lastSpokenBucket = 0
         synthesizer.speak(utterance)
-        DispatchQueue.main.async {
-            self.isPlaying = true
-            self.isPaused = false
-        }
+        markPlaybackStarted()
     }
 
     // MARK: - 系统语音段看门狗
@@ -1053,10 +1047,7 @@ public class AudioBookService: NSObject, ObservableObject, AVSpeechSynthesizerDe
 
         if TTSEngineChoice.isUsingHTTP, let source = TTSourceSelection.activeSource {
             httpPlayer.start(source: source, text: text, speed: httpSpeed, maxChunkLength: chunkLength)
-            DispatchQueue.main.async {
-                self.isPlaying = true
-                self.isPaused = false
-            }
+            markPlaybackStarted()
             return
         }
         // 包内模型 / 系统语音：由 speakWithSystemVoice 分流，模型不在包里自动退系统
@@ -1070,6 +1061,22 @@ public class AudioBookService: NSObject, ObservableObject, AVSpeechSynthesizerDe
             resume()
         } else {
             speak(text: text, language: language)
+        }
+    }
+
+    /// 起读后的状态回写：暂停请求已经落下时，不要再把 isPaused 清回 false。
+    /// 原来这里无条件写 isPlaying=true / isPaused=false，起读后立刻点暂停会被这条
+    /// 异步回写吞掉，听书球第一下看起来就是「按了没反应」。
+    private func markPlaybackStarted() {
+        DispatchQueue.main.async {
+            guard self.isPaused else {
+                self.isPlaying = true
+                return
+            }
+            self.isPlaying = false
+            if self.synthesizer.isSpeaking { self.synthesizer.pauseSpeaking(at: .word) }
+            self.httpPlayer.pause()
+            BundledTTSEngine.shared.pause()
         }
     }
 
@@ -1096,8 +1103,8 @@ public class AudioBookService: NSObject, ObservableObject, AVSpeechSynthesizerDe
         if TTSEngineChoice.isUsingHTTP {
             httpPlayer.pause()
         }
-        if TTSEngineChoice.current == .builtIn, isPlaying, !isPaused {
-            BundledTTSEngine.shared.pause()
+        if TTSEngineChoice.current == .builtIn {
+            if isPlaying { BundledTTSEngine.shared.pause() }
             DispatchQueue.main.async {
                 self.isPlaying = false
                 self.isPaused = true
@@ -1106,10 +1113,12 @@ public class AudioBookService: NSObject, ObservableObject, AVSpeechSynthesizerDe
         }
         if synthesizer.isSpeaking && !synthesizer.isPaused {
             synthesizer.pauseSpeaking(at: .word)
-            DispatchQueue.main.async {
-                self.isPlaying = false
-                self.isPaused = true
-            }
+        }
+        // 系统语音还没开口时也要记下暂停意图：起读后的异步回写会把 isPlaying 置回 true，
+        // 暂停不落盘的话第一下点球就白点了。
+        DispatchQueue.main.async {
+            self.isPlaying = false
+            self.isPaused = true
         }
     }
 
@@ -1205,6 +1214,15 @@ public class AudioBookService: NSObject, ObservableObject, AVSpeechSynthesizerDe
     }
 
     // MARK: - AVSpeechSynthesizerDelegate
+    public func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didStart utterance: AVSpeechUtterance) {
+        // 暂停可能赶在开口之前（起读后立刻点球）：这一段已经排队，开口瞬间补一次暂停，
+        // 否则状态显示已暂停、声音却还在走。
+        guard utterance === currentAVUtterance, isPaused else { return }
+        synthesizer.pauseSpeaking(at: .word)
+        DispatchQueue.main.async { self.isPlaying = false }
+        AppLog.write("[听书] 暂停先于开口 · 开口即停")
+    }
+
     public func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didFinish utterance: AVSpeechUtterance) {
         // 迟到的旧语句（翻页、重起读留下的）不许推进队列，否则新段会被当成已播完
         guard utterance === currentAVUtterance else { return }
@@ -1411,10 +1429,7 @@ public class AudioBookService: NSObject, ObservableObject, AVSpeechSynthesizerDe
         currentAVUtterance = utterance
         synthesizer.speak(utterance)
         startCastGuard(text: spoken, role: role, token: token)
-        DispatchQueue.main.async {
-            self.isPlaying = true
-            self.isPaused = false
-        }
+        markPlaybackStarted()
     }
 
     private func playCastWithLocal(_ spoken: String, role: TTSCastRole?, token: Int) {
@@ -1458,10 +1473,7 @@ public class AudioBookService: NSObject, ObservableObject, AVSpeechSynthesizerDe
                 }
             }
         )
-        DispatchQueue.main.async {
-            self.isPlaying = true
-            self.isPaused = false
-        }
+        markPlaybackStarted()
     }
 
     private func playCastWithHTTP(_ spoken: String, source: HttpTTS, token: Int) {
@@ -1482,10 +1494,7 @@ public class AudioBookService: NSObject, ObservableObject, AVSpeechSynthesizerDe
             self?.completeCastSegment(token)
         }
         httpPlayer.start(source: source, text: spoken, speed: httpSpeed, maxChunkLength: chunkLength)
-        DispatchQueue.main.async {
-            self.isPlaying = true
-            self.isPaused = false
-        }
+        markPlaybackStarted()
     }
 
     /// 一段收尾。只有拿着当前这一段身份证的回调才推得动队列：
@@ -1594,10 +1603,7 @@ public class AudioBookService: NSObject, ObservableObject, AVSpeechSynthesizerDe
     }
 
     private func markReadingPlaying() {
-        DispatchQueue.main.async {
-            self.isPlaying = true
-            self.isPaused = false
-        }
+        markPlaybackStarted()
     }
 
     private func completeReadingItem() {
@@ -1744,6 +1750,7 @@ public class AudioBookService: NSObject, ObservableObject, AVSpeechSynthesizerDe
     }
 
     public func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didContinue utterance: AVSpeechUtterance) {
+        // 这是用户主动恢复的回调：显式清掉暂停，别走 markPlaybackStarted。
         DispatchQueue.main.async {
             self.isPlaying = true
             self.isPaused = false

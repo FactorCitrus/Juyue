@@ -367,6 +367,7 @@
 				<string>EE55FF00000000000000C001</string>
 				<string>EE55FF00000000000000C005</string>
 				<string>EE55FF00000000000000C007</string>
+				<string>C0DE00000000000000000001</string>
 			</array>
 			<key>isa</key>
 			<string>PBXGroup</string>
@@ -479,6 +480,7 @@
 			<key>children</key>
 			<array>
 				<string>D8DFA4D16089BF33BEFA2BEB</string>
+				<string>C0DE00000000000000000010</string>
 			</array>
 			<key>isa</key>
 			<string>PBXGroup</string>
@@ -612,7 +614,7 @@
 				<key>CODE_SIGN_STYLE</key>
 				<string>Automatic</string>
 				<key>CURRENT_PROJECT_VERSION</key>
-				<string>5.0.19</string>
+				<string>5.0.20</string>
 				<key>DEVELOPMENT_TEAM</key>
 				<string></string>
 				<key>ENABLE_PREVIEWS</key>
@@ -634,7 +636,7 @@
 				<key>LD_RUNPATH_SEARCH_PATHS</key>
 				<string>$(inherited) @executable_path/Frameworks</string>
 				<key>MARKETING_VERSION</key>
-				<string>5.0.19</string>
+				<string>5.0.20</string>
 				<key>PRODUCT_BUNDLE_IDENTIFIER</key>
 				<string>com.factorcitrus.juyue</string>
 				<key>PRODUCT_NAME</key>
@@ -937,6 +939,14 @@
 				<string>1</string>
 				<key>LastUpgradeCheck</key>
 				<string>1420</string>
+				<key>TargetAttributes</key>
+				<dict>
+					<key>C0DE00000000000000000020</key>
+					<dict>
+						<key>TestTargetID</key>
+						<string>6AA38DB9F09E8937A03A7462</string>
+					</dict>
+				</dict>
 			</dict>
 			<key>buildConfigurationList</key>
 			<string>877A59C8A2B3DE9D57625958</string>
@@ -969,6 +979,7 @@
 			<key>targets</key>
 			<array>
 				<string>6AA38DB9F09E8937A03A7462</string>
+				<string>C0DE00000000000000000020</string>
 			</array>
 		</dict>
 		<key>877A59C8A2B3DE9D57625958</key>
@@ -1703,7 +1714,7 @@
 				<key>CODE_SIGN_STYLE</key>
 				<string>Automatic</string>
 				<key>CURRENT_PROJECT_VERSION</key>
-				<string>5.0.19</string>
+				<string>5.0.20</string>
 				<key>DEVELOPMENT_TEAM</key>
 				<string></string>
 				<key>ENABLE_PREVIEWS</key>
@@ -1725,7 +1736,7 @@
 				<key>LD_RUNPATH_SEARCH_PATHS</key>
 				<string>$(inherited) @executable_path/Frameworks</string>
 				<key>MARKETING_VERSION</key>
-				<string>5.0.19</string>
+				<string>5.0.20</string>
 				<key>PRODUCT_BUNDLE_IDENTIFIER</key>
 				<string>com.factorcitrus.juyue</string>
 				<key>PRODUCT_NAME</key>
@@ -1784,7 +1795,7 @@
 				<key>CODE_SIGN_STYLE</key>
 				<string>Automatic</string>
 				<key>CURRENT_PROJECT_VERSION</key>
-				<string>5.0.19</string>
+				<string>5.0.20</string>
 				<key>DEVELOPMENT_TEAM</key>
 				<string></string>
 				<key>ENABLE_PREVIEWS</key>
@@ -1808,7 +1819,7 @@
 				<key>LD_RUNPATH_SEARCH_PATHS</key>
 				<string>$(inherited) @executable_path/Frameworks</string>
 				<key>MARKETING_VERSION</key>
-				<string>5.0.19</string>
+				<string>5.0.20</string>
 				<key>PRODUCT_BUNDLE_IDENTIFIER</key>
 				<string>com.factorcitrus.juyue.reader</string>
 				<key>PRODUCT_NAME</key>
@@ -2365,6 +2376,212 @@
 			<string>/bin/sh</string>
 			<key>shellScript</key>
 			<string>echo &quot;[BaiduTTS] copying&quot;; if [ &quot;$CONFIGURATION&quot; != &quot;AppStore&quot; ] &amp;&amp; [ -d &quot;$SRCROOT/Sources/LegadoApp/Resources/BaiduTTS&quot; ]; then mkdir -p &quot;$TARGET_BUILD_DIR/$UNLOCALIZED_RESOURCES_FOLDER_PATH/BaiduTTS&quot;; cp -R &quot;$SRCROOT/Sources/LegadoApp/Resources/BaiduTTS/.&quot; &quot;$TARGET_BUILD_DIR/$UNLOCALIZED_RESOURCES_FOLDER_PATH/BaiduTTS/&quot;; echo &quot;[BaiduTTS] done $(ls &quot;$TARGET_BUILD_DIR/$UNLOCALIZED_RESOURCES_FOLDER_PATH/BaiduTTS&quot; | wc -l) files&quot;; fi</string>
+		</dict>
+		<key>C0DE00000000000000000002</key>
+		<dict>
+			<key>isa</key>
+			<string>PBXFileReference</string>
+			<key>lastKnownFileType</key>
+			<string>sourcecode.swift</string>
+			<key>path</key>
+			<string>Tests/LegadoUITests/BookshelfSmokeTests.swift</string>
+			<key>sourceTree</key>
+			<string>&lt;group&gt;</string>
+		</dict>
+		<key>C0DE00000000000000000003</key>
+		<dict>
+			<key>isa</key>
+			<string>PBXBuildFile</string>
+			<key>fileRef</key>
+			<string>C0DE00000000000000000002</string>
+		</dict>
+		<key>C0DE00000000000000000001</key>
+		<dict>
+			<key>isa</key>
+			<string>PBXGroup</string>
+			<key>children</key>
+			<array>
+				<string>C0DE00000000000000000002</string>
+			</array>
+			<key>name</key>
+			<string>LegadoUITests</string>
+			<key>sourceTree</key>
+			<string>&lt;group&gt;</string>
+		</dict>
+		<key>C0DE00000000000000000010</key>
+		<dict>
+			<key>explicitFileType</key>
+			<string>wrapper.cfbundle</string>
+			<key>includeInIndex</key>
+			<string>0</string>
+			<key>isa</key>
+			<string>PBXFileReference</string>
+			<key>path</key>
+			<string>LegadoUITests.xctest</string>
+			<key>sourceTree</key>
+			<string>BUILT_PRODUCTS_DIR</string>
+		</dict>
+		<key>C0DE00000000000000000040</key>
+		<dict>
+			<key>isa</key>
+			<string>PBXSourcesBuildPhase</string>
+			<key>buildActionMask</key>
+			<string>2147483647</string>
+			<key>files</key>
+			<array>
+				<string>C0DE00000000000000000003</string>
+			</array>
+			<key>runOnlyForDeploymentPostprocessing</key>
+			<string>0</string>
+		</dict>
+		<key>C0DE00000000000000000041</key>
+		<dict>
+			<key>isa</key>
+			<string>PBXFrameworksBuildPhase</string>
+			<key>buildActionMask</key>
+			<string>2147483647</string>
+			<key>files</key>
+			<array/>
+			<key>runOnlyForDeploymentPostprocessing</key>
+			<string>0</string>
+		</dict>
+		<key>C0DE00000000000000000042</key>
+		<dict>
+			<key>isa</key>
+			<string>PBXResourcesBuildPhase</string>
+			<key>buildActionMask</key>
+			<string>2147483647</string>
+			<key>files</key>
+			<array/>
+			<key>runOnlyForDeploymentPostprocessing</key>
+			<string>0</string>
+		</dict>
+		<key>C0DE00000000000000000030</key>
+		<dict>
+			<key>isa</key>
+			<string>PBXContainerItemProxy</string>
+			<key>containerPortal</key>
+			<string>83273B710FAA8AB95BEAE14F</string>
+			<key>proxyType</key>
+			<string>1</string>
+			<key>remoteGlobalIDString</key>
+			<string>6AA38DB9F09E8937A03A7462</string>
+			<key>remoteInfo</key>
+			<string>LegadoApp</string>
+		</dict>
+		<key>C0DE00000000000000000031</key>
+		<dict>
+			<key>isa</key>
+			<string>PBXTargetDependency</string>
+			<key>target</key>
+			<string>6AA38DB9F09E8937A03A7462</string>
+			<key>targetProxy</key>
+			<string>C0DE00000000000000000030</string>
+		</dict>
+		<key>C0DE00000000000000000051</key>
+		<dict>
+			<key>isa</key>
+			<string>XCBuildConfiguration</string>
+			<key>name</key>
+			<string>Debug</string>
+			<key>buildSettings</key>
+			<dict>
+				<key>CODE_SIGN_STYLE</key>
+				<string>Automatic</string>
+				<key>CURRENT_PROJECT_VERSION</key>
+				<string>5.0.20</string>
+				<key>DEVELOPMENT_TEAM</key>
+				<string></string>
+				<key>GENERATE_INFOPLIST_FILE</key>
+				<string>YES</string>
+				<key>LD_RUNPATH_SEARCH_PATHS</key>
+				<string>$(inherited) @executable_path/Frameworks @loader_path/Frameworks</string>
+				<key>MARKETING_VERSION</key>
+				<string>5.0.20</string>
+				<key>PRODUCT_BUNDLE_IDENTIFIER</key>
+				<string>com.factorcitrus.juyue.uitests</string>
+				<key>PRODUCT_NAME</key>
+				<string>$(TARGET_NAME)</string>
+				<key>SWIFT_VERSION</key>
+				<string>5.0</string>
+				<key>TARGETED_DEVICE_FAMILY</key>
+				<string>1,2</string>
+				<key>TEST_TARGET_NAME</key>
+				<string>LegadoApp</string>
+			</dict>
+		</dict>
+		<key>C0DE00000000000000000052</key>
+		<dict>
+			<key>isa</key>
+			<string>XCBuildConfiguration</string>
+			<key>name</key>
+			<string>Release</string>
+			<key>buildSettings</key>
+			<dict>
+				<key>CODE_SIGN_STYLE</key>
+				<string>Automatic</string>
+				<key>CURRENT_PROJECT_VERSION</key>
+				<string>5.0.20</string>
+				<key>DEVELOPMENT_TEAM</key>
+				<string></string>
+				<key>GENERATE_INFOPLIST_FILE</key>
+				<string>YES</string>
+				<key>LD_RUNPATH_SEARCH_PATHS</key>
+				<string>$(inherited) @executable_path/Frameworks @loader_path/Frameworks</string>
+				<key>MARKETING_VERSION</key>
+				<string>5.0.20</string>
+				<key>PRODUCT_BUNDLE_IDENTIFIER</key>
+				<string>com.factorcitrus.juyue.uitests</string>
+				<key>PRODUCT_NAME</key>
+				<string>$(TARGET_NAME)</string>
+				<key>SWIFT_VERSION</key>
+				<string>5.0</string>
+				<key>TARGETED_DEVICE_FAMILY</key>
+				<string>1,2</string>
+				<key>TEST_TARGET_NAME</key>
+				<string>LegadoApp</string>
+			</dict>
+		</dict>
+		<key>C0DE00000000000000000050</key>
+		<dict>
+			<key>isa</key>
+			<string>XCConfigurationList</string>
+			<key>buildConfigurations</key>
+			<array>
+				<string>C0DE00000000000000000051</string>
+				<string>C0DE00000000000000000052</string>
+			</array>
+			<key>defaultConfigurationIsVisible</key>
+			<string>0</string>
+			<key>defaultConfigurationName</key>
+			<string>Release</string>
+		</dict>
+		<key>C0DE00000000000000000020</key>
+		<dict>
+			<key>isa</key>
+			<string>PBXNativeTarget</string>
+			<key>buildConfigurationList</key>
+			<string>C0DE00000000000000000050</string>
+			<key>buildPhases</key>
+			<array>
+				<string>C0DE00000000000000000040</string>
+				<string>C0DE00000000000000000041</string>
+				<string>C0DE00000000000000000042</string>
+			</array>
+			<key>buildRules</key>
+			<array/>
+			<key>dependencies</key>
+			<array>
+				<string>C0DE00000000000000000031</string>
+			</array>
+			<key>name</key>
+			<string>LegadoUITests</string>
+			<key>productName</key>
+			<string>LegadoUITests</string>
+			<key>productReference</key>
+			<string>C0DE00000000000000000010</string>
+			<key>productType</key>
+			<string>com.apple.product-type.bundle.ui-testing</string>
 		</dict>
 	</dict>
 	<key>rootObject</key>

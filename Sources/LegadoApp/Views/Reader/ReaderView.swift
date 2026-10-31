@@ -1742,6 +1742,8 @@ public struct ReaderView: View {
     @State private var readingChapterIndex: Int = -1
     /// 上一次「点段起读」的时间：同一根手指会被两套识别器各报一次
     @State private var lastReadingTapAt: Date = .distantPast
+    /// 听书球按下时刻：轻点 / 长按按按住时长区分
+    @State private var listeningBallPressBegan: Date? = nil
     /// 长按选中段落之后这段时间里，松手不再当点击处理
     @State private var tapSuppressor = ReaderTapSuppressor()
     @State private var chapterCache: [Int: LoadedChapter] = [:]
@@ -6384,22 +6386,31 @@ public struct ReaderView: View {
             )
             .shadow(color: .black.opacity(0.16), radius: 7, y: 2)
             .contentShape(Circle())
-            .onTapGesture {
-                tapSuppressor.suppress()
-                if audioService.isPlaying || audioService.isPaused {
-                    if audioService.isPlaying { audioService.pause() } else { audioService.resume() }
-                } else {
-                    withAnimation(.easeOut(duration: 0.18)) { showReadingPanel = true }
-                }
-                AppLog.write("[听书] 球 · 相位=\(audioService.playbackPhase.rawValue) 有会话=\(audioService.hasReadingSession)")
-            }
+            // 轻点和长按用同一个拖动手势按按住时长区分：两套手势叠在一起时，
+            // 旧系统上高优先级长按会把轻点吃掉，表现就是「按了没反应」。
             .highPriorityGesture(
-                LongPressGesture(minimumDuration: 0.45).onEnded { _ in
-                    tapSuppressor.suppress()
-                    withAnimation(.easeOut(duration: 0.18)) { showReadingPanel = true }
-                    AppLog.write("[听书] 长按球 · 打开朗读面板")
-                }
+                DragGesture(minimumDistance: 0)
+                    .onChanged { _ in
+                        if listeningBallPressBegan == nil { listeningBallPressBegan = Date() }
+                    }
+                    .onEnded { _ in
+                        let held = Date().timeIntervalSince(listeningBallPressBegan ?? Date())
+                        listeningBallPressBegan = nil
+                        if held >= 0.45 {
+                            handleListeningBallLongPress()
+                        } else {
+                            handleListeningBallTap()
+                        }
+                    }
             )
+            .accessibilityElement()
+            .accessibilityLabel("听书")
+            .accessibilityIdentifier("reader.listeningBall")
+            .accessibilityAddTraits(.isButton)
+            .accessibilityHint("轻点打开朗读面板；播放中轻点暂停或继续")
+            .accessibilityValue(audioService.isPaused ? "已暂停"
+                                : (audioService.isPlaying ? "正在朗读" : "未开始"))
+            .accessibilityAction { handleListeningBallTap() }
             .frame(maxWidth: .infinity, alignment: .trailing)
             .padding(.trailing, 20)
             .padding(.bottom, screenBottomInset + 134)
@@ -6410,6 +6421,23 @@ public struct ReaderView: View {
             .onDisappear {
                 AppLog.write("[听书] 球消失 · controls=\(showControls)")
             }
+    }
+
+    /// 轻点听书球：没在听就开面板，在听就暂停/继续。
+    private func handleListeningBallTap() {
+        tapSuppressor.suppress()
+        if audioService.isPlaying || audioService.isPaused {
+            if audioService.isPlaying { audioService.pause() } else { audioService.resume() }
+        } else {
+            withAnimation(.easeOut(duration: 0.18)) { showReadingPanel = true }
+        }
+        AppLog.write("[听书] 球 · 相位=\(audioService.playbackPhase.rawValue) 有会话=\(audioService.hasReadingSession)")
+    }
+
+    private func handleListeningBallLongPress() {
+        tapSuppressor.suppress()
+        withAnimation(.easeOut(duration: 0.18)) { showReadingPanel = true }
+        AppLog.write("[听书] 长按球 · 打开朗读面板")
     }
 
     /// 朗读面板的浮层：点空白处、右上角 × 都能关，别挡着读正文
