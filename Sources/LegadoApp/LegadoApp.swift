@@ -21,31 +21,6 @@ public struct LegadoApp: App {
     @Environment(\.scenePhase) private var scenePhase
     @AppStorage("legado_app_theme") private var appTheme: String = "system"
 
-    private var selectedColorScheme: ColorScheme? {
-        switch appTheme {
-        case "light": return .light
-        case "dark": return .dark
-        default: return nil
-        }
-    }
-
-    private var effectiveColorScheme: ColorScheme? {
-        renderTheme.forcedColorScheme ?? selectedColorScheme
-    }
-
-    /// 验收用：`JUYUE_THEME=lunarTerminal` 只换这一轮渲染的调色板与列表样式，
-    /// 不写持久化里的主题选择。Release 里没有这段。
-    private var renderTheme: AppThemeTokens {
-        #if DEBUG || targetEnvironment(simulator)
-        switch ProcessInfo.processInfo.environment["JUYUE_THEME"] {
-        case "lunarTerminal": return .lunarTerminal
-        case "standard": return .standard
-        default: break
-        }
-        #endif
-        return themeManager.theme
-    }
-
     /// 机型标识（iPhone18,1 这种）比 UIDevice.model 的「iPhone」有用。
     private static var deviceModel: String {
         #if targetEnvironment(simulator)
@@ -283,30 +258,26 @@ public struct LegadoApp: App {
         // scriptBrowser 不参与布局了：网页现在由 ScriptBrowserWindow 单独开窗显示。
         // 保留这一行是因为脚本浏览器的 present 回调挂在它自己的 init 里，取一次 shared
         // 才能保证脚本还没弹过网页时宿主就已经接好。
-        MainTabView()
-            // 钩子挂在环境注入的内层：sheet 只会继承挂载点上方的环境，
-            // 放到 .environment(\.appTheme,) 外面就拿不到主题了。
-            .modifier(DebugTTSLauncher())
-            .task {
-                #if !NO_BAIDU_TTS
-                BaiduOfflineTTS.probeIfNeeded()
-                #endif
-            }
-            .environmentObject(bookStore)
-            .environmentObject(themeManager)
-            .environment(\.appTheme, renderTheme)
-            .tint(renderTheme.palette.accent)
-            .preferredColorScheme(effectiveColorScheme)
+        AppThemeRoot(themeManager: themeManager, appearanceSetting: appTheme) {
+            MainTabView()
+                // 钩子挂在环境注入的内层：sheet 只会继承挂载点上方的环境，
+                // 放到主题环境外面就拿不到主题了。
+                .modifier(DebugTTSLauncher())
+                .task {
+                    #if !NO_BAIDU_TTS
+                    BaiduOfflineTTS.probeIfNeeded()
+                    #endif
+                }
+                .environmentObject(bookStore)
+                .environmentObject(themeManager)
+        }
         #else
-        MainTabView()
-            // 钩子挂在环境注入的内层：sheet 只会继承挂载点上方的环境，
-            // 放到 .environment(\.appTheme,) 外面就拿不到主题了。
-            .modifier(DebugTTSLauncher())
-            .environmentObject(bookStore)
-            .environmentObject(themeManager)
-            .environment(\.appTheme, renderTheme)
-            .tint(renderTheme.palette.accent)
-            .preferredColorScheme(effectiveColorScheme)
+        AppThemeRoot(themeManager: themeManager, appearanceSetting: appTheme) {
+            MainTabView()
+                .modifier(DebugTTSLauncher())
+                .environmentObject(bookStore)
+                .environmentObject(themeManager)
+        }
         #endif
     }
 
@@ -761,6 +732,78 @@ final class ScriptBrowserWindow {
     }
 }
 #endif
+
+/// 主题环境注入层。
+///
+/// 学级审判不再强制浅色，而是跟随设置里的「外观模式」。`App` 结构体读不到
+/// `colorScheme`，所以由这一层按实际解析出的明暗注入对应令牌：跟随系统时用
+/// 系统的明暗，浅色/深色/月面终端强制时用强制值，避免 `preferredColorScheme`
+/// 与 `colorScheme` 互相打架。
+private struct AppThemeRoot<Content: View>: View {
+    @ObservedObject var themeManager: AppThemeManager
+    let appearanceSetting: String
+    let content: Content
+
+    @Environment(\.colorScheme) private var systemColorScheme
+
+    init(
+        themeManager: AppThemeManager,
+        appearanceSetting: String,
+        @ViewBuilder content: () -> Content
+    ) {
+        self.themeManager = themeManager
+        self.appearanceSetting = appearanceSetting
+        self.content = content()
+    }
+
+    /// 验收用：`JUYUE_THEME=classTrial` 只换这一轮渲染的主题，不写持久化选择。
+    private var debugChoice: AppThemeChoice? {
+        #if DEBUG || targetEnvironment(simulator)
+        switch ProcessInfo.processInfo.environment["JUYUE_THEME"] {
+        case "lunarTerminal": return .lunarTerminal
+        case "classTrial": return .classTrial
+        case "standard": return .standard
+        default: break
+        }
+        #endif
+        return nil
+    }
+
+    private var renderedChoice: AppThemeChoice {
+        debugChoice ?? themeManager.choice
+    }
+
+    private var preferredScheme: ColorScheme? {
+        switch appearanceSetting {
+        case "light": return .light
+        case "dark": return .dark
+        default: return nil
+        }
+    }
+
+    /// 月面终端仍然强制浅色；学级审判跟随外观模式，标准主题跟随系统。
+    private var presentationScheme: ColorScheme? {
+        AppThemeManager.tokens(for: renderedChoice).forcedColorScheme ?? preferredScheme
+    }
+
+    private var resolvedScheme: ColorScheme {
+        presentationScheme ?? systemColorScheme
+    }
+
+    private var theme: AppThemeTokens {
+        AppThemeManager.tokens(for: renderedChoice, colorScheme: resolvedScheme)
+    }
+
+    var body: some View {
+        let current = theme
+        // ReaderConfig / NieRPalette 读不到环境，入口处同步一次实际明暗。
+        themeManager.syncAppearance(renderedChoice: debugChoice, colorScheme: resolvedScheme)
+        return content
+            .environment(\.appTheme, current)
+            .tint(current.palette.accent)
+            .preferredColorScheme(presentationScheme)
+    }
+}
 
 public struct MainTabView: View {
     /// 三个页签始终建出来，否则未选中的 tabItem 会消失（试过用条件包 Group，tab 栏就只剩书架了）。

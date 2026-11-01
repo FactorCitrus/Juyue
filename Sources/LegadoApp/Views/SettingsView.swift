@@ -274,53 +274,109 @@ public struct SettingsView: View {
         }
     }
 
+    @ViewBuilder
     private var settingsHero: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack {
-                Text("SETTINGS / 橘阅")
-                    .font(theme.typography.label)
-                    .foregroundColor(theme.palette.secondaryInk)
-                Spacer()
-                Text("SYS.ONLINE")
-                    .font(theme.typography.mono)
-                    .foregroundColor(theme.palette.secondaryInk)
+        if theme.isClassTrial {
+            VStack(alignment: .leading, spacing: 8) {
+                HStack {
+                    Text("SETTINGS / 橘阅")
+                        .font(theme.typography.label)
+                        .foregroundColor(theme.palette.accent)
+                    Spacer()
+                    Text("CLASS TRIAL / 05")
+                        .font(theme.typography.mono)
+                        .foregroundColor(theme.palette.onInk.opacity(0.55))
+                }
+
+                Text("设置")
+                    .font(.system(size: 40, weight: .black))
+                    .foregroundColor(theme.palette.onInk)
+
+                HStack(spacing: 6) {
+                    Text("05 MODULES")
+                        .font(theme.typography.mono)
+                        .foregroundColor(theme.palette.onAccent)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(theme.palette.accent)
+                    Text("本地设置 · 即时生效 · v\(shortVersion)")
+                        .font(theme.typography.mono)
+                        .foregroundColor(theme.palette.onInk.opacity(0.7))
+                }
+
+                HStack(spacing: 0) {
+                    Rectangle()
+                        .fill(theme.palette.accent)
+                        .frame(height: 5)
+                    Rectangle()
+                        .fill(theme.palette.onInk.opacity(0.18))
+                        .frame(height: 5)
+                }
             }
-
-            Text("设置")
-                .font(.system(size: 30, weight: .bold))
-                .foregroundColor(theme.palette.ink)
-
-            Text("本地设置 · 即时生效 · 05 MODULES · v\(shortVersion)")
-                .font(theme.typography.mono)
-                .foregroundColor(theme.palette.secondaryInk)
-
-            HStack(spacing: 0) {
+            .padding(16)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(theme.palette.ink)
+            .overlay(alignment: .trailing) {
+                Text("判")
+                    .font(.system(size: 96, weight: .black))
+                    .foregroundColor(theme.palette.accent.opacity(0.16))
+                    .rotationEffect(.degrees(-8))
+                    .offset(x: -6, y: 10)
+            }
+            .clipped()
+            .background(
                 Rectangle()
                     .fill(theme.palette.accent)
-                    .frame(width: 24, height: 2)
-                Rectangle()
-                    .fill(theme.palette.divider.opacity(0.9))
-                    .frame(height: 0.5)
-                Rectangle()
-                    .fill(theme.palette.ink.opacity(0.75))
-                    .frame(width: 4, height: 4)
+                    .offset(x: 5, y: 5)
+            )
+        } else {
+            VStack(alignment: .leading, spacing: 10) {
+                HStack {
+                    Text("SETTINGS / 橘阅")
+                        .font(theme.typography.label)
+                        .foregroundColor(theme.palette.secondaryInk)
+                    Spacer()
+                    Text("SYS.ONLINE")
+                        .font(theme.typography.mono)
+                        .foregroundColor(theme.palette.secondaryInk)
+                }
+
+                Text("设置")
+                    .font(.system(size: 30, weight: .bold))
+                    .foregroundColor(theme.palette.ink)
+
+                Text("本地设置 · 即时生效 · 05 MODULES · v\(shortVersion)")
+                    .font(theme.typography.mono)
+                    .foregroundColor(theme.palette.secondaryInk)
+
+                HStack(spacing: 0) {
+                    Rectangle()
+                        .fill(theme.palette.accent)
+                        .frame(width: 24, height: 2)
+                    Rectangle()
+                        .fill(theme.palette.divider.opacity(0.9))
+                        .frame(height: 0.5)
+                    Rectangle()
+                        .fill(theme.palette.ink.opacity(0.75))
+                        .frame(width: 4, height: 4)
+                }
             }
+            .padding(16)
+            .background(
+                RoundedRectangle(cornerRadius: theme.metrics.cornerRadius, style: .continuous)
+                    .fill(theme.palette.surface)
+            )
+            .overlay(alignment: .leading) {
+                Rectangle()
+                    .fill(theme.palette.accent)
+                    .frame(width: 3)
+                    .padding(.vertical, 14)
+            }
+            .overlay(
+                RoundedRectangle(cornerRadius: theme.metrics.cornerRadius, style: .continuous)
+                    .stroke(theme.palette.divider, lineWidth: theme.metrics.borderWidth)
+            )
         }
-        .padding(16)
-        .background(
-            RoundedRectangle(cornerRadius: theme.metrics.cornerRadius, style: .continuous)
-                .fill(theme.palette.surface)
-        )
-        .overlay(alignment: .leading) {
-            Rectangle()
-                .fill(theme.palette.accent)
-                .frame(width: 3)
-                .padding(.vertical, 14)
-        }
-        .overlay(
-            RoundedRectangle(cornerRadius: theme.metrics.cornerRadius, style: .continuous)
-                .stroke(theme.palette.divider, lineWidth: theme.metrics.borderWidth)
-        )
     }
 
     private var shortVersion: String {
@@ -368,14 +424,7 @@ public struct SettingsView: View {
         }
         .padding(14)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(
-            RoundedRectangle(cornerRadius: theme.metrics.cornerRadius, style: .continuous)
-                .fill(theme.palette.surface)
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: theme.metrics.cornerRadius, style: .continuous)
-                .stroke(theme.palette.divider, lineWidth: theme.metrics.borderWidth)
-        )
+        .appThemePanel()
     }
 
     private var panelFill: Color {
@@ -407,7 +456,7 @@ public struct SettingsView: View {
                 }
                 Spacer(minLength: 0)
                 Text(board.title)
-                    .font(.headline)
+                    .font(theme.isClassTrial ? .system(size: 21, weight: .black) : .headline)
                     .foregroundColor(theme.palette.ink)
                 Text(boardDescription(board))
                     .font(.caption2)
@@ -420,19 +469,14 @@ public struct SettingsView: View {
             }
             .padding(14)
             .frame(maxWidth: .infinity, minHeight: height, alignment: .topLeading)
-            .background(
-                RoundedRectangle(cornerRadius: theme.metrics.cornerRadius, style: .continuous)
-                    .fill(panelFill)
-            )
-            .clipShape(RoundedRectangle(cornerRadius: theme.metrics.cornerRadius, style: .continuous))
-            .overlay(
-                RoundedRectangle(cornerRadius: theme.metrics.cornerRadius, style: .continuous)
-                    .stroke(theme.palette.divider, lineWidth: theme.metrics.borderWidth)
-            )
+            .appThemePanel()
             .overlay(alignment: .bottomTrailing) {
                 Text(board.index)
-                    .font(.system(size: 38, weight: .bold, design: .monospaced))
-                    .foregroundColor(theme.palette.ink.opacity(0.045))
+                    .font(.system(size: theme.isClassTrial ? 54 : 38, weight: .black, design: .monospaced))
+                    .foregroundColor(theme.isClassTrial
+                        ? theme.palette.accent.opacity(0.14)
+                        : theme.palette.ink.opacity(0.045))
+                    .rotationEffect(.degrees(theme.isClassTrial ? -8 : 0))
                     .padding(8)
             }
         }
@@ -537,7 +581,7 @@ public struct SettingsView: View {
             case "dark": appearance = "深色"
             default: appearance = "跟随系统"
             }
-            return "\(appearance) / \(appIcon.choice.title)"
+            return "\(themeManager.choice.title) / \(appearance)"
         case .sources:
             return "书源 \(bookStore.sources.count) / OPDS \(OPDSStore.shared.catalogs.count) / RSS \(RSSStore.shared.sources.count)"
         case .data:
@@ -554,7 +598,42 @@ public struct SettingsView: View {
         tag: String,
         @ViewBuilder content: () -> Content
     ) -> AnyView {
-        AnyView(VStack(alignment: .leading, spacing: 10) {
+        if theme.isClassTrial {
+            return AnyView(VStack(alignment: .leading, spacing: 0) {
+                HStack(spacing: 0) {
+                    Text(title)
+                        .font(.system(size: 12, weight: .black))
+                        .foregroundColor(theme.palette.onInk)
+                        .padding(.horizontal, 9)
+                        .padding(.vertical, 5)
+                        .background(theme.palette.ink)
+                    Text(tag)
+                        .font(theme.typography.mono)
+                        .foregroundColor(theme.palette.onAccent)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 5)
+                        .background(theme.palette.accent)
+                    Rectangle()
+                        .fill(theme.palette.ink)
+                        .frame(maxWidth: .infinity, maxHeight: 2)
+                }
+                VStack(alignment: .leading, spacing: 0) {
+                    content()
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(theme.palette.surface)
+                .overlay(
+                    Rectangle()
+                        .stroke(theme.palette.ink, lineWidth: 2)
+                )
+                .overlay(alignment: .bottomTrailing) {
+                    Rectangle()
+                        .fill(theme.palette.accent)
+                        .frame(width: 34, height: 5)
+                }
+            })
+        }
+        return AnyView(VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 8) {
                 Rectangle()
                     .fill(theme.palette.accent)
@@ -585,6 +664,71 @@ public struct SettingsView: View {
         })
     }
 
+    /// 主题选择行：左边一小块纸样，直接把背景、墨色和强调色摆出来。
+    private func themeChoiceRow(_ choice: AppThemeChoice) -> some View {
+        let preview = AppThemeManager.tokens(for: choice)
+        return Button {
+            themeManager.choice = choice
+            AppLog.write("[设置] 界面主题 → \(choice.rawValue)")
+        } label: {
+            HStack(spacing: 12) {
+                ZStack(alignment: .leading) {
+                    Rectangle()
+                        .fill(preview.palette.background)
+                    VStack(alignment: .leading, spacing: 3) {
+                        Rectangle()
+                            .fill(preview.palette.ink)
+                            .frame(width: 24, height: 2)
+                        Rectangle()
+                            .fill(preview.palette.secondaryInk.opacity(0.7))
+                            .frame(width: 30, height: 1)
+                        Rectangle()
+                            .fill(preview.palette.accent)
+                            .frame(width: 14, height: 3)
+                    }
+                    .padding(.leading, 7)
+                }
+                .frame(width: 54, height: 38)
+                .overlay(alignment: .bottom) {
+                    if preview.isClassTrial {
+                        HStack(spacing: 0) {
+                            ForEach(0..<6, id: \.self) { index in
+                                Rectangle()
+                                    .fill(index % 2 == 0 ? preview.palette.ink : preview.palette.accent)
+                                    .frame(width: 9, height: 6)
+                            }
+                        }
+                    }
+                }
+                .overlay(
+                    Rectangle()
+                        .stroke(preview.isClassTrial ? preview.palette.ink : preview.palette.divider,
+                                lineWidth: preview.isClassTrial ? 2 : 0.5)
+                )
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(choice.title)
+                        .font(theme.typography.body)
+                        .foregroundColor(theme.palette.ink)
+                    Text(choice.subtitle)
+                        .font(.caption2)
+                        .foregroundColor(theme.palette.secondaryInk)
+                }
+
+                Spacer(minLength: 8)
+
+                if themeManager.choice == choice {
+                    Image(systemName: "checkmark")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundColor(theme.palette.accent)
+                }
+            }
+            .padding(.vertical, 7)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+
     private var cardDivider: some View {
         Rectangle()
             .fill(theme.palette.divider.opacity(0.55))
@@ -594,13 +738,20 @@ public struct SettingsView: View {
 
     private func rowIcon(_ name: String) -> some View {
         Image(systemName: name)
-            .font(.system(size: 13, weight: .medium))
-            .foregroundColor(theme.palette.accent)
+            .font(.system(size: 13, weight: theme.isClassTrial ? .bold : .medium))
+            .foregroundColor(theme.isClassTrial ? theme.palette.onInk : theme.palette.accent)
             .frame(width: 30, height: 30)
             .background(
-                RoundedRectangle(cornerRadius: max(6, theme.metrics.cornerRadius - 3), style: .continuous)
-                    .fill(theme.palette.elevated)
+                RoundedRectangle(cornerRadius: theme.isClassTrial ? 0 : max(6, theme.metrics.cornerRadius - 3), style: .continuous)
+                    .fill(theme.isClassTrial ? theme.palette.ink : theme.palette.elevated)
             )
+            .overlay(alignment: .bottomTrailing) {
+                if theme.isClassTrial {
+                    Rectangle()
+                        .fill(theme.palette.accent)
+                        .frame(width: 7, height: 7)
+                }
+            }
     }
 
     private func settingLabel(
@@ -762,12 +913,16 @@ public struct SettingsView: View {
                         .padding(.vertical, 9)
                         .background(
                             RoundedRectangle(cornerRadius: theme.metrics.cornerRadius, style: .continuous)
-                                .fill(isSelected ? theme.palette.accent : theme.palette.elevated)
+                                .fill(isSelected
+                                    ? theme.palette.accent
+                                    : (theme.isClassTrial ? theme.palette.surface : theme.palette.elevated))
                         )
                         .overlay(
                             RoundedRectangle(cornerRadius: theme.metrics.cornerRadius, style: .continuous)
-                                .stroke(isSelected ? theme.palette.accent : theme.palette.divider,
-                                        lineWidth: theme.metrics.borderWidth)
+                                .stroke(theme.isClassTrial
+                                    ? (isSelected ? theme.palette.accent : theme.palette.ink)
+                                    : (isSelected ? theme.palette.accent : theme.palette.divider),
+                                        lineWidth: theme.isClassTrial ? 2 : theme.metrics.borderWidth)
                         )
                 }
                 .buttonStyle(.plain)
@@ -821,6 +976,11 @@ public struct SettingsView: View {
                     options: ReaderTheme.allCases.map { ($0, $0.rawValue) },
                     columns: 2
                 )
+                if theme.overridesReaderAppearance {
+                    Text("界面主题「\(theme.choice.title)」正在接管阅读配色；切回「标准」后可单独选择阅读底色。")
+                        .font(.caption2)
+                        .foregroundColor(theme.palette.secondaryInk)
+                }
             }
             cardDivider
             settingBlock {
@@ -831,10 +991,10 @@ public struct SettingsView: View {
                     Text("这是示例文本，天地玄黄，宇宙洪荒。日月盈昃，辰宿列张。")
                         .font(.system(size: readerConfig.fontSize))
                         .lineSpacing(readerConfig.lineSpacing)
-                        .foregroundColor(readerConfig.theme.textColor)
+                        .foregroundColor(readerConfig.pageTextColor)
                         .padding(10)
                         .frame(maxWidth: .infinity, alignment: .leading)
-                        .background(readerConfig.theme.backgroundColor)
+                        .background(readerConfig.pageBackgroundColor)
                         .cornerRadius(8)
                         .overlay(
                             RoundedRectangle(cornerRadius: 8)
@@ -877,29 +1037,54 @@ public struct SettingsView: View {
     private var displayBoard: some View {
         sectionCard("界面主题", tag: "THEME") {
             settingBlock("配色方案", icon: "paintpalette") {
-                Picker("界面主题", selection: $themeManager.choice) {
+                VStack(spacing: 0) {
                     ForEach(AppThemeChoice.allCases) { choice in
-                        Text(choice.title).tag(choice)
+                        themeChoiceRow(choice)
+                        if choice != AppThemeChoice.allCases.last {
+                            Rectangle()
+                                .fill(theme.palette.divider.opacity(0.55))
+                                .frame(height: 0.5)
+                        }
                     }
                 }
-                .pickerStyle(.segmented)
-                Text(themeManager.choice.subtitle)
-                    .font(.caption)
-                    .foregroundColor(theme.palette.secondaryInk)
             }
             cardDivider
             settingBlock("外观模式", icon: "circle.lefthalf.filled") {
-                Picker("外观模式", selection: $appTheme) {
-                    Text("跟随系统").tag("system")
-                    Text("浅色模式").tag("light")
-                    Text("深色模式").tag("dark")
+                if theme.isClassTrial {
+                    chipPicker(
+                        selection: $appTheme,
+                        options: [
+                            ("system", "跟随系统"),
+                            ("light", "浅色模式"),
+                            ("dark", "深色模式")
+                        ],
+                        columns: 3
+                    )
+                } else {
+                    Picker("外观模式", selection: $appTheme) {
+                        Text("跟随系统").tag("system")
+                        Text("浅色模式").tag("light")
+                        Text("深色模式").tag("dark")
+                    }
+                    .pickerStyle(.segmented)
                 }
-                .pickerStyle(.segmented)
             }
         }
 
         sectionCard("应用图标", tag: "ICON") {
-            DisclosureGroup(isExpanded: $showAppIconOptions) {
+            Button {
+                withAnimation(.easeInOut(duration: 0.18)) { showAppIconOptions.toggle() }
+            } label: {
+                shelfGroupLabel(
+                    "当前图标",
+                    icon: "app.badge",
+                    summary: appIcon.isSwitching ? "切换中…" : appIcon.choice.title,
+                    expanded: showAppIconOptions
+                )
+            }
+            .buttonStyle(.plain)
+
+            if showAppIconOptions {
                 VStack(spacing: 0) {
                     ForEach(AppIconChoice.allCases) { option in
                         Button {
@@ -908,7 +1093,9 @@ public struct SettingsView: View {
                             HStack(spacing: 10) {
                                 VStack(alignment: .leading, spacing: 2) {
                                     Text(option.title)
-                                        .font(theme.typography.body)
+                                        .font(theme.isClassTrial
+                                            ? .system(size: 15, weight: .heavy)
+                                            : theme.typography.body)
                                         .foregroundColor(theme.palette.ink)
                                     Text(option.subtitle)
                                         .font(.caption2)
@@ -916,7 +1103,12 @@ public struct SettingsView: View {
                                 }
                                 Spacer()
                                 if appIcon.choice == option {
-                                    Image(systemName: "checkmark.circle.fill")
+                                    Image(systemName: theme.isClassTrial
+                                        ? "checkmark.square.fill"
+                                        : "checkmark.circle.fill")
+                                        .font(theme.isClassTrial
+                                            ? .system(size: 18, weight: .bold)
+                                            : .body)
                                         .foregroundColor(theme.palette.accent)
                                 }
                             }
@@ -926,36 +1118,23 @@ public struct SettingsView: View {
                         }
                         .buttonStyle(.plain)
                         .disabled(appIcon.isSwitching)
+
+                        if option != AppIconChoice.allCases.last {
+                            Rectangle()
+                                .fill(theme.palette.divider.opacity(0.55))
+                                .frame(height: 0.5)
+                                .padding(.leading, 14)
+                        }
                     }
-                    if showAppIconOptions {
-                        Text("换完桌面图标会跟着变。没变的话，回一趟桌面，或者重启 App。")
-                            .font(.caption2)
-                            .foregroundColor(theme.palette.secondaryInk)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .padding(.horizontal, 14)
-                            .padding(.bottom, 10)
-                    }
+
+                    Text("换完桌面图标会跟着变。没变的话，回一趟桌面，或者重启 App。")
+                        .font(.caption2)
+                        .foregroundColor(theme.palette.secondaryInk)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 10)
                 }
-            } label: {
-                HStack(spacing: 12) {
-                    rowIcon("app.badge")
-                    Text("当前图标")
-                        .font(theme.typography.body)
-                        .foregroundColor(theme.palette.ink)
-                    Spacer()
-                    if appIcon.isSwitching {
-                        ProgressView().controlSize(.small)
-                    } else {
-                        Text(appIcon.choice.title)
-                            .font(.system(size: 13))
-                            .foregroundColor(theme.palette.secondaryInk)
-                    }
-                }
-                .padding(.horizontal, 14)
-                .padding(.vertical, 11)
-                .contentShape(Rectangle())
             }
-            .tint(theme.palette.accent)
         }
 
         sectionCard("书架排列", tag: "SHELF") {
@@ -1046,6 +1225,7 @@ public struct SettingsView: View {
                                 AppLog.write("[设置] 清除自定义书架图标")
                             }
                             .font(.system(size: 13))
+                            .foregroundColor(theme.palette.danger)
                         }
                         Spacer(minLength: 0)
                     }
@@ -1216,77 +1396,158 @@ public struct SettingsView: View {
     }
 
     /// 书架标题实时预览：改字、字号、位置都按真实书架的比例立刻显示
+    @ViewBuilder
     private var shelfTitlePreview: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(alignment: .bottom, spacing: 12) {
-                Group {
-                    if let custom = shelfLogo.image {
-                        #if canImport(UIKit)
-                        Image(uiImage: custom)
-                            .resizable()
-                            .scaledToFit()
-                        #else
-                        Image(nsImage: custom)
-                            .resizable()
-                            .scaledToFit()
-                        #endif
-                    } else if AppEdition.isAppStoreClean {
-                        ShelfEditionMark(ink: theme.palette.ink, accent: theme.palette.accent)
-                    } else {
-                        Image("ShelfMark")
-                            .renderingMode(.template)
-                            .resizable()
-                            .scaledToFit()
-                            .foregroundColor(theme.palette.ink)
+        if theme.isClassTrial {
+            VStack(alignment: .leading, spacing: 8) {
+                HStack(alignment: .bottom, spacing: 12) {
+                    Group {
+                        if let custom = shelfLogo.image {
+                            #if canImport(UIKit)
+                            Image(uiImage: custom)
+                                .resizable()
+                                .scaledToFit()
+                            #else
+                            Image(nsImage: custom)
+                                .resizable()
+                                .scaledToFit()
+                            #endif
+                        } else {
+                            ClassTrialShelfMark(block: theme.markBlock, mark: theme.markLine, accent: theme.palette.accent)
+                                .frame(width: shelfConfig.logoHeight * 0.82,
+                                       height: shelfConfig.logoHeight * 0.82)
+                        }
                     }
-                }
-                .frame(height: shelfConfig.logoHeight)
-                .offset(x: shelfConfig.logoOffsetX, y: shelfConfig.logoOffsetY)
+                    .frame(height: shelfConfig.logoHeight)
+                    .offset(x: shelfConfig.logoOffsetX, y: shelfConfig.logoOffsetY)
 
-                if shelfConfig.titleVisible {
-                    Text(shelfTitlePreviewText)
-                        .font(.system(size: shelfConfig.titleFontSize, weight: .bold))
-                        .foregroundColor(theme.palette.ink)
-                        .lineLimit(1)
-                        .fixedSize(horizontal: true, vertical: false)
+                    if shelfConfig.titleVisible {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("SHELF / FILE")
+                                .font(theme.typography.label)
+                                .foregroundColor(theme.palette.accent)
+                            Text(shelfTitlePreviewText)
+                                .font(.system(size: shelfConfig.titleFontSize, weight: .black))
+                                .foregroundColor(theme.palette.ink)
+                                .lineLimit(1)
+                                .fixedSize(horizontal: true, vertical: false)
+                                .padding(.bottom, 6)
+                                .overlay(alignment: .bottomLeading) {
+                                    Rectangle()
+                                        .fill(theme.palette.accent)
+                                        .frame(height: 5)
+                                }
+                        }
+                        .rotationEffect(.degrees(-1))
                         .offset(x: shelfConfig.titleOffsetX, y: shelfConfig.titleOffsetY)
-                        .padding(.bottom, 4)
+                    }
+
+                    Spacer(minLength: 0)
                 }
 
-                Spacer(minLength: 0)
+                HStack(spacing: 0) {
+                    Rectangle()
+                        .fill(theme.palette.ink)
+                        .frame(height: 3)
+                    Rectangle()
+                        .fill(theme.palette.accent)
+                        .frame(width: 46, height: 7)
+                }
+                .padding(.leading, 6)
             }
-
-            HStack(spacing: 0) {
+            .padding(12)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .frame(height: 120, alignment: .bottomLeading)
+            .background(theme.palette.surface)
+            .overlay(
+                Rectangle()
+                    .stroke(theme.palette.ink, lineWidth: 2)
+            )
+            .overlay(alignment: .bottomTrailing) {
                 Rectangle()
                     .fill(theme.palette.accent)
-                    .frame(width: 24, height: 2)
-                Rectangle()
-                    .fill(theme.palette.divider.opacity(0.9))
-                    .frame(height: 0.5)
-                Rectangle()
-                    .fill(theme.palette.ink.opacity(0.75))
-                    .frame(width: 4, height: 4)
+                    .frame(width: 34, height: 6)
             }
-            .padding(.leading, 6)
-        }
-        .padding(12)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .frame(height: 120, alignment: .bottomLeading)
-        .background(
-            LinearGradient(
-                colors: [theme.palette.elevated.opacity(0.9), theme.palette.surface],
-                startPoint: .topLeading,
-                endPoint: .bottomTrailing
+            .clipped()
+            .background(
+                Rectangle()
+                    .fill(theme.palette.offsetShadow)
+                    .offset(x: 4, y: 4)
             )
-        )
-        .clipShape(RoundedRectangle(cornerRadius: theme.metrics.cornerRadius, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: theme.metrics.cornerRadius, style: .continuous)
-                .stroke(theme.palette.divider, lineWidth: theme.metrics.borderWidth)
-        )
-        .clipped()
-        .padding(.horizontal, 14)
-        .padding(.top, 10)
+            .padding(.horizontal, 14)
+            .padding(.top, 10)
+        } else {
+            VStack(alignment: .leading, spacing: 8) {
+                HStack(alignment: .bottom, spacing: 12) {
+                    Group {
+                        if let custom = shelfLogo.image {
+                            #if canImport(UIKit)
+                            Image(uiImage: custom)
+                                .resizable()
+                                .scaledToFit()
+                            #else
+                            Image(nsImage: custom)
+                                .resizable()
+                                .scaledToFit()
+                            #endif
+                        } else if AppEdition.isAppStoreClean {
+                            ShelfEditionMark(ink: theme.palette.ink, accent: theme.palette.accent)
+                        } else {
+                            Image("ShelfMark")
+                                .renderingMode(.template)
+                                .resizable()
+                                .scaledToFit()
+                                .foregroundColor(theme.palette.ink)
+                        }
+                    }
+                    .frame(height: shelfConfig.logoHeight)
+                    .offset(x: shelfConfig.logoOffsetX, y: shelfConfig.logoOffsetY)
+
+                    if shelfConfig.titleVisible {
+                        Text(shelfTitlePreviewText)
+                            .font(.system(size: shelfConfig.titleFontSize, weight: .bold))
+                            .foregroundColor(theme.palette.ink)
+                            .lineLimit(1)
+                            .fixedSize(horizontal: true, vertical: false)
+                            .offset(x: shelfConfig.titleOffsetX, y: shelfConfig.titleOffsetY)
+                            .padding(.bottom, 4)
+                    }
+
+                    Spacer(minLength: 0)
+                }
+
+                HStack(spacing: 0) {
+                    Rectangle()
+                        .fill(theme.palette.accent)
+                        .frame(width: 24, height: 2)
+                    Rectangle()
+                        .fill(theme.palette.divider.opacity(0.9))
+                        .frame(height: 0.5)
+                    Rectangle()
+                        .fill(theme.palette.ink.opacity(0.75))
+                        .frame(width: 4, height: 4)
+                }
+                .padding(.leading, 6)
+            }
+            .padding(12)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .frame(height: 120, alignment: .bottomLeading)
+            .background(
+                LinearGradient(
+                    colors: [theme.palette.elevated.opacity(0.9), theme.palette.surface],
+                    startPoint: .topLeading,
+                    endPoint: .bottomTrailing
+                )
+            )
+            .clipShape(RoundedRectangle(cornerRadius: theme.metrics.cornerRadius, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: theme.metrics.cornerRadius, style: .continuous)
+                    .stroke(theme.palette.divider, lineWidth: theme.metrics.borderWidth)
+            )
+            .clipped()
+            .padding(.horizontal, 14)
+            .padding(.top, 10)
+        }
     }
 
     private var shelfTitlePreviewText: String {
@@ -1391,14 +1652,7 @@ public struct SettingsView: View {
             cardDivider
             Toggle(isOn: $cacheReviews) {
                 HStack(spacing: 12) {
-                    Image(systemName: "text.bubble")
-                        .font(.system(size: 13, weight: .medium))
-                        .foregroundColor(theme.palette.ink)
-                        .frame(width: 30, height: 30)
-                        .background(
-                            RoundedRectangle(cornerRadius: max(6, theme.metrics.cornerRadius - 3), style: .continuous)
-                                .fill(theme.palette.divider.opacity(0.25))
-                        )
+                    rowIcon("text.bubble")
                     VStack(alignment: .leading, spacing: 2) {
                         Text("缓存时一起抓书评")
                             .font(theme.typography.body)
@@ -5031,7 +5285,7 @@ struct LogViewerView: View {
                 diagnosticsPane
             }
         }
-        .background(theme.palette.background)
+        .appThemePageBackground()
         .appThemedPage()
         .navigationTitle("诊断日志")
         .onAppear { load() }

@@ -99,7 +99,13 @@ public struct CategoryExploreView: View {
                     mainContentView
                 }
             }
-            .background(theme.palette.background)
+            .background {
+                if theme.backdropStyle == .plain {
+                    theme.palette.background
+                } else {
+                    AppThemeBackdrop()
+                }
+            }
             .navigationTitle("分类")
             #if os(iOS)
             .navigationBarTitleDisplayMode(.inline)
@@ -674,20 +680,40 @@ public struct CategoryExploreView: View {
 
     private var emptySourcesView: some View {
         VStack(spacing: 12) {
-            Image(systemName: "square.grid.2x2")
-                .font(.system(size: 48))
-                .foregroundColor(.secondary.opacity(0.5))
+            if theme.isClassTrial {
+                Image(systemName: "square.grid.2x2")
+                    .font(.system(size: 34, weight: .bold))
+                    .foregroundColor(theme.palette.onInk)
+                    .frame(width: 76, height: 76)
+                    .background(Rectangle().fill(theme.palette.ink))
+                    .overlay(alignment: .bottomTrailing) {
+                        Rectangle()
+                            .fill(theme.palette.accent)
+                            .frame(width: 16, height: 16)
+                    }
+                    .rotationEffect(.degrees(-3))
+            } else {
+                Image(systemName: "square.grid.2x2")
+                    .font(.system(size: 48))
+                    .foregroundColor(.secondary.opacity(0.5))
+            }
             Text("暂无可用分类书源")
-                .font(.headline)
-                .foregroundColor(.secondary)
+                .font(theme.isClassTrial ? .system(size: 20, weight: .black) : .headline)
+                .foregroundColor(theme.isClassTrial ? theme.palette.ink : .secondary)
             Text("请在「设置 - 书源管理」中导入并启用支持预设分类的书籍来源。")
-                .font(.caption)
-                .foregroundColor(.secondary)
+                .font(theme.isClassTrial ? .system(size: 12, weight: .medium) : .caption)
+                .foregroundColor(theme.isClassTrial ? theme.palette.secondaryInk : .secondary)
                 .multilineTextAlignment(.center)
                 .padding(.horizontal, 32)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(theme.palette.background)
+        .background {
+            if theme.backdropStyle == .plain {
+                theme.palette.background
+            } else {
+                AppThemeBackdrop()
+            }
+        }
     }
 
     // MARK: - All Categories Sheet (Grouped by Header)

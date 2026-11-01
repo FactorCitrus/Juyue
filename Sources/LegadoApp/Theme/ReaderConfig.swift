@@ -1,8 +1,12 @@
 import SwiftUI
+#if canImport(UIKit)
+import UIKit
+#endif
 
 enum AppThemeChoice: String, CaseIterable, Identifiable {
     case standard
     case lunarTerminal
+    case classTrial
 
     var id: String { rawValue }
 
@@ -10,6 +14,7 @@ enum AppThemeChoice: String, CaseIterable, Identifiable {
         switch self {
         case .standard: return "标准"
         case .lunarTerminal: return "月面终端"
+        case .classTrial: return "学级审判"
         }
     }
 
@@ -17,6 +22,7 @@ enum AppThemeChoice: String, CaseIterable, Identifiable {
         switch self {
         case .standard: return "跟随系统外观"
         case .lunarTerminal: return "暖纸、墨色与氧化红"
+        case .classTrial: return "黑白、品红与警示斜纹"
         }
     }
 }
@@ -33,6 +39,12 @@ struct AppThemePalette {
     var success: Color
     var warning: Color
     var onAccent: Color
+    /// 压在大块墨色面板上的字与图标：浅色主题墨块是黑的，字得是白的；
+    /// 深色主题墨块翻成暖白，字就必须跟着压深。
+    var onInk: Color
+    /// 学级审判卡片背后的硬偏移块。浅色用墨色，深色改用强调色，
+    /// 免得深色页面被一层层白块压得发灰。
+    var offsetShadow: Color
 }
 
 struct AppThemeTypography {
@@ -51,14 +63,42 @@ struct AppThemeMetrics {
     var tileHeight: CGFloat
 }
 
+/// 主题自带的背景装饰。标准主题什么都不画，两个定制主题各有一套印刷/终端纹理。
+enum AppThemeBackdropStyle {
+    case plain
+    case terminal
+    case classTrial
+}
+
 struct AppThemeTokens {
     var choice: AppThemeChoice
     var palette: AppThemePalette
     var typography: AppThemeTypography
     var metrics: AppThemeMetrics
-    var showsGrid: Bool
+    var backdropStyle: AppThemeBackdropStyle
     var gridOpacity: Double
     var forcedColorScheme: ColorScheme?
+    /// 这套令牌是不是深色变体。学级审判的图标砖、背景装饰要按它换配色。
+    var isDark: Bool = false
+
+    /// 定制主题用无分组线列表：卡片自己就是一块「纸样」，系统分组会打断细线节奏。
+    var usesPlainLists: Bool { backdropStyle != .plain }
+
+    /// 定制主题接管阅读页的底色和墨色；标准主题继续用阅读器自己的配色。
+    var overridesReaderAppearance: Bool { backdropStyle != .plain }
+
+    /// 学级审判要额外的拼贴版式：标题黑板、粗描边、偏移硬阴影。
+    var isClassTrial: Bool { backdropStyle == .classTrial }
+
+    /// 学级审判的深色变体：黑底白描线，强调色不变。
+    var isDarkClassTrial: Bool { isClassTrial && isDark }
+
+    /// 实心图标砖的底色。浅色主题是黑块；深色主题压到稍亮的深灰，
+    /// 这样白描线和小准星还能分得清砖块的边界。
+    var markBlock: Color { isDarkClassTrial ? palette.elevated : palette.ink }
+
+    /// 图标砖内部的线条与网点色。
+    var markLine: Color { isDarkClassTrial ? palette.ink : .white }
 
     static let standard = AppThemeTokens(
         choice: .standard,
@@ -73,7 +113,9 @@ struct AppThemeTokens {
             danger: .red,
             success: .green,
             warning: .orange,
-            onAccent: .white
+            onAccent: .white,
+            onInk: systemGroupedBackground,
+            offsetShadow: Color.primary.opacity(0.10)
         ),
         typography: AppThemeTypography(
             title: .system(size: 26, weight: .bold),
@@ -84,7 +126,7 @@ struct AppThemeTokens {
             readerBody: .system(size: 17)
         ),
         metrics: AppThemeMetrics(cornerRadius: 14, borderWidth: 1, gridSpacing: 28, tileHeight: 146),
-        showsGrid: false,
+        backdropStyle: .plain,
         gridOpacity: 0,
         forcedColorScheme: nil
     )
@@ -102,7 +144,9 @@ struct AppThemeTokens {
             danger: Color(red: 0.702, green: 0.227, blue: 0.169),
             success: Color(red: 0.247, green: 0.408, blue: 0.267),
             warning: Color(red: 0.553, green: 0.373, blue: 0.153),
-            onAccent: Color(red: 0.965, green: 0.945, blue: 0.894)
+            onAccent: Color(red: 0.965, green: 0.945, blue: 0.894),
+            onInk: Color(red: 0.851, green: 0.831, blue: 0.765),
+            offsetShadow: Color(red: 0.090, green: 0.090, blue: 0.082)
         ),
         typography: AppThemeTypography(
             title: .system(size: 25, weight: .bold),
@@ -113,9 +157,76 @@ struct AppThemeTokens {
             readerBody: .custom("Songti SC", size: 18)
         ),
         metrics: AppThemeMetrics(cornerRadius: 2, borderWidth: 1, gridSpacing: 28, tileHeight: 146),
-        showsGrid: true,
+        backdropStyle: .terminal,
         gridOpacity: 0.09,
         forcedColorScheme: .light
+    )
+
+    /// 学级审判：黑白拼贴 + 品红强调。纸面留白、粗黑描边、警示斜纹和网点，
+    /// 字体改粗黑无衬线，卡片一律直角，跟另外两套主题拉开距离。
+    static let classTrial = AppThemeTokens(
+        choice: .classTrial,
+        palette: AppThemePalette(
+            background: Color(red: 0.965, green: 0.957, blue: 0.941),
+            surface: Color(red: 1.0, green: 1.0, blue: 1.0),
+            elevated: Color(red: 0.906, green: 0.906, blue: 0.906),
+            ink: Color(red: 0.070, green: 0.066, blue: 0.062),
+            secondaryInk: Color(red: 0.345, green: 0.337, blue: 0.325),
+            divider: Color(red: 0.070, green: 0.066, blue: 0.062),
+            accent: Color(red: 0.894, green: 0.000, blue: 0.353),
+            danger: Color(red: 0.760, green: 0.063, blue: 0.290),
+            success: Color(red: 0.122, green: 0.478, blue: 0.365),
+            warning: Color(red: 0.651, green: 0.416, blue: 0.000),
+            onAccent: Color(red: 1.0, green: 1.0, blue: 1.0),
+            onInk: Color(red: 1.0, green: 1.0, blue: 1.0),
+            offsetShadow: Color(red: 0.070, green: 0.066, blue: 0.062)
+        ),
+        typography: AppThemeTypography(
+            title: .system(size: 27, weight: .black),
+            body: .system(size: 15, weight: .medium),
+            label: .system(size: 10, weight: .heavy, design: .monospaced),
+            mono: .system(size: 11, weight: .semibold, design: .monospaced),
+            symbol: .system(size: 16, weight: .bold),
+            readerBody: .system(size: 17, weight: .regular)
+        ),
+        metrics: AppThemeMetrics(cornerRadius: 0, borderWidth: 2, gridSpacing: 22, tileHeight: 146),
+        backdropStyle: .classTrial,
+        gridOpacity: 0,
+        forcedColorScheme: nil
+    )
+
+    /// 学级审判夜间：同一套拼贴语言翻到黑底。纸面变暖炭黑，墨色翻成暖白，
+    /// 品红强调不动，卡片的硬偏移块改用强调色，避免整页铺满白块。
+    static let classTrialDark = AppThemeTokens(
+        choice: .classTrial,
+        palette: AppThemePalette(
+            background: Color(red: 0.078, green: 0.071, blue: 0.063),
+            surface: Color(red: 0.129, green: 0.118, blue: 0.106),
+            elevated: Color(red: 0.173, green: 0.157, blue: 0.145),
+            ink: Color(red: 0.949, green: 0.933, blue: 0.906),
+            secondaryInk: Color(red: 0.651, green: 0.620, blue: 0.576),
+            divider: Color(red: 0.949, green: 0.933, blue: 0.906),
+            accent: Color(red: 0.894, green: 0.000, blue: 0.353),
+            danger: Color(red: 0.941, green: 0.298, blue: 0.420),
+            success: Color(red: 0.361, green: 0.788, blue: 0.627),
+            warning: Color(red: 0.910, green: 0.690, blue: 0.290),
+            onAccent: Color(red: 1.0, green: 1.0, blue: 1.0),
+            onInk: Color(red: 0.078, green: 0.071, blue: 0.063),
+            offsetShadow: Color(red: 0.894, green: 0.000, blue: 0.353)
+        ),
+        typography: AppThemeTypography(
+            title: .system(size: 27, weight: .black),
+            body: .system(size: 15, weight: .medium),
+            label: .system(size: 10, weight: .heavy, design: .monospaced),
+            mono: .system(size: 11, weight: .semibold, design: .monospaced),
+            symbol: .system(size: 16, weight: .bold),
+            readerBody: .system(size: 17, weight: .regular)
+        ),
+        metrics: AppThemeMetrics(cornerRadius: 0, borderWidth: 2, gridSpacing: 22, tileHeight: 146),
+        backdropStyle: .classTrial,
+        gridOpacity: 0,
+        forcedColorScheme: nil,
+        isDark: true
     )
 
     private static var systemGroupedBackground: Color {
@@ -139,21 +250,78 @@ final class AppThemeManager: ObservableObject {
     static let shared = AppThemeManager()
 
     @Published var choice: AppThemeChoice {
-        didSet { UserDefaults.standard.set(choice.rawValue, forKey: Self.key) }
+        didSet {
+            UserDefaults.standard.set(choice.rawValue, forKey: Self.key)
+            applyPlatformAppearance()
+        }
     }
 
+    /// 根视图每次渲染时写入的「实际外观」。学级审判现在跟随外观模式，
+    /// ReaderConfig、NieRPalette 这些读不到 SwiftUI 环境的模型靠它选对明暗。
+    private(set) var activeColorScheme: ColorScheme = .light
+    /// 验收调试注入（JUYUE_THEME）时渲染的主题可能与持久化选择不同。
+    private(set) var renderedChoice: AppThemeChoice?
+
+    private var lastAppearanceKey = ""
     private static let key = "app_theme_choice_v1"
 
     var theme: AppThemeTokens {
+        Self.tokens(for: renderedChoice ?? choice, colorScheme: activeColorScheme)
+    }
+
+    /// 由主题根视图在每次布局前调用，保证 ReaderConfig 读到的明暗和界面一致。
+    func syncAppearance(renderedChoice: AppThemeChoice?, colorScheme: ColorScheme) {
+        activeColorScheme = colorScheme
+        self.renderedChoice = renderedChoice
+        let key = "\(renderedChoice?.rawValue ?? choice.rawValue)-\(colorScheme == .dark)"
+        guard key != lastAppearanceKey else { return }
+        lastAppearanceKey = key
+        applyPlatformAppearance()
+    }
+
+    /// 学级审判把系统分段控件也改成黑/品红；切回其他主题时还原。
+    private func applyPlatformAppearance() {
+        #if canImport(UIKit)
+        let tokens = Self.tokens(for: renderedChoice ?? choice, colorScheme: activeColorScheme)
+        let appearance = UISegmentedControl.appearance()
+        if tokens.isClassTrial {
+            appearance.selectedSegmentTintColor = UIColor(tokens.palette.accent)
+            appearance.backgroundColor = UIColor(tokens.palette.surface)
+            appearance.setTitleTextAttributes([
+                .foregroundColor: UIColor(tokens.palette.onAccent),
+                .font: UIFont.systemFont(ofSize: 13, weight: .black)
+            ], for: .selected)
+            appearance.setTitleTextAttributes([
+                .foregroundColor: UIColor(tokens.palette.ink),
+                .font: UIFont.systemFont(ofSize: 13, weight: .semibold)
+            ], for: .normal)
+        } else {
+            appearance.selectedSegmentTintColor = nil
+            appearance.backgroundColor = nil
+            appearance.setTitleTextAttributes([
+                .foregroundColor: UIColor.label
+            ], for: .selected)
+            appearance.setTitleTextAttributes([
+                .foregroundColor: UIColor.label
+            ], for: .normal)
+        }
+        #endif
+    }
+
+    /// 主题选择器要预览每套配色，所以按 choice 取令牌，而不只看当前主题。
+    /// 预览默认给浅色纸样；实际渲染时再按 colorScheme 取深色变体。
+    static func tokens(for choice: AppThemeChoice, colorScheme: ColorScheme = .light) -> AppThemeTokens {
         switch choice {
         case .standard: return .standard
         case .lunarTerminal: return .lunarTerminal
+        case .classTrial: return colorScheme == .dark ? .classTrialDark : .classTrial
         }
     }
 
     private init() {
         let stored = UserDefaults.standard.string(forKey: Self.key)
         choice = AppThemeChoice(rawValue: stored ?? "") ?? .standard
+        applyPlatformAppearance()
     }
 }
 
@@ -173,7 +341,7 @@ private struct AppThemedListModifier: ViewModifier {
 
     @ViewBuilder
     private func styledContent(_ content: Content) -> some View {
-        if theme.showsGrid {
+        if theme.usesPlainLists {
             content.listStyle(.plain)
         } else {
             content
@@ -270,64 +438,324 @@ struct AppThemeBackdrop: View {
                     endRadius: 420
                 )
 
-                if theme.showsGrid {
-                    Canvas { context, size in
-                        var grid = Path()
-                        for x in stride(from: 0.0, through: size.width, by: theme.metrics.gridSpacing) {
-                            grid.move(to: CGPoint(x: x, y: 0))
-                            grid.addLine(to: CGPoint(x: x, y: size.height))
-                        }
-                        for y in stride(from: 0.0, through: size.height, by: theme.metrics.gridSpacing) {
-                            grid.move(to: CGPoint(x: 0, y: y))
-                            grid.addLine(to: CGPoint(x: size.width, y: y))
-                        }
-                        context.stroke(grid, with: .color(theme.palette.ink.opacity(theme.gridOpacity)), lineWidth: 0.5)
-
-                        var scanlines = Path()
-                        for y in stride(from: 0.0, through: size.height, by: 4.0) {
-                            scanlines.move(to: CGPoint(x: 0, y: y))
-                            scanlines.addLine(to: CGPoint(x: size.width, y: y))
-                        }
-                        context.stroke(scanlines, with: .color(theme.palette.ink.opacity(0.018)), lineWidth: 0.5)
-
-                        var corners = Path()
-                        let inset: CGFloat = 14
-                        let arm: CGFloat = 26
-                        corners.move(to: CGPoint(x: inset, y: inset + arm))
-                        corners.addLine(to: CGPoint(x: inset, y: inset))
-                        corners.addLine(to: CGPoint(x: inset + arm, y: inset))
-                        corners.move(to: CGPoint(x: size.width - inset - arm, y: inset))
-                        corners.addLine(to: CGPoint(x: size.width - inset, y: inset))
-                        corners.addLine(to: CGPoint(x: size.width - inset, y: inset + arm))
-                        corners.move(to: CGPoint(x: inset, y: size.height - inset - arm))
-                        corners.addLine(to: CGPoint(x: inset, y: size.height - inset))
-                        corners.addLine(to: CGPoint(x: inset + arm, y: size.height - inset))
-                        corners.move(to: CGPoint(x: size.width - inset - arm, y: size.height - inset))
-                        corners.addLine(to: CGPoint(x: size.width - inset, y: size.height - inset))
-                        corners.addLine(to: CGPoint(x: size.width - inset, y: size.height - inset - arm))
-                        context.stroke(corners, with: .color(theme.palette.ink.opacity(0.16)), lineWidth: 0.8)
-
-                        var ticks = Path()
-                        let tickY = size.height - 34
-                        for index in 0..<14 {
-                            let height = CGFloat((index % 5) + 1) * 2.2
-                            let x = size.width - 34 - CGFloat(index) * 4
-                            ticks.addRect(CGRect(x: x, y: tickY - height, width: 2, height: height))
-                        }
-                        context.fill(ticks, with: .color(theme.palette.ink.opacity(0.08)))
-                    }
-
-                    Text("TERMINAL / READER")
-                        .font(.system(size: 9, weight: .medium, design: .monospaced))
-                        .tracking(3)
-                        .foregroundColor(theme.palette.ink.opacity(0.055))
-                        .rotationEffect(.degrees(-90))
-                        .position(x: geo.size.width - 9, y: geo.size.height * 0.52)
+                switch theme.backdropStyle {
+                case .plain:
+                    EmptyView()
+                case .terminal:
+                    terminalDecor(size: geo.size)
+                case .classTrial:
+                    classTrialDecor(size: geo.size)
                 }
             }
             .frame(width: geo.size.width, height: geo.size.height)
         }
         .ignoresSafeArea()
+    }
+
+    @ViewBuilder
+    private func terminalDecor(size: CGSize) -> some View {
+        Canvas { context, size in
+            var grid = Path()
+            for x in stride(from: 0.0, through: size.width, by: theme.metrics.gridSpacing) {
+                grid.move(to: CGPoint(x: x, y: 0))
+                grid.addLine(to: CGPoint(x: x, y: size.height))
+            }
+            for y in stride(from: 0.0, through: size.height, by: theme.metrics.gridSpacing) {
+                grid.move(to: CGPoint(x: 0, y: y))
+                grid.addLine(to: CGPoint(x: size.width, y: y))
+            }
+            context.stroke(grid, with: .color(theme.palette.ink.opacity(theme.gridOpacity)), lineWidth: 0.5)
+
+            var scanlines = Path()
+            for y in stride(from: 0.0, through: size.height, by: 4.0) {
+                scanlines.move(to: CGPoint(x: 0, y: y))
+                scanlines.addLine(to: CGPoint(x: size.width, y: y))
+            }
+            context.stroke(scanlines, with: .color(theme.palette.ink.opacity(0.018)), lineWidth: 0.5)
+
+            var corners = Path()
+            let inset: CGFloat = 14
+            let arm: CGFloat = 26
+            corners.move(to: CGPoint(x: inset, y: inset + arm))
+            corners.addLine(to: CGPoint(x: inset, y: inset))
+            corners.addLine(to: CGPoint(x: inset + arm, y: inset))
+            corners.move(to: CGPoint(x: size.width - inset - arm, y: inset))
+            corners.addLine(to: CGPoint(x: size.width - inset, y: inset))
+            corners.addLine(to: CGPoint(x: size.width - inset, y: inset + arm))
+            corners.move(to: CGPoint(x: inset, y: size.height - inset - arm))
+            corners.addLine(to: CGPoint(x: inset, y: size.height - inset))
+            corners.addLine(to: CGPoint(x: inset + arm, y: size.height - inset))
+            corners.move(to: CGPoint(x: size.width - inset - arm, y: size.height - inset))
+            corners.addLine(to: CGPoint(x: size.width - inset, y: size.height - inset))
+            corners.addLine(to: CGPoint(x: size.width - inset, y: size.height - inset - arm))
+            context.stroke(corners, with: .color(theme.palette.ink.opacity(0.16)), lineWidth: 0.8)
+
+            var ticks = Path()
+            let tickY = size.height - 34
+            for index in 0..<14 {
+                let height = CGFloat((index % 5) + 1) * 2.2
+                let x = size.width - 34 - CGFloat(index) * 4
+                ticks.addRect(CGRect(x: x, y: tickY - height, width: 2, height: height))
+            }
+            context.fill(ticks, with: .color(theme.palette.ink.opacity(0.08)))
+        }
+
+        Text("TERMINAL / READER")
+            .font(.system(size: 9, weight: .medium, design: .monospaced))
+            .tracking(3)
+            .foregroundColor(theme.palette.ink.opacity(0.055))
+            .rotationEffect(.degrees(-90))
+            .position(x: size.width - 9, y: size.height * 0.52)
+    }
+
+    /// 学级审判：黑白拼贴。网点、警示斜纹、放射速度线和品红溅点，
+    /// 全部压到低透明度；四角用粗黑裁切标记咬住画面。
+    @ViewBuilder
+    private func classTrialDecor(size: CGSize) -> some View {
+        Canvas { context, size in
+            var seed: UInt64 = 0x1CE_5EED_2026_0001
+            func next() -> CGFloat {
+                seed = seed &* 6_364_136_223_846_793_005 &+ 1_442_695_040_888_963_407
+                return CGFloat((seed >> 33) & 0xFFFFFF) / CGFloat(0xFFFFFF)
+            }
+
+            // 左上、右下两团网点
+            var dots = Path()
+            let spacing: CGFloat = 7
+            let clusters: [(CGPoint, CGFloat)] = [
+                (CGPoint(x: -20, y: -10), 260),
+                (CGPoint(x: size.width + 10, y: size.height + 10), 300)
+            ]
+            var dotY: CGFloat = 0
+            while dotY < size.height {
+                var dotX: CGFloat = 0
+                while dotX < size.width {
+                    var intensity: CGFloat = 0
+                    for (center, radius) in clusters {
+                        let dx = dotX - center.x
+                        let dy = dotY - center.y
+                        let distance = sqrt(dx * dx + dy * dy)
+                        intensity = max(intensity, max(0, 1 - distance / radius))
+                    }
+                    if intensity > 0.06, next() < intensity * 0.9 {
+                        let radius = 0.6 + intensity * 1.6
+                        dots.addEllipse(in: CGRect(x: dotX - radius, y: dotY - radius,
+                                                   width: radius * 2, height: radius * 2))
+                    }
+                    dotX += spacing
+                }
+                dotY += spacing
+            }
+            context.fill(dots, with: .color(theme.palette.ink.opacity(theme.isDark ? 0.10 : 0.12)))
+
+            // 右上角放射速度线：深色下白线与品红线交替，比纯白更透气
+            var speed = Path()
+            var accentSpeed = Path()
+            let focus = CGPoint(x: size.width * 0.94, y: size.height * 0.06)
+            for index in 0..<70 {
+                let angle = CGFloat(index) / 70 * .pi * 0.62 + .pi * 0.42
+                let inner = 40 + next() * 90
+                let outer = inner + 160 + next() * 280
+                let line = CGPoint(x: focus.x + cos(angle) * inner, y: focus.y + sin(angle) * inner)
+                let end = CGPoint(x: focus.x + cos(angle) * outer, y: focus.y + sin(angle) * outer)
+                if theme.isDark && index % 4 == 0 {
+                    accentSpeed.move(to: line)
+                    accentSpeed.addLine(to: end)
+                } else {
+                    speed.move(to: line)
+                    speed.addLine(to: end)
+                }
+            }
+            context.stroke(speed, with: .color(theme.palette.ink.opacity(theme.isDark ? 0.09 : 0.05)), lineWidth: 0.6)
+            if theme.isDark {
+                context.stroke(accentSpeed, with: .color(theme.palette.accent.opacity(0.10)), lineWidth: 0.6)
+            }
+
+            // 底部警示斜纹带：留出底部工具栏的位置。深色下换成低透明度品红，
+            // 白色斜纹在黑底上太抢眼，会把底栏压住。
+            var stripes = Path()
+            let bandHeight: CGFloat = 12
+            let bandY = size.height - bandHeight - 46
+            let stripeWidth: CGFloat = 9
+            var stripeX = -bandHeight
+            while stripeX < size.width + bandHeight {
+                stripes.move(to: CGPoint(x: stripeX, y: bandY + bandHeight))
+                stripes.addLine(to: CGPoint(x: stripeX + stripeWidth, y: bandY + bandHeight))
+                stripes.addLine(to: CGPoint(x: stripeX + stripeWidth + bandHeight, y: bandY))
+                stripes.addLine(to: CGPoint(x: stripeX + bandHeight, y: bandY))
+                stripes.closeSubpath()
+                stripeX += stripeWidth * 2
+            }
+            context.fill(stripes, with: .color(theme.isDark
+                ? theme.palette.accent.opacity(0.10)
+                : theme.palette.ink.opacity(0.16)))
+
+            // 品红溅点
+            var splat = Path()
+            for _ in 0..<7 {
+                let cx = next() * size.width * 0.4
+                let cy = size.height * 0.6 + next() * size.height * 0.36
+                let radius = 2 + next() * 9
+                splat.addEllipse(in: CGRect(x: cx, y: cy, width: radius, height: radius))
+            }
+            context.fill(splat, with: .color(theme.palette.accent.opacity(theme.isDark ? 0.18 : 0.10)))
+
+            // 四角粗黑裁切标记
+            var corners = Path()
+            let inset: CGFloat = 10
+            let arm: CGFloat = 22
+            let thickness: CGFloat = 4
+            corners.addRect(CGRect(x: inset, y: inset, width: arm, height: thickness))
+            corners.addRect(CGRect(x: inset, y: inset, width: thickness, height: arm))
+            corners.addRect(CGRect(x: size.width - inset - arm, y: inset, width: arm, height: thickness))
+            corners.addRect(CGRect(x: size.width - inset - thickness, y: inset, width: thickness, height: arm))
+            corners.addRect(CGRect(x: inset, y: size.height - inset - thickness, width: arm, height: thickness))
+            corners.addRect(CGRect(x: inset, y: size.height - inset - arm, width: thickness, height: arm))
+            corners.addRect(CGRect(x: size.width - inset - arm, y: size.height - inset - thickness, width: arm, height: thickness))
+            corners.addRect(CGRect(x: size.width - inset - thickness, y: size.height - inset - arm, width: thickness, height: arm))
+            context.fill(corners, with: .color(theme.palette.ink.opacity(theme.isDark ? 0.55 : 0.85)))
+        }
+
+        Text("CLASS TRIAL / 学级审判")
+            .font(.system(size: 9, weight: .heavy, design: .monospaced))
+            .tracking(2.4)
+            .foregroundColor(theme.palette.ink.opacity(0.14))
+            .rotationEffect(.degrees(-90))
+            .position(x: size.width - 9, y: size.height * 0.42)
+
+        Text("01")
+            .font(.system(size: 96, weight: .black))
+            .foregroundColor(theme.palette.accent.opacity(theme.isDark ? 0.10 : 0.07))
+            .rotationEffect(.degrees(-8))
+            .position(x: size.width * 0.82, y: size.height * 0.17)
+    }
+}
+
+/// 定制主题的统一卡面：学级审判用直角 + 粗黑描边 + 偏移硬阴影；
+/// 其余主题沿用圆角卡面。
+struct AppThemePanelModifier: ViewModifier {
+    @Environment(\.appTheme) private var theme
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if theme.isClassTrial {
+            content
+                .background(theme.palette.surface)
+                .overlay(
+                    Rectangle()
+                        .stroke(theme.palette.ink, lineWidth: 2)
+                )
+                .background(
+                    Rectangle()
+                        .fill(theme.palette.offsetShadow)
+                        .offset(x: 4, y: 4)
+                )
+        } else {
+            content
+                .background(
+                    RoundedRectangle(cornerRadius: theme.metrics.cornerRadius, style: .continuous)
+                        .fill(theme.palette.surface)
+                )
+                .clipShape(RoundedRectangle(cornerRadius: theme.metrics.cornerRadius, style: .continuous))
+                .overlay(
+                    RoundedRectangle(cornerRadius: theme.metrics.cornerRadius, style: .continuous)
+                        .stroke(theme.palette.divider, lineWidth: theme.metrics.borderWidth)
+                )
+        }
+    }
+}
+
+extension View {
+    func appThemePanel() -> some View {
+        modifier(AppThemePanelModifier())
+    }
+
+    /// 页面底色：标准主题铺平色，定制主题铺满装饰背景。
+    func appThemePageBackground() -> some View {
+        modifier(AppThemePageBackgroundModifier())
+    }
+}
+
+struct AppThemePageBackgroundModifier: ViewModifier {
+    @Environment(\.appTheme) private var theme
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if theme.backdropStyle == .plain {
+            content.background(theme.palette.background)
+        } else {
+            content.background(AppThemeBackdrop())
+        }
+    }
+}
+
+/// 通用分组卡片：设置、弹层、子菜单都能复用同一套主题页头和卡面。
+struct AppThemeSection<Content: View>: View {
+    @Environment(\.appTheme) private var theme
+
+    let title: String
+    let tag: String?
+    let content: Content
+
+    init(_ title: String, tag: String? = nil, @ViewBuilder content: () -> Content) {
+        self.title = title
+        self.tag = tag
+        self.content = content()
+    }
+
+    @ViewBuilder
+    var body: some View {
+        if theme.isClassTrial {
+            VStack(alignment: .leading, spacing: 0) {
+                HStack(spacing: 0) {
+                    Text(title)
+                        .font(.system(size: 12, weight: .black))
+                        .foregroundColor(theme.palette.onInk)
+                        .padding(.horizontal, 9)
+                        .padding(.vertical, 5)
+                        .background(theme.palette.ink)
+                    if let tag {
+                        Text(tag)
+                            .font(theme.typography.mono)
+                            .foregroundColor(theme.palette.onAccent)
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 5)
+                            .background(theme.palette.accent)
+                    }
+                    Rectangle()
+                        .fill(theme.palette.ink)
+                        .frame(maxWidth: .infinity, maxHeight: 2)
+                }
+                content
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(theme.palette.surface)
+                    .overlay(
+                        Rectangle()
+                            .stroke(theme.palette.ink, lineWidth: 2)
+                    )
+                    .overlay(alignment: .bottomTrailing) {
+                        Rectangle()
+                            .fill(theme.palette.accent)
+                            .frame(width: 34, height: 5)
+                    }
+            }
+        } else {
+            VStack(alignment: .leading, spacing: 8) {
+                Text(title)
+                    .font(theme.typography.label)
+                    .foregroundColor(theme.palette.secondaryInk)
+                content
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(
+                        RoundedRectangle(cornerRadius: theme.metrics.cornerRadius, style: .continuous)
+                            .fill(theme.palette.surface)
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: theme.metrics.cornerRadius, style: .continuous)
+                            .stroke(theme.palette.divider, lineWidth: theme.metrics.borderWidth)
+                    )
+            }
+        }
     }
 }
 
@@ -339,35 +767,80 @@ struct TerminalPageHeader: View {
     let detail: String
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 7) {
-            HStack {
-                Text(code)
-                    .font(theme.typography.label)
-                Spacer()
-                Text("MODULE")
+        if theme.isClassTrial {
+            VStack(alignment: .leading, spacing: 5) {
+                HStack {
+                    Text(code)
+                        .font(theme.typography.label)
+                        .foregroundColor(theme.palette.accent)
+                    Spacer()
+                    Text("CLASS TRIAL")
+                        .font(theme.typography.mono)
+                        .foregroundColor(theme.palette.onInk.opacity(0.55))
+                }
+
+                Text(title)
+                    .font(.system(size: 28, weight: .black))
+                    .foregroundColor(theme.palette.onInk)
+
+                Text(detail)
                     .font(theme.typography.mono)
+                    .foregroundColor(theme.palette.onInk.opacity(0.62))
             }
-            .foregroundColor(theme.palette.secondaryInk)
-
-            Text(title)
-                .font(theme.typography.title)
-                .foregroundColor(theme.palette.ink)
-
-            Text(detail)
-                .font(theme.typography.mono)
+            .padding(14)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(theme.palette.ink)
+            .overlay(alignment: .leading) {
+                Rectangle()
+                    .fill(theme.palette.accent)
+                    .frame(width: 5)
+            }
+            .overlay(alignment: .bottom) {
+                HStack(spacing: 0) {
+                    Rectangle()
+                        .fill(theme.palette.accent)
+                        .frame(height: 4)
+                    Rectangle()
+                        .fill(theme.palette.onInk.opacity(0.16))
+                        .frame(height: 4)
+                }
+            }
+            .background(
+                Rectangle()
+                    .fill(theme.palette.accent)
+                    .offset(x: 5, y: 5)
+            )
+        } else {
+            VStack(alignment: .leading, spacing: 7) {
+                HStack {
+                    Text(code)
+                        .font(theme.typography.label)
+                    Spacer()
+                    Text("MODULE")
+                        .font(theme.typography.mono)
+                }
                 .foregroundColor(theme.palette.secondaryInk)
-        }
-        .padding(14)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(theme.palette.surface)
-        .overlay(alignment: .leading) {
-            Rectangle()
-                .fill(theme.palette.accent)
-                .frame(width: 3)
-        }
-        .overlay {
-            Rectangle()
-                .stroke(theme.palette.divider, lineWidth: theme.metrics.borderWidth)
+
+                Text(title)
+                    .font(theme.typography.title)
+                    .foregroundColor(theme.palette.ink)
+
+                Text(detail)
+                    .font(theme.typography.mono)
+                    .foregroundColor(theme.palette.secondaryInk)
+            }
+            .padding(14)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(theme.palette.surface)
+            .overlay(alignment: .leading) {
+                Rectangle()
+                    .fill(theme.palette.accent)
+                    .frame(width: 3)
+            }
+            .overlay {
+                Rectangle()
+                    .stroke(theme.palette.divider, lineWidth: theme.metrics.borderWidth)
+            }
         }
     }
 }
@@ -384,9 +857,18 @@ struct TerminalInfoRow: View {
         HStack(alignment: .center, spacing: 10) {
             Image(systemName: symbol)
                 .font(theme.typography.symbol)
-                .foregroundColor(theme.palette.accent)
+                .foregroundColor(theme.isClassTrial ? theme.palette.onInk : theme.palette.accent)
                 .frame(width: 28, height: 28)
-                .background(theme.palette.accent.opacity(0.10))
+                .background(theme.isClassTrial
+                    ? theme.palette.ink
+                    : theme.palette.accent.opacity(0.10))
+                .overlay(alignment: .bottomTrailing) {
+                    if theme.isClassTrial {
+                        Rectangle()
+                            .fill(theme.palette.accent)
+                            .frame(width: 6, height: 6)
+                    }
+                }
                 .overlay(
                     Rectangle()
                         .stroke(theme.palette.divider, lineWidth: theme.metrics.borderWidth)
@@ -426,10 +908,21 @@ struct TerminalStatusPill: View {
     var body: some View {
         Text(text)
             .font(theme.typography.mono)
-            .foregroundColor(color ?? theme.palette.secondaryInk)
+            .foregroundColor(theme.isClassTrial
+                ? (color ?? theme.palette.onInk)
+                : (color ?? theme.palette.secondaryInk))
             .padding(.horizontal, 7)
             .padding(.vertical, 3)
-            .background((color ?? theme.palette.secondaryInk).opacity(0.10))
+            .background(theme.isClassTrial
+                ? theme.palette.ink
+                : (color ?? theme.palette.secondaryInk).opacity(0.10))
+            .overlay(alignment: .leading) {
+                if theme.isClassTrial {
+                    Rectangle()
+                        .fill(color ?? theme.palette.accent)
+                        .frame(width: 3)
+                }
+            }
             .overlay(
                 Rectangle()
                     .stroke((color ?? theme.palette.divider).opacity(0.7),
@@ -1130,6 +1623,18 @@ public class ReaderConfig: ObservableObject {
             return theme.textColor
         }
         return custom
+    }
+
+    /// 阅读页真正使用的纸色与墨色。定制界面主题接管时用主题配色，
+    /// 跟顶栏、设置面板保持一致；标准主题仍按阅读主题和自定义配色走。
+    public var pageBackgroundColor: Color {
+        let appTheme = AppThemeManager.shared.theme
+        return appTheme.overridesReaderAppearance ? appTheme.palette.background : backgroundColor
+    }
+
+    public var pageTextColor: Color {
+        let appTheme = AppThemeManager.shared.theme
+        return appTheme.overridesReaderAppearance ? appTheme.palette.ink : textColor
     }
 
     public init() {

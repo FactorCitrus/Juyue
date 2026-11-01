@@ -3,20 +3,24 @@ import SwiftUI
 /// 局部尼尔风主题。只用在换源、段评、评论这类信息面板上，不覆盖全局设置。
 struct NieRPalette {
     let isDark: Bool
+    let isClassTrial: Bool
+    private let app: AppThemeTokens
 
     init(_ scheme: ColorScheme) {
         self.isDark = scheme == .dark
+        self.app = AppThemeManager.tokens(for: AppThemeManager.shared.theme.choice, colorScheme: scheme)
+        self.isClassTrial = app.isClassTrial
     }
 
-    var background: Color { color(isDark ? "#191A18" : "#E7DFCF") }
-    var panel: Color { color(isDark ? "#232420" : "#F0E9DC") }
-    var panelRaised: Color { color(isDark ? "#2B2C27" : "#F5EFE4") }
-    var ink: Color { color(isDark ? "#E9E1D2" : "#1E1D1A") }
-    var muted: Color { color(isDark ? "#9C9588" : "#6E675C") }
-    var line: Color { color(isDark ? "#4A4841" : "#B9AE9B") }
-    var accent: Color { color(isDark ? "#D05A49" : "#A63A2E") }
+    var background: Color { isClassTrial ? app.palette.background : color(isDark ? "#191A18" : "#E7DFCF") }
+    var panel: Color { isClassTrial ? app.palette.surface : color(isDark ? "#232420" : "#F0E9DC") }
+    var panelRaised: Color { isClassTrial ? app.palette.surface : color(isDark ? "#2B2C27" : "#F5EFE4") }
+    var ink: Color { isClassTrial ? app.palette.ink : color(isDark ? "#E9E1D2" : "#1E1D1A") }
+    var muted: Color { isClassTrial ? app.palette.secondaryInk : color(isDark ? "#9C9588" : "#6E675C") }
+    var line: Color { isClassTrial ? app.palette.ink : color(isDark ? "#4A4841" : "#B9AE9B") }
+    var accent: Color { isClassTrial ? app.palette.accent : color(isDark ? "#D05A49" : "#A63A2E") }
     var accentSoft: Color { accent.opacity(isDark ? 0.22 : 0.13) }
-    var warning: Color { color(isDark ? "#D2A24C" : "#8C6428") }
+    var warning: Color { isClassTrial ? app.palette.warning : color(isDark ? "#D2A24C" : "#8C6428") }
     var grid: Color { ink.opacity(isDark ? 0.035 : 0.045) }
 
     private func color(_ hex: String) -> Color {
@@ -28,33 +32,39 @@ struct NieRBackdrop: View {
     let palette: NieRPalette
 
     var body: some View {
-        ZStack {
-            palette.background
-            Canvas { context, size in
-                let spacing: CGFloat = 28
-                var path = Path()
-                var x: CGFloat = 0
-                while x <= size.width {
-                    path.move(to: CGPoint(x: x, y: 0))
-                    path.addLine(to: CGPoint(x: x, y: size.height))
-                    x += spacing
-                }
-                var y: CGFloat = 0
-                while y <= size.height {
-                    path.move(to: CGPoint(x: 0, y: y))
-                    path.addLine(to: CGPoint(x: size.width, y: y))
-                    y += spacing
-                }
-                context.stroke(path, with: .color(palette.grid), lineWidth: 0.5)
+        Group {
+            if palette.isClassTrial {
+                AppThemeBackdrop()
+            } else {
+                ZStack {
+                    palette.background
+                    Canvas { context, size in
+                        let spacing: CGFloat = 28
+                        var path = Path()
+                        var x: CGFloat = 0
+                        while x <= size.width {
+                            path.move(to: CGPoint(x: x, y: 0))
+                            path.addLine(to: CGPoint(x: x, y: size.height))
+                            x += spacing
+                        }
+                        var y: CGFloat = 0
+                        while y <= size.height {
+                            path.move(to: CGPoint(x: 0, y: y))
+                            path.addLine(to: CGPoint(x: size.width, y: y))
+                            y += spacing
+                        }
+                        context.stroke(path, with: .color(palette.grid), lineWidth: 0.5)
 
-                var scan = Path()
-                var sy: CGFloat = 0
-                while sy <= size.height {
-                    scan.move(to: CGPoint(x: 0, y: sy))
-                    scan.addLine(to: CGPoint(x: size.width, y: sy))
-                    sy += 4
+                        var scan = Path()
+                        var sy: CGFloat = 0
+                        while sy <= size.height {
+                            scan.move(to: CGPoint(x: 0, y: sy))
+                            scan.addLine(to: CGPoint(x: size.width, y: sy))
+                            sy += 4
+                        }
+                        context.stroke(scan, with: .color(palette.ink.opacity(0.012)), lineWidth: 0.5)
+                    }
                 }
-                context.stroke(scan, with: .color(palette.ink.opacity(0.012)), lineWidth: 0.5)
             }
         }
         .ignoresSafeArea()
@@ -77,7 +87,7 @@ struct NieRSheetHeader: View {
                         .tracking(1.4)
                         .foregroundColor(palette.accent)
                     Text(title)
-                        .font(.system(size: 27, weight: .bold))
+                        .font(.system(size: 27, weight: palette.isClassTrial ? .black : .bold))
                         .foregroundColor(palette.ink)
                     if let subtitle, !subtitle.isEmpty {
                         Text(subtitle)
@@ -158,14 +168,29 @@ struct NieRPanel<Content: View>: View {
     @ViewBuilder let content: () -> Content
 
     var body: some View {
-        content()
-            .padding(12)
-            .background(raised ? palette.panelRaised : palette.panel)
-            .overlay(
-                Rectangle()
-                    .stroke(palette.line.opacity(0.8), lineWidth: 0.7)
-            )
-            .overlay(alignment: .topLeading) { cornerMarks }
+        if palette.isClassTrial {
+            content()
+                .padding(12)
+                .background(palette.panel)
+                .overlay(
+                    Rectangle()
+                        .stroke(palette.ink, lineWidth: 2)
+                )
+                .overlay(alignment: .bottomTrailing) {
+                    Rectangle()
+                        .fill(palette.accent)
+                        .frame(width: 20, height: 5)
+                }
+        } else {
+            content()
+                .padding(12)
+                .background(raised ? palette.panelRaised : palette.panel)
+                .overlay(
+                    Rectangle()
+                        .stroke(palette.line.opacity(0.8), lineWidth: 0.7)
+                )
+                .overlay(alignment: .topLeading) { cornerMarks }
+        }
     }
 
     private var cornerMarks: some View {

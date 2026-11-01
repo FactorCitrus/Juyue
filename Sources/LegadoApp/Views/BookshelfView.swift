@@ -286,10 +286,14 @@ final class ShelfLogoStore: ObservableObject {
 public struct BookshelfView: View {
     @ObservedObject var bookStore = BookStore.shared
     @ObservedObject private var shelfConfig = BookshelfConfig.shared
+    @ObservedObject private var readingStats = ReadingStatsStore.shared
     @StateObject private var shelfLogo = ShelfLogoStore.shared
     @Environment(\.appTheme) private var theme
     @Environment(\.colorScheme) private var colorScheme
     @State private var selectedBook: Book? = nil
+    @State private var readerInitialChapter: Int? = nil
+    @State private var showingBookmarks = false
+    @State private var showingLunarLog = false
     @State private var navigateToDetailBook: Book? = nil
     @State private var isSearchActive: Bool = false
     @State private var showFileImporter: Bool = false
@@ -318,6 +322,475 @@ public struct BookshelfView: View {
         return sortedBookshelf.filter { $0.groupId == selectedGroupId }
     }
 
+    // MARK: 阅读统计（档案条用）
+
+    private func statDuration(_ seconds: Int) -> String {
+        if seconds < 60 { return "\(seconds) 秒" }
+        if seconds < 3600 { return "\(seconds / 60) 分钟" }
+        let hours = Double(seconds) / 3600
+        return String(format: "%.1f 小时", hours)
+    }
+
+    /// 最近 7 天的阅读秒数，按旧 → 新排。
+    private var last7DaySeconds: [Int] {
+        let calendar = Calendar.current
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd"
+        return (0..<7).reversed().map { offset in
+            let date = calendar.date(byAdding: .day, value: -offset, to: Date()) ?? Date()
+            return readingStats.snapshot.dailySeconds[formatter.string(from: date)] ?? 0
+        }
+    }
+
+    private var weekBars: some View {
+        weekBars(height: 30)
+    }
+
+    private func weekBars(height: CGFloat) -> some View {
+        let values = last7DaySeconds
+        let peak = max(values.max() ?? 0, 1)
+        return HStack(alignment: .bottom, spacing: 3) {
+            ForEach(Array(values.enumerated()), id: \.offset) { index, seconds in
+                Rectangle()
+                    .fill(index == values.count - 1
+                        ? theme.palette.accent
+                        : theme.palette.ink.opacity(seconds > 0 ? 0.78 : 0.14))
+                    .frame(width: 6, height: max(3, height * CGFloat(seconds) / CGFloat(peak)))
+            }
+        }
+        .frame(height: height, alignment: .bottom)
+    }
+
+    // MARK: 学级审判档案条（点击翻面）
+
+    private var classTrialReadingCard: some View {
+        VStack(spacing: 0) {
+            ZStack {
+                if showingBookmarks {
+                    classTrialBookmarkFace
+                        .rotation3DEffect(.degrees(180), axis: (x: 0, y: 1, z: 0))
+                } else {
+                    classTrialStatsFace
+                }
+            }
+            .frame(height: 74)
+            .rotation3DEffect(
+                .degrees(showingBookmarks ? 180 : 0),
+                axis: (x: 0, y: 1, z: 0),
+                perspective: 0.55
+            )
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(theme.palette.surface)
+        .overlay(
+            Rectangle()
+                .stroke(theme.palette.ink, lineWidth: 2)
+        )
+        .overlay(alignment: .bottom) {
+            HStack(spacing: 0) {
+                Rectangle()
+                    .fill(theme.palette.accent)
+                    .frame(width: 72, height: 5)
+                Rectangle()
+                    .fill(theme.palette.ink.opacity(0.14))
+                    .frame(height: 5)
+            }
+        }
+        .overlay(alignment: .topTrailing) {
+            Text("FILE / 01")
+                .font(.system(size: 8, weight: .heavy, design: .monospaced))
+                .foregroundColor(theme.palette.onInk)
+                .padding(.horizontal, 6)
+                .padding(.vertical, 2)
+                .background(theme.palette.ink)
+                .offset(x: 7, y: -10)
+        }
+        .background(
+            Rectangle()
+                .fill(theme.palette.offsetShadow)
+                .offset(x: 4, y: 4)
+        )
+        .padding(.horizontal, 16)
+        .padding(.top, 14)
+        .contentShape(Rectangle())
+        .onTapGesture {
+            guard !showingBookmarks else { return }
+            withAnimation(.easeInOut(duration: 0.42)) { showingBookmarks = true }
+        }
+    }
+
+    // MARK: 月面终端档案条（点击翻面）
+
+    private var lunarTerminalArchiveCard: some View {
+        VStack(spacing: 0) {
+            ZStack {
+                if showingLunarLog {
+                    lunarLogFace
+                        .rotation3DEffect(.degrees(180), axis: (x: 0, y: 1, z: 0))
+                } else {
+                    lunarArchiveFace
+                }
+            }
+            .frame(height: 92)
+            .rotation3DEffect(
+                .degrees(showingLunarLog ? 180 : 0),
+                axis: (x: 0, y: 1, z: 0),
+                perspective: 0.55
+            )
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .background(
+            LinearGradient(
+                colors: [theme.palette.elevated.opacity(0.9), theme.palette.surface],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
+        )
+        .overlay(alignment: .leading) {
+            Rectangle()
+                .fill(theme.palette.accent)
+                .frame(width: 3)
+        }
+        .overlay(
+            RoundedRectangle(cornerRadius: theme.metrics.cornerRadius, style: .continuous)
+                .stroke(theme.palette.divider.opacity(0.85), lineWidth: theme.metrics.borderWidth)
+        )
+        .clipShape(RoundedRectangle(cornerRadius: theme.metrics.cornerRadius, style: .continuous))
+        .shadow(color: .black.opacity(0.05), radius: 10, y: 5)
+        .contentShape(Rectangle())
+        .onTapGesture {
+            guard !showingLunarLog else { return }
+            withAnimation(.easeInOut(duration: 0.42)) { showingLunarLog = true }
+        }
+        .padding(.horizontal, 16)
+        .padding(.top, 8)
+    }
+
+    private var lunarArchiveFace: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            HStack(spacing: 6) {
+                Text("ARCHIVE / LIBRARY")
+                    .font(theme.typography.label)
+                    .foregroundColor(theme.palette.secondaryInk)
+                Spacer(minLength: 4)
+                Circle()
+                    .fill(theme.palette.accent)
+                    .frame(width: 5, height: 5)
+                Text("SYS.READY")
+                    .font(theme.typography.mono)
+                    .foregroundColor(theme.palette.secondaryInk)
+            }
+
+            HStack(alignment: .firstTextBaseline, spacing: 5) {
+                Text("档案库")
+                    .font(theme.typography.title)
+                    .foregroundColor(theme.palette.ink)
+                Spacer(minLength: 6)
+                Text(String(format: "%03d", bookStore.bookshelf.count))
+                    .font(.system(size: 26, weight: .bold, design: .monospaced))
+                    .foregroundColor(theme.palette.ink.opacity(0.24))
+                Text("BOOKS")
+                    .font(theme.typography.mono)
+                    .foregroundColor(theme.palette.secondaryInk)
+            }
+
+            HStack(alignment: .bottom, spacing: 8) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("在读 \(readingBookCount) · 今日 \(statDuration(readingStats.todaySeconds)) · 连续 \(readingStats.streakDays) 天")
+                        .font(theme.typography.mono)
+                        .foregroundColor(theme.palette.secondaryInk)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.85)
+                    Text("\(bookStore.groups.count) GROUPS · TAP / FLIP")
+                        .font(.system(size: 9, design: .monospaced))
+                        .foregroundColor(theme.palette.secondaryInk.opacity(0.7))
+                }
+                Spacer(minLength: 6)
+                VStack(alignment: .trailing, spacing: 2) {
+                    Text("7D")
+                        .font(.system(size: 8, weight: .semibold, design: .monospaced))
+                        .foregroundColor(theme.palette.secondaryInk)
+                    weekBars(height: 24)
+                        .frame(width: 60, alignment: .trailing)
+                }
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 4)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+    }
+
+    private var lunarLogFace: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            HStack(spacing: 6) {
+                Text("SYSTEM LOG / 会话日志")
+                    .font(theme.typography.label)
+                    .foregroundColor(theme.palette.accent)
+                Spacer(minLength: 4)
+                Button {
+                    withAnimation(.easeInOut(duration: 0.42)) { showingLunarLog = false }
+                } label: {
+                    HStack(spacing: 3) {
+                        Image(systemName: "arrow.uturn.backward")
+                            .font(.system(size: 8, weight: .bold))
+                        Text("翻回")
+                            .font(.system(size: 9, weight: .semibold))
+                    }
+                    .foregroundColor(theme.palette.secondaryInk)
+                }
+                .buttonStyle(.plain)
+            }
+
+            if recentBookmarks.isEmpty && inProgressBooks.isEmpty {
+                Text("暂无记录 · 翻开一本书开始记录")
+                    .font(.system(size: 10, weight: .medium, design: .monospaced))
+                    .foregroundColor(theme.palette.secondaryInk)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.top, 8)
+            } else if !recentBookmarks.isEmpty {
+                lunarLogSectionLabel("RECENT MARKS")
+                ForEach(Array(recentBookmarks.prefix(2).enumerated()), id: \.element.id) { index, bookmark in
+                    lunarLogRow(
+                        index: index,
+                        title: bookmarkText(bookmark),
+                        subtitle: bookmarkSubtitle(bookmark),
+                        trailing: "CH.\(bookmark.chapterIndex + 1)"
+                    ) {
+                        openLunarBookmark(bookmark)
+                    }
+                }
+            } else {
+                lunarLogSectionLabel("IN PROGRESS")
+                ForEach(Array(inProgressBooks.prefix(2).enumerated()), id: \.element.bookUrl) { index, book in
+                    lunarLogRow(
+                        index: index,
+                        title: book.name,
+                        subtitle: book.durChapterTitle ?? "未开始",
+                        trailing: lunarProgress(book)
+                    ) {
+                        openLunarBook(book)
+                    }
+                }
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 4)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+    }
+
+    private func lunarLogSectionLabel(_ text: String) -> some View {
+        HStack(spacing: 6) {
+            Rectangle()
+                .fill(theme.palette.accent.opacity(0.75))
+                .frame(width: 10, height: 1.5)
+            Text(text)
+                .font(.system(size: 8, weight: .semibold, design: .monospaced))
+                .tracking(0.8)
+                .foregroundColor(theme.palette.secondaryInk)
+            Rectangle()
+                .fill(theme.palette.divider.opacity(0.5))
+                .frame(height: 0.5)
+        }
+    }
+
+    private func lunarLogRow(
+        index: Int,
+        title: String,
+        subtitle: String,
+        trailing: String,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            HStack(spacing: 7) {
+                Text(String(format: "%02d", index + 1))
+                    .font(.system(size: 9, weight: .bold, design: .monospaced))
+                    .foregroundColor(theme.palette.accent)
+                    .frame(width: 16, alignment: .leading)
+                VStack(alignment: .leading, spacing: 0) {
+                    Text(title)
+                        .font(.system(size: 11.5, weight: .medium))
+                        .foregroundColor(theme.palette.ink)
+                        .lineLimit(1)
+                    Text(subtitle)
+                        .font(.system(size: 8.5, design: .monospaced))
+                        .foregroundColor(theme.palette.secondaryInk)
+                        .lineLimit(1)
+                }
+                Spacer(minLength: 4)
+                Text(trailing)
+                    .font(.system(size: 8.5, weight: .semibold, design: .monospaced))
+                    .foregroundColor(theme.palette.secondaryInk)
+                    .lineLimit(1)
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+
+    private var inProgressBooks: [Book] {
+        bookStore.bookshelf
+            .filter { $0.durChapterIndex > 0 || !($0.durChapterTitle ?? "").isEmpty }
+            .sorted { $0.durChapterTime > $1.durChapterTime }
+    }
+
+    private func lunarProgress(_ book: Book) -> String {
+        guard book.totalChapterNum > 0 else { return "--" }
+        let raw = Double(book.durChapterIndex + 1) / Double(book.totalChapterNum)
+        return "\(Int(min(1, max(0, raw)) * 100))%"
+    }
+
+    private func openLunarBookmark(_ bookmark: BookBookmark) {
+        showingLunarLog = false
+        guard let book = bookStore.bookshelf.first(where: { $0.bookUrl == bookmark.bookUrl }) else { return }
+        readerInitialChapter = bookmark.chapterIndex
+        selectedBook = book
+    }
+
+    private func openLunarBook(_ book: Book) {
+        showingLunarLog = false
+        readerInitialChapter = book.durChapterIndex
+        selectedBook = book
+    }
+
+    private var classTrialStatsFace: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            HStack {
+                Text("READING LOG / 阅读统计")
+                    .font(theme.typography.label)
+                    .foregroundColor(theme.palette.accent)
+                Spacer()
+                HStack(spacing: 3) {
+                    Image(systemName: "arrow.triangle.2.circlepath")
+                        .font(.system(size: 8, weight: .bold))
+                    Text("TAP / FLIP")
+                        .font(.system(size: 8, weight: .heavy, design: .monospaced))
+                }
+                .foregroundColor(theme.palette.secondaryInk)
+            }
+
+            HStack(alignment: .center, spacing: 10) {
+                ClassTrialBearMark(block: theme.markBlock, mark: theme.markLine, accent: theme.palette.accent)
+                    .frame(width: 38, height: 38)
+
+                VStack(alignment: .leading, spacing: 1) {
+                    HStack(alignment: .firstTextBaseline, spacing: 4) {
+                        Text(statDuration(readingStats.todaySeconds))
+                            .font(.system(size: 20, weight: .black, design: .monospaced))
+                            .foregroundColor(theme.palette.ink)
+                        Text("今日")
+                            .font(theme.typography.label)
+                            .foregroundColor(theme.palette.secondaryInk)
+                    }
+                    Text("连续 \(readingStats.streakDays) 天 · 累计 \(statDuration(readingStats.totalSeconds)) · 读完 \(readingStats.chaptersRead) 章")
+                        .font(.system(size: 9.5, weight: .semibold, design: .monospaced))
+                        .foregroundColor(theme.palette.secondaryInk)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.7)
+                }
+
+                Spacer(minLength: 4)
+
+                weekBars
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var classTrialBookmarkFace: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            HStack {
+                Text("BOOKMARKS / 最近书签")
+                    .font(theme.typography.label)
+                    .foregroundColor(theme.palette.accent)
+                Spacer()
+                Button {
+                    withAnimation(.easeInOut(duration: 0.42)) { showingBookmarks = false }
+                } label: {
+                    HStack(spacing: 3) {
+                        Image(systemName: "arrow.uturn.backward")
+                            .font(.system(size: 8, weight: .bold))
+                        Text("翻回")
+                            .font(.system(size: 9, weight: .heavy))
+                    }
+                    .foregroundColor(theme.palette.secondaryInk)
+                }
+                .buttonStyle(.plain)
+            }
+
+            if recentBookmarks.isEmpty {
+                Text("还没有书签，阅读时长按选段或点书签按钮")
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundColor(theme.palette.secondaryInk)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.top, 8)
+            } else {
+                ForEach(recentBookmarks) { bookmark in
+                    Button {
+                        openBookmark(bookmark)
+                    } label: {
+                        HStack(spacing: 5) {
+                            Image(systemName: bookmarkIcon(bookmark.kind))
+                                .font(.system(size: 9, weight: .bold))
+                                .foregroundColor(theme.palette.accent)
+                                .frame(width: 13)
+                            VStack(alignment: .leading, spacing: 0) {
+                                Text(bookmarkText(bookmark))
+                                    .font(.system(size: 10.5, weight: .heavy))
+                                    .foregroundColor(theme.palette.ink)
+                                    .lineLimit(1)
+                                Text(bookmarkSubtitle(bookmark))
+                                    .font(.system(size: 8, weight: .medium, design: .monospaced))
+                                    .foregroundColor(theme.palette.secondaryInk)
+                                    .lineLimit(1)
+                            }
+                            Spacer(minLength: 2)
+                            Image(systemName: "chevron.right")
+                                .font(.system(size: 7, weight: .bold))
+                                .foregroundColor(theme.palette.secondaryInk)
+                        }
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var recentBookmarks: [BookBookmark] {
+        Array(bookStore.bookmarks.sorted { $0.createdAt > $1.createdAt }.prefix(2))
+    }
+
+    private func bookmarkIcon(_ kind: BookBookmark.Kind) -> String {
+        switch kind {
+        case .bookmark: return "bookmark.fill"
+        case .underline: return "underline"
+        case .highlight: return "highlighter"
+        }
+    }
+
+    private func bookmarkText(_ bookmark: BookBookmark) -> String {
+        let note = bookmark.note.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !note.isEmpty { return note }
+        let snippet = bookmark.snippet.trimmingCharacters(in: .whitespacesAndNewlines)
+        return snippet.isEmpty ? bookmark.chapterTitle : snippet
+    }
+
+    private func bookmarkSubtitle(_ bookmark: BookBookmark) -> String {
+        let bookName = bookStore.bookshelf.first { $0.bookUrl == bookmark.bookUrl }?.name ?? "未知书籍"
+        return "\(bookName) · \(bookmark.chapterTitle)"
+    }
+
+    private func openBookmark(_ bookmark: BookBookmark) {
+        guard let book = bookStore.bookshelf.first(where: { $0.bookUrl == bookmark.bookUrl }) else { return }
+        readerInitialChapter = bookmark.chapterIndex
+        showingBookmarks = false
+        selectedBook = book
+    }
+
     private var groupFilterBar: some View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 8) {
@@ -334,13 +807,25 @@ public struct BookshelfView: View {
                     showNewGroupAlert = true
                 } label: {
                     HStack(spacing: 4) {
-                        Image(systemName: "folder.badge.plus").font(.system(size: 11))
-                        Text("新建分组").font(.system(size: 12, weight: .medium))
+                        Image(systemName: "folder.badge.plus")
+                            .font(.system(size: 11))
+                            .foregroundColor(theme.isClassTrial ? theme.palette.accent : .primary)
+                        Text("新建分组")
+                            .font(.system(size: 12, weight: theme.isClassTrial ? .heavy : .medium))
                     }
+                    .foregroundColor(theme.isClassTrial ? theme.palette.ink : .primary)
                     .padding(.horizontal, 10)
                     .padding(.vertical, 6)
-                    .background(Color.secondary.opacity(0.12))
-                    .cornerRadius(14)
+                    .background(theme.isClassTrial
+                        ? theme.palette.surface
+                        : Color.secondary.opacity(0.12))
+                    .overlay {
+                        if theme.isClassTrial {
+                            Rectangle()
+                                .stroke(theme.palette.ink, lineWidth: 2)
+                        }
+                    }
+                    .cornerRadius(theme.isClassTrial ? 0 : 14)
                 }
                 .buttonStyle(.plain)
             }
@@ -352,73 +837,82 @@ public struct BookshelfView: View {
     private func groupChip(title: String, isSelected: Bool, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             Text(title)
-                .font(.system(size: 13, weight: isSelected ? .semibold : .regular))
+                .font(.system(size: 13, weight: isSelected || theme.isClassTrial ? .heavy : .regular))
                 .padding(.horizontal, 12)
                 .padding(.vertical, 6)
-                .background(isSelected ? theme.palette.accent : theme.palette.surface.opacity(0.88))
+                .background(isSelected ? theme.palette.accent : theme.palette.surface)
                 .foregroundColor(isSelected ? theme.palette.onAccent : theme.palette.ink)
                 .overlay(
                     RoundedRectangle(cornerRadius: theme.metrics.cornerRadius, style: .continuous)
-                        .stroke(isSelected ? theme.palette.accent : theme.palette.divider,
-                                lineWidth: theme.metrics.borderWidth)
+                        .stroke(theme.isClassTrial
+                            ? (isSelected ? theme.palette.accent : theme.palette.ink)
+                            : (isSelected ? theme.palette.accent : theme.palette.divider),
+                                lineWidth: theme.isClassTrial ? 2 : theme.metrics.borderWidth)
                 )
                 .cornerRadius(theme.metrics.cornerRadius)
         }
         .buttonStyle(.plain)
     }
 
+    @ViewBuilder
     private var bookshelfHeader: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack {
-                Text("ARCHIVE / LIBRARY")
-                    .font(theme.typography.label)
-                Spacer()
-                Text("SYS.READY")
-                    .font(theme.typography.mono)
-            }
-            .foregroundColor(theme.palette.secondaryInk)
+        if theme.isClassTrial {
+            classTrialReadingCard
+        } else if theme.backdropStyle == .terminal {
+            lunarTerminalArchiveCard
+        } else {
+            VStack(alignment: .leading, spacing: 12) {
+                HStack {
+                    Text("ARCHIVE / LIBRARY")
+                        .font(theme.typography.label)
+                    Spacer()
+                    Text("SYS.READY")
+                        .font(theme.typography.mono)
+                }
+                .foregroundColor(theme.palette.secondaryInk)
 
-            HStack(alignment: .firstTextBaseline) {
-                Text("档案库")
-                    .font(theme.typography.title)
-                    .foregroundColor(theme.palette.ink)
-                Spacer()
-                Text("\(bookStore.bookshelf.count) BOOKS")
+                HStack(alignment: .firstTextBaseline) {
+                    Text("档案库")
+                        .font(theme.typography.title)
+                        .foregroundColor(theme.palette.ink)
+                    Spacer()
+                    Text("\(bookStore.bookshelf.count) BOOKS")
+                        .font(theme.typography.mono)
+                        .foregroundColor(theme.palette.secondaryInk)
+                }
+
+                Text("\(bookStore.groups.count) GROUPS · \(readingBookCount) IN PROGRESS")
                     .font(theme.typography.mono)
                     .foregroundColor(theme.palette.secondaryInk)
             }
-
-            Text("\(bookStore.groups.count) GROUPS · \(readingBookCount) IN PROGRESS")
-                .font(theme.typography.mono)
-                .foregroundColor(theme.palette.secondaryInk)
-        }
-        .padding(14)
-        .background(
-            LinearGradient(
-                colors: [theme.palette.elevated.opacity(0.9), theme.palette.surface],
-                startPoint: .topLeading,
-                endPoint: .bottomTrailing
+            .padding(14)
+            .background(
+                LinearGradient(
+                    colors: [theme.palette.elevated.opacity(0.9), theme.palette.surface],
+                    startPoint: .topLeading,
+                    endPoint: .bottomTrailing
+                )
             )
-        )
-        .overlay(alignment: .leading) {
-            Rectangle()
-                .fill(theme.palette.accent)
-                .frame(width: 3)
+            .overlay(alignment: .leading) {
+                Rectangle()
+                    .fill(theme.palette.accent)
+                    .frame(width: 3)
+            }
+            .overlay(alignment: .trailing) {
+                Text(String(format: "%03d", bookStore.bookshelf.count))
+                    .font(.system(size: 58, weight: .bold, design: .monospaced))
+                    .foregroundColor(theme.palette.ink.opacity(0.035))
+                    .padding(.trailing, 10)
+            }
+            .overlay(
+                Rectangle()
+                    .stroke(theme.palette.divider.opacity(0.85), lineWidth: theme.metrics.borderWidth)
+            )
+            .clipShape(RoundedRectangle(cornerRadius: theme.metrics.cornerRadius, style: .continuous))
+            .shadow(color: .black.opacity(0.05), radius: 10, y: 5)
+            .padding(.horizontal, 16)
+            .padding(.top, 8)
         }
-        .overlay(alignment: .trailing) {
-            Text(String(format: "%03d", bookStore.bookshelf.count))
-                .font(.system(size: 58, weight: .bold, design: .monospaced))
-                .foregroundColor(theme.palette.ink.opacity(0.035))
-                .padding(.trailing, 10)
-        }
-        .overlay(
-            Rectangle()
-                .stroke(theme.palette.divider.opacity(0.85), lineWidth: theme.metrics.borderWidth)
-        )
-        .clipShape(RoundedRectangle(cornerRadius: theme.metrics.cornerRadius, style: .continuous))
-        .shadow(color: .black.opacity(0.05), radius: 10, y: 5)
-        .padding(.horizontal, 16)
-        .padding(.top, 8)
     }
 
     /// 书架标题：logo 用模板色跟随主题墨色，配合标题字。
@@ -436,6 +930,10 @@ public struct BookshelfView: View {
                             .resizable()
                             .scaledToFit()
                         #endif
+                    } else if theme.isClassTrial {
+                        ClassTrialShelfMark(block: theme.markBlock, mark: theme.markLine, accent: theme.palette.accent)
+                            .frame(width: shelfConfig.logoHeight * 0.82,
+                                   height: shelfConfig.logoHeight * 0.82)
                     } else if AppEdition.isAppStoreClean {
                         // 商店包不能带第三方角色美术：换成程序绘制的档案标记
                         ShelfEditionMark(ink: theme.palette.ink, accent: theme.palette.accent)
@@ -457,14 +955,36 @@ public struct BookshelfView: View {
                 .accessibilityHidden(true)
 
                 if shelfConfig.titleVisible {
-                    Text(shelfDisplayTitle)
-                        .font(.system(size: shelfConfig.titleFontSize, weight: .bold))
-                        .foregroundColor(theme.palette.ink)
-                        .lineLimit(1)
-                        // 字号要真实生效：别在 29pt 以后又自动缩回去
-                        .fixedSize(horizontal: true, vertical: false)
+                    if theme.isClassTrial {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("SHELF / FILE")
+                                .font(theme.typography.label)
+                                .foregroundColor(theme.palette.accent)
+                            Text(shelfDisplayTitle)
+                                .font(.system(size: shelfConfig.titleFontSize, weight: .black))
+                                .foregroundColor(theme.palette.ink)
+                                .lineLimit(1)
+                                .fixedSize(horizontal: true, vertical: false)
+                                .padding(.bottom, 6)
+                                .overlay(alignment: .bottomLeading) {
+                                    Rectangle()
+                                        .fill(theme.palette.accent)
+                                        .frame(height: 5)
+                                }
+                        }
+                        .rotationEffect(.degrees(-1))
                         .offset(x: shelfConfig.titleOffsetX, y: shelfConfig.titleOffsetY)
                         .padding(.bottom, 4)
+                    } else {
+                        Text(shelfDisplayTitle)
+                            .font(.system(size: shelfConfig.titleFontSize, weight: .bold))
+                            .foregroundColor(theme.palette.ink)
+                            .lineLimit(1)
+                            // 字号要真实生效：别在 29pt 以后又自动缩回去
+                            .fixedSize(horizontal: true, vertical: false)
+                            .offset(x: shelfConfig.titleOffsetX, y: shelfConfig.titleOffsetY)
+                            .padding(.bottom, 4)
+                    }
                 }
 
                 Spacer(minLength: 0)
@@ -474,19 +994,31 @@ public struct BookshelfView: View {
                     .padding(.bottom, 4)
             }
 
-            // 标题下的装饰线：短红条 + 细线 + 末端小方块，呼应档案终端的分隔记号
-            HStack(spacing: 0) {
-                Rectangle()
-                    .fill(theme.palette.accent)
-                    .frame(width: 24, height: 2)
-                Rectangle()
-                    .fill(theme.palette.divider.opacity(0.9))
-                    .frame(height: 0.5)
-                Rectangle()
-                    .fill(theme.palette.ink.opacity(0.75))
-                    .frame(width: 4, height: 4)
+            // 标题下的装饰线：学级审判用粗黑横线 + 品红块，其余主题保留细线档案记号
+            if theme.isClassTrial {
+                HStack(spacing: 0) {
+                    Rectangle()
+                        .fill(theme.palette.ink)
+                        .frame(height: 3)
+                    Rectangle()
+                        .fill(theme.palette.accent)
+                        .frame(width: 46, height: 7)
+                }
+                .padding(.leading, 6)
+            } else {
+                HStack(spacing: 0) {
+                    Rectangle()
+                        .fill(theme.palette.accent)
+                        .frame(width: 24, height: 2)
+                    Rectangle()
+                        .fill(theme.palette.divider.opacity(0.9))
+                        .frame(height: 0.5)
+                    Rectangle()
+                        .fill(theme.palette.ink.opacity(0.75))
+                        .frame(width: 4, height: 4)
+                }
+                .padding(.leading, 6)
             }
-            .padding(.leading, 6)
         }
         .padding(.horizontal, 16)
         .padding(.top, 8)
@@ -971,20 +1503,13 @@ public struct BookshelfView: View {
         }
         .padding(9)
         .frame(maxWidth: .infinity, alignment: .topLeading)
-        .background(
-            LinearGradient(
-                colors: [theme.palette.surface.opacity(0.94), theme.palette.surface],
-                startPoint: .top,
-                endPoint: .bottom
-            )
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: theme.metrics.cornerRadius, style: .continuous)
-                .stroke(isSelected ? theme.palette.accent : theme.palette.divider.opacity(0.45),
-                        lineWidth: isSelected ? 1.4 : theme.metrics.borderWidth)
-        )
-        .clipShape(RoundedRectangle(cornerRadius: theme.metrics.cornerRadius, style: .continuous))
-        .shadow(color: .black.opacity(0.035), radius: 6, y: 3)
+        .appThemePanel()
+        .overlay {
+            if theme.isClassTrial && isSelected {
+                Rectangle()
+                    .stroke(theme.palette.accent, lineWidth: 3)
+            }
+        }
     }
 
     @ViewBuilder
@@ -1529,6 +2054,7 @@ public struct BookshelfView: View {
                !book.bookUrl.hasPrefix("txt://") {
                 MissingBookSourceView(book: book) {
                     selectedBook = nil
+                    readerInitialChapter = nil
                 }
             } else if let source, source.kind != .text {
                 let cached = bookStore.getChapters(for: book.bookUrl)
@@ -1544,14 +2070,21 @@ public struct BookshelfView: View {
                     book: book,
                     source: source,
                     chapters: chapters,
-                    initialChapterIndex: book.durChapterIndex
+                    initialChapterIndex: readerInitialChapter ?? book.durChapterIndex
                 ) {
                     selectedBook = nil
+                    readerInitialChapter = nil
                 }
             } else {
-                ReaderView(book: book, source: source, onDismiss: {
-                    selectedBook = nil
-                })
+                ReaderView(
+                    book: book,
+                    source: source,
+                    initialChapterIndex: readerInitialChapter,
+                    onDismiss: {
+                        selectedBook = nil
+                        readerInitialChapter = nil
+                    }
+                )
             }
         }
     }
@@ -1586,7 +2119,7 @@ public struct BookshelfView: View {
         }
         .padding()
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(theme.palette.background)
+        .appThemePageBackground()
     }
 }
 
@@ -1791,5 +2324,127 @@ struct ShelfEditionMark: View {
             )
         }
         .aspectRatio(1.24, contentMode: .fit)
+    }
+}
+
+/// 学级审判的书架标记：墨块底、网点、品红斜带与白色准星。
+/// 程序绘制，不依赖角色美术。深色主题下墨块换成深灰砖、描线换成暖白。
+struct ClassTrialShelfMark: View {
+    let block: Color
+    let mark: Color
+    let accent: Color
+
+    var body: some View {
+        GeometryReader { geo in
+            let side = min(geo.size.width, geo.size.height)
+            ZStack {
+                Rectangle()
+                    .fill(block)
+
+                Canvas { context, size in
+                    var dots = Path()
+                    let step = max(3, size.width / 9)
+                    var y = step / 2
+                    while y < size.height * 0.6 {
+                        var x = step / 2
+                        while x < size.width * 0.6 {
+                            dots.addEllipse(in: CGRect(x: x, y: y, width: 1.6, height: 1.6))
+                            x += step
+                        }
+                        y += step
+                    }
+                    context.fill(dots, with: .color(mark.opacity(0.32)))
+                }
+
+                Rectangle()
+                    .fill(accent)
+                    .frame(width: side * 0.14, height: side * 1.35)
+                    .rotationEffect(.degrees(28))
+                    .offset(x: side * 0.26)
+
+                Circle()
+                    .stroke(mark, lineWidth: max(2, side * 0.04))
+                    .frame(width: side * 0.40, height: side * 0.40)
+
+                Rectangle()
+                    .fill(mark)
+                    .frame(width: side * 0.62, height: max(1.5, side * 0.025))
+                Rectangle()
+                    .fill(mark)
+                    .frame(width: max(1.5, side * 0.025), height: side * 0.62)
+
+                Text("01")
+                    .font(.system(size: side * 0.16, weight: .black, design: .monospaced))
+                    .foregroundColor(accent)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
+                    .padding(side * 0.05)
+            }
+            .clipShape(Rectangle())
+            .rotationEffect(.degrees(-4))
+        }
+    }
+}
+
+/// 学级审判的黑白熊标记：左白右黑的圆头、锯齿嘴和品红闪电眼。
+/// 程序绘制，不依赖角色美术。
+struct ClassTrialBearMark: View {
+    let block: Color
+    let mark: Color
+    let accent: Color
+
+    var body: some View {
+        GeometryReader { geo in
+            let side = min(geo.size.width, geo.size.height)
+            ZStack {
+                Circle()
+                    .fill(mark)
+                    .overlay(Circle().stroke(block, lineWidth: max(1.5, side * 0.05)))
+                    .frame(width: side * 0.34, height: side * 0.34)
+                    .offset(x: -side * 0.22, y: -side * 0.25)
+                Circle()
+                    .fill(block)
+                    .frame(width: side * 0.34, height: side * 0.34)
+                    .offset(x: side * 0.22, y: -side * 0.25)
+
+                Circle()
+                    .fill(mark)
+                    .frame(width: side * 0.78, height: side * 0.78)
+                Circle()
+                    .fill(block)
+                    .frame(width: side * 0.78, height: side * 0.78)
+                    .mask(
+                        Rectangle()
+                            .frame(width: side * 0.39, height: side * 0.78)
+                            .offset(x: side * 0.195)
+                    )
+                Circle()
+                    .stroke(block, lineWidth: max(2, side * 0.06))
+                    .frame(width: side * 0.78, height: side * 0.78)
+
+                Circle()
+                    .fill(block)
+                    .frame(width: side * 0.08, height: side * 0.08)
+                    .offset(x: -side * 0.17, y: -side * 0.05)
+                Image(systemName: "bolt.fill")
+                    .font(.system(size: side * 0.2, weight: .black))
+                    .foregroundColor(accent)
+                    .offset(x: side * 0.16, y: -side * 0.05)
+
+                Path { path in
+                    let baseY = side * 0.62
+                    path.move(to: CGPoint(x: side * 0.28, y: baseY))
+                    var x = side * 0.28
+                    var up = true
+                    while x < side * 0.72 {
+                        x += side * 0.055
+                        path.addLine(to: CGPoint(x: x, y: baseY + (up ? -side * 0.04 : side * 0.04)))
+                        up.toggle()
+                    }
+                }
+                .stroke(block, lineWidth: max(1.2, side * 0.035))
+            }
+            .frame(width: side, height: side)
+            .rotationEffect(.degrees(-4))
+        }
     }
 }

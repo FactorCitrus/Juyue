@@ -1713,15 +1713,15 @@ public struct ReaderView: View {
     }
 
     private var chromeBackground: Color {
-        theme.choice == .lunarTerminal ? theme.palette.background : readerConfig.backgroundColor
+        readerConfig.pageBackgroundColor
     }
 
     private var chromeInk: Color {
-        theme.choice == .lunarTerminal ? theme.palette.ink : readerConfig.textColor
+        readerConfig.pageTextColor
     }
 
     private var chromeRadius: CGFloat {
-        theme.choice == .lunarTerminal ? theme.metrics.cornerRadius : 24
+        theme.overridesReaderAppearance ? theme.metrics.cornerRadius : 24
     }
 
     private var effectiveSource: BookSource? {
@@ -2158,7 +2158,7 @@ public struct ReaderView: View {
             } label: {
                 Label("本章说", systemImage: "text.bubble")
                     .font(.system(size: 12, weight: .medium))
-                    .foregroundColor(readerConfig.textColor)
+                    .foregroundColor(readerConfig.pageTextColor)
                     .padding(.horizontal, 10)
                     .padding(.vertical, 6)
                     .background(.ultraThinMaterial, in: Capsule())
@@ -2192,7 +2192,7 @@ public struct ReaderView: View {
                                 ProgressView()
                                 Text(loadingNote)
                                     .font(.subheadline)
-                                    .foregroundColor(readerConfig.textColor.opacity(0.7))
+                                    .foregroundColor(readerConfig.pageTextColor.opacity(0.7))
                                 Button("返回书架") {
                                     dismiss()
                                 }
@@ -2342,7 +2342,7 @@ public struct ReaderView: View {
                     if let downloadHint {
                         Text(downloadHint)
                             .font(.system(size: 13))
-                            .foregroundColor(readerConfig.textColor)
+                            .foregroundColor(readerConfig.pageTextColor)
                             .padding(.horizontal, 12)
                             .padding(.vertical, 8)
                             .background(.ultraThinMaterial, in: Capsule())
@@ -2585,7 +2585,7 @@ public struct ReaderView: View {
     @ViewBuilder
     private var readerBackground: some View {
         ZStack {
-            readerConfig.backgroundColor
+            readerConfig.pageBackgroundColor
             if readerConfig.backgroundImageEnabled,
                !readerConfig.backgroundImagePath.isEmpty,
                let image = platformImage(atPath: readerConfig.backgroundImagePath) {
@@ -2695,7 +2695,7 @@ public struct ReaderView: View {
                 fontSize: readerConfig.fontSize,
                 lineSpacing: readerConfig.lineSpacing,
                 letterSpacing: readerConfig.letterSpacing,
-                textColor: readerConfig.textColor,
+                textColor: readerConfig.pageTextColor,
                 fontName: readerConfig.font.postScriptName,
                 underlineEnabled: readerConfig.underlineEnabled,
                 underlineColor: readerConfig.underlineColor,
@@ -2798,7 +2798,7 @@ public struct ReaderView: View {
     private func bodyText(_ text: String, alignment: TextAlignment) -> some View {
         let base = Text(text)
             .font(.system(size: readerConfig.fontSize))
-            .foregroundColor(readerConfig.textColor)
+            .foregroundColor(readerConfig.pageTextColor)
 
         // 下划线与字距都是 Text 专属修饰符，必须趁还是 Text 的时候应用
         let decorated: Text = {
@@ -2807,10 +2807,10 @@ public struct ReaderView: View {
                 return base.underline(
                     true,
                     pattern: readerConfig.underlinePattern.lineStyle,
-                    color: readerConfig.underlineColor ?? readerConfig.textColor
+                    color: readerConfig.underlineColor ?? readerConfig.pageTextColor
                 )
             } else {
-                return base.underline(true, color: readerConfig.underlineColor ?? readerConfig.textColor)
+                return base.underline(true, color: readerConfig.underlineColor ?? readerConfig.pageTextColor)
             }
         }()
 
@@ -3182,12 +3182,12 @@ public struct ReaderView: View {
                 underlineColor: readerConfig.underlineColor,
                 paragraphSeparatorLines: readerConfig.paragraphSeparatorLines,
                 paragraphSeparatorColor: readerConfig.paragraphSeparatorColor,
-                textColor: readerConfig.textColor,
+                textColor: readerConfig.pageTextColor,
                 accentColor: nierPalette.accent,
                 onAccentColor: nierPalette.background,
                 reviewStyle: reviewCardStyle,
                 reviewURLs: reviewURLMap,
-                backgroundColor: readerConfig.backgroundColor,
+                backgroundColor: readerConfig.pageBackgroundColor,
                 backgroundImage: readerConfig.backgroundImageEnabled
                     ? platformImage(atPath: readerConfig.backgroundImagePath)
                     : nil,
@@ -3371,7 +3371,7 @@ public struct ReaderView: View {
                                 isParagraphEnd: isParagraphEnd,
                                 fontSize: readerConfig.fontSize,
                                 lineSpacing: readerConfig.lineSpacing,
-                                textColor: readerConfig.textColor,
+                                textColor: readerConfig.pageTextColor,
                                 width: usableWidth,
                                 height: pageContentHeight,
                                 letterSpacing: readerConfig.letterSpacing,
@@ -3399,7 +3399,7 @@ public struct ReaderView: View {
                                readingBlockId: readingParagraphOrdinal,
                                readingTintColor: readingTint,
                                commentMap: commentMap,
-                               pageBackgroundColor: readerConfig.backgroundColor,
+                               pageBackgroundColor: readerConfig.pageBackgroundColor,
                                reviewAccentColor: nierPalette.accent,
                                reviewStyle: reviewCardStyle,
                                reviewURLs: reviewURLMap,
@@ -3812,7 +3812,7 @@ public struct ReaderView: View {
             // Book Title in Center (No reading progress/chapter info)
             Text(activeBook.name)
                 .font(.system(size: 15, weight: .semibold))
-                .foregroundColor(readerConfig.textColor)
+                .foregroundColor(readerConfig.pageTextColor)
                 .lineLimit(1)
                 .frame(maxWidth: 240)
 
@@ -3939,7 +3939,7 @@ public struct ReaderView: View {
             }
             if readerConfig.barDivider {
                 Rectangle()
-                    .fill(readerConfig.textColor.opacity(0.12))
+                    .fill(readerConfig.pageTextColor.opacity(0.12))
                     .frame(height: 0.5)
             }
             HStack(spacing: 8) {
@@ -3948,7 +3948,7 @@ public struct ReaderView: View {
                 statusSlot(right, alignment: .trailing)
             }
             .font(.system(size: 11))
-            .foregroundColor(readerConfig.textColor.opacity(0.8))
+            .foregroundColor(readerConfig.pageTextColor.opacity(0.8))
             .padding(.horizontal, 16)
             .frame(height: 18)
             if bottomSpacer > 0 {
@@ -3962,9 +3962,9 @@ public struct ReaderView: View {
                 if readerConfig.backgroundImageEnabled, !readerConfig.backgroundImagePath.isEmpty {
                     Color.clear
                 } else if let edge = extendEdge {
-                    readerConfig.backgroundColor.ignoresSafeArea(edges: edge)
+                    readerConfig.pageBackgroundColor.ignoresSafeArea(edges: edge)
                 } else {
-                    readerConfig.backgroundColor
+                    readerConfig.pageBackgroundColor
                 }
             }
         )
@@ -4013,9 +4013,9 @@ public struct ReaderView: View {
     private func statusBar(fraction: Double, alignment: Alignment) -> some View {
         GeometryReader { geo in
             ZStack(alignment: .leading) {
-                Capsule().fill(readerConfig.textColor.opacity(0.18))
+                Capsule().fill(readerConfig.pageTextColor.opacity(0.18))
                 Capsule()
-                    .fill(readerConfig.textColor.opacity(0.65))
+                    .fill(readerConfig.pageTextColor.opacity(0.65))
                     .frame(width: geo.size.width * CGFloat(max(0, min(1, fraction))))
             }
         }
@@ -4090,13 +4090,13 @@ public struct ReaderView: View {
             if !chapters.isEmpty && currentChapterIndex < chapters.count {
                 Text(chapters[currentChapterIndex].title)
                     .font(.system(size: 11, weight: .regular))
-                    .foregroundColor(readerConfig.textColor.opacity(0.55))
+                    .foregroundColor(readerConfig.pageTextColor.opacity(0.55))
                     .lineLimit(1)
                     .truncationMode(.tail)
             } else {
                 Text(activeBook.name)
                     .font(.system(size: 11, weight: .regular))
-                    .foregroundColor(readerConfig.textColor.opacity(0.55))
+                    .foregroundColor(readerConfig.pageTextColor.opacity(0.55))
                     .lineLimit(1)
             }
 
@@ -4108,11 +4108,11 @@ public struct ReaderView: View {
                 if readerConfig.pageMode.isPaged, let cur = currentLoadedChapter, !cur.pages.isEmpty {
                     Text("\(currentPageIndex + 1)/\(cur.pages.count) · \(String(format: "%.1f%%", progressPercent))")
                         .font(.system(size: 11, weight: .medium, design: .monospaced))
-                        .foregroundColor(readerConfig.textColor.opacity(0.55))
+                        .foregroundColor(readerConfig.pageTextColor.opacity(0.55))
                 } else {
                     Text("\(currentChapterIndex + 1)/\(chapters.count) (\(String(format: "%.1f%%", progressPercent)))")
                         .font(.system(size: 11, weight: .medium, design: .monospaced))
-                        .foregroundColor(readerConfig.textColor.opacity(0.55))
+                        .foregroundColor(readerConfig.pageTextColor.opacity(0.55))
                 }
             }
         }
@@ -4120,7 +4120,7 @@ public struct ReaderView: View {
         .padding(.top, 2)
         .padding(.bottom, 6)
         .frame(height: 26)
-        .background(readerConfig.backgroundColor)
+        .background(readerConfig.pageBackgroundColor)
         .contentShape(Rectangle())
         .onTapGesture {
             toggleControls("footer")
@@ -4137,7 +4137,7 @@ public struct ReaderView: View {
                     Text("上一章")
                 }
                 .font(.system(size: 13, weight: .medium))
-                .foregroundColor(currentChapterIndex > 0 ? readerConfig.textColor : readerConfig.textColor.opacity(0.3))
+                .foregroundColor(currentChapterIndex > 0 ? readerConfig.pageTextColor : readerConfig.pageTextColor.opacity(0.3))
             }
             .disabled(currentChapterIndex <= 0)
 
@@ -4168,7 +4168,7 @@ public struct ReaderView: View {
                     Image(systemName: "chevron.right")
                 }
                 .font(.system(size: 13, weight: .medium))
-                .foregroundColor(currentChapterIndex < chapters.count - 1 ? readerConfig.textColor : readerConfig.textColor.opacity(0.3))
+                .foregroundColor(currentChapterIndex < chapters.count - 1 ? readerConfig.pageTextColor : readerConfig.pageTextColor.opacity(0.3))
             }
             .disabled(currentChapterIndex >= chapters.count - 1)
         }
@@ -4358,81 +4358,72 @@ public struct ReaderView: View {
         saveCurrentProgress()
     }
 
+    private func readerToolButton(
+        _ symbol: String,
+        _ title: String,
+        enabled: Bool = true,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            VStack(spacing: 5) {
+                if theme.isClassTrial {
+                    Image(systemName: symbol)
+                        .font(.system(size: 17, weight: .bold))
+                        .foregroundColor(theme.palette.onInk)
+                        .frame(width: 34, height: 34)
+                        .background(Rectangle().fill(theme.palette.ink))
+                        .overlay(alignment: .bottomTrailing) {
+                            Rectangle()
+                                .fill(theme.palette.accent)
+                                .frame(width: 8, height: 8)
+                        }
+                } else {
+                    Image(systemName: symbol)
+                        .font(.system(size: 20))
+                }
+                Text(title)
+                    .font(theme.isClassTrial
+                        ? .system(size: 10, weight: .heavy)
+                        : .system(size: 11, weight: .medium))
+            }
+            .foregroundColor(enabled ? readerConfig.pageTextColor : readerConfig.pageTextColor.opacity(0.45))
+            .frame(maxWidth: .infinity)
+        }
+    }
+
     private var bottomActionRow: some View {
         return HStack(spacing: 0) {
-            // Contents Table (目录)
-            Button(action: {
+            readerToolButton("list.bullet", "目录") {
                 tocSearchText = ""
                 showTOC = true
-            }) {
-                VStack(spacing: 4) {
-                    Image(systemName: "list.bullet")
-                        .font(.system(size: 20))
-                    Text("目录")
-                        .font(.system(size: 11, weight: .medium))
-                }
-                .foregroundColor(readerConfig.textColor)
-                .frame(maxWidth: .infinity)
             }
 
-            // Text Search (搜索)
-            Button(action: { showSearch = true }) {
-                VStack(spacing: 4) {
-                    Image(systemName: "magnifyingglass")
-                        .font(.system(size: 20))
-                    Text("搜索")
-                        .font(.system(size: 11, weight: .medium))
-                }
-                .foregroundColor(readerConfig.textColor)
-                .frame(maxWidth: .infinity)
+            readerToolButton("magnifyingglass", "搜索") {
+                showSearch = true
             }
 
             // 段评：书源提供了段评地址才亮，点开是本章所有热门段落
-            Button(action: {
+            readerToolButton(
+                "bubble.left.and.bubble.right",
+                chapterCommentItems.isEmpty ? "段评" : "段评 \(chapterCommentItems.count)",
+                enabled: !chapterCommentItems.isEmpty
+            ) {
                 if chapterCommentItems.isEmpty {
                     showBookmarkHint("本章暂无段评")
                 } else {
                     showComments = true
                 }
-            }) {
-                VStack(spacing: 4) {
-                    Image(systemName: "bubble.left.and.bubble.right")
-                        .font(.system(size: 20))
-                    Text(chapterCommentItems.isEmpty ? "段评" : "段评 \(chapterCommentItems.count)")
-                        .font(.system(size: 11, weight: .medium))
-                }
-                .foregroundColor(readerConfig.textColor.opacity(chapterCommentItems.isEmpty ? 0.45 : 1))
-                .frame(maxWidth: .infinity)
             }
 
-            // Switch Book Source (换源)
-            Button(action: { showSourceSwitch = true }) {
-                VStack(spacing: 4) {
-                    Image(systemName: "arrow.triangle.2.circlepath")
-                        .font(.system(size: 20))
-                    Text("换源")
-                        .font(.system(size: 11, weight: .medium))
-                }
-                .foregroundColor(readerConfig.textColor)
-                .frame(maxWidth: .infinity)
+            readerToolButton("arrow.triangle.2.circlepath", "换源") {
+                showSourceSwitch = true
             }
 
-            // Interface Settings (界面设置)
-            Button(action: {
+            readerToolButton("textformat.size", "界面") {
                 // 真机打开面板会闪退，先留一行完整状态：崩溃后日志最后一条就是现场
                 AppLog.write("[阅读设置] 点开界面 主题=\(readerConfig.theme.rawValue) 模式=\(readerConfig.pageMode.rawValue) 字号=\(readerConfig.fontSize) 行距=\(readerConfig.lineSpacing) 亮度=\(readerConfig.brightness) 面板=\(readerConfig.panelOpacity) 章=\(currentChapterIndex + 1)/\(chapters.count) 页=\(currentPageIndex + 1)")
                 showSettings = true
-            }) {
-                VStack(spacing: 4) {
-                    Image(systemName: "textformat.size")
-                        .font(.system(size: 20))
-                    Text("界面")
-                        .font(.system(size: 11, weight: .medium))
-                }
-                .foregroundColor(readerConfig.textColor)
-                .frame(maxWidth: .infinity)
             }
-
         }
     }
 
@@ -4511,20 +4502,21 @@ public struct ReaderView: View {
                 }) {
                     HStack {
                         Text(ch.title)
-                            .foregroundColor(ch.index == currentChapterIndex ? .accentColor : .primary)
+                            .foregroundColor(ch.index == currentChapterIndex ? theme.palette.accent : theme.palette.ink)
                         Spacer()
                         if ch.index == currentChapterIndex {
                             Image(systemName: "checkmark")
-                                .foregroundColor(.accentColor)
+                                .foregroundColor(theme.palette.accent)
                         }
                     }
                 }
             }
+            .appThemedList()
             .overlay {
                 if tocFilteredChapters.isEmpty {
                     Text(tocSearchText.isEmpty ? "目录为空" : "没有匹配的章节")
                         .font(.system(size: 13))
-                        .foregroundColor(.secondary)
+                        .foregroundColor(theme.palette.secondaryInk)
                 }
             }
             #if os(iOS)
@@ -4948,7 +4940,7 @@ public struct ReaderView: View {
 
     /// 气泡圆角跟主题走：月面终端用它自己的直角，标准主题给圆一点的卡面
     private var bubbleCornerRadius: CGFloat {
-        theme.choice == .lunarTerminal ? max(6, theme.metrics.cornerRadius) : 20
+        theme.overridesReaderAppearance ? max(6, theme.metrics.cornerRadius) : 20
     }
 
     /// 气泡尖角：底色跟卡片一模一样的两层填充，再只描两条斜边，
@@ -5065,10 +5057,10 @@ public struct ReaderView: View {
 
     // 气泡自己的一套颜色：跟阅读页的纸色、墨色、强调色走。
     // 之前借 App 主题的 surface，羊皮纸正文上就浮出一张冷灰卡，跟纸不是一家。
-    private var bubbleCardColor: Color { readerConfig.backgroundColor }
-    private var bubbleInkColor: Color { readerConfig.textColor }
+    private var bubbleCardColor: Color { readerConfig.pageBackgroundColor }
+    private var bubbleInkColor: Color { readerConfig.pageTextColor }
     private var bubbleAccentColor: Color { readerConfig.theme.accentColor }
-    private var bubbleDividerColor: Color { readerConfig.textColor.opacity(0.16) }
+    private var bubbleDividerColor: Color { readerConfig.pageTextColor.opacity(0.16) }
 
     /// 第一行的动作格：图标在上、标签在下；选中状态的图标和字改用主题强调色
     private func paragraphAction(_ title: String, _ icon: String, width: CGFloat,
@@ -5212,12 +5204,12 @@ public struct ReaderView: View {
         } label: {
             ZStack {
                 ReaderCommentBubbleShape()
-                    .fill(readerConfig.backgroundColor)
+                    .fill(readerConfig.pageBackgroundColor)
                 ReaderCommentBubbleShape()
-                    .stroke(readerConfig.textColor.opacity(0.45), lineWidth: 1.2)
+                    .stroke(readerConfig.pageTextColor.opacity(0.45), lineWidth: 1.2)
                 Text(label)
                     .font(.system(size: 11, weight: .semibold))
-                    .foregroundColor(readerConfig.textColor)
+                    .foregroundColor(readerConfig.pageTextColor)
                     .padding(.leading, 6)
             }
             .frame(width: totalWidth, height: 22)
@@ -5251,7 +5243,7 @@ public struct ReaderView: View {
                         .overlay(Circle().stroke(Color.black.opacity(0.25), lineWidth: 0.7))
                         .overlay(
                             Circle()
-                                .stroke(readerConfig.textColor, lineWidth: selected == hex ? 2 : 0)
+                                .stroke(readerConfig.pageTextColor, lineWidth: selected == hex ? 2 : 0)
                                 .padding(-3)
                         )
                 }
@@ -5269,11 +5261,11 @@ public struct ReaderView: View {
                         Text("清除")
                             .font(.system(size: 11, weight: .medium))
                     }
-                    .foregroundColor(readerConfig.textColor)
+                    .foregroundColor(readerConfig.pageTextColor)
                     .padding(.horizontal, 8)
                     .frame(height: 22)
                     .background(
-                        Capsule().stroke(readerConfig.textColor.opacity(0.35), lineWidth: 0.8)
+                        Capsule().stroke(readerConfig.pageTextColor.opacity(0.35), lineWidth: 0.8)
                     )
                 }
                 .buttonStyle(.plain)
@@ -5284,7 +5276,7 @@ public struct ReaderView: View {
             } label: {
                 Image(systemName: "xmark")
                     .font(.system(size: 12, weight: .semibold))
-                    .foregroundColor(readerConfig.textColor.opacity(0.7))
+                    .foregroundColor(readerConfig.pageTextColor.opacity(0.7))
                     .frame(width: 22, height: 22)
             }
             .buttonStyle(.plain)
@@ -5920,7 +5912,7 @@ public struct ReaderView: View {
     /// 用 .regularMaterial 会采样背后的正文，浅色纸上图标糊成一片，颜色还会随翻页变。
     private var readerPanelSurface: Color {
         #if os(iOS)
-        let base = UIColor(readerConfig.backgroundColor)
+        let base = UIColor(readerConfig.pageBackgroundColor)
         let resolved = base.resolvedColor(with: UITraitCollection(userInterfaceStyle: .light))
         var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
         if resolved.getRed(&r, green: &g, blue: &b, alpha: &a) {
@@ -5931,7 +5923,7 @@ public struct ReaderView: View {
             return Color(red: clamp(r + shift), green: clamp(g + shift), blue: clamp(b + shift))
         }
         #endif
-        return readerConfig.backgroundColor
+        return readerConfig.pageBackgroundColor
     }
 
     /// "#RRGGBB" → Color（标注底色）
@@ -6205,12 +6197,18 @@ public struct ReaderView: View {
         return (1 - 1 / (dy / maxOffset + 1)) * maxOffset
     }
 
-    /// 下拉是开关：这一章没书签就加，有就取消
+    /// 下拉是开关：当前位置没书签就加，有就取消那一条。
+    /// 不能按「整章」判断——同一章翻页后位置变了，应该能再存一条。
     private func toggleBookmarkByPull() {
         guard let loaded = currentLoadedChapter else { return }
         let index = loaded.chapter.index
+        let offset = currentChapterCharOffset()
         let existing = bookmarkStore.bookmarks(for: activeBook.bookUrl)
-            .filter { $0.chapterIndex == index && $0.kind == .bookmark }
+            .filter {
+                $0.chapterIndex == index
+                    && $0.kind == .bookmark
+                    && $0.charOffset == offset
+            }
 
         if existing.isEmpty {
             addBookmarkHere()
@@ -6375,17 +6373,39 @@ public struct ReaderView: View {
     }
 
     private var listeningBall: some View {
-        Image(systemName: audioService.phaseGlyph)
-            .font(.system(size: 19, weight: .semibold))
-            .foregroundColor(audioService.isPlaying ? theme.palette.accent : readerConfig.textColor)
-            .frame(width: 46, height: 46)
-            .background(Circle().fill(readerPanelSurface))
-            .overlay(
-                Circle().stroke(audioService.isPlaying ? theme.palette.accent : theme.palette.divider,
-                                lineWidth: audioService.isPlaying ? 1.4 : 0.8)
-            )
-            .shadow(color: .black.opacity(0.16), radius: 7, y: 2)
-            .contentShape(Circle())
+        Group {
+            if theme.isClassTrial {
+                Image(systemName: audioService.phaseGlyph)
+                    .font(.system(size: 19, weight: .bold))
+                    .foregroundColor(theme.palette.onInk)
+                    .frame(width: 48, height: 48)
+                    .background(Rectangle().fill(theme.palette.ink))
+                    .overlay(
+                        Rectangle()
+                            .stroke(theme.palette.accent,
+                                    lineWidth: audioService.isPlaying ? 3 : 2)
+                    )
+                    .rotationEffect(.degrees(-3))
+                    .background(
+                        Rectangle()
+                            .fill(theme.palette.accent)
+                            .offset(x: 4, y: 4)
+                    )
+                    .contentShape(Rectangle())
+            } else {
+                Image(systemName: audioService.phaseGlyph)
+                    .font(.system(size: 19, weight: .semibold))
+                    .foregroundColor(audioService.isPlaying ? theme.palette.accent : readerConfig.pageTextColor)
+                    .frame(width: 46, height: 46)
+                    .background(Circle().fill(readerPanelSurface))
+                    .overlay(
+                        Circle().stroke(audioService.isPlaying ? theme.palette.accent : theme.palette.divider,
+                                        lineWidth: audioService.isPlaying ? 1.4 : 0.8)
+                    )
+                    .shadow(color: .black.opacity(0.16), radius: 7, y: 2)
+                    .contentShape(Circle())
+            }
+        }
             // 轻点和长按用同一个拖动手势按按住时长区分：两套手势叠在一起时，
             // 旧系统上高优先级长按会把轻点吃掉，表现就是「按了没反应」。
             .highPriorityGesture(
@@ -6825,6 +6845,17 @@ public struct ReaderView: View {
         let title = (!chapters.isEmpty && currentChapterIndex < chapters.count)
             ? chapters[currentChapterIndex].title
             : activeBook.name
+        let offset = currentChapterCharOffset()
+        // 同一位置只留一条：反复点「加书签」不该堆重复项
+        if bookmarkStore.bookmarks(for: activeBook.bookUrl).contains(where: {
+            $0.chapterIndex == currentChapterIndex
+                && $0.kind == .bookmark
+                && $0.charOffset == offset
+        }) {
+            newBookmarkNote = ""
+            showBookmarkHint("这个位置已有书签")
+            return
+        }
         let snippet = currentChapterContent
             .replacingOccurrences(of: "\n", with: " ")
             .trimmingCharacters(in: .whitespacesAndNewlines)
@@ -6832,7 +6863,7 @@ public struct ReaderView: View {
             bookUrl: activeBook.bookUrl,
             chapterIndex: currentChapterIndex,
             chapterTitle: title,
-            charOffset: currentChapterCharOffset(),
+            charOffset: offset,
             snippet: String(snippet.prefix(60)),
             note: newBookmarkNote.trimmingCharacters(in: .whitespacesAndNewlines)
         )
@@ -6941,9 +6972,9 @@ public struct ReaderView: View {
         .modifier(ReaderSettingsCardChrome(
             radius: chromeRadius,
             // 面板调半透明时不要毛玻璃，否则还是看不清底下的正文
-            fill: theme.choice == .lunarTerminal
-                ? theme.palette.surface.opacity(effectivePanelLayerOpacity)
-                : readerConfig.backgroundColor.opacity(effectivePanelLayerOpacity),
+            fill: theme.overridesReaderAppearance
+                ? theme.palette.surface.opacity(panelSurfaceOpacity)
+                : readerConfig.pageBackgroundColor.opacity(effectivePanelLayerOpacity),
             showsMaterial: effectivePanelOpacity >= 0.99 && theme.choice == .standard,
             ink: chromeInk,
             backdrop: chromeBackground,
@@ -6991,13 +7022,13 @@ public struct ReaderView: View {
                 case .quick:
                     CollapsibleSettingBlock(
                         title: "阅读模式",
-                        tint: readerConfig.textColor,
+                        tint: readerConfig.pageTextColor,
                         initiallyExpanded: true,
                         summary: readerConfig.pageMode.rawValue
                     ) { pageModeRow }
                     CollapsibleSettingBlock(
                         title: "字号与主题",
-                        tint: readerConfig.textColor,
+                        tint: readerConfig.pageTextColor,
                         initiallyExpanded: true,
                         summary: "\(safeInt(readerConfig.fontSize)) pt · \(readerConfig.theme.rawValue)"
                     ) {
@@ -7006,35 +7037,35 @@ public struct ReaderView: View {
                     }
                     CollapsibleSettingBlock(
                         title: "背景图",
-                        tint: readerConfig.textColor,
+                        tint: readerConfig.pageTextColor,
                         summary: readerConfig.backgroundImageEnabled ? "已开启" : "关闭"
                     ) { backgroundImageSection }
                     CollapsibleSettingBlock(
                         title: "配色",
-                        tint: readerConfig.textColor,
+                        tint: readerConfig.pageTextColor,
                         summary: readerConfig.useCustomColors ? "自定义" : "跟随主题"
                     ) { colorSection }
                     CollapsibleSettingBlock(
                         title: "热评卡片",
-                        tint: readerConfig.textColor,
+                        tint: readerConfig.pageTextColor,
                         summary: "\(safeInt(readerConfig.reviewFontScale * 100))% · \(reviewStyleName)"
                     ) { reviewCardSection }
                     CollapsibleSettingBlock(
                         title: "显示",
-                        tint: readerConfig.textColor,
+                        tint: readerConfig.pageTextColor,
                         summary: "亮度 \(safeInt(readerConfig.brightness * 100))% · 面板 \(safeInt(readerConfig.panelOpacity * 100))%"
                     ) { displaySection }
                 case .spacing:
                     CollapsibleSettingBlock(
                         title: "字体与正文",
-                        tint: readerConfig.textColor,
+                        tint: readerConfig.pageTextColor,
                         initiallyExpanded: true,
                         summary: readerConfig.font.displayName
                     ) { typographySection }
-                    CollapsibleSettingBlock(title: "正文排版", tint: readerConfig.textColor) { bodyLayoutSection }
+                    CollapsibleSettingBlock(title: "正文排版", tint: readerConfig.pageTextColor) { bodyLayoutSection }
                     underlineSection
-                    CollapsibleSettingBlock(title: "页边距", tint: readerConfig.textColor) { marginSection }
-                    CollapsibleSettingBlock(title: "章节标题", tint: readerConfig.textColor) { chapterTitleSection }
+                    CollapsibleSettingBlock(title: "页边距", tint: readerConfig.pageTextColor) { marginSection }
+                    CollapsibleSettingBlock(title: "章节标题", tint: readerConfig.pageTextColor) { chapterTitleSection }
                     headerFooterSection
                 case .tts:
                     settingsBlock { ttsSection }
@@ -7145,7 +7176,7 @@ public struct ReaderView: View {
 
     /// 设置面板的强调色：跟当前主题走
     private var settingsAccent: Color {
-        theme.choice == .lunarTerminal ? theme.palette.accent : readerConfig.theme.accentColor
+        theme.overridesReaderAppearance ? theme.palette.accent : readerConfig.theme.accentColor
     }
 
     private var effectivePanelOpacity: Double {
@@ -7155,6 +7186,15 @@ public struct ReaderView: View {
     private var effectivePanelLayerOpacity: Double {
         let value = max(0.0, min(1.0, effectivePanelOpacity))
         return 1 - (1 - value).squareRoot()
+    }
+
+    /// 深色学级审判的底板要更实：半透明面板叠在近黑正文上时，
+    /// 底下的白字会透上来，跟面板里的白字糊成一片。
+    private var panelSurfaceOpacity: Double {
+        guard theme.isDarkClassTrial, !layoutPreviewActive else {
+            return effectivePanelLayerOpacity
+        }
+        return max(effectivePanelLayerOpacity, 0.92)
     }
 
     private func flashLayoutPreview() {
@@ -7187,7 +7227,9 @@ public struct ReaderView: View {
                     HStack(spacing: 5) {
                         Text(panelIndex(panel))
                             .font(theme.typography.mono)
-                            .foregroundColor(theme.palette.secondaryInk)
+                            .foregroundColor(theme.isClassTrial
+                                ? (isOn ? theme.palette.onAccent : theme.palette.accent)
+                                : theme.palette.secondaryInk)
                         Image(systemName: panel.symbolName)
                             .font(.system(size: 11, weight: .medium))
                         Text(panel.rawValue)
@@ -7197,13 +7239,20 @@ public struct ReaderView: View {
                     .frame(maxWidth: .infinity)
                     .background(
                         RoundedRectangle(cornerRadius: theme.metrics.cornerRadius, style: .continuous)
-                            .fill(isOn ? settingsAccent.opacity(0.20) : theme.palette.elevated.opacity(effectivePanelLayerOpacity))
+                            .fill(theme.isClassTrial
+                                ? (isOn ? theme.palette.accent : theme.palette.surface)
+                                : (isOn ? settingsAccent.opacity(0.20) : theme.palette.elevated.opacity(effectivePanelLayerOpacity)))
                     )
                     .overlay(
                         RoundedRectangle(cornerRadius: theme.metrics.cornerRadius, style: .continuous)
-                            .stroke(isOn ? settingsAccent.opacity(0.65) : theme.palette.divider, lineWidth: theme.metrics.borderWidth)
+                            .stroke(theme.isClassTrial
+                                ? (isOn ? theme.palette.accent : theme.palette.ink)
+                                : (isOn ? settingsAccent.opacity(0.65) : theme.palette.divider),
+                                    lineWidth: theme.isClassTrial ? 2 : theme.metrics.borderWidth)
                     )
-                    .foregroundColor(isOn ? settingsAccent : theme.palette.secondaryInk)
+                    .foregroundColor(theme.isClassTrial
+                        ? (isOn ? theme.palette.onAccent : theme.palette.ink)
+                        : (isOn ? settingsAccent : theme.palette.secondaryInk))
                 }
                 .buttonStyle(.plain)
             }
@@ -7345,25 +7394,25 @@ public struct ReaderView: View {
             HStack(spacing: 10) {
                 Text("面板")
                     .font(.system(size: 12, weight: .medium))
-                    .foregroundColor(readerConfig.textColor.opacity(0.7))
+                    .foregroundColor(readerConfig.pageTextColor.opacity(0.7))
                 Slider(value: Binding(
                     get: { min(max(readerConfig.panelOpacity, 0.25), 1.0) },
                     set: { readerConfig.panelOpacity = min(max($0, 0.25), 1.0) }
                 ), in: 0.25...1.0, step: 0.05)
-                .tint(readerConfig.textColor.opacity(0.65))
+                .tint(readerConfig.pageTextColor.opacity(0.65))
                 Text("\(safeInt(readerConfig.panelOpacity * 100))%")
                     .font(.system(size: 11, design: .monospaced))
-                    .foregroundColor(readerConfig.textColor.opacity(0.6))
+                    .foregroundColor(readerConfig.pageTextColor.opacity(0.6))
                     .frame(width: 40, alignment: .trailing)
             }
             Text("调布局时把面板调淡，能看见被它挡住的正文和页眉页脚。")
                 .font(.system(size: 11))
-                .foregroundColor(readerConfig.textColor.opacity(0.5))
+                .foregroundColor(readerConfig.pageTextColor.opacity(0.5))
 
             Toggle(isOn: $readerConfig.autoNight) {
                 Text("自动夜间（22:00–07:00 自动切暗黑）")
                     .font(.system(size: 12, weight: .medium))
-                    .foregroundColor(readerConfig.textColor.opacity(0.75))
+                    .foregroundColor(readerConfig.pageTextColor.opacity(0.75))
             }
             .toggleStyle(.switch)
         }
@@ -7428,20 +7477,20 @@ public struct ReaderView: View {
                 HStack {
                     Text("字体")
                         .font(.system(size: 12, weight: .medium))
-                        .foregroundColor(readerConfig.textColor.opacity(0.7))
+                        .foregroundColor(readerConfig.pageTextColor.opacity(0.7))
                     Spacer()
                     Text(readerConfig.font.displayName)
                         .font(.system(size: 12))
-                        .foregroundColor(readerConfig.textColor.opacity(0.55))
+                        .foregroundColor(readerConfig.pageTextColor.opacity(0.55))
                     Image(systemName: "chevron.right")
                         .font(.system(size: 11))
-                        .foregroundColor(readerConfig.textColor.opacity(0.4))
+                        .foregroundColor(readerConfig.pageTextColor.opacity(0.4))
                 }
             }
 
             Text("天地玄黄，宇宙洪荒。日月盈昃，辰宿列张。")
                 .font(resolvedTypographyPreviewFont(size: 15))
-                .foregroundColor(readerConfig.textColor.opacity(0.85))
+                .foregroundColor(readerConfig.pageTextColor.opacity(0.85))
                 .lineLimit(2)
                 .padding(.vertical, 2)
 
@@ -7451,19 +7500,19 @@ public struct ReaderView: View {
                 Toggle(isOn: $readerConfig.justifyLastPage) {
                     Text("页末匀空白")
                         .font(.system(size: 12, weight: .medium))
-                        .foregroundColor(readerConfig.textColor.opacity(0.7))
+                        .foregroundColor(readerConfig.pageTextColor.opacity(0.7))
                 }
                 .toggleStyle(.switch)
             }
             Text("开着的时候，一页没排满就把多出来的高度匀进段间距，正文一直铺到页脚，看着段距会宽一点。关掉，段距就是你填的那个数，剩下的空白全留在页尾。")
                 .font(.system(size: 11))
-                .foregroundColor(readerConfig.textColor.opacity(0.5))
+                .foregroundColor(readerConfig.pageTextColor.opacity(0.5))
             settingSlider("首行缩进", value: $readerConfig.firstLineIndent, range: 0...4, step: 1, suffix: " 字")
 
             HStack(spacing: 8) {
                 Text("字重")
                     .font(.system(size: 12, weight: .medium))
-                    .foregroundColor(readerConfig.textColor.opacity(0.7))
+                    .foregroundColor(readerConfig.pageTextColor.opacity(0.7))
                 Picker("字重", selection: Binding(
                     get: { readerConfig.weight },
                     set: { readerConfig.weight = $0 }
@@ -7478,7 +7527,7 @@ public struct ReaderView: View {
             HStack(spacing: 8) {
                 Text("简繁")
                     .font(.system(size: 12, weight: .medium))
-                    .foregroundColor(readerConfig.textColor.opacity(0.7))
+                    .foregroundColor(readerConfig.pageTextColor.opacity(0.7))
                 Picker("简繁", selection: $readerConfig.chineseConversion) {
                     ForEach(ChineseConversion.allCases) { mode in
                         Text(mode.rawValue).tag(mode)
@@ -7509,7 +7558,7 @@ public struct ReaderView: View {
             HStack(spacing: 8) {
                 Text("对齐")
                     .font(.system(size: 12, weight: .medium))
-                    .foregroundColor(readerConfig.textColor.opacity(0.7))
+                    .foregroundColor(readerConfig.pageTextColor.opacity(0.7))
                 Picker("对齐", selection: $readerConfig.textAlignment) {
                     ForEach(ReaderTextAlignment.allCases) { item in
                         Text(item.rawValue).tag(item)
@@ -7521,7 +7570,7 @@ public struct ReaderView: View {
             HStack(spacing: 8) {
                 Text("段间分隔线")
                     .font(.system(size: 12, weight: .medium))
-                    .foregroundColor(readerConfig.textColor.opacity(0.7))
+                    .foregroundColor(readerConfig.pageTextColor.opacity(0.7))
                 Picker("段间分隔线", selection: $readerConfig.paragraphSeparatorLines) {
                     ForEach(0...3, id: \.self) { count in
                         Text(count == 0 ? "无" : "\(count)").tag(count)
@@ -7541,7 +7590,7 @@ public struct ReaderView: View {
             Toggle(isOn: $readerConfig.underlineEnabled) {
                 Text("给正文加下划线")
                     .font(.system(size: 12, weight: .medium))
-                    .foregroundColor(readerConfig.textColor.opacity(0.7))
+                    .foregroundColor(readerConfig.pageTextColor.opacity(0.7))
             }
             .toggleStyle(.switch)
 
@@ -7549,7 +7598,7 @@ public struct ReaderView: View {
                 HStack(spacing: 8) {
                     Text("线型")
                         .font(.system(size: 12, weight: .medium))
-                        .foregroundColor(readerConfig.textColor.opacity(0.7))
+                        .foregroundColor(readerConfig.pageTextColor.opacity(0.7))
                     Picker("线型", selection: $readerConfig.underlinePattern) {
                         ForEach(ReaderUnderlinePattern.allCases) { item in
                             Text(item.rawValue).tag(item)
@@ -7563,14 +7612,14 @@ public struct ReaderView: View {
 
                 Text("Cocoa 文本接口不支持线宽和偏移，这两项调不了。")
                     .font(.system(size: 10))
-                    .foregroundColor(readerConfig.textColor.opacity(0.45))
+                    .foregroundColor(readerConfig.pageTextColor.opacity(0.45))
             }
         }
     }
 
     private var underlineColorBinding: Binding<Color> {
         Binding(
-            get: { readerConfig.underlineColor ?? readerConfig.textColor },
+            get: { readerConfig.underlineColor ?? readerConfig.pageTextColor },
             set: { readerConfig.underlineColorHex = $0.hexString ?? "" }
         )
     }
@@ -7588,12 +7637,12 @@ public struct ReaderView: View {
                 Button("章节标题设计器…") { showTitleDesigner = true }
                     .font(.system(size: 12))
                     .buttonStyle(.plain)
-                    .foregroundColor(readerConfig.textColor.opacity(0.85))
+                    .foregroundColor(readerConfig.pageTextColor.opacity(0.85))
                 Spacer()
                 if readerConfig.hasDesignedChapterTitle {
                     Text("已设计")
                         .font(.system(size: 11))
-                        .foregroundColor(readerConfig.textColor.opacity(0.5))
+                        .foregroundColor(readerConfig.pageTextColor.opacity(0.5))
                     Button("清除") {
                         readerConfig.chapterTitleHTMLTemplate = ""
                         readerConfig.chapterTitleProjectJSON = ""
@@ -7601,7 +7650,7 @@ public struct ReaderView: View {
                     }
                     .font(.system(size: 12))
                     .buttonStyle(.plain)
-                    .foregroundColor(readerConfig.textColor.opacity(0.5))
+                    .foregroundColor(readerConfig.pageTextColor.opacity(0.5))
                 }
             }
         }
@@ -7613,7 +7662,7 @@ public struct ReaderView: View {
             Toggle(isOn: $readerConfig.backgroundImageEnabled) {
                 Text("用图片做阅读背景")
                     .font(.system(size: 12, weight: .medium))
-                    .foregroundColor(readerConfig.textColor.opacity(0.7))
+                    .foregroundColor(readerConfig.pageTextColor.opacity(0.7))
             }
             .toggleStyle(.switch)
 
@@ -7640,33 +7689,33 @@ public struct ReaderView: View {
                         ), matching: .images) {
                             Text(readerConfig.backgroundImagePath.isEmpty ? "从相册选图" : "换一张")
                                 .font(.system(size: 12))
-                                .foregroundColor(readerConfig.textColor.opacity(0.8))
+                                .foregroundColor(readerConfig.pageTextColor.opacity(0.8))
                         }
                     } else {
                         Button("选择图片…") { showBackgroundImagePicker = true }
                             .font(.system(size: 12))
                             .buttonStyle(.plain)
-                            .foregroundColor(readerConfig.textColor.opacity(0.8))
+                            .foregroundColor(readerConfig.pageTextColor.opacity(0.8))
                     }
                     #else
                     Button("选择图片…") { showBackgroundImagePicker = true }
                         .font(.system(size: 12))
                         .buttonStyle(.plain)
-                        .foregroundColor(readerConfig.textColor.opacity(0.8))
+                        .foregroundColor(readerConfig.pageTextColor.opacity(0.8))
                     #endif
                     Spacer()
                     if !readerConfig.backgroundImagePath.isEmpty {
                         Button("清除") { readerConfig.backgroundImagePath = "" }
                             .font(.system(size: 12))
                             .buttonStyle(.plain)
-                            .foregroundColor(readerConfig.textColor.opacity(0.5))
+                            .foregroundColor(readerConfig.pageTextColor.opacity(0.5))
                     }
                 }
                 Text(readerConfig.backgroundImagePath.isEmpty
                      ? "未选择图片"
                      : URL(fileURLWithPath: readerConfig.backgroundImagePath).lastPathComponent)
                     .font(.system(size: 11))
-                    .foregroundColor(readerConfig.textColor.opacity(0.5))
+                    .foregroundColor(readerConfig.pageTextColor.opacity(0.5))
                     .lineLimit(1)
 
                 if !readerConfig.backgroundImagePath.isEmpty {
@@ -7683,7 +7732,7 @@ public struct ReaderView: View {
         HStack(spacing: 8) {
             Text(title)
                 .font(.system(size: 11))
-                .foregroundColor(readerConfig.textColor.opacity(0.6))
+                .foregroundColor(readerConfig.pageTextColor.opacity(0.6))
                 .frame(width: 56, alignment: .leading)
             Slider(value: Binding(
                 get: { min(max(value.wrappedValue, range.lowerBound), range.upperBound) },
@@ -7691,7 +7740,7 @@ public struct ReaderView: View {
             ), in: range)
             Text(String(format: "%.2f", value.wrappedValue))
                 .font(.system(size: 11, design: .rounded))
-                .foregroundColor(readerConfig.textColor.opacity(0.5))
+                .foregroundColor(readerConfig.pageTextColor.opacity(0.5))
                 .frame(width: 44, alignment: .trailing)
         }
     }
@@ -7702,7 +7751,7 @@ public struct ReaderView: View {
             Toggle(isOn: $readerConfig.useCustomColors) {
                 Text("自定义背景与文字颜色")
                     .font(.system(size: 12, weight: .medium))
-                    .foregroundColor(readerConfig.textColor.opacity(0.7))
+                    .foregroundColor(readerConfig.pageTextColor.opacity(0.7))
             }
             .toggleStyle(.switch)
 
@@ -7718,7 +7767,7 @@ public struct ReaderView: View {
                             .fill(Color(hex: preset.backgroundHex) ?? .gray)
                             .frame(width: 30, height: 30)
                             .overlay(
-                                Circle().stroke(readerConfig.textColor.opacity(0.25), lineWidth: 1)
+                                Circle().stroke(readerConfig.pageTextColor.opacity(0.25), lineWidth: 1)
                             )
                             .overlay(
                                 Text("文")
@@ -7739,12 +7788,12 @@ public struct ReaderView: View {
                 HStack(spacing: 8) {
                     Text("预览")
                         .font(.system(size: 12))
-                        .foregroundColor(readerConfig.textColor.opacity(0.6))
+                        .foregroundColor(readerConfig.pageTextColor.opacity(0.6))
                     Text("天地玄黄，宇宙洪荒。")
                         .font(.system(size: readerConfig.fontSize))
-                        .foregroundColor(readerConfig.textColor)
+                        .foregroundColor(readerConfig.pageTextColor)
                         .padding(8)
-                        .background(readerConfig.backgroundColor)
+                        .background(readerConfig.pageBackgroundColor)
                         .cornerRadius(6)
                 }
             }
@@ -7770,14 +7819,14 @@ public struct ReaderView: View {
             Toggle(isOn: $readerConfig.sharedLayout) {
                 Text("共享布局")
                     .font(.system(size: 12, weight: .medium))
-                    .foregroundColor(readerConfig.textColor.opacity(0.7))
+                    .foregroundColor(readerConfig.pageTextColor.opacity(0.7))
             }
             .toggleStyle(.switch)
 
             HStack(spacing: 8) {
                 Text("共享布局开着一套排版给所有书用；关掉后每本书各存一份。")
                     .font(.system(size: 11))
-                    .foregroundColor(readerConfig.textColor.opacity(0.5))
+                    .foregroundColor(readerConfig.pageTextColor.opacity(0.5))
                 Spacer()
                 Button("信息") {
                     showBookInfo = true
@@ -7788,14 +7837,14 @@ public struct ReaderView: View {
             Toggle(isOn: $readerConfig.headerEnabled) {
                 Text("页眉")
                     .font(.system(size: 12, weight: .medium))
-                    .foregroundColor(readerConfig.textColor.opacity(0.7))
+                    .foregroundColor(readerConfig.pageTextColor.opacity(0.7))
             }
             .toggleStyle(.switch)
             if readerConfig.headerEnabled {
                 settingSlider("距顶", value: $readerConfig.headerOffset, range: 0...160, step: 2)
                 Text("这一行离屏幕上沿多远。0 = 贴屏幕上沿（跟灵动岛同高），62 是灵动岛下面，越往上拉越贴顶。")
                     .font(.system(size: 11))
-                    .foregroundColor(readerConfig.textColor.opacity(0.5))
+                    .foregroundColor(readerConfig.pageTextColor.opacity(0.5))
                 barContentRow("左", selection: $readerConfig.headerLeft)
                 barContentRow("中", selection: $readerConfig.headerCenter)
                 barContentRow("右", selection: $readerConfig.headerRight)
@@ -7804,14 +7853,14 @@ public struct ReaderView: View {
             Toggle(isOn: $readerConfig.footerEnabled) {
                 Text("页脚")
                     .font(.system(size: 12, weight: .medium))
-                    .foregroundColor(readerConfig.textColor.opacity(0.7))
+                    .foregroundColor(readerConfig.pageTextColor.opacity(0.7))
             }
             .toggleStyle(.switch)
             if readerConfig.footerEnabled {
                 settingSlider("距底", value: $readerConfig.footerOffset, range: 0...120, step: 2)
                 Text("这一行离屏幕下沿多远。0 = 贴屏幕最下面，34 是 Home 指示条上面。")
                     .font(.system(size: 11))
-                    .foregroundColor(readerConfig.textColor.opacity(0.5))
+                    .foregroundColor(readerConfig.pageTextColor.opacity(0.5))
                 barContentRow("左", selection: $readerConfig.footerLeft)
                 barContentRow("中", selection: $readerConfig.footerCenter)
                 barContentRow("右", selection: $readerConfig.footerRight)
@@ -7820,29 +7869,29 @@ public struct ReaderView: View {
             Toggle(isOn: $readerConfig.barDivider) {
                 Text("显示分隔线")
                     .font(.system(size: 12, weight: .medium))
-                    .foregroundColor(readerConfig.textColor.opacity(0.7))
+                    .foregroundColor(readerConfig.pageTextColor.opacity(0.7))
             }
             .toggleStyle(.switch)
 
             Toggle(isOn: $readerConfig.smartParagraphs) {
                 Text("智能分段")
                     .font(.system(size: 12, weight: .medium))
-                    .foregroundColor(readerConfig.textColor.opacity(0.7))
+                    .foregroundColor(readerConfig.pageTextColor.opacity(0.7))
             }
             .toggleStyle(.switch)
             Text("有的书源把整章塞成一行，中间不带空行。开着就按句末标点把这种长行切开，已经是正常段落的正文不动。")
                 .font(.system(size: 11))
-                .foregroundColor(readerConfig.textColor.opacity(0.5))
+                .foregroundColor(readerConfig.pageTextColor.opacity(0.5))
 
             Toggle(isOn: $readerConfig.punctuationKinsoku) {
                 Text("标点禁则")
                     .font(.system(size: 12, weight: .medium))
-                    .foregroundColor(readerConfig.textColor.opacity(0.7))
+                    .foregroundColor(readerConfig.pageTextColor.opacity(0.7))
             }
             .toggleStyle(.switch)
             Text("按中文的规矩排：句号逗号这类标点不许落在行首，开引号、开括号不许留在行尾。按页翻和连续滚动都管用。")
                 .font(.system(size: 11))
-                .foregroundColor(readerConfig.textColor.opacity(0.5))
+                .foregroundColor(readerConfig.pageTextColor.opacity(0.5))
 
             // 显示项自身的参数：短标题截几个字、自定义日期格式、自定义栏文字
             settingSlider("短标题", value: shortTitleLengthBinding, range: 2...12, step: 1, suffix: " 字")
@@ -7850,7 +7899,7 @@ public struct ReaderView: View {
             HStack(spacing: 8) {
                 Text("日期格式")
                     .font(.system(size: 12, weight: .medium))
-                    .foregroundColor(readerConfig.textColor.opacity(0.7))
+                    .foregroundColor(readerConfig.pageTextColor.opacity(0.7))
                 TextField("M月d日", text: $readerConfig.customDatePattern)
                     .textFieldStyle(.roundedBorder)
                     .font(.system(size: 12))
@@ -7859,7 +7908,7 @@ public struct ReaderView: View {
             HStack(spacing: 8) {
                 Text("自定义栏")
                     .font(.system(size: 12, weight: .medium))
-                    .foregroundColor(readerConfig.textColor.opacity(0.7))
+                    .foregroundColor(readerConfig.pageTextColor.opacity(0.7))
                 TextField("这一栏要显示的字", text: $readerConfig.customBarText)
                     .textFieldStyle(.roundedBorder)
                     .font(.system(size: 12))
@@ -7877,7 +7926,7 @@ public struct ReaderView: View {
     /// 一栏的内容选择：默认收起只显示已选项，点「选择」才展开芯片。
     /// 原来无条件铺开 6 栏 × 24 个芯片（144 个按钮），真机上这一节一渲染就崩。
     private func barContentRow(_ title: String, selection: Binding<[ReaderBarContent]>) -> some View {
-        ReaderBarPickerRow(title: title, selection: selection, tint: readerConfig.textColor)
+        ReaderBarPickerRow(title: title, selection: selection, tint: readerConfig.pageTextColor)
     }
 
     // MARK: 听书
@@ -7889,7 +7938,7 @@ public struct ReaderView: View {
             HStack(spacing: 8) {
                 Text(audioService.currentEngineName)
                     .font(.system(size: 12))
-                    .foregroundColor(readerConfig.textColor.opacity(0.75))
+                    .foregroundColor(readerConfig.pageTextColor.opacity(0.75))
                     .lineLimit(1)
                 Spacer()
                 Button("听书设置") {
@@ -7935,7 +7984,7 @@ public struct ReaderView: View {
         HStack(spacing: 10) {
             Text(title)
                 .font(.system(size: 11, weight: .medium))
-                .foregroundColor(readerConfig.textColor.opacity(0.68))
+                .foregroundColor(readerConfig.pageTextColor.opacity(0.68))
                 .lineLimit(1)
                 .frame(width: 48, alignment: .leading)
             Slider(value: Binding(
@@ -7983,7 +8032,7 @@ public struct ReaderView: View {
             HStack(spacing: 12) {
                 Text("A-")
                     .font(.system(size: 13, weight: .semibold))
-                    .foregroundColor(readerConfig.textColor.opacity(0.8))
+                    .foregroundColor(readerConfig.pageTextColor.opacity(0.8))
 
                 Slider(value: Binding(
                     get: { min(max(readerConfig.fontSize, 12), 32) },
@@ -7996,7 +8045,7 @@ public struct ReaderView: View {
 
                 Text("A+")
                     .font(.system(size: 16, weight: .bold))
-                    .foregroundColor(readerConfig.textColor.opacity(0.8))
+                    .foregroundColor(readerConfig.pageTextColor.opacity(0.8))
             }
         }
         .onAppear { AppLog.write("[阅读设置] 字号区已渲染") }
@@ -8014,7 +8063,7 @@ public struct ReaderView: View {
         Button(action: action) {
             Text(title)
                 .font(.system(size: 11, weight: .medium))
-                .foregroundColor(selected ? settingsAccent : readerConfig.textColor.opacity(0.72))
+                .foregroundColor(selected ? settingsAccent : readerConfig.pageTextColor.opacity(0.72))
                 .padding(.horizontal, 10)
                 .padding(.vertical, 6)
                 .background(Rectangle().fill(settingsAccent.opacity(selected ? 0.16 : 0.05)))
@@ -8030,21 +8079,21 @@ public struct ReaderView: View {
                 style: reviewCardStyle,
                 palette: nierPalette,
                 accent: nierPalette.accent,
-                pageColor: readerConfig.backgroundColor,
-                readerTextColor: readerConfig.textColor,
+                pageColor: readerConfig.pageBackgroundColor,
+                readerTextColor: readerConfig.pageTextColor,
                 baseFontSize: readerConfig.fontSize,
                 readerLineSpacing: readerConfig.lineSpacing,
                 paragraphSpacing: readerConfig.paragraphSpacing,
                 readerFontName: readerConfig.font.postScriptName,
                 sample: "热评 · 这条热评会跟着你的设置变化"
             )
-            .overlay(Rectangle().stroke(readerConfig.textColor.opacity(0.12), lineWidth: 0.5))
+            .overlay(Rectangle().stroke(readerConfig.pageTextColor.opacity(0.12), lineWidth: 0.5))
             .clipShape(Rectangle())
 
             HStack(spacing: 8) {
                 Text("字号 \(safeInt(readerConfig.reviewFontScale * 100))% · 内边距 \(safeInt(readerConfig.reviewInset))pt · 不透明 \(safeInt(readerConfig.reviewCardOpacity * 100))% · 位置 \(safeInt(readerConfig.reviewTextDrop))pt")
                     .font(.system(size: 9, weight: .medium, design: .monospaced))
-                    .foregroundColor(readerConfig.textColor.opacity(0.45))
+                    .foregroundColor(readerConfig.pageTextColor.opacity(0.45))
                     .lineLimit(1)
                     .minimumScaleFactor(0.8)
                 Spacer(minLength: 0)
@@ -8082,6 +8131,12 @@ public struct ReaderView: View {
                     themeButton(for: t)
                 }
             }
+            if theme.overridesReaderAppearance {
+                Text("界面主题「\(theme.choice.title)」正在接管阅读配色；切回「标准」后可单独选择阅读主题。")
+                    .font(.system(size: 11))
+                    .foregroundColor(readerConfig.pageTextColor.opacity(0.55))
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
         }
         .onAppear { AppLog.write("[阅读设置] 主题区已渲染") }
     }
@@ -8101,7 +8156,7 @@ public struct ReaderView: View {
                     .frame(width: 14, height: 14)
                     .overlay(
                         Circle()
-                            .stroke(readerConfig.textColor.opacity(0.25), lineWidth: 1)
+                            .stroke(readerConfig.pageTextColor.opacity(0.25), lineWidth: 1)
                     )
                 Text(t.rawValue)
                     .font(.system(size: 12, weight: isSelected ? .semibold : .regular))
@@ -8125,7 +8180,7 @@ public struct ReaderView: View {
             )
         }
         .buttonStyle(.plain)
-        .foregroundColor(isSelected ? settingsAccent : readerConfig.textColor)
+        .foregroundColor(isSelected ? settingsAccent : readerConfig.pageTextColor)
     }
 
     // MARK: - Data Loading Pipeline
@@ -9231,6 +9286,7 @@ public struct ReaderSearchSheet: View {
     let onSelectChapter: (Int, String?) -> Void
 
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.appTheme) private var theme
     @State private var searchText: String = ""
     @State private var searchScope: Int = 0 // 0: 本章内容, 1: 目录章节
 
@@ -9296,10 +9352,10 @@ public struct ReaderSearchSheet: View {
                         Spacer()
                         Image(systemName: "magnifyingglass")
                             .font(.system(size: 40))
-                            .foregroundColor(.secondary.opacity(0.6))
+                            .foregroundColor(theme.palette.secondaryInk.opacity(0.6))
                         Text(searchScope == 0 ? "输入关键词搜索当前章节正文" : "输入关键词搜索目录章节")
                             .font(.subheadline)
-                            .foregroundColor(.secondary)
+                            .foregroundColor(theme.palette.secondaryInk)
                         Spacer()
                     }
                 } else if activeResults.isEmpty {
@@ -9307,10 +9363,10 @@ public struct ReaderSearchSheet: View {
                         Spacer()
                         Image(systemName: "doc.text.magnifyingglass")
                             .font(.system(size: 40))
-                            .foregroundColor(.secondary.opacity(0.6))
+                            .foregroundColor(theme.palette.secondaryInk.opacity(0.6))
                         Text("没找到包含 “\(searchText)” 的内容")
                             .font(.subheadline)
-                            .foregroundColor(.secondary)
+                            .foregroundColor(theme.palette.secondaryInk)
                         Spacer()
                     }
                 } else {
@@ -9322,23 +9378,25 @@ public struct ReaderSearchSheet: View {
                                 HStack {
                                     Text(item.title)
                                         .font(.caption)
-                                        .foregroundColor(.accentColor)
+                                        .foregroundColor(theme.palette.accent)
                                     Spacer()
                                     Image(systemName: "chevron.right")
                                         .font(.caption2)
-                                        .foregroundColor(.secondary)
+                                        .foregroundColor(theme.palette.secondaryInk)
                                 }
                                 Text(item.snippet)
                                     .font(.system(size: 14))
-                                    .foregroundColor(.primary)
+                                    .foregroundColor(theme.palette.ink)
                                     .lineLimit(3)
                             }
                             .padding(.vertical, 4)
                         }
                     }
+                    .appThemedList()
                     .listStyle(.plain)
                 }
             }
+            .appThemePageBackground()
             .navigationTitle("查找")
             #if os(iOS)
             .navigationBarTitleDisplayMode(.inline)
@@ -11293,11 +11351,11 @@ struct ReaderAssetsSheet: View {
             VStack(spacing: 0) {
                 Color.clear.frame(height: pageTop)
                 ZStack(alignment: .topLeading) {
-                    ReaderConfig.shared.backgroundColor
+                    ReaderConfig.shared.pageBackgroundColor
                     VStack(alignment: .leading, spacing: 7) {
                         ForEach(0..<4, id: \.self) { _ in
                             RoundedRectangle(cornerRadius: 2)
-                                .fill(ReaderConfig.shared.textColor.opacity(0.22))
+                                .fill(ReaderConfig.shared.pageTextColor.opacity(0.22))
                                 .frame(height: 6)
                         }
                     }

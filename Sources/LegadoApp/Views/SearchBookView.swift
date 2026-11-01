@@ -9,6 +9,7 @@ public struct SearchBookView: View {
     @State private var selectedDetailBook: SearchBook? = nil
     /// 范围与匹配默认收起，先看结果；收起状态是临时的
     @State private var showOptions = false
+    @State private var showSourcePicker = false
 
     public init() {}
 
@@ -16,6 +17,24 @@ public struct SearchBookView: View {
     private func restartIfNeeded() {
         guard !viewModel.searchQuery.trimmingCharacters(in: .whitespaces).isEmpty else { return }
         viewModel.startSearch()
+    }
+
+    private var matchOptions: [(SourceMatchRules.SearchField, String)] {
+        [(.title, "书名"), (.author, "作者"), (.either, "书名或作者")]
+    }
+
+    @ViewBuilder
+    private var groupMenuContent: some View {
+        Button("全部分组") {
+            viewModel.groupFilter = nil
+            restartIfNeeded()
+        }
+        ForEach(viewModel.availableGroups, id: \.self) { group in
+            Button(group) {
+                viewModel.groupFilter = group
+                restartIfNeeded()
+            }
+        }
     }
 
     /// 卡片底：整页走浅灰底 + 白卡片，控件不再直接贴在灰底上
@@ -53,12 +72,20 @@ public struct SearchBookView: View {
                     }
                 }
 
-                Button("搜索") { viewModel.startSearch() }
-                    .buttonStyle(.borderedProminent)
-                    .disabled(viewModel.searchQuery.trimmingCharacters(in: .whitespaces).isEmpty || viewModel.isSearching)
+                if viewModel.isSearching || viewModel.isLoadingMore {
+                    Button("暂停") { viewModel.pauseSearch() }
+                        .buttonStyle(.bordered)
+                } else if viewModel.isPaused {
+                    Button("继续") { viewModel.resumeSearch() }
+                        .buttonStyle(.borderedProminent)
+                } else {
+                    Button("搜索") { viewModel.startSearch() }
+                        .buttonStyle(.borderedProminent)
+                        .disabled(viewModel.searchQuery.trimmingCharacters(in: .whitespaces).isEmpty)
+                }
             }
             .padding(12)
-            .background(searchCard)
+            .appThemePanel()
             .padding(.horizontal, 16)
             .padding(.top, 12)
 
@@ -99,13 +126,37 @@ public struct SearchBookView: View {
                             .font(.caption)
                             .foregroundColor(theme.palette.secondaryInk)
 
-                        Picker("匹配条件", selection: $viewModel.matchField) {
-                            Text("书名").tag(SourceMatchRules.SearchField.title)
-                            Text("作者").tag(SourceMatchRules.SearchField.author)
-                            Text("书名或作者").tag(SourceMatchRules.SearchField.either)
+                        if theme.isClassTrial {
+                            HStack(spacing: 6) {
+                                ForEach(matchOptions, id: \.1) { option in
+                                    let isOn = viewModel.matchField == option.0
+                                    Button {
+                                        viewModel.matchField = option.0
+                                    } label: {
+                                        Text(option.1)
+                                            .font(.system(size: 12, weight: isOn ? .black : .semibold))
+                                            .frame(maxWidth: .infinity)
+                                            .padding(.vertical, 8)
+                                            .background(isOn ? theme.palette.accent : theme.palette.surface)
+                                            .foregroundColor(isOn ? theme.palette.onAccent : theme.palette.ink)
+                                            .overlay(
+                                                RoundedRectangle(cornerRadius: 0)
+                                                    .stroke(isOn ? theme.palette.accent : theme.palette.ink,
+                                                            lineWidth: 2)
+                                            )
+                                    }
+                                    .buttonStyle(.plain)
+                                }
+                            }
+                        } else {
+                            Picker("匹配条件", selection: $viewModel.matchField) {
+                                Text("书名").tag(SourceMatchRules.SearchField.title)
+                                Text("作者").tag(SourceMatchRules.SearchField.author)
+                                Text("书名或作者").tag(SourceMatchRules.SearchField.either)
+                            }
+                            .pickerStyle(.segmented)
+                            .labelsHidden()
                         }
-                        .pickerStyle(.segmented)
-                        .labelsHidden()
 
                         Toggle("精确匹配", isOn: $viewModel.exactMatch)
                     }
@@ -121,20 +172,35 @@ public struct SearchBookView: View {
                                 .font(.subheadline)
                                 .foregroundColor(theme.palette.secondaryInk)
                                 .frame(width: 40, alignment: .leading)
-                            Menu(viewModel.groupFilter ?? "全部分组") {
-                                Button("全部分组") {
-                                    viewModel.groupFilter = nil
-                                    restartIfNeeded()
-                                }
-                                ForEach(viewModel.availableGroups, id: \.self) { group in
-                                    Button(group) {
-                                        viewModel.groupFilter = group
-                                        restartIfNeeded()
+                            if theme.isClassTrial {
+                                Menu {
+                                    groupMenuContent
+                                } label: {
+                                    HStack(spacing: 4) {
+                                        Text(viewModel.groupFilter ?? "全部分组")
+                                        Image(systemName: "chevron.down")
+                                            .font(.caption2)
                                     }
+                                    .font(.system(size: 13, weight: .semibold))
+                                    .foregroundColor(theme.palette.ink)
+                                    .padding(.horizontal, 10)
+                                    .padding(.vertical, 6)
+                                    .background(theme.palette.surface)
+                                    .overlay(
+                                        Rectangle()
+                                            .stroke(theme.palette.ink, lineWidth: 2)
+                                    )
                                 }
+                                .buttonStyle(.plain)
+                            } else {
+                                Menu {
+                                    groupMenuContent
+                                } label: {
+                                    Text(viewModel.groupFilter ?? "全部分组")
+                                }
+                                .buttonStyle(.bordered)
+                                .controlSize(.small)
                             }
-                            .buttonStyle(.bordered)
-                            .controlSize(.small)
                             Spacer()
                         }
 
@@ -143,14 +209,31 @@ public struct SearchBookView: View {
                                 .font(.subheadline)
                                 .foregroundColor(theme.palette.secondaryInk)
                                 .frame(width: 52, alignment: .leading)
-                            PlaceholderField(placeholder: "源名 / 分组含这几个字",
-                                             text: $viewModel.sourceNameFilter) {
-                                restartIfNeeded()
+                            Button {
+                                showSourcePicker = true
+                            } label: {
+                                HStack(spacing: 6) {
+                                    Text(viewModel.selectedSourceUrls.isEmpty
+                                        ? "全部书源"
+                                        : "已选 \(viewModel.selectedSourceUrls.count) 个源")
+                                        .lineLimit(1)
+                                    Image(systemName: "chevron.right")
+                                        .font(.system(size: 10, weight: .semibold))
+                                }
+                                .font(.system(size: 13, weight: .medium))
+                                .foregroundColor(theme.palette.accent)
+                                .padding(.horizontal, 10)
+                                .padding(.vertical, 6)
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: theme.metrics.cornerRadius, style: .continuous)
+                                        .stroke(theme.isClassTrial
+                                            ? theme.palette.ink
+                                            : theme.palette.divider,
+                                                lineWidth: theme.isClassTrial ? 2 : 1)
+                                )
                             }
-                            Button("应用") { restartIfNeeded() }
-                                .buttonStyle(.bordered)
-                                .controlSize(.small)
-                                .disabled(viewModel.searchQuery.trimmingCharacters(in: .whitespaces).isEmpty)
+                            .buttonStyle(.plain)
+                            Spacer()
                         }
 
                         Text("范围内 \(viewModel.availableSources.count) 个源")
@@ -160,19 +243,21 @@ public struct SearchBookView: View {
                 }
             }
             .padding(14)
-            .background(searchCard)
+            .appThemePanel()
             .padding(.horizontal, 16)
             .padding(.top, 12)
 
             // Source filter chips
-            if !viewModel.availableSources.isEmpty {
+            if !viewModel.searchableSources.isEmpty {
                 sourceFilterBar
             }
 
             Divider()
 
             // Content area
-            if viewModel.isSearching && viewModel.searchResults.isEmpty {
+            if viewModel.isPaused && viewModel.searchResults.isEmpty {
+                pausedState
+            } else if viewModel.isSearching && viewModel.searchResults.isEmpty {
                 searchingState
             } else if viewModel.searchResults.isEmpty && !viewModel.searchQuery.isEmpty && !viewModel.isSearching {
                 noResultState
@@ -183,6 +268,21 @@ public struct SearchBookView: View {
                     searchHistoryList
                 }
             } else {
+                if viewModel.isPaused {
+                    HStack(spacing: 8) {
+                        Image(systemName: "pause.fill")
+                            .font(.system(size: 11, weight: .bold))
+                        Text("已暂停 · 已找到 \(viewModel.searchResults.count) 本")
+                            .font(.caption)
+                        Spacer()
+                        Button("继续") { viewModel.resumeSearch() }
+                            .font(.caption.weight(.semibold))
+                            .foregroundColor(theme.palette.accent)
+                    }
+                    .foregroundColor(theme.palette.secondaryInk)
+                    .padding(.horizontal)
+                    .padding(.top, 6)
+                }
                 if viewModel.hiddenByFilterCount > 0 {
                     Text("按当前条件过滤掉 \(viewModel.hiddenByFilterCount) 条（展开「范围与匹配」可放宽）")
                         .font(.caption2)
@@ -210,7 +310,10 @@ public struct SearchBookView: View {
         #if os(iOS)
         .navigationBarTitleDisplayMode(.inline)
         #endif
-        .background(pageBackground)
+        .appThemePageBackground()
+        .sheet(isPresented: $showSourcePicker, onDismiss: { restartIfNeeded() }) {
+            SearchSourcePickerSheet(viewModel: viewModel)
+        }
         .background(
             // Programmatic navigation link outside List to avoid any row insertion or navigation reset
             NavigationLink(
@@ -249,18 +352,19 @@ public struct SearchBookView: View {
 
     // MARK: - 状态视图
 
-    /// 书源筛选条：第一个是「全部」，后面每个源一个。
+    /// 书源筛选条：第一个是「全部」，后面每个源一个，可多选。
     private var sourceFilterBar: some View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 8) {
-                FilterChip(title: "全部书源 (\(viewModel.availableSources.count))",
-                           isSelected: viewModel.selectedSourceUrl == nil) {
-                    pickSource(nil)
+                FilterChip(title: "全部书源 (\(viewModel.searchableSources.count))",
+                           isSelected: viewModel.selectedSourceUrls.isEmpty) {
+                    viewModel.selectedSourceUrls.removeAll()
+                    restartIfNeeded()
                 }
-                ForEach(viewModel.availableSources) { source in
+                ForEach(viewModel.searchableSources) { source in
                     FilterChip(title: source.bookSourceName,
-                               isSelected: viewModel.selectedSourceUrl == source.bookSourceUrl) {
-                        pickSource(source.bookSourceUrl)
+                               isSelected: viewModel.selectedSourceUrls.contains(source.bookSourceUrl)) {
+                        toggleSource(source.bookSourceUrl)
                     }
                 }
             }
@@ -269,11 +373,33 @@ public struct SearchBookView: View {
         }
     }
 
-    /// 切书源。已经有搜索词就顺手重搜，空词只记选择。
-    private func pickSource(_ url: String?) {
-        viewModel.selectedSourceUrl = url
-        guard !viewModel.searchQuery.trimmingCharacters(in: .whitespaces).isEmpty else { return }
-        viewModel.startSearch()
+    /// 多选书源：已有搜索词就顺手重搜，空词只记选择。
+    private func toggleSource(_ url: String) {
+        if viewModel.selectedSourceUrls.contains(url) {
+            viewModel.selectedSourceUrls.remove(url)
+        } else {
+            viewModel.selectedSourceUrls.insert(url)
+        }
+        restartIfNeeded()
+    }
+
+    private var pausedState: some View {
+        VStack(spacing: 12) {
+            Image(systemName: "pause.fill")
+                .font(.system(size: 30, weight: .bold))
+                .foregroundColor(theme.palette.accent)
+            Text("搜索已暂停")
+                .font(.headline)
+                .foregroundColor(theme.palette.ink)
+            Text("已经找到的结果会保留，继续会从未完成的源接着搜。")
+                .font(.caption)
+                .foregroundColor(theme.palette.secondaryInk)
+                .multilineTextAlignment(.center)
+            Button("继续搜索") { viewModel.resumeSearch() }
+                .buttonStyle(.borderedProminent)
+        }
+        .padding(.horizontal, 24)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     private var searchingState: some View {
@@ -288,9 +414,24 @@ public struct SearchBookView: View {
 
     private var noResultState: some View {
         VStack(spacing: 8) {
-            Image(systemName: "magnifyingglass")
-                .font(.largeTitle)
-                .foregroundColor(theme.palette.secondaryInk.opacity(0.6))
+            if theme.isClassTrial {
+                Image(systemName: "magnifyingglass")
+                    .font(.system(size: 30, weight: .bold))
+                    .foregroundColor(theme.palette.onInk)
+                    .frame(width: 72, height: 72)
+                    .background(Rectangle().fill(theme.palette.ink))
+                    .overlay(alignment: .bottomTrailing) {
+                        Rectangle()
+                            .fill(theme.palette.accent)
+                            .frame(width: 15, height: 15)
+                    }
+                    .rotationEffect(.degrees(-3))
+                    .padding(.bottom, 6)
+            } else {
+                Image(systemName: "magnifyingglass")
+                    .font(.largeTitle)
+                    .foregroundColor(theme.palette.secondaryInk.opacity(0.6))
+            }
             Text("没找到相关书籍")
                 .font(.headline)
                 .foregroundColor(theme.palette.secondaryInk)
@@ -307,9 +448,24 @@ public struct SearchBookView: View {
 
     private var emptyPromptState: some View {
         VStack(spacing: 8) {
-            Image(systemName: "books.vertical")
-                .font(.system(size: 40))
-                .foregroundColor(theme.palette.secondaryInk.opacity(0.5))
+            if theme.isClassTrial {
+                Image(systemName: "books.vertical")
+                    .font(.system(size: 30, weight: .bold))
+                    .foregroundColor(theme.palette.onInk)
+                    .frame(width: 72, height: 72)
+                    .background(Rectangle().fill(theme.palette.ink))
+                    .overlay(alignment: .bottomTrailing) {
+                        Rectangle()
+                            .fill(theme.palette.accent)
+                            .frame(width: 15, height: 15)
+                    }
+                    .rotationEffect(.degrees(-3))
+                    .padding(.bottom, 6)
+            } else {
+                Image(systemName: "books.vertical")
+                    .font(.system(size: 40))
+                    .foregroundColor(theme.palette.secondaryInk.opacity(0.5))
+            }
             Text("输入关键词，全网搜。")
                 .font(.subheadline)
                 .foregroundColor(theme.palette.secondaryInk)
@@ -321,7 +477,21 @@ public struct SearchBookView: View {
 
     @ViewBuilder
     private var footerView: some View {
-        if viewModel.isLoadingMore {
+        if viewModel.isPaused {
+            Button(action: {
+                viewModel.resumeSearch()
+            }) {
+                HStack(spacing: 6) {
+                    Image(systemName: "play.fill")
+                    Text("已暂停 · 继续搜索剩余书源")
+                }
+                .frame(maxWidth: .infinity)
+                .font(.footnote)
+                .foregroundColor(theme.palette.accent)
+                .padding(.vertical, 8)
+            }
+            .buttonStyle(.plain)
+        } else if viewModel.isLoadingMore {
             loadingMoreRow
         } else if viewModel.hasMore && !viewModel.searchResults.isEmpty {
             Button(action: {
@@ -456,7 +626,14 @@ struct PlaceholderField: View {
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 9)
-        .background(RoundedRectangle(cornerRadius: theme.metrics.cornerRadius, style: .continuous).fill(theme.palette.elevated))
+        .background(RoundedRectangle(cornerRadius: theme.metrics.cornerRadius, style: .continuous)
+            .fill(theme.isClassTrial ? theme.palette.surface : theme.palette.elevated))
+        .overlay {
+            if theme.isClassTrial {
+                RoundedRectangle(cornerRadius: theme.metrics.cornerRadius, style: .continuous)
+                    .stroke(theme.palette.ink, lineWidth: 2)
+            }
+        }
     }
 }
 
@@ -473,11 +650,21 @@ struct FilterChip: View {
 
     private var label: some View {
         Text(title)
-            .font(.caption.weight(isSelected ? .bold : .regular))
+            .font(.caption.weight(isSelected || theme.isClassTrial ? .bold : .regular))
             .padding(EdgeInsets(top: 7, leading: 13, bottom: 7, trailing: 13))
-            .background(isSelected ? theme.palette.accent : theme.palette.elevated)
-            .foregroundColor(isSelected ? .white : .primary)
-            .cornerRadius(17)
+            .background(isSelected
+                ? theme.palette.accent
+                : (theme.isClassTrial ? theme.palette.surface : theme.palette.elevated))
+            .foregroundColor(isSelected
+                ? theme.palette.onAccent
+                : (theme.isClassTrial ? theme.palette.ink : .primary))
+            .cornerRadius(theme.isClassTrial ? 0 : 17)
+            .overlay {
+                if theme.isClassTrial {
+                    RoundedRectangle(cornerRadius: 0)
+                        .stroke(isSelected ? theme.palette.accent : theme.palette.ink, lineWidth: 2)
+                }
+            }
     }
 }
 
@@ -596,5 +783,105 @@ public struct SearchResultRow: View {
             .fill(tint)
             .frame(width: 52, height: 72)
             .overlay(Image(systemName: "book.closed").foregroundColor(theme.palette.accent))
+    }
+}
+
+/// 「限定源」多选面板：把当前分组下所有可搜书源列出来，勾选即生效。
+struct SearchSourcePickerSheet: View {
+    @ObservedObject var viewModel: SearchViewModel
+    @Environment(\.dismiss) private var dismiss
+    @Environment(\.appTheme) private var theme
+    @State private var query = ""
+
+    private var filteredSources: [BookSource] {
+        let key = query.trimmingCharacters(in: .whitespaces)
+        guard !key.isEmpty else { return viewModel.searchableSources }
+        return viewModel.searchableSources.filter {
+            $0.bookSourceName.localizedCaseInsensitiveContains(key)
+                || ($0.bookSourceGroup ?? "").localizedCaseInsensitiveContains(key)
+        }
+    }
+
+    var body: some View {
+        NavigationView {
+            ScrollView {
+                LazyVStack(spacing: 8) {
+                    ForEach(filteredSources, id: \.bookSourceUrl) { source in
+                        Button {
+                            toggle(source.bookSourceUrl)
+                        } label: {
+                            HStack(spacing: 10) {
+                                Image(systemName: viewModel.selectedSourceUrls.contains(source.bookSourceUrl)
+                                    ? "checkmark.square.fill"
+                                    : "square")
+                                    .font(.system(size: 18, weight: .semibold))
+                                    .foregroundColor(theme.palette.accent)
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(source.bookSourceName)
+                                        .font(theme.typography.body)
+                                        .foregroundColor(theme.palette.ink)
+                                    if let group = source.bookSourceGroup,
+                                       !group.trimmingCharacters(in: .whitespaces).isEmpty {
+                                        Text(group)
+                                            .font(.caption2)
+                                            .foregroundColor(theme.palette.secondaryInk)
+                                    }
+                                }
+                                Spacer(minLength: 0)
+                            }
+                            .padding(12)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .appThemePanel()
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+                .padding(16)
+            }
+            .background(AppThemeBackdrop())
+            .searchable(text: $query, prompt: "搜书源名或分组")
+            .navigationTitle("限定书源")
+            #if os(iOS)
+            .navigationBarTitleDisplayMode(.inline)
+            #endif
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("全选") {
+                        viewModel.selectedSourceUrls = Set(viewModel.searchableSources.map(\.bookSourceUrl))
+                    }
+                }
+                ToolbarItem(placement: .primaryAction) {
+                    Button("完成") { dismiss() }
+                }
+            }
+            .safeAreaInset(edge: .bottom) {
+                HStack {
+                    Text("已选 \(viewModel.selectedSourceUrls.count) / \(viewModel.searchableSources.count)")
+                        .font(theme.typography.mono)
+                        .foregroundColor(theme.palette.secondaryInk)
+                    Spacer()
+                    Button("清空") {
+                        viewModel.selectedSourceUrls.removeAll()
+                    }
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundColor(theme.palette.accent)
+                }
+                .padding(16)
+                .background(theme.palette.surface)
+                .overlay(alignment: .top) {
+                    Rectangle()
+                        .fill(theme.palette.divider)
+                        .frame(height: theme.isClassTrial ? 2 : 0.5)
+                }
+            }
+        }
+    }
+
+    private func toggle(_ url: String) {
+        if viewModel.selectedSourceUrls.contains(url) {
+            viewModel.selectedSourceUrls.remove(url)
+        } else {
+            viewModel.selectedSourceUrls.insert(url)
+        }
     }
 }
