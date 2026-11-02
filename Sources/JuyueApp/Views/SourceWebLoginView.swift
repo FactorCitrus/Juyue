@@ -15,7 +15,7 @@ public struct SourceWebLoginView: View {
     }
 
     public var body: some View {
-        NavigationView {
+        LoginNavigationContainer {
             VStack(spacing: 0) {
                 addressBar
                 Divider()
@@ -27,9 +27,7 @@ public struct SourceWebLoginView: View {
                 navigationBar
             }
             .navigationTitle(session.source.bookSourceName)
-            #if os(iOS)
-            .navigationBarTitleDisplayMode(.inline)
-            #endif
+            .inlineNavigationTitle()
             .toolbar { toolbarItems }
             .sheet(isPresented: $session.showingManualSheet) { manualCookieEditor }
             .alert(session.alertText ?? "", isPresented: alertBinding) {
@@ -104,7 +102,7 @@ public struct SourceWebLoginView: View {
 
     private var webArea: some View {
         LoginWebViewHost(
-            webView: session.webView,
+            browser: session.webView,
             onStartLoading: { session.loading = true },
             onFinishLoading: { title, url in
                 session.loading = false
@@ -117,30 +115,9 @@ public struct SourceWebLoginView: View {
     }
 
     private var navigationBar: some View {
-        HStack(spacing: 20) {
-            Button { session.webView.goBack() } label: {
-                Image(systemName: "chevron.backward")
-            }
-            .disabled(!session.webView.canGoBack)
-
-            Button { session.webView.goForward() } label: {
-                Image(systemName: "chevron.forward")
-            }
-            .disabled(!session.webView.canGoForward)
-
-            Button { session.webView.reload() } label: {
-                Image(systemName: "arrow.clockwise")
-            }
-
-            Spacer()
-
-            Button("手动粘贴 Cookie") { session.showingManualSheet = true }
-                .font(.caption)
-                .buttonStyle(.bordered)
+        BrowserToolbar(webView: session.webView) {
+            session.showingManualSheet = true
         }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 8)
-        .background(theme.palette.divider.opacity(0.05))
     }
 
     private var emptyHint: some View {
@@ -162,9 +139,7 @@ public struct SourceWebLoginView: View {
 
     @ToolbarContentBuilder
     private var toolbarItems: some ToolbarContent {
-        ToolbarItem(placement: .cancellationAction) {
-            Button("取消") { dismiss() }
-        }
+        CancelToolbar { dismiss() }
         ToolbarItem(placement: .confirmationAction) {
             Button("保存并完成") { session.finish() }
                 .font(.body.bold())
@@ -181,9 +156,9 @@ public struct SourceWebLoginView: View {
     // MARK: - 手动 Cookie
 
     private var manualCookieEditor: some View {
-        NavigationView {
+        LoginNavigationContainer {
             Form {
-                Section(header: Text("粘贴 Cookie 字符串")) {
+                Section("粘贴 Cookie 字符串") {
                     TextEditor(text: $session.manualCookie)
                         .frame(minHeight: 140)
                         .font(.system(.caption, design: .monospaced))
@@ -201,13 +176,9 @@ public struct SourceWebLoginView: View {
             }
             .appThemedList()
             .navigationTitle("手动填入 Cookie")
-            #if os(iOS)
-            .navigationBarTitleDisplayMode(.inline)
-            #endif
+            .inlineNavigationTitle()
             .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("取消") { session.showingManualSheet = false }
-                }
+                CancelToolbar { session.showingManualSheet = false }
             }
         }
     }
@@ -250,13 +221,21 @@ final class SourceLoginSession: ObservableObject {
 
     func loadStartPage() {
         guard let url = currentURL else { return }
-        webView.load(URLRequest(url: url))
+        loadPage(url)
     }
 
     func openTypedAddress() {
         let raw = address.trimmingCharacters(in: .whitespacesAndNewlines)
         guard let url = URL(string: raw), url.scheme?.hasPrefix("http") == true else { return }
+        open(url)
+    }
+
+    private func open(_ url: URL) {
         currentURL = url
+        loadPage(url)
+    }
+
+    private func loadPage(_ url: URL) {
         webView.load(URLRequest(url: url))
     }
 
@@ -467,19 +446,19 @@ private final class LoginNavigationProxy: NSObject, WKNavigationDelegate {
 
 #if os(iOS)
 private struct LoginWebViewHost: UIViewRepresentable {
-    let webView: WKWebView
+    let browser: WKWebView
     let onStartLoading: () -> Void
     let onFinishLoading: (String, URL?) -> Void
     let onFailLoading: () -> Void
 
     func makeUIView(context: Context) -> WKWebView {
         context.coordinator.attach(
-            to: webView,
+            to: browser,
             onStart: onStartLoading,
             onFinish: onFinishLoading,
             onFail: onFailLoading
         )
-        return webView
+        return browser
     }
 
     func updateUIView(_ uiView: WKWebView, context: Context) {}
@@ -504,19 +483,19 @@ private struct LoginWebViewHost: UIViewRepresentable {
 }
 #elseif os(macOS)
 private struct LoginWebViewHost: NSViewRepresentable {
-    let webView: WKWebView
+    let browser: WKWebView
     let onStartLoading: () -> Void
     let onFinishLoading: (String, URL?) -> Void
     let onFailLoading: () -> Void
 
     func makeNSView(context: Context) -> WKWebView {
         context.coordinator.attach(
-            to: webView,
+            to: browser,
             onStart: onStartLoading,
             onFinish: onFinishLoading,
             onFail: onFailLoading
         )
-        return webView
+        return browser
     }
 
     func updateNSView(_ nsView: WKWebView, context: Context) {}
@@ -540,3 +519,73 @@ private struct LoginWebViewHost: NSViewRepresentable {
     }
 }
 #endif
+
+// MARK: - 视图外壳
+
+private struct LoginNavigationContainer<Content: View>: View {
+    let content: Content
+
+    init(@ViewBuilder content: () -> Content) {
+        self.content = content()
+    }
+
+    var body: some View {
+        NavigationView { content }
+    }
+}
+
+private struct InlineNavigationTitle: ViewModifier {
+    func body(content: Content) -> some View {
+        #if os(iOS)
+        content.navigationBarTitleDisplayMode(.inline)
+        #else
+        content
+        #endif
+    }
+}
+
+private extension View {
+    func inlineNavigationTitle() -> some View {
+        modifier(InlineNavigationTitle())
+    }
+}
+
+private struct BrowserToolbar: View {
+    let webView: WKWebView
+    let onManualCookie: () -> Void
+    @Environment(\.appTheme) private var theme
+
+    var body: some View {
+        HStack(spacing: 20) {
+            control("chevron.backward", active: webView.canGoBack) { webView.goBack() }
+            control("chevron.forward", active: webView.canGoForward) { webView.goForward() }
+            control("arrow.clockwise", active: true) { webView.reload() }
+
+            Spacer()
+
+            Button("手动粘贴 Cookie", action: onManualCookie)
+                .font(.caption)
+                .buttonStyle(.bordered)
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 8)
+        .background(theme.palette.divider.opacity(0.05))
+    }
+
+    private func control(_ symbol: String, active: Bool, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: symbol)
+        }
+        .disabled(!active)
+    }
+}
+
+private struct CancelToolbar: ToolbarContent {
+    let action: () -> Void
+
+    var body: some ToolbarContent {
+        ToolbarItem(placement: .cancellationAction) {
+            Button("取消", action: action)
+        }
+    }
+}

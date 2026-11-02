@@ -461,11 +461,10 @@ public struct SourceSwitchSheet: View {
         }
     }
 
-    private func startSearch() {
+    private func startSearch(resuming: Bool = false) {
         searchTask?.cancel()
-        rawResults = []
+        searchTask = nil
         errorMessage = nil
-        finishedSources = 0
 
         let trimmedKeyword = keyword.trimmingCharacters(in: .whitespaces)
         guard !trimmedKeyword.isEmpty else {
@@ -479,24 +478,43 @@ public struct SourceSwitchSheet: View {
             return
         }
 
-        let sources = selectedSourceUrls.isEmpty
-            ? enabledSources
-            : enabledSources.filter { selectedSourceUrls.contains($0.bookSourceUrl) }
-        totalSources = sources.count
-        isSearching = !sources.isEmpty
-        guard !sources.isEmpty else {
-            errorMessage = "没有可搜索的书源，先去设置里导入或重新勾选。"
+        if !resuming {
+            let sources = selectedSourceUrls.isEmpty
+                ? enabledSources
+                : enabledSources.filter { selectedSourceUrls.contains($0.bookSourceUrl) }
+            guard !sources.isEmpty else {
+                isSearching = false
+                isPaused = false
+                errorMessage = "没有可搜索的书源，先去设置里导入或重新勾选。"
+                return
+            }
+            rawResults = []
+            finishedSources = 0
+            isPaused = false
+            runSources = sources
+            totalSources = sources.count
+            reportedSourceUrls = []
+            runKeyword = requestKeyword(from: trimmedKeyword)
+        }
+
+        let remaining = resuming
+            ? runSources.filter { !reportedSourceUrls.contains($0.bookSourceUrl) }
+            : runSources
+        guard !remaining.isEmpty else {
+            isSearching = false
+            isPaused = false
             return
         }
 
-        let requestKey = requestKeyword(from: trimmedKeyword)
-
+        isSearching = true
+        isPaused = false
         searchTask = Task {
-            let stream = BookSearchService.shared.searchMultiSources(sources: sources, key: requestKey, page: 1)
+            let stream = BookSearchService.shared.searchMultiSources(sources: remaining, key: runKeyword, page: 1)
             for await (source, books) in stream {
                 if Task.isCancelled { return }
                 await MainActor.run {
-                    finishedSources += 1
+                    reportedSourceUrls.insert(source.bookSourceUrl)
+                    finishedSources = min(totalSources, finishedSources + 1)
                     // 原样收着，展示时按当前口径筛（改开关不用重新搜一遍）
                     for candidate in books {
                         if !rawResults.contains(where: { $0.book.bookUrl == candidate.bookUrl }) {
@@ -507,8 +525,22 @@ public struct SourceSwitchSheet: View {
             }
             await MainActor.run {
                 isSearching = false
+                isPaused = false
             }
         }
+    }
+
+    private func pauseSearch() {
+        guard isSearching else { return }
+        searchTask?.cancel()
+        searchTask = nil
+        isSearching = false
+        isPaused = true
+    }
+
+    private func resumeSearch() {
+        guard isPaused else { return }
+        startSearch(resuming: true)
     }
 
     /// 搜索接口一般只认书名，带空格的关键词取最长的那一段去请求
@@ -519,10 +551,15 @@ public struct SourceSwitchSheet: View {
 
 }
 
+private struct SourceSwitchSourceGroup: Identifiable {
+    let name: String
+    let sources: [BookSource]
+    var id: String { name }
+}
+
 /// 换源页的「限定源」多选面板。不选表示全部启用源；
 /// 勾选后既限制这一轮换源要扫的源，也即时过滤已返回的候选。
-private struct SourceSwitchSourcePicker: View {
-    let sources: [BookSource]
+private struct SourceSwitchSourcePicker: View {    let sources: [BookSource]
     @Binding var selection: Set<String>
     let currentSourceUrl: String?
     let palette: NieRPalette
@@ -536,6 +573,70 @@ private struct SourceSwitchSourcePicker: View {
             $0.bookSourceName.localizedCaseInsensitiveContains(key)
                 || ($0.bookSourceGroup ?? "").localizedCaseInsensitiveContains(key)
         }
+    }
+
+    private var groupedSources: [SourceSwitchSourceGroup] {
+        var order: [String] = []
+        var map: [String: [BookSource]] = [:]
+        for source in filteredSources {
+            let names = groupNames(for: source)
+            for name in names.isEmpty ? ["未分组"] : names {
+                if map[name] == nil {
+                    order.append(name)
+                    map[name] = []
+                }
+                map[name]?.append(source)
+            }
+        }
+        let sorted = order.sorted { lhs, rhs in
+            if lhs == "未分组" { return false }
+            if rhs == "未分组" { return true }
+            return lhs.localizedStandardCompare(rhs) == .orderedAscending
+        }
+        return sorted.map { SourceSwitchSourceGroup(name: $0, sources: map[$0] ?? []) }
+    }
+
+    private func groupNames(for source: BookSource) -> [String] {
+        (source.bookSourceGroup ?? "")
+            .split(whereSeparator: { ",，、;；".contains($0) })
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+    }
+
+    private func groupRow(_ name: String, sources: [BookSource]) -> some View {
+        let urls = Set(sources.map(\.bookSourceUrl))
+        let selectedCount = urls.intersection(selection).count
+        let allSelected = !urls.isEmpty && selectedCount == urls.count
+        let partiallySelected = selectedCount > 0 && !allSelected
+        return Button {
+            if allSelected {
+                selection.subtract(urls)
+            } else {
+                selection.formUnion(urls)
+            }
+        } label: {
+            HStack(spacing: 8) {
+                Image(systemName: allSelected
+                      ? "checkmark.square.fill"
+                      : (partiallySelected ? "minus.square.fill" : "square"))
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundColor(palette.accent)
+                Text(name)
+                    .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                    .tracking(0.6)
+                    .foregroundColor(palette.ink)
+                Spacer(minLength: 0)
+                Text("\(selectedCount)/\(urls.count)")
+                    .font(.system(size: 9, design: .monospaced))
+                    .foregroundColor(palette.muted)
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 7)
+            .background(palette.background.opacity(0.55))
+            .overlay(Rectangle().stroke(palette.line.opacity(0.55), lineWidth: 0.6))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
     }
 
     var body: some View {
@@ -567,8 +668,11 @@ private struct SourceSwitchSourcePicker: View {
                         .foregroundColor(palette.muted)
 
                     LazyVStack(spacing: 8) {
-                        ForEach(filteredSources, id: \.bookSourceUrl) { source in
-                            sourceRow(source)
+                        ForEach(groupedSources) { group in
+                            groupRow(group.name, sources: group.sources)
+                            ForEach(group.sources, id: \.bookSourceUrl) { source in
+                                sourceRow(source)
+                            }
                         }
                     }
                 }

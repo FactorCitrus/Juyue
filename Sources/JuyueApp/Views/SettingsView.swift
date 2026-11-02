@@ -145,6 +145,70 @@ final class AppIconManager: ObservableObject {
     #endif
 }
 
+private struct SettingsAlerts {
+    var restorePresented = false
+    var clearCachePresented = false
+}
+
+private struct AppearanceModePicker: View {
+    @Binding var selection: String
+
+    private static let modes: [(id: String, title: String)] = [
+        ("system", "跟随系统"),
+        ("light", "浅色模式"),
+        ("dark", "深色模式")
+    ]
+
+    var body: some View {
+        Picker(selection: $selection) {
+            ForEach(Self.modes, id: \.id) { mode in
+                Text(mode.title).tag(mode.id)
+            }
+        } label: {
+            Text("外观模式")
+        }
+        .pickerStyle(SegmentedPickerStyle())
+    }
+}
+
+private struct SettingsTrailingRow<Leading: View, Trailing: View>: View {
+    let leading: Leading
+    let trailing: Trailing
+
+    init(@ViewBuilder leading: () -> Leading, @ViewBuilder trailing: () -> Trailing) {
+        self.leading = leading()
+        self.trailing = trailing()
+    }
+
+    var body: some View {
+        leading
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .overlay(alignment: .trailing) { trailing }
+    }
+}
+
+private struct ImportFileSummary: View {
+    let fileName: String
+    let sourceName: String
+    let fileExtension: String
+    @Environment(\.appTheme) private var theme
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(fileName)
+                .font(theme.typography.body.weight(.semibold))
+                .foregroundColor(theme.palette.ink)
+            Text(sourceName)
+                .font(.caption2)
+                .foregroundColor(theme.palette.secondaryInk)
+            Text(fileExtension.isEmpty ? "未知格式" : fileExtension)
+                .font(theme.typography.mono)
+                .foregroundColor(theme.palette.accent)
+        }
+        .padding(.vertical, 4)
+    }
+}
+
 public struct SettingsView: View {
     @ObservedObject var bookStore = BookStore.shared
     @ObservedObject var readerConfig = ReaderConfig.shared
@@ -158,13 +222,10 @@ public struct SettingsView: View {
     /// 缓存章节时顺手抓书评（段评 / 本章说）首页
     @AppStorage("reader_cache_reviews") private var cacheReviews: Bool = false
 
-    @State private var showRestoreAlert: Bool = false
-    @State private var restoreSuccessMessage: String? = nil
-    @State private var showClearCacheAlert: Bool = false
+    @State private var alerts = SettingsAlerts()
     /// WebDAV 那行的小字：填了地址就算「已配置」，同步过才是「已同步」。
     /// 之前只看 lastSyncTime，所以填完地址回来还显示「未配置」。
     @State private var webDAVStatusText: String = "未配置"
-    @State private var clearCacheMessage: String? = nil
     @State private var showAppIconOptions: Bool = false
     @State private var showLogoImporter = false
     @State private var logoPhotoItem: Any?
@@ -240,17 +301,16 @@ public struct SettingsView: View {
             .onChange(of: appTheme) { newValue in
                 AppLog.write("[设置] 外观模式 → \(newValue)")
             }
-            .alert("重置书源", isPresented: $showRestoreAlert) {
+            .alert("重置书源", isPresented: $alerts.restorePresented) {
                 Button("取消", role: .cancel) {}
                 Button("确定重置", role: .destructive) {
                     AppLog.write("[设置] 重置书源")
                     bookStore.loadBundledSources(forceReset: true)
-                    restoreSuccessMessage = "书源已重置为预装状态"
                 }
             } message: {
                 Text("确定要把书源重置为预装默认状态吗？自己导入的书源会被覆盖，重新导入即可。")
             }
-            .alert("清理阅读缓存", isPresented: $showClearCacheAlert) {
+            .alert("清理阅读缓存", isPresented: $alerts.clearCachePresented) {
                 Button("取消", role: .cancel) {}
                 Button("确定清理", role: .destructive) {
                     AppLog.write("[设置] 清理阅读缓存")
@@ -258,7 +318,6 @@ public struct SettingsView: View {
                     BookContentService.shared.clearAllChapterCaches()
                     ReviewCache.clearAll()
                     URLCache.shared.removeAllCachedResponses()
-                    clearCacheMessage = count > 0 ? "已清理 \(count) 章缓存" : "没有需要清理的章节缓存"
                 }
             } message: {
                 Text("清理临时章节和图片缓存？书架和阅读进度会保留。")
@@ -1061,12 +1120,7 @@ public struct SettingsView: View {
                         columns: 3
                     )
                 } else {
-                    Picker("外观模式", selection: $appTheme) {
-                        Text("跟随系统").tag("system")
-                        Text("浅色模式").tag("light")
-                        Text("深色模式").tag("dark")
-                    }
-                    .pickerStyle(.segmented)
+                    AppearanceModePicker(selection: $appTheme)
                 }
             }
         }
@@ -1587,7 +1641,7 @@ public struct SettingsView: View {
             }
             cardDivider
             Button {
-                showRestoreAlert = true
+                alerts.restorePresented = true
             } label: {
                 settingLabel("重置书源", icon: "arrow.clockwise", value: "恢复预装", detail: nil, chevron: false)
             }
@@ -1672,7 +1726,7 @@ public struct SettingsView: View {
             }
             cardDivider
             Button {
-                showClearCacheAlert = true
+                alerts.clearCachePresented = true
             } label: {
                 HStack(spacing: 12) {
                     Image(systemName: "trash")
@@ -2820,18 +2874,11 @@ struct DownloadedImportSheet: View {
         NavigationView {
             List {
                 Section {
-                    VStack(alignment: .leading, spacing: 6) {
-                        Text(file.fileName)
-                            .font(theme.typography.body.weight(.semibold))
-                            .foregroundColor(theme.palette.ink)
-                        Text(sourceName)
-                            .font(.caption2)
-                            .foregroundColor(theme.palette.secondaryInk)
-                        Text(file.url.pathExtension.uppercased().isEmpty ? "未知格式" : file.url.pathExtension.uppercased())
-                            .font(theme.typography.mono)
-                            .foregroundColor(theme.palette.accent)
-                    }
-                    .padding(.vertical, 4)
+                    ImportFileSummary(
+                        fileName: file.fileName,
+                        sourceName: sourceName,
+                        fileExtension: file.url.pathExtension.uppercased()
+                    )
                 }
                 .appThemedRows()
 
@@ -3579,27 +3626,29 @@ struct SubscribeSourcesView: View {
 
             if !store.sources.isEmpty {
                 Section {
-                    HStack {
+                    SettingsTrailingRow {
                         Text("显示 \(filteredSources.count) / 共 \(store.sources.count)")
                             .font(.caption)
                             .foregroundColor(theme.palette.secondaryInk)
-                        Spacer()
-                        Menu {
-                            Button("全部分组") { selectedGroup = nil }
-                            ForEach(allGroups, id: \.self) { group in
-                                Button(group) { selectedGroup = group }
+                    } trailing: {
+                        HStack(spacing: 10) {
+                            Menu {
+                                Button("全部分组") { selectedGroup = nil }
+                                ForEach(allGroups, id: \.self) { group in
+                                    Button(group) { selectedGroup = group }
+                                }
+                            } label: {
+                                Label(selectedGroup ?? "全部分组", systemImage: "folder")
+                                    .font(.caption)
                             }
-                        } label: {
-                            Label(selectedGroup ?? "全部分组", systemImage: "folder")
-                                .font(.caption)
-                        }
-                        Menu {
-                            ForEach(SubscribeSortMode.allCases) { mode in
-                                Button(mode.rawValue) { sortMode = mode }
+                            Menu {
+                                ForEach(SubscribeSortMode.allCases) { mode in
+                                    Button(mode.rawValue) { sortMode = mode }
+                                }
+                            } label: {
+                                Label(sortMode.rawValue, systemImage: "arrow.up.arrow.down")
+                                    .font(.caption)
                             }
-                        } label: {
-                            Label(sortMode.rawValue, systemImage: "arrow.up.arrow.down")
-                                .font(.caption)
                         }
                     }
 
@@ -3617,9 +3666,9 @@ struct SubscribeSourcesView: View {
                     NavigationLink {
                         SubscribeFavoritesView()
                     } label: {
-                        HStack {
+                        SettingsTrailingRow {
                             Label("收藏文章", systemImage: "star")
-                            Spacer()
+                        } trailing: {
                             Text("\(articleState.favorites().count)")
                                 .foregroundColor(theme.palette.secondaryInk)
                         }
@@ -4112,9 +4161,9 @@ struct SubscribeImportSheet: View {
                     Button {
                         fetchRemote()
                     } label: {
-                        HStack {
+                        SettingsTrailingRow {
                             Label("下载并预览", systemImage: "arrow.down.circle")
-                            Spacer()
+                        } trailing: {
                             if isFetching { ProgressView() }
                         }
                     }
@@ -4375,9 +4424,9 @@ struct SubscribeArticlesView: View {
                         Button {
                             if articleState.isRead(sourceUrl: source.sourceUrl, article: article) {
                                 articleState.markUnread(sourceUrl: source.sourceUrl, article: article)
-                            } else {
-                                articleState.markRead(sourceUrl: source.sourceUrl, article: article)
+                                return
                             }
+                            articleState.markRead(sourceUrl: source.sourceUrl, article: article)
                         } label: {
                             Label(
                                 articleState.isRead(sourceUrl: source.sourceUrl, article: article) ? "标未读" : "标已读",

@@ -6,12 +6,12 @@ import JuyueCore
 public class SearchViewModel: ObservableObject {
     public static let shared = SearchViewModel()
 
-    @Published public var searchQuery: String = ""
-    @Published public var isSearching: Bool = false
-    @Published public var isLoadingMore: Bool = false
-    @Published public var isPaused: Bool = false
-    @Published public var currentPage: Int = 1
-    @Published public var hasMore: Bool = true
+    @Published public var searchQuery = ""
+    @Published public var isSearching = false
+    @Published public var isLoadingMore = false
+    @Published public var isPaused = false
+    @Published public var currentPage = 1
+    @Published public var hasMore = true
     /// 空集合表示搜全部可搜源；否则只搜选中的这些。
     @Published public var selectedSourceUrls: Set<String> = [] {
         didSet { persistOptions() }
@@ -24,41 +24,27 @@ public class SearchViewModel: ObservableObject {
     @Published public var matchField: SourceMatchRules.SearchField = .either {
         didSet { persistOptions() }
     }
-    @Published public var exactMatch: Bool = false {
+    @Published public var exactMatch = false {
         didSet { persistOptions() }
     }
 
-    @Published private var allResults: [SearchBook] = []
-    /// 上一次真正搜过的词；过滤按它算，输入框改动不立刻影响结果。
+    @Published private var ledger = ResultLedger()
     private var lastQuery = ""
-
-    private var exhaustedSourceUrls: Set<String> = []
-    private var reportedSourceUrls: Set<String> = []
-    private var seenBookIds: Set<String> = []
+    private var pauseSnapshot: PauseSnapshot?
     private var currentSearchTask: Task<Void, Never>?
-    private var pausedWasInitial = false
-    private var pausedPage = 1
-    private var pausedCountBefore = 0
+    private let preferences = SearchPreferences()
 
-    private enum PreferenceKey {
-        static let history = "search_history_v1"
-        static let options = "search_options_v1"
-        static let historyLimit = 20
+    private struct PauseSnapshot {
+        let wasInitial: Bool
+        let page: Int
+        let countBefore: Int
     }
 
-    private struct StoredOptions: Codable {
-        var sources: [String]?
-        var group: String?
-        var field: String = SourceMatchRules.SearchField.either.rawValue
-        var exact: Bool = false
-    }
+    private var allResults: [SearchBook] { ledger.books }
 
     public init() {
-        history = UserDefaults.standard.stringArray(forKey: PreferenceKey.history) ?? []
-        guard let data = UserDefaults.standard.data(forKey: PreferenceKey.options),
-              let stored = try? JSONDecoder().decode(StoredOptions.self, from: data) else {
-            return
-        }
+        history = preferences.history()
+        guard let stored = preferences.options() else { return }
         selectedSourceUrls = Set(stored.sources ?? [])
         groupFilter = stored.group
         matchField = SourceMatchRules.SearchField(rawValue: stored.field) ?? .either
@@ -69,24 +55,12 @@ public class SearchViewModel: ObservableObject {
 
     public var searchResults: [SearchBook] {
         let keyword = lastQuery.trimmingCharacters(in: .whitespacesAndNewlines)
-        let filtered = keyword.isEmpty
+        let visible = keyword.isEmpty
             ? allResults
             : allResults.filter {
                 SourceMatchRules.matchesKeyword($0, keyword: keyword, field: matchField, exact: exactMatch)
             }
-
-        let ranks = SourceRanking.build(from: BookStore.shared.sources)
-        return filtered.enumerated()
-            .sorted { left, right in
-                SourceRanking.isOrderedBefore(
-                    left.element,
-                    offset: left.offset,
-                    right.element,
-                    offset: right.offset,
-                    ranks: ranks
-                )
-            }
-            .map(\.element)
+        return SourceRanking(sources: BookStore.shared.sources).sorted(visible)
     }
 
     public var hiddenByFilterCount: Int {
@@ -115,31 +89,27 @@ public class SearchViewModel: ObservableObject {
     // MARK: - 选项持久化
 
     private func persistOptions() {
-        let stored = StoredOptions(
+        preferences.saveOptions(SearchPreferences.Options(
             sources: Array(selectedSourceUrls),
             group: groupFilter,
             field: matchField.rawValue,
             exact: exactMatch
-        )
-        guard let data = try? JSONEncoder().encode(stored) else { return }
-        UserDefaults.standard.set(data, forKey: PreferenceKey.options)
+        ))
     }
 
     public func rememberQuery(_ raw: String) {
         let query = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !query.isEmpty else { return }
 
-        history.removeAll { $0.caseInsensitiveCompare(query) == .orderedSame }
-        history.insert(query, at: 0)
-        if history.count > PreferenceKey.historyLimit {
-            history = Array(history.prefix(PreferenceKey.historyLimit))
-        }
-        UserDefaults.standard.set(history, forKey: PreferenceKey.history)
+        var updated = history.filter { $0.caseInsensitiveCompare(query) != .orderedSame }
+        updated.insert(query, at: 0)
+        history = Array(updated.prefix(SearchPreferences.historyLimit))
+        preferences.saveHistory(history)
     }
 
     public func clearHistory() {
         history = []
-        UserDefaults.standard.removeObject(forKey: PreferenceKey.history)
+        preferences.clearHistory()
     }
 
     // MARK: - 源范围
@@ -172,18 +142,28 @@ public class SearchViewModel: ObservableObject {
     // MARK: - 搜索流程
 
     public func cancelAndReset() {
-        currentSearchTask?.cancel()
+        stopCurrentTask()
+        resetSearchState()
+    }
+
+    private func stopCurrentTask() {
+        guard let task = currentSearchTask else { return }
+        task.cancel()
         currentSearchTask = nil
-        allResults.removeAll()
-        seenBookIds.removeAll()
-        exhaustedSourceUrls.removeAll()
-        reportedSourceUrls.removeAll()
-        isSearching = false
-        isLoadingMore = false
-        isPaused = false
-        pausedWasInitial = false
+    }
+
+    private func resetSearchState() {
+        ledger = ResultLedger()
+        pauseSnapshot = nil
+        setRunState(searching: false, loading: false, paused: false)
         currentPage = 1
         hasMore = true
+    }
+
+    private func setRunState(searching: Bool, loading: Bool, paused: Bool? = nil) {
+        isSearching = searching
+        isLoadingMore = loading
+        if let paused { isPaused = paused }
     }
 
     public func startSearch() {
@@ -193,44 +173,45 @@ public class SearchViewModel: ObservableObject {
         rememberQuery(keyword)
         cancelAndReset()
         lastQuery = keyword
-        isSearching = true
+        setRunState(searching: true, loading: false)
 
-        let sources = targetSources
-        guard !sources.isEmpty else {
+        let targets = targetSources
+        if targets.isEmpty {
             AppLog.write("[搜索] 没有可用书源")
-            isSearching = false
+            setRunState(searching: false, loading: false)
             hasMore = false
             return
         }
 
-        AppLog.write("[搜索] 开始 源=\(sources.count) 个")
-        reportedSourceUrls.removeAll()
-        run(sources: sources, keyword: keyword, page: 1, initial: true, existingCount: 0)
+        AppLog.write("[搜索] 开始 源=\(targets.count) 个")
+        ledger.resetReported()
+        run(SearchRun(sources: targets, keyword: keyword, page: 1, initial: true, existingCount: 0))
     }
 
     public func pauseSearch() {
         guard isSearching || isLoadingMore else { return }
 
-        pausedWasInitial = isSearching
-        pausedPage = isSearching ? 1 : currentPage + 1
-        pausedCountBefore = allResults.count
+        pauseSnapshot = PauseSnapshot(
+            wasInitial: isSearching,
+            page: isSearching ? 1 : currentPage + 1,
+            countBefore: ledger.books.count
+        )
         currentSearchTask?.cancel()
         currentSearchTask = nil
         isPaused = true
         isSearching = false
         isLoadingMore = false
 
-        AppLog.write("[搜索] 已暂停 · 结果=\(allResults.count) 本 · 已完成源=\(reportedSourceUrls.count)")
+        AppLog.write("[搜索] 已暂停 · 结果=\(ledger.books.count) 本 · 已完成源=\(ledger.reported.count)")
     }
 
     public func resumeSearch() {
-        guard isPaused else { return }
+        guard isPaused, let snapshot = pauseSnapshot else { return }
 
         let keyword = lastQuery.trimmingCharacters(in: .whitespaces)
-        let remaining = targetSources.filter {
-            !reportedSourceUrls.contains($0.bookSourceUrl)
-        }
+        let remaining = targetSources.filter { !ledger.reported.contains($0.bookSourceUrl) }
         isPaused = false
+        pauseSnapshot = nil
 
         guard !keyword.isEmpty, !remaining.isEmpty else {
             hasMore = false
@@ -238,26 +219,26 @@ public class SearchViewModel: ObservableObject {
             return
         }
 
-        if pausedWasInitial {
+        if snapshot.wasInitial {
             isSearching = true
         } else {
             isLoadingMore = true
         }
 
-        AppLog.write("[搜索] 继续 · 第 \(pausedPage) 页 · 剩余 \(remaining.count) 个源")
-        run(
+        AppLog.write("[搜索] 继续 · 第 \(snapshot.page) 页 · 剩余 \(remaining.count) 个源")
+        run(SearchRun(
             sources: remaining,
             keyword: keyword,
-            page: pausedPage,
-            initial: pausedWasInitial,
-            existingCount: pausedCountBefore
-        )
+            page: snapshot.page,
+            initial: snapshot.wasInitial,
+            existingCount: snapshot.countBefore
+        ))
     }
 
     public func shouldAutoLoadMore(for item: SearchBook) -> Bool {
         guard !isSearching, !isLoadingMore, !isPaused, hasMore else { return false }
-        guard let index = searchResults.firstIndex(where: { $0.id == item.id }) else { return false }
-        return index >= searchResults.count - 3
+        let position = searchResults.firstIndex { $0.id == item.id }
+        return position.map { $0 >= searchResults.count - 3 } ?? false
     }
 
     public func loadNextPage() {
@@ -266,9 +247,7 @@ public class SearchViewModel: ObservableObject {
         let keyword = searchQuery.trimmingCharacters(in: .whitespaces)
         guard !keyword.isEmpty else { return }
 
-        let sources = targetSources.filter {
-            !exhaustedSourceUrls.contains($0.bookSourceUrl)
-        }
+        let sources = targetSources.filter { !ledger.exhausted.contains($0.bookSourceUrl) }
         guard !sources.isEmpty else {
             hasMore = false
             return
@@ -276,115 +255,199 @@ public class SearchViewModel: ObservableObject {
 
         isLoadingMore = true
         let page = currentPage + 1
-        let existingCount = allResults.count
-        reportedSourceUrls.removeAll()
+        let existingCount = ledger.books.count
+        ledger.resetReported()
         AppLog.write("[搜索] 加载第 \(page) 页")
-        run(sources: sources, keyword: keyword, page: page, initial: false, existingCount: existingCount)
+        run(SearchRun(
+            sources: sources,
+            keyword: keyword,
+            page: page,
+            initial: false,
+            existingCount: existingCount
+        ))
     }
 
-    private func run(
-        sources: [BookSource],
-        keyword: String,
-        page: Int,
-        initial: Bool,
-        existingCount: Int
-    ) {
-        currentSearchTask = Task {
+    // MARK: - 单轮执行
+
+    private struct SearchRun {
+        let sources: [BookSource]
+        let keyword: String
+        let page: Int
+        let initial: Bool
+        let existingCount: Int
+    }
+
+    private func run(_ job: SearchRun) {
+        let task = Task {
             let stream = BookSearchService.shared.searchMultiSources(
-                sources: sources,
-                key: keyword,
-                page: page
+                sources: job.sources,
+                key: job.keyword,
+                page: job.page
             )
+            await consume(stream, job: job)
+        }
+        currentSearchTask = task
+    }
 
-            for await (source, books) in stream {
-                if Task.isCancelled { return }
-                await MainActor.run {
-                    self.reportedSourceUrls.insert(source.bookSourceUrl)
-                    if books.isEmpty {
-                        self.exhaustedSourceUrls.insert(source.bookSourceUrl)
-                    } else {
-                        self.merge(books)
-                    }
-                }
-            }
-
-            if Task.isCancelled { return }
+    private func consume(
+        _ stream: AsyncStream<(source: BookSource, books: [SearchBook])>,
+        job: SearchRun
+    ) async {
+        for await (source, books) in stream {
+            guard !Task.isCancelled else { return }
             await MainActor.run {
-                self.finish(page: page, initial: initial, existingCount: existingCount)
+                self.apply(source: source, books: books)
             }
+        }
+
+        guard !Task.isCancelled else { return }
+        await MainActor.run {
+            self.finish(job)
         }
     }
 
-    private func finish(page: Int, initial: Bool, existingCount: Int) {
+    private func apply(source: BookSource, books: [SearchBook]) {
+        ledger.noteReported(source.bookSourceUrl)
+        if !books.isEmpty {
+            ledger.absorb(books)
+        } else {
+            ledger.noteEmpty(source.bookSourceUrl)
+        }
+    }
+
+    private func finish(_ job: SearchRun) {
         currentSearchTask = nil
 
-        if initial {
+        if job.initial {
             isSearching = false
             currentPage = 1
-            let sourceCount = targetSources.count
-            hasMore = reportedSourceUrls.count < sourceCount && !allResults.isEmpty
+            hasMore = ledger.reported.count < targetSources.count && !ledger.books.isEmpty
         } else {
             isLoadingMore = false
-            currentPage = page
-            let grew = allResults.count > existingCount
-            let remaining = targetSources.filter {
-                !exhaustedSourceUrls.contains($0.bookSourceUrl)
-            }
+            currentPage = job.page
+            let grew = ledger.books.count > job.existingCount
+            let remaining = targetSources.filter { !ledger.exhausted.contains($0.bookSourceUrl) }
             hasMore = !remaining.isEmpty && grew
         }
 
-        AppLog.write("[搜索] 第 \(page) 页完成 结果=\(allResults.count) 本，无结果源=\(exhaustedSourceUrls.count) 个")
-    }
-
-    private func merge(_ books: [SearchBook]) {
-        var fresh: [SearchBook] = []
-        for book in books where !seenBookIds.contains(book.id) {
-            seenBookIds.insert(book.id)
-            fresh.append(book)
-        }
-        allResults.append(contentsOf: fresh)
+        AppLog.write("[搜索] 第 \(job.page) 页完成 结果=\(ledger.books.count) 本，无结果源=\(ledger.exhausted.count) 个")
     }
 }
 
-// MARK: - 书源排序
+// MARK: - 结果账本
 
-private enum SourceRanking {
-    struct Rank {
+private struct ResultLedger {
+    private(set) var books: [SearchBook] = []
+    private(set) var exhausted: Set<String> = []
+    private(set) var reported: Set<String> = []
+    private var seen: Set<String> = []
+
+    mutating func noteReported(_ sourceURL: String) {
+        reported.insert(sourceURL)
+    }
+
+    mutating func noteEmpty(_ sourceURL: String) {
+        exhausted.insert(sourceURL)
+    }
+
+    mutating func resetReported() {
+        reported.removeAll()
+    }
+
+    mutating func absorb(_ incoming: [SearchBook]) {
+        for book in incoming {
+            guard seen.insert(book.id).inserted else { continue }
+            books.append(book)
+        }
+    }
+}
+
+// MARK: - 源排序
+
+private struct SourceRanking {
+    private struct Rank {
         let weight: Int
         let latency: Int64
         let position: Int
     }
 
-    static func build(from sources: [BookSource]) -> [String: Rank] {
-        var table: [String: Rank] = [:]
+    private let table: [String: Rank]
+
+    init(sources: [BookSource]) {
+        var rows: [String: Rank] = [:]
         for (position, source) in sources.enumerated() {
             let rank = Rank(
                 weight: source.weight ?? 0,
                 latency: source.respondTime ?? Int64.max,
                 position: position
             )
-            table[source.bookSourceUrl] = rank
-            table[source.bookSourceName] = rank
+            rows[source.bookSourceUrl] = rank
+            rows[source.bookSourceName] = rank
         }
-        return table
+        table = rows
     }
 
-    static func isOrderedBefore(
-        _ left: SearchBook,
-        offset leftOffset: Int,
-        _ right: SearchBook,
-        offset rightOffset: Int,
-        ranks: [String: Rank]
-    ) -> Bool {
-        let leftRank = ranks[left.origin] ?? ranks[left.originName] ?? Rank(weight: 0, latency: Int64.max, position: leftOffset)
-        let rightRank = ranks[right.origin] ?? ranks[right.originName] ?? Rank(weight: 0, latency: Int64.max, position: rightOffset)
+    func sorted(_ books: [SearchBook]) -> [SearchBook] {
+        books.enumerated()
+            .sorted { left, right in
+                let a = rank(for: left.element, fallback: left.offset)
+                let b = rank(for: right.element, fallback: right.offset)
+                if a.weight != b.weight { return a.weight > b.weight }
+                if a.latency != b.latency { return a.latency < b.latency }
+                return a.position < b.position
+            }
+            .map(\.element)
+    }
 
-        if leftRank.weight != rightRank.weight {
-            return leftRank.weight > rightRank.weight
-        }
-        if leftRank.latency != rightRank.latency {
-            return leftRank.latency < rightRank.latency
-        }
-        return leftRank.position < rightRank.position
+    private func rank(for book: SearchBook, fallback: Int) -> Rank {
+        table[book.origin]
+            ?? table[book.originName]
+            ?? Rank(weight: 0, latency: Int64.max, position: fallback)
+    }
+}
+
+// MARK: - 偏好
+
+private struct SearchPreferences {
+    static let historyLimit = 20
+
+    private enum Key {
+        static let history = "search_history_v1"
+        static let options = "search_options_v1"
+    }
+
+    struct Options: Codable {
+        var sources: [String]?
+        var group: String?
+        var field: String = SourceMatchRules.SearchField.either.rawValue
+        var exact: Bool = false
+    }
+
+    private let defaults: UserDefaults
+
+    init(defaults: UserDefaults = .standard) {
+        self.defaults = defaults
+    }
+
+    func history() -> [String] {
+        defaults.stringArray(forKey: Key.history) ?? []
+    }
+
+    func saveHistory(_ values: [String]) {
+        defaults.set(values, forKey: Key.history)
+    }
+
+    func clearHistory() {
+        defaults.removeObject(forKey: Key.history)
+    }
+
+    func options() -> Options? {
+        guard let data = defaults.data(forKey: Key.options) else { return nil }
+        return try? JSONDecoder().decode(Options.self, from: data)
+    }
+
+    func saveOptions(_ options: Options) {
+        guard let data = try? JSONEncoder().encode(options) else { return }
+        defaults.set(data, forKey: Key.options)
     }
 }

@@ -283,15 +283,19 @@ public struct JuyueApp: App {
     }
 
     private func preloadDefaultSources() {
-        if bookStore.sources.isEmpty {
-            // Load bundled default sources if available
-            if let bundleUrl = Bundle.main.url(forResource: "bookSources", withExtension: "json"),
-               let data = try? Data(contentsOf: bundleUrl),
-               let json = String(data: data, encoding: .utf8) {
-                let count = try? bookStore.importSources(json: json)
-                AppLog.write("[启动] 预装书源导入 \(count ?? 0) 条")
-            }
+        guard bookStore.sources.isEmpty, let json = BundledSources.text else { return }
+        let count = (try? bookStore.importSources(json: json)) ?? 0
+        AppLog.write("[启动] 预装书源导入 \(count) 条")
+    }
+}
+
+private enum BundledSources {
+    static var text: String? {
+        guard let url = Bundle.main.url(forResource: "bookSources", withExtension: "json"),
+              let data = try? Data(contentsOf: url) else {
+            return nil
         }
+        return String(data: data, encoding: .utf8)
     }
 }
 
@@ -815,23 +819,27 @@ public struct MainTabView: View {
 
     public var body: some View {
         TabView(selection: $selection) {
-            BookshelfView()
-                .tabItem {
-                    Label("书架", systemImage: "books.vertical.fill")
-                }
-                .tag(0)
-
-            CategoryExploreView(isActive: selection == 1)
-                .tabItem {
-                    Label("分类", systemImage: "square.grid.2x2.fill")
-                }
-                .tag(1)
-
-            SettingsView()
-                .tabItem {
-                    Label("设置", systemImage: "gearshape.fill")
-                }
-                .tag(2)
+            tab("书架", icon: "books.vertical.fill", tag: 0) {
+                BookshelfView()
+            }
+            tab("分类", icon: "square.grid.2x2.fill", tag: 1) {
+                CategoryExploreView(isActive: selection == 1)
+            }
+            tab("设置", icon: "gearshape.fill", tag: 2) {
+                SettingsView()
+            }
         }
+    }
+
+    @ViewBuilder
+    private func tab<Content: View>(
+        _ title: String,
+        icon: String,
+        tag: Int,
+        @ViewBuilder content: () -> Content
+    ) -> some View {
+        content()
+            .tabItem { Label(title, systemImage: icon) }
+            .tag(tag)
     }
 }
