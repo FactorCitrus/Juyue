@@ -1,0 +1,234 @@
+name: Build & Release
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'VERSION'
+      - 'CHANGELOG.md'
+      - 'Sources/**'
+      - 'Juyue.xcodeproj/**'
+      - 'Package.swift'
+      # 改发布流程本身也得跑一遍，不然 workflow 的修补要等下次改源码才验证得到
+      - '.github/workflows/release.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: juyue-release-main
+  cancel-in-progress: false
+
+jobs:
+  build-and-release:
+    name: Build & Release IPA
+    # 必须能装 Xcode 26：iOS 26 的玻璃底栏、玻璃工具栏是 SDK 26 才编出来的，
+    # 用 15.4 编出来的包在 iOS 26 设备上整回旧外观，底栏变成一条满宽不透明条。
+    runs-on: macos-15
+    timeout-minutes: 30
+    if: github.ref == 'refs/heads/main'
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v5
+
+      - name: Select Xcode
+        run: |
+          # 固定 26.3（17C529）：跟开发机同一个版本，归档行为可复现。
+          # 镜像里找不到就列出来再退，别悄悄换回旧 SDK。
+          sudo xcode-select -s /Applications/Xcode_26.3.app || {
+            echo "可用的 Xcode："
+            ls /Applications | grep -i '^Xcode'
+            exit 1
+          }
+          xcodebuild -version
+          xcodebuild -version | grep -q 'Xcode 26\.' || {
+            echo "选中的不是 Xcode 26，旧 SDK 编出来的包底栏不悬浮，停止发布"
+            exit 1
+          }
+
+      - name: Verify Version Consistency
+        run: |
+          TAG=$(tr -d '[:space:]' < VERSION)
+          VERSION_NO_V=${TAG#v}
+          echo "TAG=$TAG" >> "$GITHUB_ENV"
+          echo "VERSION_NO_V=$VERSION_NO_V" >> "$GITHUB_ENV"
+          echo "VERSION=$TAG"
+          echo "VERSION_NO_V=$VERSION_NO_V"
+          [[ "$TAG" =~ ^v[0-9]+(\.[0-9]+)+$ ]] || {
+            echo "VERSION 格式错误：$TAG"
+            exit 1
+          }
+          # 工程里有两个 target：JuyueApp（侧载，版本跟 VERSION 走）和
+          # JuyueReader（商店版，独立排 1.x）。全局 grep 会把两者混在一起，
+          # 这里只读 JuyueApp 的 Release 配置。
+          SETTINGS=$(xcodebuild -project Juyue.xcodeproj -target JuyueApp -configuration Release -showBuildSettings 2>/dev/null)
+          MARKETING=$(echo "$SETTINGS" | sed -n 's/^ *MARKETING_VERSION = //p' | sort -u)
+          BUILD=$(echo "$SETTINGS" | sed -n 's/^ *CURRENT_PROJECT_VERSION = //p' | sort -u)
+          echo "MARKETING_VERSION=$MARKETING"
+          echo "CURRENT_PROJECT_VERSION=$BUILD"
+          [ "$MARKETING" = "$VERSION_NO_V" ] || {
+            echo "MARKETING_VERSION 与 VERSION 不一致"
+            exit 1
+          }
+          [ "$BUILD" = "$VERSION_NO_V" ] || {
+            echo "CURRENT_PROJECT_VERSION 与 VERSION 不一致"
+            exit 1
+          }
+          grep -Fqx "## $TAG" CHANGELOG.md || {
+            echo "CHANGELOG 缺少 $TAG 段落"
+            exit 1
+          }
+
+      # main 上任何 Sources 改动都会触发发布。版本号没升的话 tag 已存在，
+      # action-gh-release 会覆盖同一 tag 的 ipa，而 tag 还指在旧 commit 上。
+      # 手动 dispatch 保留覆盖重发的口子。
+      - name: Guard existing tag
+        if: github.event_name != 'workflow_dispatch'
+        run: |
+          git fetch --tags --force --depth=1 origin "+refs/tags/$TAG:refs/tags/$TAG" 2>/dev/null || true
+          if git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
+            OLD=$(git rev-list -n1 "refs/tags/$TAG")
+            [ "$OLD" = "$GITHUB_SHA" ] || {
+              echo "tag $TAG 已在 $OLD，这次没升版本号。先跑 scripts/legado.sh bump <新版本>。"
+              exit 1
+            }
+          fi
+
+      - name: Run Tests
+        run: |
+          swift test
+
+      - name: Build Archive (Unsigned)
+        run: |
+          # 音库目录也在 .gitignore 里（37MB），工程把它当资源目录，补个空目录免得报
+          # "No such file or directory"。没有音库时 App 会退回系统语音。
+          mkdir -p Sources/JuyueApp/Resources/BaiduTTS
+          # 工程直接链了百度 SDK 的静态库和桥接头，CI 没有这两样：
+          # 桥接头给空文件（配合下面的 SWIFT_OBJC_BRIDGING_HEADER="" 更保险），
+          # 静态库给一个空归档占位——NO_BAIDU_TTS 已经把用到符号的代码摘掉了。
+          mkdir -p Vendor/BaiduSpeech/include
+          : > Vendor/BaiduSpeech/BaiduSpeech-Bridging-Header.h
+          # macOS 的 ar 不接受空归档，先编一个空目标文件再打包
+          : > /tmp/empty.c
+          cc -c /tmp/empty.c -o /tmp/empty.o
+          ar rcs Vendor/BaiduSpeech/libBDSpeechTTSBaseKit.a /tmp/empty.o
+          # 仓库里没有 Vendor/ 的百度语音 SDK（248MB，走 .gitignore），
+          # 所以 CI 构建关掉百度那套：清空桥接头 + 打开 NO_BAIDU_TTS，
+          # 两份百度实现会走同形状的空桩。CI 出的包只有系统语音与 HTTP 语音源。
+          #
+          # sherpa-onnx 的两个 xcframework 同样不在仓库里（190MB，Vendor/ 整块忽略）。
+          # 工程把它们写在 Frameworks 构建阶段里，文件不存在时 xcodebuild 直接报
+          # "There is no XCFramework found at …"，连归档都进不去。这里造一对合法的
+          # 空壳：结构、Info.plist、arm64 空静态库都是真的，只是不含任何符号。
+          # 没有 include 目录 → canImport(CSherpaOnnx) 为假 → LocalTTSEngine 走空桩，
+          # 没有任何代码引用它的符号，链接阶段不会缺符号。
+          SHERPA=Vendor/sherpa-onnx
+          mkdir -p "$SHERPA/include"
+          cc -arch arm64 -c /tmp/empty.c -o /tmp/empty_arm64.o
+          ar rcs /tmp/libempty.a /tmp/empty_arm64.o
+          for NAME in sherpa-onnx onnxruntime; do
+            XCF="$SHERPA/$NAME.xcframework"
+            mkdir -p "$XCF/ios-arm64"
+            cp /tmp/libempty.a "$XCF/ios-arm64/lib$NAME.a"
+            cat > "$XCF/Info.plist" <<PLIST
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>AvailableLibraries</key>
+            <array>
+              <dict>
+                <key>LibraryIdentifier</key><string>ios-arm64</string>
+                <key>LibraryPath</key><string>lib$NAME.a</string>
+                <key>SupportedArchitectures</key><array><string>arm64</string></array>
+                <key>SupportedPlatform</key><string>ios</string>
+              </dict>
+            </array>
+            <key>CFBundlePackageType</key><string>XFWK</string>
+            <key>XCFrameworkFormatVersion</key><string>1.0</string>
+          </dict>
+          </plist>
+          PLIST
+          done
+          xcodebuild -project Juyue.xcodeproj \
+            -scheme JuyueApp \
+            -configuration Release \
+            -destination 'generic/platform=iOS' \
+            -archivePath build/JuyueApp.xcarchive \
+            -derivedDataPath build/DerivedData \
+            archive \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            SWIFT_OBJC_BRIDGING_HEADER="" \
+            SWIFT_ACTIVE_COMPILATION_CONDITIONS="NO_BAIDU_TTS"
+
+      - name: Package IPA
+        run: |
+          APP=build/JuyueApp.xcarchive/Products/Applications/JuyueApp.app
+          BUILT=$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" "$APP/Info.plist")
+          echo "包内版本号: $BUILT"
+          [ "$BUILT" = "$VERSION_NO_V" ] || {
+            echo "包内版本号与 VERSION 不一致：$BUILT != $VERSION_NO_V"
+            exit 1
+          }
+          mkdir -p build/Payload
+          cp -R "$APP" build/Payload/
+          (cd build && zip -qr "Juyue-${TAG}.ipa" Payload)
+          ls -lh "build/Juyue-${TAG}.ipa"
+
+      - name: Upload IPA Artifact
+        uses: actions/upload-artifact@v5
+        with:
+          name: Juyue-${{ env.TAG }}-ipa
+          path: build/Juyue-*.ipa
+
+      - name: Extract Release Notes
+        run: |
+          mkdir -p build
+          {
+            echo "## $TAG"
+            echo
+            echo "#### 🌟 核心更新与特性"
+            echo
+            SECTION=$(awk -v tag="$TAG" '
+              index($0, "## " tag) == 1 { found = 1; next }
+              found && index($0, "## ") == 1 { exit }
+              found { print }
+            ' CHANGELOG.md)
+            # 这一版 CHANGELOG 里没有条目时给一句通用的，免得只留个空标题
+            if [ -z "$(printf '%s' "$SECTION" | tr -d '[:space:]')" ]; then
+              echo "- 更新稳定性，提高流畅度。"
+            else
+              printf '%s\n' "$SECTION"
+            fi
+            echo
+            echo "#### 📱 安装说明"
+            echo "下载下方的 \`Juyue-*.ipa\` 附件，侧载安装：**TrollStore**（巨魔，推荐）/ AltStore / SideStore / Sideloadly / 爱思助手。"
+            echo "> CI 构建不含百度语音 SDK，只有系统语音与 HTTP 语音源。"
+          } > build/RELEASE_NOTES.md
+          cat build/RELEASE_NOTES.md
+
+      - name: Remove stale IPA asset
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          OLD="Juyue-${TAG#v}.ipa"
+          if [ "$OLD" != "Juyue-${TAG}.ipa" ] && gh release view "$TAG" >/dev/null 2>&1; then
+            gh release delete-asset "$TAG" "$OLD" --yes || true
+          fi
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.TAG }}
+          target_commitish: ${{ github.sha }}
+          name: "橘阅 ${{ env.TAG }}"
+          prerelease: false
+          draft: false
+          overwrite_files: true
+          fail_on_unmatched_files: true
+          files: build/Juyue-*.ipa
+          body_path: build/RELEASE_NOTES.md

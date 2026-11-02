@@ -1,0 +1,34 @@
+# Xcode
+## User settings
+xcuserdata/
+*.xcuserdatad/
+*.xcscmblueprint
+
+## Build products
+DerivedData/
+build/
+*.ipa
+*.dSYM.zip
+*.dSYM
+
+# Swift Package Manager
+.build/
+.swiftpm/
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+Icon
+._*
+
+# Temporary files
+*.swp
+*~
+*.bak
+*.tmp
+
+# 大体积二进制：百度语音 SDK 与音库（约 285MB），不进 git 历史
+# 备份在 ~/Projects/legado-binaries-20261013.tar.gz
+Vendor/
+Sources/JuyueApp/Resources/BaiduTTS/
