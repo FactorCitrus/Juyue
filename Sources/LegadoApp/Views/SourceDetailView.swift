@@ -611,7 +611,7 @@ public struct SourceDetailView: View {
     }
 
     private func openScopedSearch() {
-        SearchViewModel.shared.selectedSourceUrl = currentSource.bookSourceUrl
+        SearchViewModel.shared.selectedSourceUrls = [currentSource.bookSourceUrl]
         showSingleSourceSearch = true
     }
 }

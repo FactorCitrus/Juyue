@@ -810,7 +810,7 @@ struct TTSOnlinePresetSheet: View {
             #endif
             // 表单也得跟着主题走，不然弹出来一块白
             .themedScrollBackground()
-            .background(theme.palette.background)
+            .appThemePageBackground()
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("取消") { dismiss() }

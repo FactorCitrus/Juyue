@@ -124,7 +124,7 @@ public struct BookDetailView: View {
                 // Fixed Bottom Action Bar (Add to shelf + Read Now)
                 bottomActionBar
             }
-            .background(theme.palette.background)
+            .appThemePageBackground()
             .navigationTitle("书籍详情")
             #if os(iOS)
             .navigationBarTitleDisplayMode(.inline)
@@ -339,17 +339,29 @@ public struct BookDetailView: View {
             Button {
                 showCoverPicker = true
             } label: {
-                if currentBook.coverUrl != nil {
-                    BookCoverImage(urlString: currentBook.coverUrl)
-                        .frame(width: 100, height: 138)
-                        .cornerRadius(8)
-                        .shadow(color: Color.black.opacity(0.12), radius: 6, x: 0, y: 3)
-                        .clipped()
-                } else {
-                    coverPlaceholder
-                        .frame(width: 100, height: 138)
-                        .cornerRadius(8)
-                        .shadow(color: Color.black.opacity(0.12), radius: 6, x: 0, y: 3)
+                Group {
+                    if currentBook.coverUrl != nil {
+                        BookCoverImage(urlString: currentBook.coverUrl)
+                    } else {
+                        coverPlaceholder
+                    }
+                }
+                .frame(width: 100, height: 138)
+                .cornerRadius(theme.isClassTrial ? 0 : 8)
+                .overlay {
+                    if theme.isClassTrial {
+                        Rectangle()
+                            .stroke(theme.palette.ink, lineWidth: 2)
+                    }
+                }
+                .shadow(color: theme.isClassTrial ? .clear : Color.black.opacity(0.12),
+                        radius: 6, x: 0, y: 3)
+                .background {
+                    if theme.isClassTrial {
+                        Rectangle()
+                            .fill(theme.palette.accent)
+                            .offset(x: 4, y: 4)
+                    }
                 }
             }
             .buttonStyle(.plain)
@@ -359,9 +371,11 @@ public struct BookDetailView: View {
                     beginEditing()
                 } label: {
                     Text(currentBook.name)
-                        .font(.title3.bold())
+                        .font(theme.isClassTrial
+                            ? .system(size: 22, weight: .black)
+                            : .title3.bold())
                         .lineLimit(2)
-                        .foregroundColor(.primary)
+                        .foregroundColor(theme.isClassTrial ? theme.palette.ink : .primary)
                         .multilineTextAlignment(.leading)
                 }
                 .buttonStyle(.plain)
@@ -369,7 +383,7 @@ public struct BookDetailView: View {
                 HStack(spacing: 6) {
                     Image(systemName: "person")
                         .font(.caption)
-                        .foregroundColor(.secondary)
+                        .foregroundColor(theme.palette.secondaryInk)
 
                     if !currentBook.author.isEmpty && currentBook.author != "未知作者" {
                         Button {
@@ -377,18 +391,18 @@ public struct BookDetailView: View {
                         } label: {
                             Text(currentBook.author)
                                 .font(.subheadline)
-                                .foregroundColor(.secondary)
+                                .foregroundColor(theme.palette.secondaryInk)
                                 .lineLimit(1)
                         }
                         .buttonStyle(.plain)
                     } else if isLoadingDetails {
                         Text("正在获取作者...")
                             .font(.subheadline)
-                            .foregroundColor(.secondary.opacity(0.6))
+                            .foregroundColor(theme.palette.secondaryInk.opacity(0.6))
                     } else {
                         Text("佚名")
                             .font(.subheadline)
-                            .foregroundColor(.secondary)
+                            .foregroundColor(theme.palette.secondaryInk)
                     }
                 }
 
@@ -398,18 +412,34 @@ public struct BookDetailView: View {
                         .font(.caption2.bold())
                         .padding(.horizontal, 7)
                         .padding(.vertical, 3)
-                        .background(theme.palette.accent.opacity(0.15))
+                        .background(theme.isClassTrial
+                            ? theme.palette.surface
+                            : theme.palette.accent.opacity(0.15))
                         .foregroundColor(theme.palette.accent)
-                        .cornerRadius(theme.metrics.cornerRadius + 4)
+                        .overlay {
+                            if theme.isClassTrial {
+                                Rectangle()
+                                    .stroke(theme.palette.ink, lineWidth: 1.5)
+                            }
+                        }
+                        .cornerRadius(theme.isClassTrial ? 0 : theme.metrics.cornerRadius + 4)
 
                     if sourceKind != .text {
                         Label(sourceKind.label, systemImage: typeIcon)
                             .font(.caption2.bold())
                             .padding(.horizontal, 7)
                             .padding(.vertical, 3)
-                            .background(Color.orange.opacity(0.15))
-                            .foregroundColor(.orange)
-                            .cornerRadius(theme.metrics.cornerRadius + 4)
+                            .background(theme.isClassTrial
+                                ? theme.palette.surface
+                                : Color.orange.opacity(0.15))
+                            .foregroundColor(theme.isClassTrial ? theme.palette.warning : .orange)
+                            .overlay {
+                                if theme.isClassTrial {
+                                    Rectangle()
+                                        .stroke(theme.palette.ink, lineWidth: 1.5)
+                                }
+                            }
+                            .cornerRadius(theme.isClassTrial ? 0 : theme.metrics.cornerRadius + 4)
                     }
 
                     if let wordCount = currentBook.wordCount, !wordCount.isEmpty {
@@ -417,9 +447,17 @@ public struct BookDetailView: View {
                             .font(.caption2)
                             .padding(.horizontal, 6)
                             .padding(.vertical, 3)
-                            .background(theme.palette.elevated)
+                            .background(theme.isClassTrial
+                                ? theme.palette.surface
+                                : theme.palette.elevated)
                             .foregroundColor(theme.palette.secondaryInk)
-                            .cornerRadius(theme.metrics.cornerRadius + 4)
+                            .overlay {
+                                if theme.isClassTrial {
+                                    Rectangle()
+                                        .stroke(theme.palette.ink, lineWidth: 1.5)
+                                }
+                            }
+                            .cornerRadius(theme.isClassTrial ? 0 : theme.metrics.cornerRadius + 4)
                     }
                 }
 
@@ -427,7 +465,7 @@ public struct BookDetailView: View {
                    let durTitle = currentBookshelfBook.durChapterTitle {
                     Text("上次读至：\(durTitle)")
                         .font(.caption)
-                        .foregroundColor(.orange)
+                        .foregroundColor(theme.isClassTrial ? theme.palette.accent : .orange)
                         .lineLimit(1)
                 }
             }
@@ -435,18 +473,29 @@ public struct BookDetailView: View {
             Spacer()
         }
         .padding(14)
-        .background(theme.palette.surface)
-        .cornerRadius(theme.metrics.cornerRadius)
+        .appThemePanel()
     }
 
     private var coverPlaceholder: some View {
-        RoundedRectangle(cornerRadius: 8)
-            .fill(Color.accentColor.opacity(0.15))
-            .overlay(
-                Image(systemName: "book.closed")
-                    .font(.system(size: 36))
-                    .foregroundColor(.accentColor)
-            )
+        Group {
+            if theme.isClassTrial {
+                ZStack {
+                    Rectangle()
+                        .fill(theme.palette.surface)
+                    Image(systemName: "book.closed")
+                        .font(.system(size: 36, weight: .bold))
+                        .foregroundColor(theme.palette.accent)
+                }
+            } else {
+                RoundedRectangle(cornerRadius: 8)
+                    .fill(Color.accentColor.opacity(0.15))
+                    .overlay(
+                        Image(systemName: "book.closed")
+                            .font(.system(size: 36))
+                            .foregroundColor(.accentColor)
+                    )
+            }
+        }
     }
 
     // MARK: - Tags Section
@@ -456,12 +505,20 @@ public struct BookDetailView: View {
             HStack(spacing: 8) {
                 ForEach(tags, id: \.self) { tag in
                     Text(tag)
-                        .font(.caption)
+                        .font(.caption.weight(theme.isClassTrial ? .heavy : .regular))
                         .padding(.horizontal, 10)
                         .padding(.vertical, 5)
-                        .background(Color.secondary.opacity(0.12))
-                        .foregroundColor(.secondary)
-                        .cornerRadius(12)
+                        .background(theme.isClassTrial
+                            ? theme.palette.surface
+                            : Color.secondary.opacity(0.12))
+                        .foregroundColor(theme.isClassTrial ? theme.palette.ink : .secondary)
+                        .cornerRadius(theme.isClassTrial ? 0 : 12)
+                        .overlay {
+                            if theme.isClassTrial {
+                                Rectangle()
+                                    .stroke(theme.palette.ink, lineWidth: 1.5)
+                            }
+                        }
                 }
             }
         }
@@ -476,13 +533,13 @@ public struct BookDetailView: View {
             HStack(spacing: 12) {
                 Image(systemName: "list.bullet")
                     .font(.headline)
-                    .foregroundColor(.accentColor)
+                    .foregroundColor(theme.palette.accent)
 
                 VStack(alignment: .leading, spacing: 3) {
                     HStack {
                         Text("目录")
                             .font(.subheadline.bold())
-                            .foregroundColor(.primary)
+                            .foregroundColor(theme.isClassTrial ? theme.palette.ink : .primary)
 
                         if isLoadingDetails {
                             ProgressView()
@@ -490,28 +547,28 @@ public struct BookDetailView: View {
                         } else if !chapters.isEmpty {
                             Text("共 \(chapters.count) 章")
                                 .font(.caption2)
-                                .foregroundColor(.secondary)
+                                .foregroundColor(theme.palette.secondaryInk)
                         }
                     }
 
                     if let latest = currentBook.latestChapterTitle, !latest.isEmpty {
                         Text("最新：\(latest)")
                             .font(.caption)
-                            .foregroundColor(.secondary)
+                            .foregroundColor(theme.palette.secondaryInk)
                             .lineLimit(1)
                     } else if !chapters.isEmpty {
                         Text("最新：\(chapters.last?.title ?? "")")
                             .font(.caption)
-                            .foregroundColor(.secondary)
+                            .foregroundColor(theme.palette.secondaryInk)
                             .lineLimit(1)
                     } else if isLoadingDetails {
                         Text("正在拉取目录...")
                             .font(.caption)
-                            .foregroundColor(.secondary)
+                            .foregroundColor(theme.palette.secondaryInk)
                     } else if let error = errorMessage {
                         Text("拉取目录失败: \(error)")
                             .font(.caption)
-                            .foregroundColor(.red)
+                            .foregroundColor(theme.palette.danger)
                     }
                 }
 
@@ -519,11 +576,10 @@ public struct BookDetailView: View {
 
                 Image(systemName: "chevron.right")
                     .font(.caption)
-                    .foregroundColor(.secondary)
+                    .foregroundColor(theme.palette.secondaryInk)
             }
             .padding(14)
-            .background(theme.palette.surface)
-            .cornerRadius(theme.metrics.cornerRadius)
+            .appThemePanel()
         }
         .buttonStyle(.plain)
     }
@@ -534,8 +590,8 @@ public struct BookDetailView: View {
         VStack(alignment: .leading, spacing: 8) {
             HStack {
                 Text("内容简介")
-                    .font(.headline)
-                    .foregroundColor(.primary)
+                    .font(theme.isClassTrial ? .system(size: 18, weight: .black) : .headline)
+                    .foregroundColor(theme.isClassTrial ? theme.palette.ink : .primary)
                 Spacer()
                 if let intro = displayIntro, intro.count > 100 {
                     Button(action: {
@@ -545,7 +601,7 @@ public struct BookDetailView: View {
                     }) {
                         Text(isIntroExpanded ? "收起" : "展开")
                             .font(.caption)
-                            .foregroundColor(.accentColor)
+                            .foregroundColor(theme.palette.accent)
                     }
                 }
             }
@@ -553,7 +609,7 @@ public struct BookDetailView: View {
             if let intro = displayIntro {
                 Text(intro)
                     .font(.subheadline)
-                    .foregroundColor(.secondary)
+                    .foregroundColor(theme.palette.secondaryInk)
                     .lineSpacing(4)
                     .lineLimit(isIntroExpanded ? nil : 4)
             } else if isLoadingDetails {
@@ -562,20 +618,19 @@ public struct BookDetailView: View {
                         .scaleEffect(0.8)
                     Text("正在加载作品简介与详情...")
                         .font(.subheadline)
-                        .foregroundColor(.secondary.opacity(0.8))
+                        .foregroundColor(theme.palette.secondaryInk.opacity(0.8))
                 }
                 .padding(.vertical, 4)
             } else {
                 Text("暂无简介")
                     .font(.subheadline)
-                    .foregroundColor(.secondary.opacity(0.6))
+                    .foregroundColor(theme.palette.secondaryInk.opacity(0.6))
                     .padding(.vertical, 4)
             }
         }
         .padding(14)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(theme.palette.surface)
-        .cornerRadius(theme.metrics.cornerRadius)
+        .appThemePanel()
     }
 
     // MARK: - Bottom Action Bar
@@ -591,10 +646,18 @@ public struct BookDetailView: View {
                     Text(isInBookshelf ? "移出书架" : "加入书架")
                 }
                 .font(.subheadline.bold())
-                .foregroundColor(isInBookshelf ? .secondary : .accentColor)
+                .foregroundColor(theme.isClassTrial
+                    ? (isInBookshelf ? theme.palette.secondaryInk : theme.palette.ink)
+                    : (isInBookshelf ? .secondary : .accentColor))
                 .frame(maxWidth: .infinity)
                 .padding(.vertical, 12)
-                .background(theme.palette.elevated)
+                .background(theme.isClassTrial ? theme.palette.surface : theme.palette.elevated)
+                .overlay {
+                    if theme.isClassTrial {
+                        Rectangle()
+                            .stroke(theme.palette.ink, lineWidth: 2)
+                    }
+                }
                 .cornerRadius(theme.metrics.cornerRadius)
             }
             .buttonStyle(.plain)
@@ -617,16 +680,28 @@ public struct BookDetailView: View {
                 .frame(maxWidth: .infinity)
                 .padding(.vertical, 12)
                 .background(theme.palette.accent)
+                .overlay {
+                    if theme.isClassTrial {
+                        Rectangle()
+                            .stroke(theme.palette.ink, lineWidth: 2)
+                    }
+                }
                 .cornerRadius(theme.metrics.cornerRadius)
             }
             .buttonStyle(.plain)
         }
         .padding(.horizontal)
         .padding(.vertical, 10)
-        .background(
-            theme.palette.surface
-            .shadow(color: Color.black.opacity(0.06), radius: 4, x: 0, y: -2)
-        )
+        .background(theme.palette.surface)
+        .overlay(alignment: .top) {
+            if theme.isClassTrial {
+                Rectangle()
+                    .fill(theme.palette.ink)
+                    .frame(height: 2)
+            }
+        }
+        .shadow(color: theme.isClassTrial ? .clear : Color.black.opacity(0.06),
+                radius: 4, x: 0, y: -2)
     }
 
     private var typeIcon: String {
@@ -752,20 +827,27 @@ struct ChapterListView: View {
     private var searchBar: some View {
         HStack {
             Image(systemName: "magnifyingglass")
-                .foregroundColor(.secondary)
+                .foregroundColor(theme.palette.secondaryInk)
             TextField("搜索章节标题...", text: $searchKeyword)
+                .foregroundColor(theme.palette.ink)
             if !searchKeyword.isEmpty {
                 Button {
                     searchKeyword = ""
                 } label: {
                     Image(systemName: "xmark.circle.fill")
-                        .foregroundColor(.secondary)
+                        .foregroundColor(theme.palette.secondaryInk)
                 }
             }
         }
         .padding(8)
-        .background(theme.palette.elevated)
-        .cornerRadius(8)
+        .background(theme.isClassTrial ? theme.palette.surface : theme.palette.elevated)
+        .overlay {
+            if theme.isClassTrial {
+                Rectangle()
+                    .stroke(theme.palette.ink, lineWidth: 2)
+            }
+        }
+        .cornerRadius(theme.isClassTrial ? 0 : 8)
         .padding(.horizontal)
         .padding(.top, 8)
     }
@@ -776,18 +858,26 @@ struct ChapterListView: View {
         } label: {
             HStack {
                 Text(chapter.title)
-                    .font(.subheadline)
-                    .foregroundColor(index == currentChapterIndex ? .accentColor : .primary)
+                    .font(.subheadline.weight(theme.isClassTrial ? .semibold : .regular))
+                    .foregroundColor(index == currentChapterIndex ? theme.palette.accent : theme.palette.ink)
                     .lineLimit(1)
                 Spacer()
                 if index == currentChapterIndex {
                     Text("上次阅读")
-                        .font(.caption2)
+                        .font(.caption2.weight(theme.isClassTrial ? .bold : .regular))
                         .padding(.horizontal, 6)
                         .padding(.vertical, 2)
-                        .background(Color.accentColor.opacity(0.15))
-                        .foregroundColor(.accentColor)
-                        .cornerRadius(4)
+                        .background(theme.isClassTrial
+                            ? theme.palette.surface
+                            : theme.palette.accent.opacity(0.15))
+                        .foregroundColor(theme.palette.accent)
+                        .overlay {
+                            if theme.isClassTrial {
+                                Rectangle()
+                                    .stroke(theme.palette.ink, lineWidth: 1.5)
+                            }
+                        }
+                        .cornerRadius(theme.isClassTrial ? 0 : 4)
                 }
             }
             .padding(.vertical, 2)
@@ -803,6 +893,7 @@ struct BookCoverPickerSheet: View {
     let onPick: (String) -> Void
 
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.appTheme) private var theme
     @State private var candidates: [(source: String, url: String)] = []
     @State private var isLoading = true
     @State private var manualAddress = ""
@@ -812,14 +903,17 @@ struct BookCoverPickerSheet: View {
 
     var body: some View {
         NavigationView {
-            List {
-                statusSection
-                candidateSection
-                manualSection
-                photoSection
-                clearSection
+            ScrollView {
+                VStack(spacing: 14) {
+                    statusSection
+                    candidateSection
+                    manualSection
+                    photoSection
+                    clearSection
+                }
+                .padding(16)
             }
-            .appThemedList()
+            .background(AppThemeBackdrop())
             .navigationTitle("换封面")
             #if os(iOS)
             .navigationBarTitleDisplayMode(.inline)
@@ -836,19 +930,21 @@ struct BookCoverPickerSheet: View {
     @ViewBuilder
     private var statusSection: some View {
         if isLoading {
-            Section {
+            AppThemeSection("书源封面", tag: "PROBE") {
                 HStack(spacing: 8) {
                     ProgressView()
                     Text("正在书源里找这本书的封面…")
                         .font(.caption)
-                        .foregroundColor(.secondary)
+                        .foregroundColor(theme.palette.secondaryInk)
                 }
+                .padding(12)
             }
         } else if candidates.isEmpty {
-            Section {
+            AppThemeSection("书源封面", tag: "PROBE") {
                 Text("书源里没找到封面，手填一个地址，或者从相册挑。")
                     .font(.caption)
-                    .foregroundColor(.secondary)
+                    .foregroundColor(theme.palette.secondaryInk)
+                    .padding(12)
             }
         }
     }
@@ -856,7 +952,7 @@ struct BookCoverPickerSheet: View {
     @ViewBuilder
     private var candidateSection: some View {
         if !candidates.isEmpty {
-            Section(header: Text("书源找到的封面（\(candidates.count)）")) {
+            AppThemeSection("书源找到的封面（\(candidates.count)）", tag: "PICK") {
                 LazyVGrid(columns: [GridItem(.adaptive(minimum: 76), spacing: 10)], spacing: 10) {
                     ForEach(candidates, id: \.url) { item in
                         Button {
@@ -866,32 +962,53 @@ struct BookCoverPickerSheet: View {
                             VStack(spacing: 4) {
                                 BookCoverImage(urlString: item.url)
                                     .frame(width: 76, height: 104)
-                                    .cornerRadius(6)
+                                    .cornerRadius(theme.isClassTrial ? 0 : 6)
+                                    .overlay {
+                                        if theme.isClassTrial {
+                                            Rectangle()
+                                                .stroke(theme.palette.ink, lineWidth: 1.5)
+                                        }
+                                    }
                                 Text(item.source)
                                     .font(.caption2)
-                                    .foregroundColor(.secondary)
+                                    .foregroundColor(theme.palette.secondaryInk)
                                     .lineLimit(1)
                             }
                         }
                         .buttonStyle(.plain)
                     }
                 }
-                .padding(.vertical, 4)
+                .padding(12)
             }
         }
     }
 
     private var manualSection: some View {
-        Section(header: Text("手填地址")) {
-            TextField("https://…", text: $manualAddress)
-                .autocorrectionDisabled()
-            Button("用这个地址") {
-                let trimmed = manualAddress.trimmingCharacters(in: .whitespacesAndNewlines)
-                guard !trimmed.isEmpty else { return }
-                onPick(trimmed)
-                dismiss()
+        AppThemeSection("手填地址", tag: "URL") {
+            VStack(alignment: .leading, spacing: 8) {
+                TextField("https://…", text: $manualAddress)
+                    .autocorrectionDisabled()
+                    .textFieldStyle(.plain)
+                    .font(theme.typography.body)
+                    .foregroundColor(theme.palette.ink)
+                    .padding(10)
+                    .background(theme.palette.surface)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: theme.metrics.cornerRadius, style: .continuous)
+                            .stroke(theme.isClassTrial ? theme.palette.ink : theme.palette.divider,
+                                    lineWidth: theme.isClassTrial ? 2 : 1)
+                    )
+
+                Button("用这个地址") {
+                    let trimmed = manualAddress.trimmingCharacters(in: .whitespacesAndNewlines)
+                    guard !trimmed.isEmpty else { return }
+                    onPick(trimmed)
+                    dismiss()
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(manualAddress.trimmingCharacters(in: .whitespaces).isEmpty)
             }
-            .disabled(manualAddress.trimmingCharacters(in: .whitespaces).isEmpty)
+            .padding(12)
         }
     }
 
@@ -899,10 +1016,13 @@ struct BookCoverPickerSheet: View {
     private var photoSection: some View {
         #if os(iOS)
         if #available(iOS 16.0, *) {
-            Section {
+            AppThemeSection("本地相册", tag: "PHOTO") {
                 PhotosPicker(selection: photoBinding, matching: .images) {
                     Label("从相册选封面", systemImage: "photo.on.rectangle")
+                        .font(.system(size: 13, weight: theme.isClassTrial ? .heavy : .medium))
+                        .foregroundColor(theme.palette.accent)
                 }
+                .padding(12)
             }
         }
         #endif
@@ -932,13 +1052,16 @@ struct BookCoverPickerSheet: View {
     @ViewBuilder
     private var clearSection: some View {
         if let currentCover, !currentCover.isEmpty {
-            Section {
+            AppThemeSection("当前封面", tag: "CLEAR") {
                 Button(role: .destructive) {
                     onPick("")
                     dismiss()
                 } label: {
                     Label("清除封面", systemImage: "trash")
+                        .font(.system(size: 13, weight: theme.isClassTrial ? .heavy : .medium))
+                        .foregroundColor(theme.palette.danger)
                 }
+                .padding(12)
             }
         }
     }
@@ -952,6 +1075,7 @@ struct BookCoverPickerSheet: View {
 
 /// 封面：网络地址走 AsyncImage，本地文件（相册选的）直接读盘，省一次请求
 struct BookCoverImage: View {
+    @Environment(\.appTheme) private var theme
     let urlString: String?
     var contentMode: ContentMode = .fill
     /// 书架等场景可以换成自己的默认封面
@@ -964,16 +1088,12 @@ struct BookCoverImage: View {
     var body: some View {
         Group {
             if let localImage {
-                localImage
-                    .resizable()
-                    .aspectRatio(contentMode: contentMode)
+                styledImage(localImage)
             } else if let remoteURL = urlString.flatMap(URL.init(string:)) {
                 AsyncImage(url: remoteURL) { phase in
                     switch phase {
                     case .success(let image):
-                        image
-                            .resizable()
-                            .aspectRatio(contentMode: contentMode)
+                        styledImage(image)
                     case .failure:
                         placeholder.onAppear { onFailure?() }
                     default:
@@ -989,16 +1109,42 @@ struct BookCoverImage: View {
         }
     }
 
+    /// 封面必须被父容器框住：横图/超大图只裁剪，不允许把卡片撑宽。
+    @ViewBuilder
+    private func styledImage(_ image: Image) -> some View {
+        if contentMode == .fill {
+            Color.clear
+                .overlay {
+                    image
+                        .resizable()
+                        .scaledToFill()
+                }
+                .clipped()
+        } else {
+            image
+                .resizable()
+                .scaledToFit()
+        }
+    }
+
     private var placeholder: some View {
         Group {
             if let placeholderOverride {
                 placeholderOverride
             } else {
                 ZStack {
-                    Color.gray.opacity(0.16)
-                    Image(systemName: "book.closed")
-                        .font(.title3)
-                        .foregroundColor(.secondary)
+                    if theme.isClassTrial {
+                        Rectangle()
+                            .fill(theme.palette.surface)
+                        Image(systemName: "book.closed")
+                            .font(.title3.weight(.bold))
+                            .foregroundColor(theme.palette.accent)
+                    } else {
+                        Color.gray.opacity(0.16)
+                        Image(systemName: "book.closed")
+                            .font(.title3)
+                            .foregroundColor(.secondary)
+                    }
                 }
             }
         }
