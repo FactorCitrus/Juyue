@@ -35,6 +35,16 @@ def is_trivial(line):
     return bool(re.fullmatch(r"[{}()\[\],;:.]+", text))
 
 
+def is_public_api(line):
+    text = line.strip()
+    return text.startswith((
+        "public ", "@Published public", "open ", "@objc public",
+        "public static", "public init", "public func", "public var",
+        "public let", "public struct", "public class", "public enum",
+        "public protocol", "public typealias", "public extension",
+    ))
+
+
 def current_path(path):
     """上游基线路径 → 改名后的工作树路径。"""
     return (path
@@ -63,6 +73,8 @@ def main():
                     help="只统计非样板行（空行/括号/import/#if 不计）")
     ap.add_argument("--logic", action="store_true",
                     help="在 substantive 基础上排除 Models/ 下的数据格式契约")
+    ap.add_argument("--logic-only", action="store_true",
+                    help="在 logic 基础上再排除 public API 声明")
     ap.add_argument("--top", type=int, default=15)
     ap.add_argument("--json", default=None, help="把逐文件结果写成 JSON（做棘轮预算用）")
     args = ap.parse_args()
@@ -97,14 +109,26 @@ def main():
             for line in new[block.b:block.b + block.size]
             if not is_trivial(line)
         )
+        api = sum(
+            1
+            for block in matcher.get_matching_blocks()
+            for line in new[block.b:block.b + block.size]
+            if not is_trivial(line) and is_public_api(line)
+        )
         rows.append({"path": path, "lines": len(new), "upstream": same,
-                     "substantive": substantive,
+                     "substantive": substantive, "api": api,
+                     "logicOnly": substantive - api,
                      "contract": path.startswith(CONTRACT_PREFIX),
                      "ratio": same / max(1, len(new))})
 
     logic_rows = [r for r in rows if not r["contract"]]
     total_logic = sum(r["substantive"] for r in logic_rows)
-    if args.logic:
+    total_logic_only = sum(r["logicOnly"] for r in logic_rows)
+    total_api = sum(r["api"] for r in logic_rows)
+    if args.logic_only:
+        rows = logic_rows
+        metric = "logicOnly"
+    elif args.logic:
         rows = logic_rows
         metric = "substantive"
     else:
@@ -112,7 +136,9 @@ def main():
     rows.sort(key=lambda r: r[metric], reverse=True)
     total_raw = sum(r["upstream"] for r in rows)
     total_substantive = sum(r["substantive"] for r in rows)
-    if args.logic:
+    if args.logic_only:
+        total = total_logic_only
+    elif args.logic:
         total = total_logic
     elif args.substantive:
         total = total_substantive
@@ -122,7 +148,7 @@ def main():
 
     print(f"baseline {args.baseline} | files compared {len(rows)} | "
           f"surviving upstream lines {total_raw} (substantive {total_substantive}, "
-          f"logic {total_logic})")
+          f"logic {total_logic}, logic-only {total_logic_only}, api {total_api})")
     print(f"{'upstream':>9}  {'subst':>6}  {'lines':>6}  {'ratio':>6}  file")
     for r in rows[: args.top]:
         print(f"{r['upstream']:9d}  {r['substantive']:6d}  {r['lines']:6d}  "

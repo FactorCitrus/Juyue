@@ -27,7 +27,8 @@ public struct SourceSwitchSheet: View {
     @State private var totalSources = 0
     @State private var errorMessage: String?
     @State private var keyword: String
-    @State private var sourceFilter: String = ""
+    @State private var selectedSourceUrls: Set<String> = []
+    @State private var showSourcePicker = false
     /// 搜索条件默认收起，换源时先看候选；收起状态是临时的，每次打开都收着
     @State private var showSearchOptions = false
 
@@ -50,8 +51,13 @@ public struct SourceSwitchSheet: View {
 
     private var results: [(source: BookSource, book: SearchBook)] {
         rawResults.filter {
-            SourceMatchRules.matches($0.book, title: book.name, author: book.author, options: options)
+            (selectedSourceUrls.isEmpty || selectedSourceUrls.contains($0.source.bookSourceUrl))
+                && SourceMatchRules.matches($0.book, title: book.name, author: book.author, options: options)
         }
+    }
+
+    private var enabledSources: [BookSource] {
+        bookStore.sources.filter { $0.enabled != false }
     }
 
     /// 给提示用：现在是按什么口径筛的
@@ -121,6 +127,14 @@ public struct SourceSwitchSheet: View {
         }
         .onDisappear {
             searchTask?.cancel()
+        }
+        .sheet(isPresented: $showSourcePicker) {
+            SourceSwitchSourcePicker(
+                sources: enabledSources,
+                selection: $selectedSourceUrls,
+                currentSourceUrl: currentSourceUrl,
+                palette: palette
+            )
         }
     }
 
@@ -208,7 +222,30 @@ public struct SourceSwitchSheet: View {
                             .background(palette.accent)
                             .disabled(keyword.trimmingCharacters(in: .whitespaces).isEmpty || (!matchTitle && !matchAuthor))
                     }
-                    nierField("限定源", text: $sourceFilter, palette: palette)
+                    Button {
+                        showSourcePicker = true
+                    } label: {
+                        HStack(spacing: 8) {
+                            Text("限定源")
+                                .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                                .foregroundColor(palette.muted)
+                            Spacer(minLength: 0)
+                            Text(selectedSourceUrls.isEmpty
+                                 ? "全部源"
+                                 : "已选 \(selectedSourceUrls.count) / \(enabledSources.count)")
+                                .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                                .foregroundColor(palette.accent)
+                            Image(systemName: "chevron.right")
+                                .font(.system(size: 10, weight: .semibold))
+                                .foregroundColor(palette.accent)
+                        }
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 8)
+                        .background(palette.background.opacity(0.7))
+                        .overlay(Rectangle().stroke(palette.line.opacity(0.7), lineWidth: 0.6))
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
                     toggleRow("显示书籍详情", isOn: $showDetail, palette: palette)
                 }
             }
@@ -417,20 +454,13 @@ public struct SourceSwitchSheet: View {
             return
         }
 
-        let filter = sourceFilter.trimmingCharacters(in: .whitespaces).lowercased()
-        var sources = bookStore.sources.filter { $0.enabled != false }
-        if !filter.isEmpty {
-            sources = sources.filter {
-                $0.bookSourceName.lowercased().contains(filter)
-                    || ($0.bookSourceGroup ?? "").lowercased().contains(filter)
-            }
-        }
+        let sources = selectedSourceUrls.isEmpty
+            ? enabledSources
+            : enabledSources.filter { selectedSourceUrls.contains($0.bookSourceUrl) }
         totalSources = sources.count
         isSearching = !sources.isEmpty
         guard !sources.isEmpty else {
-            errorMessage = filter.isEmpty
-                ? "没有启用的书源，先去设置里导入。"
-                : "没有符合「\(sourceFilter)」的书源。"
+            errorMessage = "没有可搜索的书源，先去设置里导入或重新勾选。"
             return
         }
 
@@ -462,4 +492,123 @@ public struct SourceSwitchSheet: View {
         return parts.max(by: { $0.count < $1.count }) ?? raw
     }
 
+}
+
+/// 换源页的「限定源」多选面板。不选表示全部启用源；
+/// 勾选后既限制这一轮换源要扫的源，也即时过滤已返回的候选。
+private struct SourceSwitchSourcePicker: View {
+    let sources: [BookSource]
+    @Binding var selection: Set<String>
+    let currentSourceUrl: String?
+    let palette: NieRPalette
+    @Environment(\.dismiss) private var dismiss
+    @State private var query = ""
+
+    private var filteredSources: [BookSource] {
+        let key = query.trimmingCharacters(in: .whitespaces)
+        guard !key.isEmpty else { return sources }
+        return sources.filter {
+            $0.bookSourceName.localizedCaseInsensitiveContains(key)
+                || ($0.bookSourceGroup ?? "").localizedCaseInsensitiveContains(key)
+        }
+    }
+
+    var body: some View {
+        NavigationView {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 10) {
+                    HStack(spacing: 6) {
+                        Image(systemName: "magnifyingglass")
+                            .font(.system(size: 11))
+                            .foregroundColor(palette.muted)
+                        TextField("搜索书源…", text: $query)
+                            .textFieldStyle(.plain)
+                            .font(.system(size: 12, design: .monospaced))
+                            .foregroundColor(palette.ink)
+                            #if os(iOS)
+                            .autocapitalization(.none)
+                            .disableAutocorrection(true)
+                            #endif
+                    }
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 8)
+                    .background(palette.panel)
+                    .overlay(Rectangle().stroke(palette.line.opacity(0.7), lineWidth: 0.6))
+
+                    Text(selection.isEmpty
+                         ? "未选择 = 全部启用源 · \(sources.count) 个"
+                         : "已选 \(selection.count) / \(sources.count) 个源")
+                        .font(.system(size: 10, design: .monospaced))
+                        .foregroundColor(palette.muted)
+
+                    LazyVStack(spacing: 8) {
+                        ForEach(filteredSources, id: \.bookSourceUrl) { source in
+                            sourceRow(source)
+                        }
+                    }
+                }
+                .padding(16)
+            }
+            .background(NieRBackdrop(palette: palette))
+            .navigationTitle("限定源")
+            #if os(iOS)
+            .navigationBarTitleDisplayMode(.inline)
+            #endif
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("清空") { selection.removeAll() }
+                        .disabled(selection.isEmpty)
+                }
+                ToolbarItemGroup(placement: .primaryAction) {
+                    Button("全选") { selection = Set(sources.map(\.bookSourceUrl)) }
+                    Button("完成") { dismiss() }
+                }
+            }
+        }
+    }
+
+    private func sourceRow(_ source: BookSource) -> some View {
+        let isOn = selection.contains(source.bookSourceUrl)
+        return Button {
+            if isOn {
+                selection.remove(source.bookSourceUrl)
+            } else {
+                selection.insert(source.bookSourceUrl)
+            }
+        } label: {
+            HStack(spacing: 10) {
+                Image(systemName: isOn ? "checkmark.square.fill" : "square")
+                    .font(.system(size: 18, weight: .semibold))
+                    .foregroundColor(palette.accent)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(source.bookSourceName)
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundColor(palette.ink)
+                        .lineLimit(1)
+                    if let group = source.bookSourceGroup,
+                       !group.trimmingCharacters(in: .whitespaces).isEmpty {
+                        Text(group)
+                            .font(.system(size: 9, design: .monospaced))
+                            .foregroundColor(palette.muted)
+                            .lineLimit(1)
+                    }
+                }
+                Spacer(minLength: 0)
+                if source.bookSourceUrl == currentSourceUrl {
+                    Text("当前")
+                        .font(.system(size: 9, weight: .semibold, design: .monospaced))
+                        .foregroundColor(palette.accent)
+                        .padding(.horizontal, 5)
+                        .padding(.vertical, 2)
+                        .overlay(Rectangle().stroke(palette.accent.opacity(0.6), lineWidth: 0.6))
+                }
+            }
+            .padding(10)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(palette.panel)
+            .overlay(Rectangle().stroke(palette.line.opacity(0.7), lineWidth: 0.6))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
 }

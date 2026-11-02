@@ -2217,24 +2217,7 @@ public struct ReaderView: View {
 
                     Group {
                         if isLoadingInitial {
-                            VStack(spacing: 16) {
-                                Spacer()
-                                ProgressView()
-                                Text(loadingNote)
-                                    .font(.subheadline)
-                                    .foregroundColor(readerConfig.pageTextColor.opacity(0.7))
-                                Button("返回书架") {
-                                    dismiss()
-                                }
-                                .buttonStyle(.bordered)
-                                .padding(.top, 4)
-                                Spacer()
-                            }
-                            .frame(maxWidth: .infinity, maxHeight: .infinity)
-                            .contentShape(Rectangle())
-                            .onTapGesture {
-                                toggleControls("loading-tap")
-                            }
+                            initialLoadingView
                         } else if errorMessage != nil {
                             errorStateView
                         } else {
@@ -2262,18 +2245,7 @@ public struct ReaderView: View {
                 }
 
                 // 2. Dismiss Backdrop (when controls are open, tapping anywhere outside bars dismisses them)
-                if showControls && !showSettings {
-                    Color.black.opacity(0.001)
-                        .contentShape(Rectangle())
-                        .onTapGesture {
-                            // 诊断用：球点下去没反应时，靠这行判断是不是被背景层吃了触摸。
-                            AppLog.write("[菜单] backdrop 吃掉一下 → controls=false")
-                            withAnimation(.easeInOut(duration: 0.22)) {
-                                showControls = false
-                            }
-                        }
-                        .ignoresSafeArea()
-                }
+                dismissBackdrop
 
                 controlsOverlay
                 settingsOverlay
@@ -2808,13 +2780,7 @@ public struct ReaderView: View {
                                 // Chapter Title
                                 chapterTitleView(chapterIndex: loadedCh.chapter.index, title: loadedCh.chapter.title)
                                     .id("chapter_\(loadedCh.chapter.index)")
-                                    .onAppear {
-                                        if currentChapterIndex != loadedCh.chapter.index {
-                                            currentChapterIndex = loadedCh.chapter.index
-                                            BookStore.shared.updateProgress(bookUrl: activeBook.bookUrl, chapterIndex: currentChapterIndex, chapterTitle: loadedCh.chapter.title, chapterPos: currentChapterCharOffset())
-                                            preCacheNeighbors(around: currentChapterIndex)
-                                        }
-                                    }
+                                    .onAppear { handleChapterTitleAppear(loadedCh) }
 
                                 // Chapter Paragraphs and Images
                                 ForEach(loadedCh.blocks) { block in
@@ -2904,11 +2870,7 @@ public struct ReaderView: View {
                                 Color.clear
                                     .frame(height: readerConfig.chapterBottomSpacing + readerConfig.chapterTopSpacing)
                                     .id("chapter_end_\(loadedCh.chapter.index)")
-                                    .onAppear {
-                                        if loadedCh.chapter.index < chapters.count - 1 {
-                                            loadNextChapterForInfiniteScroll(after: loadedCh.chapter.index)
-                                        }
-                                    }
+                                    .onAppear { handleChapterEndAppear(loadedCh.chapter.index) }
                             }
                         }
                     }
@@ -2982,16 +2944,24 @@ public struct ReaderView: View {
         return frames.min(by: { abs($0.minY - 50) < abs($1.minY - 50) })
     }
 
+    private var estimatedLineHeight: CGFloat {
+        readerConfig.fontSize * 1.25 + readerConfig.lineSpacing
+    }
+
+    private var estimatedCharsPerLine: Int {
+        let width = max(240, readerContainerSize.width)
+        let usable = max(200, width - 40)
+        return max(10, Int(usable / readerConfig.fontSize))
+    }
+
     private func handleScrollOffsetChanged(scrollY: CGFloat) {
         // 下拉动画期间整页在位移，探针读到的偏移是「假的」，这时候按它换章/重排
         // 会让内容突变、文字重排变形。下拉结束再恢复。
         guard !isPullActive else { return }
         scrollOffsetY = scrollY
         guard scrollY > 0, !loadedChapters.isEmpty else { return }
-        let width = max(240, readerContainerSize.width)
-        let usableWidth = max(200, width - 40)
-        let charsPerLine = max(10, Int(usableWidth / readerConfig.fontSize))
-        let lineHeight = readerConfig.fontSize * 1.25 + readerConfig.lineSpacing
+        let charsPerLine = estimatedCharsPerLine
+        let lineHeight = estimatedLineHeight
         // 跟真实布局对齐：标题 = 字高 + 章前距 + 标题下距
         let titleHeight = (readerConfig.fontSize * readerConfig.chapterTitleScale) * 1.3
             + readerConfig.chapterTopSpacing
@@ -3177,6 +3147,14 @@ public struct ReaderView: View {
         }
     }
 
+    private func pageTextLines(from blocks: [ContentBlock]) -> [String] {
+        blocks.map(\.text)
+    }
+
+    private func pageParagraphEndFlags(from blocks: [ContentBlock]) -> [Bool] {
+        blocks.map { $0.imageUrl == "p_end" }
+    }
+
     private var pageByPageView: some View {
         GeometryReader { geo in
             let pages = currentLoadedChapter?.pages ?? []
@@ -3230,8 +3208,8 @@ public struct ReaderView: View {
                         } else if pageBlocks.first?.isImage == true, let urlStr = pageBlocks.first?.imageUrl {
                             ChapterImageView(urlString: urlStr, referer: effectiveSource?.bookSourceUrl)
                         } else {
-                            let lines = pageBlocks.map { $0.text }
-                            let isParagraphEnd = pageBlocks.map { $0.imageUrl == "p_end" }
+                            let lines = pageTextLines(from: pageBlocks)
+                            let isParagraphEnd = pageParagraphEndFlags(from: pageBlocks)
                             let effectiveLineHeight = readerConfig.fontSize * 1.25 + readerConfig.lineSpacing
                             // 页面最后一行是段尾的话，它后面的段间距是看不见的空白，不该占高度
                             let trailingSpacing = isParagraphEnd.last == true ? 1 : 0
@@ -3460,12 +3438,15 @@ public struct ReaderView: View {
     private func updateContainerSizeIfNeeded(_ size: CGSize) {
         // 下拉期间整页在位移，几何读数不可信；这时重排会让字号/行距当场变样。
         guard !isPullActive, pagePullOffset == 0 else { return }
-        guard size.width > 100 && size.height > 100 else { return }
-        if abs(size.width - readerContainerSize.width) > 6 || abs(size.height - readerContainerSize.height) > 6 {
-            DispatchQueue.main.async {
-                self.readerContainerSize = size
-                self.recomputePagination()
-            }
+        guard size.width > 100, size.height > 100 else { return }
+
+        let widthChanged = abs(size.width - readerContainerSize.width) > 6
+        let heightChanged = abs(size.height - readerContainerSize.height) > 6
+        guard widthChanged || heightChanged else { return }
+
+        DispatchQueue.main.async {
+            self.readerContainerSize = size
+            self.recomputePagination()
         }
     }
 
@@ -3941,6 +3922,27 @@ public struct ReaderView: View {
         )
     }
 
+    private var initialLoadingView: some View {
+        VStack(spacing: 16) {
+            Spacer()
+            ProgressView()
+            Text(loadingNote)
+                .font(.subheadline)
+                .foregroundColor(readerConfig.pageTextColor.opacity(0.7))
+            Button("返回书架") {
+                dismiss()
+            }
+            .buttonStyle(.bordered)
+            .padding(.top, 4)
+            Spacer()
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .contentShape(Rectangle())
+        .onTapGesture {
+            toggleControls("loading-tap")
+        }
+    }
+
     private var errorStateView: some View {
         VStack(spacing: 12) {
             Spacer()
@@ -3985,6 +3987,22 @@ public struct ReaderView: View {
         Rectangle()
             .fill(chromeInk.opacity(0.12))
             .frame(height: 0.5)
+    }
+
+    @ViewBuilder
+    private var dismissBackdrop: some View {
+        if showControls && !showSettings {
+            Color.black.opacity(0.001)
+                .contentShape(Rectangle())
+                .onTapGesture {
+                    // 诊断用：球点下去没反应时，靠这行判断是不是被背景层吃了触摸。
+                    AppLog.write("[菜单] backdrop 吃掉一下 → controls=false")
+                    withAnimation(.easeInOut(duration: 0.22)) {
+                        showControls = false
+                    }
+                }
+                .ignoresSafeArea()
+        }
     }
 
     private var bottomControlPanel: some View {
@@ -4203,6 +4221,11 @@ public struct ReaderView: View {
         }
     }
 
+    private var readingProgressPercent: Double {
+        guard !chapters.isEmpty else { return 0 }
+        return Double(currentChapterIndex + 1) / Double(chapters.count) * 100
+    }
+
     private var fixedBottomStatusBar: some View {
         HStack(alignment: .center, spacing: 12) {
             footerChapterLabel
@@ -4211,7 +4234,7 @@ public struct ReaderView: View {
 
             // Reading Percentage / Page Info
             if !chapters.isEmpty {
-                let progressPercent = Double(currentChapterIndex + 1) / Double(chapters.count) * 100.0
+                let progressPercent = readingProgressPercent
                 if readerConfig.pageMode.isPaged, let cur = currentLoadedChapter, !cur.pages.isEmpty {
                     Text("\(currentPageIndex + 1)/\(cur.pages.count) · \(String(format: "%.1f%%", progressPercent))")
                         .font(.system(size: 11, weight: .medium, design: .monospaced))
@@ -4324,6 +4347,12 @@ public struct ReaderView: View {
         jumpToChapter(target, toEnd: false)
     }
 
+    private func resetPageState() {
+        currentPageIndex = 0
+        currentReadingBlockId = 0
+        scrollSessionId = UUID()
+    }
+
     private func jumpToChapter(_ targetIndex: Int, toEnd: Bool = false, forceResumeReading: Bool = false) {
         AppLog.write("[阅读] 换章 → 第 \(targetIndex + 1) 章 / 共 \(chapters.count) 章")
         guard targetIndex >= 0 && targetIndex < chapters.count else { return }
@@ -4336,9 +4365,7 @@ public struct ReaderView: View {
             AppLog.write("[听书] 换章作废旧挂起")
         }
         currentChapterIndex = targetIndex
-        currentPageIndex = 0
-        currentReadingBlockId = 0
-        scrollSessionId = UUID()
+        resetPageState()
         loadInitialChapter(at: targetIndex, targetPageIndex: toEnd ? -1 : 0, scrollToTargetEnd: toEnd)
         if wasReading || forceResumeReading {
             resumeReadingAfterChapterJump(targetIndex)
@@ -8194,13 +8221,13 @@ public struct ReaderView: View {
 
     private func themeButton(for t: ReaderTheme) -> some View {
         let isSelected = (readerConfig.theme == t)
-        return Button(action: {
+        return Button {
             withAnimation(.easeInOut(duration: 0.15)) {
                 readerConfig.theme = t
                 // 选主题就回到主题配色，不然自定义色会一直压着主题不放
                 readerConfig.useCustomColors = false
             }
-        }) {
+        } label: {
             HStack(spacing: 8) {
                 Circle()
                     .fill(t.backgroundColor)
@@ -8239,14 +8266,14 @@ public struct ReaderView: View {
         if activeBook.origin == "local" {
             var localChapters = BookStore.shared.getChapters(for: activeBook.bookUrl)
             if !localChapters.isEmpty {
-                for i in 0..<localChapters.count {
-                    localChapters[i].index = i
+                localChapters = localChapters.enumerated().map { offset, chapter in
+                    var item = chapter
+                    item.index = offset
+                    return item
                 }
                 self.chapters = localChapters
                 AppLog.write("[阅读] 打开本地书籍，共 \(localChapters.count) 章")
-                if currentChapterIndex >= localChapters.count {
-                    currentChapterIndex = max(0, localChapters.count - 1)
-                }
+                currentChapterIndex = min(currentChapterIndex, max(0, localChapters.count - 1))
                 loadInitialChapter(at: currentChapterIndex)
                 return
             }
@@ -8304,9 +8331,7 @@ public struct ReaderView: View {
                 self.isLoadingInitial = false
                 return
             }
-            if currentChapterIndex >= fetchedChapters.count {
-                currentChapterIndex = max(0, fetchedChapters.count - 1)
-            }
+            currentChapterIndex = min(currentChapterIndex, max(0, fetchedChapters.count - 1))
             loadInitialChapter(at: currentChapterIndex)
         } catch {
             AppLog.write("[阅读] 目录解析失败 error=\(error.localizedDescription)")
@@ -8399,11 +8424,14 @@ public struct ReaderView: View {
         BookContentService.shared.preDownloadChapters(around: index, chapters: chapters, source: source)
     }
 
+    private func setInitialScrollTarget(index: Int, toEnd: Bool) {
+        guard readerConfig.pageMode == .scroll, scrollToChapterId == nil else { return }
+        scrollToChapterId = toEnd ? "chapter_end_\(index)" : "chapter_\(index)"
+    }
+
     private func loadInitialChapter(at index: Int, targetPageIndex: Int = 0, scrollToTargetEnd: Bool = false) {
         guard chapters.indices.contains(index) else { return }
-        if loadedChapters.isEmpty {
-            isLoadingInitial = true
-        }
+        isLoadingInitial = isLoadingInitial || loadedChapters.isEmpty
         errorMessage = nil
 
         let source = effectiveSource
@@ -8463,9 +8491,7 @@ public struct ReaderView: View {
                 BookStore.shared.updateProgress(bookUrl: activeBook.bookUrl, chapterIndex: index, chapterTitle: loaded.chapter.title, chapterPos: currentPos)
                 self.preCacheNeighbors(around: index)
 
-                if readerConfig.pageMode == .scroll && self.scrollToChapterId == nil {
-                    self.scrollToChapterId = scrollToTargetEnd ? "chapter_end_\(index)" : "chapter_\(index)"
-                }
+                self.setInitialScrollTarget(index: index, toEnd: scrollToTargetEnd)
             } catch {
                 AppLog.write("[阅读] 首章正文失败 第 \(index + 1) 章 error=\(error.localizedDescription)")
                 if self.pendingReadingStart?.chapter == index {
@@ -8477,6 +8503,23 @@ public struct ReaderView: View {
                 self.isSwitchingChapter = false
             }
         }
+    }
+
+    private func handleChapterTitleAppear(_ loaded: LoadedChapter) {
+        guard currentChapterIndex != loaded.chapter.index else { return }
+        currentChapterIndex = loaded.chapter.index
+        BookStore.shared.updateProgress(
+            bookUrl: activeBook.bookUrl,
+            chapterIndex: currentChapterIndex,
+            chapterTitle: loaded.chapter.title,
+            chapterPos: currentChapterCharOffset()
+        )
+        preCacheNeighbors(around: currentChapterIndex)
+    }
+
+    private func handleChapterEndAppear(_ index: Int) {
+        guard index < chapters.count - 1 else { return }
+        loadNextChapterForInfiniteScroll(after: index)
     }
 
     private func loadNextChapterForInfiniteScroll(after index: Int) {
@@ -8785,13 +8828,12 @@ public struct ReaderView: View {
     }
 
     private func saveCurrentProgress() {
-        guard let cur = currentLoadedChapter else { return }
-        let pos = currentChapterCharOffset()
+        guard let chapter = currentLoadedChapter else { return }
         BookStore.shared.updateProgress(
             bookUrl: activeBook.bookUrl,
             chapterIndex: currentChapterIndex,
-            chapterTitle: cur.chapter.title,
-            chapterPos: pos
+            chapterTitle: chapter.chapter.title,
+            chapterPos: currentChapterCharOffset()
         )
     }
 
@@ -9445,6 +9487,14 @@ public struct ReaderSearchSheet: View {
     }
 }
 
+private func typographicBounds(_ line: CTLine) -> (ascent: CGFloat, descent: CGFloat, leading: CGFloat) {
+    var ascent: CGFloat = 0
+    var descent: CGFloat = 0
+    var leading: CGFloat = 0
+    CTLineGetTypographicBounds(line, &ascent, &descent, &leading)
+    return (ascent, descent, leading)
+}
+
 // MARK: - CoreText Two-End Justified Page View (两端对齐与定高排版组件)
 #if os(macOS)
 import AppKit
@@ -9496,7 +9546,7 @@ public struct CoreTextPageView: NSViewRepresentable {
 
     public func makeNSView(context: Context) -> CoreTextNSView {
         let view = CoreTextNSView()
-        updateNSView(view, context: context)
+        configure(view)
         return view
     }
 
@@ -9624,12 +9674,8 @@ public class CoreTextNSView: NSView {
                 }
             }
 
-            var ascent: CGFloat = 0
-            var descent: CGFloat = 0
-            var leading: CGFloat = 0
-            CTLineGetTypographicBounds(finalLine, &ascent, &descent, &leading)
-
-            let baselineY = CGFloat(index) * effectiveLineHeight + ascent + paragraphOffset
+            let metrics = typographicBounds(finalLine)
+            let baselineY = CGFloat(index) * effectiveLineHeight + metrics.ascent + paragraphOffset
 
             // macOS 版不做段落级标注（标注绘制在 iOS 的 CoreTextUIView 里）
             ctx.saveGState()
@@ -9642,7 +9688,7 @@ public class CoreTextNSView: NSView {
             if isEnd {
                 if paragraphSeparatorLines > 0 {
                     let lineColor = paragraphSeparatorColor ?? textColor
-                    var sepY = baselineY + descent
+                    var sepY = baselineY + metrics.descent
                         + max(2, (paragraphSpacing - CGFloat(paragraphSeparatorLines) * 3.5) / 2)
                     ctx.saveGState()
                     ctx.setStrokeColor(lineColor.cgColor)
@@ -9900,7 +9946,7 @@ public struct CoreTextPageView: UIViewRepresentable {
 
     public func makeUIView(context: Context) -> CoreTextUIView {
         let view = CoreTextUIView()
-        updateUIView(view, context: context)
+        configure(view)
         return view
     }
 
@@ -10483,20 +10529,17 @@ public class CoreTextUIView: UIView {
                 }
             }
 
-            var ascent: CGFloat = 0
-            var descent: CGFloat = 0
-            var leading: CGFloat = 0
-            CTLineGetTypographicBounds(finalLine, &ascent, &descent, &leading)
+            let metrics = typographicBounds(finalLine)
 
             // 热评行的字面高度比行框矮，行框又上下各留了 pad，字看起来会偏上。
             // 基线下压由「文字位置」控制（默认 2.5pt），行框本身不动，分页不受影响。
             let reviewDrop: CGFloat = isReviewLine ? reviewStyle.textDrop : 0
-            let baselineY = lineTops[index] + ascent + reviewDrop
+            let baselineY = lineTops[index] + metrics.ascent + reviewDrop
 
             // 标注与选中：段落级底色 / 下划线，选中时再叠一层淡蓝
             let blockId = index < lineBlockIds.count ? lineBlockIds[index] : -1
-            let lineRect = CGRect(x: lineInset, y: baselineY - ascent,
-                                  width: lineTargetWidth, height: ascent + descent)
+            let lineRect = CGRect(x: lineInset, y: baselineY - metrics.ascent,
+                                  width: lineTargetWidth, height: metrics.ascent + metrics.descent)
             rects[index] = lineRect
 
             // 逐字边界：CTLine 的字符偏移加上行本身的对齐位移
@@ -10560,7 +10603,7 @@ public class CoreTextUIView: UIView {
                         ?? UIColor.systemBlue
                     ctx.setStrokeColor(lineColor.withAlphaComponent(0.9).cgColor)
                     ctx.setLineWidth(1.5)
-                    let underlineY = baselineY + descent + 1
+                    let underlineY = baselineY + metrics.descent + 1
                     ctx.move(to: CGPoint(x: 0, y: underlineY))
                     ctx.addLine(to: CGPoint(x: lineRect.width, y: underlineY))
                     ctx.strokePath()
@@ -10614,7 +10657,7 @@ public class CoreTextUIView: UIView {
                 if originX + bubbleWidth > CGFloat(targetWidth) {
                     originX = max(0, CGFloat(targetWidth) - bubbleWidth)
                 }
-                let originY = baselineY - ascent + ((ascent + descent) - bubbleHeight) / 2
+                let originY = baselineY - metrics.ascent + ((metrics.ascent + metrics.descent) - bubbleHeight) / 2
                 let bodyRect = CGRect(x: originX + 6, y: originY,
                                       width: bodyWidth, height: bubbleHeight)
                 let path = UIBezierPath(roundedRect: bodyRect, cornerRadius: 5)
@@ -10651,7 +10694,7 @@ public class CoreTextUIView: UIView {
             if isEnd {
                 if paragraphSeparatorLines > 0 {
                     let lineColor = paragraphSeparatorColor ?? textColor
-                    var sepY = baselineY + descent
+                    var sepY = baselineY + metrics.descent
                         + max(2, (paragraphSpacing - CGFloat(paragraphSeparatorLines) * 3.5) / 2)
                     ctx.saveGState()
                     ctx.setStrokeColor(lineColor.cgColor)

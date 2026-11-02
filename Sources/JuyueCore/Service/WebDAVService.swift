@@ -36,19 +36,21 @@ public struct WebDAVConfig: Codable, Equatable {
 
     /// 备份文件名沿用安卓端约定：backupYYYY-MM-DD-设备名.zip。
     public static func generateBackupFileName(date: Date = Date(), deviceName: String?) -> String {
-        let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.dateFormat = "yyyy-MM-dd"
-        let day = formatter.string(from: date)
+        let day = Self.dayStamp(date)
         let mapped: [Character: Character] = ["/": "-", "\\": "-", ":": "-"]
         let dropped: Set<Character> = ["*", "?", "\"", "<", ">", "|"]
         let characters = (deviceName ?? "").compactMap { character -> Character? in
             if let replacement = mapped[character] { return replacement }
             return dropped.contains(character) ? nil : character
         }
-        let cleaned = String(characters)
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-            .trimmingCharacters(in: CharacterSet(charactersIn: "-_ "))
+        var cleaned = String(characters).trimmingCharacters(in: .whitespacesAndNewlines)
+        let edgeTrim: Set<Character> = ["-", "_", " "]
+        while let head = cleaned.first, edgeTrim.contains(head) {
+            cleaned.removeFirst()
+        }
+        while let tail = cleaned.last, edgeTrim.contains(tail) {
+            cleaned.removeLast()
+        }
         return cleaned.isEmpty ? "backup\(day).zip" : "backup\(day)-\(cleaned).zip"
     }
 
@@ -86,6 +88,13 @@ public struct WebDAVConfig: Codable, Equatable {
         self.remotePath = try field(.remotePath, fallback: "juyue")
         self.deviceName = try field(.deviceName, fallback: Self.defaultDeviceName)
         self.lastSyncTime = try box.decodeIfPresent(Date.self, forKey: .lastSyncTime)
+    }
+
+    private static func dayStamp(_ date: Date) -> String {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = .current
+        let parts = calendar.dateComponents([.year, .month, .day], from: date)
+        return String(format: "%04d-%02d-%02d", parts.year ?? 0, parts.month ?? 0, parts.day ?? 0)
     }
 
     private var normalizedServer: String? {
@@ -281,20 +290,12 @@ public final class WebDAVService {
         let progressDirectory = directory.appendingPathComponent("bookProgress")
         try? await createDirectoryIfNeeded(url: progressDirectory, config: config)
 
-        let progress = BookProgress(
-            name: book.name,
-            author: book.author,
-            durChapterIndex: book.durChapterIndex,
-            durChapterPos: book.durChapterPos,
-            durChapterTime: book.durChapterTime > 0
-                ? book.durChapterTime
-                : Int64(Date().timeIntervalSince1970 * 1000),
-            durChapterTitle: book.durChapterTitle
-        )
+        let stamp = book.durChapterTime > 0
+            ? book.durChapterTime
+            : Int64(Date().timeIntervalSince1970 * 1000)
+        let progress = BookProgress(book: book, timestamp: stamp)
 
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.prettyPrinted]
-        let payload = try encoder.encode(progress)
+        let payload = try PrettyJSON.encode(progress)
 
         let fileName = sanitizeFileName("\(book.name)_\(book.author).json")
         let reply = try await transport.execute(WebDAVCall(
@@ -353,11 +354,9 @@ public final class WebDAVService {
             throw WebDAVError.serverError(upload.status, "上传备份文件失败")
         }
 
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.prettyPrinted]
         let sidecars: [(String, Data)] = [
-            ("bookshelf.json", try encoder.encode(books)),
-            ("bookSource.json", try encoder.encode(sources))
+            ("bookshelf.json", try PrettyJSON.encode(books)),
+            ("bookSource.json", try PrettyJSON.encode(sources))
         ]
         for (name, payload) in sidecars {
             _ = try? await transport.execute(WebDAVCall(
@@ -532,17 +531,11 @@ public final class WebDAVService {
     // MARK: 解包
 
     public func restoreFromZip(data: Data) throws -> (books: [Book]?, sources: [BookSource]?) {
-        guard let archive = try? Archive(data: data, accessMode: .read, pathEncoding: nil) else {
-            throw WebDAVError.decodingFailed("无法解析 Zip 压缩包数据")
-        }
-        return try parseArchive(archive)
+        try parseArchive(try openArchive(data: data))
     }
 
     public func restoreFromZip(fileUrl: URL) throws -> (books: [Book]?, sources: [BookSource]?) {
-        guard let archive = try? Archive(url: fileUrl, accessMode: .read, pathEncoding: nil) else {
-            throw WebDAVError.decodingFailed("无法读取 Zip 备份文件: \(fileUrl.lastPathComponent)")
-        }
-        var result = try parseArchive(archive)
+        var result = try parseArchive(try openArchive(fileURL: fileUrl))
 
         let adjacent = fileUrl.deletingLastPathComponent().appendingPathComponent("bookProgress")
         var isDirectory: ObjCBool = false
@@ -555,13 +548,25 @@ public final class WebDAVService {
     }
 
     public func extractSettingsJSON(fromZip data: Data) -> Data? {
-        guard let archive = try? Archive(data: data, accessMode: .read, pathEncoding: nil) else { return nil }
-        return extractSettingsJSON(from: archive)
+        (try? openArchive(data: data)).flatMap { extractSettingsJSON(from: $0) }
     }
 
     public func extractSettingsJSON(fromZipFileUrl url: URL) -> Data? {
-        guard let archive = try? Archive(url: url, accessMode: .read, pathEncoding: nil) else { return nil }
-        return extractSettingsJSON(from: archive)
+        (try? openArchive(fileURL: url)).flatMap { extractSettingsJSON(from: $0) }
+    }
+
+    private func openArchive(data: Data) throws -> Archive {
+        if let archive = try? Archive(data: data, accessMode: .read, pathEncoding: nil) {
+            return archive
+        }
+        throw WebDAVError.decodingFailed("无法解析 Zip 压缩包数据")
+    }
+
+    private func openArchive(fileURL: URL) throws -> Archive {
+        if let archive = try? Archive(url: fileURL, accessMode: .read, pathEncoding: nil) {
+            return archive
+        }
+        throw WebDAVError.decodingFailed("无法读取 Zip 备份文件: \(fileURL.lastPathComponent)")
     }
 
     public func extractSettingsJSON(from archive: Archive) -> Data? {
@@ -576,9 +581,10 @@ public final class WebDAVService {
         if var restored = books, !contents.progress.isEmpty {
             for index in restored.indices {
                 let key = BookProgressMerger.key(name: restored[index].name, author: restored[index].author)
-                guard let progress = contents.progress[key],
-                      progress.durChapterIndex >= restored[index].durChapterIndex else { continue }
-                BookProgressMerger.apply(progress, to: &restored[index], requireNotBehind: false)
+                if let progress = contents.progress[key],
+                   progress.durChapterIndex >= restored[index].durChapterIndex {
+                    BookProgressMerger.apply(progress, to: &restored[index], requireNotBehind: false)
+                }
             }
             books = restored
         }
@@ -588,28 +594,27 @@ public final class WebDAVService {
     }
 
     public func applyBookProgress(books: inout [Book], fromDirectory dirUrl: URL) {
-        guard let files = try? FileManager.default.contentsOfDirectory(
+        let files = (try? FileManager.default.contentsOfDirectory(
             at: dirUrl,
             includingPropertiesForKeys: nil
-        ) else {
-            return
-        }
+        )) ?? []
 
         var progressByKey: [String: BookProgress] = [:]
-        for file in files where file.pathExtension == "json" {
-            guard let data = try? Data(contentsOf: file),
-                  let progress = try? JSONDecoder().decode(BookProgress.self, from: data) else {
-                continue
+        for file in files where file.pathExtension.lowercased() == "json" {
+            if let data = try? Data(contentsOf: file),
+               let progress = try? JSONDecoder().decode(BookProgress.self, from: data) {
+                progressByKey[BookProgressMerger.key(name: progress.name, author: progress.author)] = progress
             }
-            progressByKey[BookProgressMerger.key(name: progress.name, author: progress.author)] = progress
         }
-        guard !progressByKey.isEmpty else { return }
 
-        for index in books.indices {
-            let key = BookProgressMerger.key(name: books[index].name, author: books[index].author)
-            guard let progress = progressByKey[key],
-                  progress.durChapterIndex >= books[index].durChapterIndex else { continue }
-            BookProgressMerger.apply(progress, to: &books[index], requireNotBehind: false)
+        if !progressByKey.isEmpty {
+            for index in books.indices {
+                let key = BookProgressMerger.key(name: books[index].name, author: books[index].author)
+                if let progress = progressByKey[key],
+                   progress.durChapterIndex >= books[index].durChapterIndex {
+                    BookProgressMerger.apply(progress, to: &books[index], requireNotBehind: false)
+                }
+            }
         }
     }
 }
@@ -764,11 +769,9 @@ private enum BackupArchiveBuilder {
         try FileManager.default.createDirectory(at: scratch, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: scratch) }
 
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.prettyPrinted]
         var members: [(name: String, bytes: Data)] = [
-            ("bookshelf.json", try encoder.encode(books)),
-            ("bookSource.json", try encoder.encode(sources))
+            ("bookshelf.json", try PrettyJSON.encode(books)),
+            ("bookSource.json", try PrettyJSON.encode(sources))
         ]
         if let settingsJSON {
             members.append(("settings.json", settingsJSON))
@@ -828,10 +831,9 @@ private enum ArchiveInspector {
         for entry in archive where isProgressFile(entry.path) {
             var bytes = Data()
             _ = try? archive.extract(entry) { bytes.append($0) }
-            guard let progress = try? JSONDecoder().decode(BookProgress.self, from: bytes) else {
-                continue
+            if let progress = try? JSONDecoder().decode(BookProgress.self, from: bytes) {
+                table[BookProgressMerger.key(name: progress.name, author: progress.author)] = progress
             }
-            table[BookProgressMerger.key(name: progress.name, author: progress.author)] = progress
         }
         return table
     }
@@ -871,6 +873,25 @@ private enum BookProgressMerger {
             return incoming.durChapterIndex > book.durChapterIndex
         }
         return requireNotBehind ? incoming.durChapterPos >= book.durChapterPos : true
+    }
+}
+
+private enum PrettyJSON {
+    static func encode<T: Encodable>(_ value: T) throws -> Data {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted]
+        return try encoder.encode(value)
+    }
+}
+
+private extension BookProgress {
+    init(book: Book, timestamp: Int64) {
+        self.name = book.name
+        self.author = book.author
+        self.durChapterIndex = book.durChapterIndex
+        self.durChapterPos = book.durChapterPos
+        self.durChapterTime = timestamp
+        self.durChapterTitle = book.durChapterTitle
     }
 }
 

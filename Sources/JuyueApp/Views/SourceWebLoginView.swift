@@ -260,29 +260,32 @@ final class SourceLoginSession: ObservableObject {
         webView.load(URLRequest(url: url))
     }
 
-    func refreshCookies() {
+    private func captureCookies(_ receive: @escaping ([HTTPCookie]) -> Void) {
         webView.configuration.websiteDataStore.httpCookieStore.getAllCookies { [weak self] all in
             guard let self else { return }
             let relevant = LoginCookieScope.relevant(all, source: self.source, currentURL: self.currentURL)
-            DispatchQueue.main.async { self.cookies = relevant }
+            DispatchQueue.main.async { receive(relevant) }
+        }
+    }
+
+    func refreshCookies() {
+        captureCookies { [weak self] relevant in
+            self?.cookies = relevant
         }
     }
 
     func finish() {
-        webView.configuration.websiteDataStore.httpCookieStore.getAllCookies { [weak self] all in
+        captureCookies { [weak self] relevant in
             guard let self else { return }
-            let relevant = LoginCookieScope.relevant(all, source: self.source, currentURL: self.currentURL)
-            DispatchQueue.main.async {
-                guard !relevant.isEmpty else {
-                    self.alertText = "未检测到该网站的有效 Cookie，请先在网页内输入账号密码完成登录，或点击底部「手动粘贴 Cookie」。"
-                    return
-                }
-                self.cookies = relevant
-                self.persist(
-                    cookieHeader: relevant.map { "\($0.name)=\($0.value)" }.joined(separator: "; "),
-                    cookies: relevant
-                )
+            guard !relevant.isEmpty else {
+                self.alertText = "未检测到该网站的有效 Cookie，请先在网页内输入账号密码完成登录，或点击底部「手动粘贴 Cookie」。"
+                return
             }
+            self.cookies = relevant
+            self.persist(
+                cookieHeader: relevant.map { "\($0.name)=\($0.value)" }.joined(separator: "; "),
+                cookies: relevant
+            )
         }
     }
 
@@ -444,6 +447,24 @@ enum LoginPayload {
 
 // MARK: - WKWebView 桥接
 
+private final class LoginNavigationProxy: NSObject, WKNavigationDelegate {
+    var onStart: (() -> Void)?
+    var onFinish: ((String, URL?) -> Void)?
+    var onFail: (() -> Void)?
+
+    func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
+        onStart?()
+    }
+
+    func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+        onFinish?(webView.title ?? "", webView.url)
+    }
+
+    func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
+        onFail?()
+    }
+}
+
 #if os(iOS)
 private struct LoginWebViewHost: UIViewRepresentable {
     let webView: WKWebView
@@ -452,31 +473,32 @@ private struct LoginWebViewHost: UIViewRepresentable {
     let onFailLoading: () -> Void
 
     func makeUIView(context: Context) -> WKWebView {
-        webView.navigationDelegate = context.coordinator
+        context.coordinator.attach(
+            to: webView,
+            onStart: onStartLoading,
+            onFinish: onFinishLoading,
+            onFail: onFailLoading
+        )
         return webView
     }
 
     func updateUIView(_ uiView: WKWebView, context: Context) {}
 
-    func makeCoordinator() -> Coordinator { Coordinator(parent: self) }
+    func makeCoordinator() -> Coordinator { Coordinator() }
 
-    final class Coordinator: NSObject, WKNavigationDelegate {
-        private let parent: LoginWebViewHost
+    final class Coordinator {
+        private let proxy = LoginNavigationProxy()
 
-        init(parent: LoginWebViewHost) {
-            self.parent = parent
-        }
-
-        func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
-            parent.onStartLoading()
-        }
-
-        func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
-            parent.onFinishLoading(webView.title ?? "", webView.url)
-        }
-
-        func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
-            parent.onFailLoading()
+        func attach(
+            to webView: WKWebView,
+            onStart: @escaping () -> Void,
+            onFinish: @escaping (String, URL?) -> Void,
+            onFail: @escaping () -> Void
+        ) {
+            proxy.onStart = onStart
+            proxy.onFinish = onFinish
+            proxy.onFail = onFail
+            webView.navigationDelegate = proxy
         }
     }
 }
@@ -488,31 +510,32 @@ private struct LoginWebViewHost: NSViewRepresentable {
     let onFailLoading: () -> Void
 
     func makeNSView(context: Context) -> WKWebView {
-        webView.navigationDelegate = context.coordinator
+        context.coordinator.attach(
+            to: webView,
+            onStart: onStartLoading,
+            onFinish: onFinishLoading,
+            onFail: onFailLoading
+        )
         return webView
     }
 
     func updateNSView(_ nsView: WKWebView, context: Context) {}
 
-    func makeCoordinator() -> Coordinator { Coordinator(parent: self) }
+    func makeCoordinator() -> Coordinator { Coordinator() }
 
-    final class Coordinator: NSObject, WKNavigationDelegate {
-        private let parent: LoginWebViewHost
+    final class Coordinator {
+        private let proxy = LoginNavigationProxy()
 
-        init(parent: LoginWebViewHost) {
-            self.parent = parent
-        }
-
-        func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
-            parent.onStartLoading()
-        }
-
-        func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
-            parent.onFinishLoading(webView.title ?? "", webView.url)
-        }
-
-        func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
-            parent.onFailLoading()
+        func attach(
+            to webView: WKWebView,
+            onStart: @escaping () -> Void,
+            onFinish: @escaping (String, URL?) -> Void,
+            onFail: @escaping () -> Void
+        ) {
+            proxy.onStart = onStart
+            proxy.onFinish = onFinish
+            proxy.onFail = onFail
+            webView.navigationDelegate = proxy
         }
     }
 }

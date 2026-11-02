@@ -366,6 +366,22 @@ final class ShelfLogoStore: ObservableObject {
     }
 }
 
+private enum ShelfOrdering {
+    static func sort(_ books: [Book]) -> [Book] {
+        let manualOrder = books.contains { $0.shelfOrder != nil }
+        return books.sorted { lhs, rhs in
+            let lhsRank = lhs.shelfOrder ?? Int.max
+            let rhsRank = rhs.shelfOrder ?? Int.max
+            if manualOrder, lhsRank != rhsRank { return lhsRank < rhsRank }
+            return stamp(lhs) > stamp(rhs)
+        }
+    }
+
+    private static func stamp(_ book: Book) -> Int64 {
+        max(book.durChapterTime, book.lastCheckTime)
+    }
+}
+
 public struct BookshelfView: View {
     @ObservedObject var bookStore = BookStore.shared
     @ObservedObject private var shelfConfig = BookshelfConfig.shared
@@ -379,12 +395,12 @@ public struct BookshelfView: View {
     @State private var showingLunarLog = false
     @State private var navigateToDetailBook: Book? = nil
     @State private var isSearchActive: Bool = false
-    @State private var showFileImporter: Bool = false
+    @State private var importingFile: Bool = false
     @State private var selectedGroupId: UUID? = nil
     @State private var showNewGroupAlert: Bool = false
     @State private var newGroupName: String = ""
-    @State private var importErrorMessage: String? = nil
-    @State private var showImportAlert: Bool = false
+    @State private var importErrorText: String? = nil
+    @State private var presentingImportError: Bool = false
     @State private var isOrganizing = false
     @State private var selectedBookIDs: Set<String> = []
     @State private var showDeleteSelectedAlert = false
@@ -401,8 +417,8 @@ public struct BookshelfView: View {
 
     /// 分组筛选：nil = 全部
     private var displayedBooks: [Book] {
-        guard let selectedGroupId else { return sortedBookshelf }
-        return sortedBookshelf.filter { $0.groupId == selectedGroupId }
+        guard let selectedGroupId else { return orderedShelf }
+        return orderedShelf.filter { $0.groupId == selectedGroupId }
     }
 
     // MARK: 阅读统计（档案条用）
@@ -1192,7 +1208,7 @@ public struct BookshelfView: View {
             .accessibilityLabel("搜索书籍")
 
             Button {
-                showFileImporter = true
+                importingFile = true
             } label: {
                 Image(systemName: "doc.badge.plus")
             }
@@ -1633,27 +1649,14 @@ public struct BookshelfView: View {
         }
     }
 
-    private var sortedBookshelf: [Book] {
-        let books = bookStore.bookshelf
-        let manualOrder = books.contains { $0.shelfOrder != nil }
-        return books.sorted { left, right in
-            if manualOrder {
-                let leftRank = left.shelfOrder ?? Int.max
-                let rightRank = right.shelfOrder ?? Int.max
-                if leftRank != rightRank { return leftRank < rightRank }
-            }
-            return lastActivity(of: left) > lastActivity(of: right)
-        }
-    }
-
-    private func lastActivity(of book: Book) -> Int64 {
-        max(book.durChapterTime, book.lastCheckTime)
+    private var orderedShelf: [Book] {
+        ShelfOrdering.sort(bookStore.bookshelf)
     }
 
     /// 拖拽换位：先把当前顺序固化成序位，再交换两本的位置并整体写回。
     private func moveBook(_ sourceUrl: String, onto targetUrl: String, persist: Bool = true) {
         guard sourceUrl != targetUrl else { return }
-        var ordered = sortedBookshelf
+        var ordered = orderedShelf
         guard let sourceIndex = ordered.firstIndex(where: { $0.bookUrl == sourceUrl }),
               let targetIndex = ordered.firstIndex(where: { $0.bookUrl == targetUrl }) else {
             return
@@ -1914,7 +1917,7 @@ public struct BookshelfView: View {
     @ViewBuilder
     private var shelfMainContent: some View {
         if bookStore.bookshelf.isEmpty {
-            emptyShelfView
+            emptyShelf
         } else {
             groupFilterBar
             bookshelfGrid
@@ -1964,13 +1967,8 @@ public struct BookshelfView: View {
             #if os(iOS)
             .navigationBarHidden(true)
             #endif
-            .fileImporter(
-                isPresented: $showFileImporter,
-                allowedContentTypes: [.epub, .plainText, .pdf, .zip, .archive],
-                allowsMultipleSelection: false,
-                onCompletion: handleImportedFiles
-            )
-            .alert(importErrorMessage ?? "", isPresented: $showImportAlert) {
+            .modifier(ShelfFileImport(isPresented: $importingFile, onCompletion: handleImportedFiles))
+            .alert(importErrorText ?? "", isPresented: $presentingImportError) {
                 Button("确定", role: .cancel) {}
             }
             .alert("新建分组", isPresented: $showNewGroupAlert) {
@@ -1987,13 +1985,13 @@ public struct BookshelfView: View {
             }
             #if os(iOS)
             .fullScreenCover(item: $selectedBook) { book in
-                readerCoverView(for: book)
+                readerDestination(for: book)
             }
             #endif
         }
         #if !os(iOS)
-        if let book = selectedBook {
-            readerCoverView(for: book)
+        if let current = selectedBook {
+            readerDestination(for: current)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .background(Color.black)
                 .transition(.opacity)
@@ -2027,11 +2025,11 @@ public struct BookshelfView: View {
     }
 
     private func failImport(_ message: String) {
-        importErrorMessage = message
-        showImportAlert = true
+        importErrorText = message
+        presentingImportError = true
     }
 
-    private func readerCoverView(for book: Book) -> some View {
+    private func readerDestination(for book: Book) -> some View {
         ShelfReaderDestination(
             book: book,
             source: bookStore.findSource(for: book),
@@ -2043,8 +2041,22 @@ public struct BookshelfView: View {
         }
     }
 
-    private var emptyShelfView: some View {
+    private var emptyShelf: some View {
         ShelfEmptyState { isSearchActive = true }
+    }
+}
+
+private struct ShelfFileImport: ViewModifier {
+    @Binding var isPresented: Bool
+    let onCompletion: (Result<[URL], Error>) -> Void
+
+    func body(content: Content) -> some View {
+        content.fileImporter(
+            isPresented: $isPresented,
+            allowedContentTypes: [.epub, .plainText, .pdf, .zip, .archive],
+            allowsMultipleSelection: false,
+            onCompletion: onCompletion
+        )
     }
 }
 
@@ -2071,22 +2083,22 @@ private struct ShelfEmptyState: View {
     @Environment(\.appTheme) private var theme
 
     var body: some View {
-        VStack(spacing: 16) {
+        VStack(alignment: .center, spacing: 16) {
             Image(systemName: "books.vertical")
                 .font(.system(size: 64))
                 .foregroundColor(.secondary.opacity(0.6))
-            Text("书架空空如也")
+            Text(verbatim: "书架空空如也")
                 .font(.headline)
-            Text("可点击右上角放大镜搜索网络小说，或点击“+”导入本地书籍")
+            Text(verbatim: "可点击右上角放大镜搜索网络小说，或点击“+”导入本地书籍")
                 .font(.subheadline)
                 .foregroundColor(.secondary)
                 .multilineTextAlignment(.center)
                 .padding(.horizontal, 32)
 
             Button(action: onSearch) {
-                HStack(spacing: 6) {
+                HStack(alignment: .center, spacing: 6) {
                     Image(systemName: "magnifyingglass")
-                    Text("前往全网搜索")
+                    Text(verbatim: "前往全网搜索")
                 }
                 .font(.subheadline.bold())
                 .padding(.horizontal, 18)
@@ -2155,132 +2167,6 @@ private struct ShelfReaderDestination: View {
             title: book.name,
             index: 0
         )]
-    }
-}
-
-// MARK: - BookRow (Android Reader Style)
-
-struct BookRow: View {
-    let book: Book
-    @ObservedObject private var st = BookshelfConfig.shared
-
-    private var unread: Int {
-        guard book.totalChapterNum > 0 else { return 0 }
-        let consumed = book.durChapterTitle == nil ? 0 : book.durChapterIndex + 1
-        return max(0, book.totalChapterNum - consumed)
-    }
-
-    private var showsBadge: Bool { st.badgeStyle != .hidden && unread > 0 }
-
-    private var badgeText: String? {
-        guard st.badgeStyle == .count else { return nil }
-        if st.badgeCap > 0 && unread > st.badgeCap { return "\(st.badgeCap)+" }
-        return "\(unread)"
-    }
-
-    var body: some View {
-        HStack(alignment: .center, spacing: 14) {
-            coverStack
-            textColumn
-        }
-        .padding(.vertical, 4)
-    }
-
-    private var coverStack: some View {
-        ZStack(alignment: st.badgeCorner == .topTrailing ? .topTrailing : .topLeading) {
-            cover
-            if showsBadge { badge }
-        }
-    }
-
-    private var cover: some View {
-        Group {
-            if book.coverUrl != nil {
-                BookCoverImage(urlString: book.coverUrl)
-                    .frame(width: 54, height: 74)
-                    .cornerRadius(6)
-                    .clipped()
-            } else {
-                RoundedRectangle(cornerRadius: 6)
-                    .fill(Color.accentColor.opacity(0.12))
-                    .frame(width: 54, height: 74)
-                    .overlay(
-                        Image(systemName: "book.closed.fill")
-                            .font(.title2)
-                            .foregroundColor(.accentColor.opacity(0.8))
-                    )
-            }
-        }
-    }
-
-    private var badge: some View {
-        let size = max(7, st.badgeFontSize)
-        let horizontal = st.badgeCorner == .topTrailing ? st.badgeOffset : -st.badgeOffset
-        return Group {
-            if let label = badgeText {
-                Text(label)
-                    .font(.system(size: size, weight: .bold))
-                    .foregroundColor(.white)
-                    .padding(.horizontal, max(3, size * 0.5))
-                    .padding(.vertical, max(1, size * 0.22))
-                    .background(Capsule().fill(st.badgeColor))
-                    .overlay { outline(Capsule()) }
-            } else {
-                Circle()
-                    .fill(st.badgeColor)
-                    .frame(width: size + 3, height: size + 3)
-                    .overlay { outline(Circle()) }
-            }
-        }
-        .offset(x: horizontal, y: -st.badgeOffset)
-    }
-
-    @ViewBuilder
-    private func outline<S: InsettableShape>(_ shape: S) -> some View {
-        if st.badgeOutline {
-            shape.stroke(Color(white: 1).opacity(0.85), lineWidth: 1.5)
-        }
-    }
-
-    private var textColumn: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text(book.name)
-                .font(.system(size: 16, weight: .bold))
-                .lineLimit(1)
-                .foregroundColor(.primary)
-
-            if showsAuthor {
-                Text(book.author)
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-                    .lineLimit(1)
-            }
-
-            if let latest = book.latestChapterTitle, !latest.isEmpty {
-                Text("最新: \(latest)")
-                    .font(.caption2)
-                    .foregroundColor(.secondary)
-                    .lineLimit(1)
-            }
-
-            HStack {
-                if let chapter = book.durChapterTitle, !chapter.isEmpty {
-                    Text("已读: \(chapter)")
-                        .font(.caption2)
-                        .foregroundColor(.accentColor)
-                        .lineLimit(1)
-                } else {
-                    Text("未读")
-                        .font(.caption2)
-                        .foregroundColor(.secondary.opacity(0.8))
-                }
-                Spacer()
-            }
-        }
-    }
-
-    private var showsAuthor: Bool {
-        !book.author.isEmpty && book.author != "未知作者"
     }
 }
 

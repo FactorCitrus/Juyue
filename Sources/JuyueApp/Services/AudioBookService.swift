@@ -509,7 +509,16 @@ public class AudioBookService: NSObject, ObservableObject, AVSpeechSynthesizerDe
     public override init() {
         super.init()
         synthesizer.delegate = self
+        restorePersistedPreferences()
+        configureAudioSession()
+        mirrorHttpPlayerState()
+        observeSystemAudioEvents()
+        observeCastSettings()
+    }
+
+    private func restorePersistedPreferences() {
         let defaults = UserDefaults.standard
+
         if defaults.object(forKey: "tts_speech_rate") != nil {
             // 旧版本存进去的 0 或负数直接喂 AVSpeech 就是不出声，读回来先夹一遍。
             let stored = Float(defaults.double(forKey: "tts_speech_rate"))
@@ -518,21 +527,22 @@ public class AudioBookService: NSObject, ObservableObject, AVSpeechSynthesizerDe
         if defaults.object(forKey: "tts_chunk_length") != nil {
             chunkLength = defaults.integer(forKey: "tts_chunk_length")
         }
-        setupAudioSession()
-        mirrorHttpPlayerState()
+    }
+
+    private func observeSystemAudioEvents() {
         #if os(iOS)
-        // 耳机拔了、蓝牙断了：系统只发通知，不会替你把朗读停下来
         NotificationCenter.default.publisher(for: AVAudioSession.routeChangeNotification)
             .receive(on: DispatchQueue.main)
             .sink { [weak self] note in self?.handleAudioRouteChange(note) }
             .store(in: &cancellables)
-        // 来电、其它 App 抢音频：结束了能接着念就接着念
         NotificationCenter.default.publisher(for: AVAudioSession.interruptionNotification)
             .receive(on: DispatchQueue.main)
             .sink { [weak self] note in self?.handleAudioInterruption(note) }
             .store(in: &cancellables)
         #endif
-        // 角色表、音色一改就重念当前那段：以前改完设置这一章直接哑掉，用户以为开关坏了
+    }
+
+    private func observeCastSettings() {
         NotificationCenter.default.publisher(for: .ttsCastChanged)
             .receive(on: DispatchQueue.main)
             .sink { [weak self] _ in self?.restartReadingAfterSettingsChange() }
@@ -1022,133 +1032,157 @@ public class AudioBookService: NSObject, ObservableObject, AVSpeechSynthesizerDe
         return min(50, max(5, Int(ratio * 10)))
     }
 
-    private func setupAudioSession() {
+    private func configureAudioSession() {
         #if os(iOS)
+        activatePlaybackSession()
+        #endif
+    }
+
+    #if os(iOS)
+    private func activatePlaybackSession() {
+        let session = AVAudioSession.sharedInstance()
         do {
-            try AVAudioSession.sharedInstance().setCategory(.playback, mode: .spokenAudio, options: [.duckOthers])
-            try AVAudioSession.sharedInstance().setActive(true)
+            try session.setCategory(.playback, mode: .spokenAudio, options: [.duckOthers])
+            try session.setActive(true)
         } catch {
             // 以前只 print，AppLog 里一个字都没有：模拟器见过 -10879 时查了一整轮才发现这里断了
             print("[AudioBookService] Failed to activate audio session: \(error)")
             AppLog.write("[听书] 音频自检 · 会话激活失败 · \(error.localizedDescription)")
             playbackNote = "音频输出不可用，检查扬声器或耳机"
         }
-        #endif
     }
+    #endif
 
     public func speak(text: String, language: String = "zh-CN") {
         AppLog.write("[听书] 开始朗读，文本长度 \(text.count)")
         stop()
         guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
-        self.currentText = text
+
+        currentText = text
         speakTextSnapshot = text
         playbackNote = nil
         httpSourceFailed = false
-        // 自检要在 stop() 之后：stop 把上一轮相位清干净了，这会儿判「有没有出口」才算数。
-        // 出口不对就别往下走——念了也听不见，还让朗读条假装在动。
+
+        // 自检要在 stop() 之后：上一轮相位已经清干净，这会儿判出口才算数。
         guard runAudioSelfCheck(reason: "起读") else { return }
-        // 只在起读/恢复时挂一次：每段都挂会在日志里刷出成串「有声」
-        scheduleSilenceWatchdog(reason: "起读")
+        beginReadingSession()
         lastSessionStartAt = Date()
 
-        if TTSEngineChoice.isUsingHTTP, let source = TTSourceSelection.activeSource {
-            httpPlayer.start(source: source, text: text, speed: httpSpeed, maxChunkLength: chunkLength)
-            DispatchQueue.main.async {
-                self.isPlaying = true
-                self.isPaused = false
-            }
+        if let online = activeOnlineSource() {
+            startOnlineReading(online, text: text)
             return
         }
-        // 包内模型 / 系统语音：由 speakWithSystemVoice 分流，模型不在包里自动退系统
         speakWithSystemVoice(text, language: language)
     }
 
     public func togglePlayPause(text: String, language: String = "zh-CN") {
-        if isPlaying {
+        switch (isPlaying, isPaused, currentText.isEmpty) {
+        case (true, _, _):
             pause()
-        } else if isPaused && !currentText.isEmpty {
+        case (false, true, false):
             resume()
-        } else {
+        default:
             speak(text: text, language: language)
         }
     }
 
     public func pause() {
-        // 多角色一段一个引擎，得按当前这一段实际走的通道停，不能用全局引擎那个开关
         AppLog.write("[听书] 暂停 · 第 \(progressIndex)/\(progressTotal) 段 · 多角色=\(castActive) 通道=\(String(describing: castRoute))")
+
         if castActive {
-            switch castRoute {
-            case .http:
-                httpPlayer.pause()
-            case .builtin:
-                BundledTTSEngine.shared.pause()
-            case .system:
-                if synthesizer.isSpeaking && !synthesizer.isPaused {
-                    synthesizer.pauseSpeaking(at: .word)
-                }
-            }
-            DispatchQueue.main.async {
-                self.isPlaying = false
-                self.isPaused = true
-            }
+            pauseCurrentCastRoute()
+            markPaused()
             return
         }
+
         if TTSEngineChoice.isUsingHTTP {
             httpPlayer.pause()
         }
         if TTSEngineChoice.current == .builtIn, isPlaying, !isPaused {
             BundledTTSEngine.shared.pause()
-            DispatchQueue.main.async {
-                self.isPlaying = false
-                self.isPaused = true
-            }
+            markPaused()
             return
         }
-        if synthesizer.isSpeaking && !synthesizer.isPaused {
+        if synthesizer.isSpeaking, !synthesizer.isPaused {
             synthesizer.pauseSpeaking(at: .word)
-            DispatchQueue.main.async {
-                self.isPlaying = false
-                self.isPaused = true
-            }
+            markPaused()
         }
     }
 
     public func resume() {
         AppLog.write("[听书] 恢复 · 第 \(progressIndex)/\(progressTotal) 段 · 多角色=\(castActive) 通道=\(String(describing: castRoute)) 引擎=\(TTSEngineChoice.current.title)")
-        // 恢复也要再看一眼：暂停期间耳机可能被拔了
         scheduleSilenceWatchdog(reason: "恢复", delay: 3)
+
         if castActive {
-            switch castRoute {
-            case .http:
-                httpPlayer.resume()
-            case .builtin:
-                BundledTTSEngine.shared.resume()
-            case .system:
-                if synthesizer.isPaused { synthesizer.continueSpeaking() }
-            }
-            DispatchQueue.main.async {
-                self.isPlaying = true
-                self.isPaused = false
-            }
+            resumeCurrentCastRoute()
+            markPlaying()
             return
         }
+
         if TTSEngineChoice.isUsingHTTP {
             httpPlayer.resume()
         }
         if TTSEngineChoice.current == .builtIn, isPaused {
             BundledTTSEngine.shared.resume()
-            DispatchQueue.main.async {
-                self.isPlaying = true
-                self.isPaused = false
-            }
+            markPlaying()
             return
         }
         if synthesizer.isPaused {
             synthesizer.continueSpeaking()
-            DispatchQueue.main.async {
-                self.isPlaying = true
-                self.isPaused = false
-            }
+            markPlaying()
+        }
+    }
+
+    private func beginReadingSession() {
+        // 只在起读/恢复时挂一次：每段都挂会在日志里刷出成串「有声」
+        scheduleSilenceWatchdog(reason: "起读")
+    }
+
+    private func activeOnlineSource() -> HttpTTS? {
+        guard TTSEngineChoice.isUsingHTTP else { return nil }
+        return TTSourceSelection.activeSource
+    }
+
+    private func startOnlineReading(_ source: HttpTTS, text: String) {
+        httpPlayer.start(source: source, text: text, speed: httpSpeed, maxChunkLength: chunkLength)
+        markPlaying()
+    }
+
+    private func pauseCurrentCastRoute() {
+        switch castRoute {
+        case .http:
+            httpPlayer.pause()
+        case .builtin:
+            BundledTTSEngine.shared.pause()
+        case .system:
+            guard synthesizer.isSpeaking, !synthesizer.isPaused else { return }
+            synthesizer.pauseSpeaking(at: .word)
+        }
+    }
+
+    private func resumeCurrentCastRoute() {
+        switch castRoute {
+        case .http:
+            httpPlayer.resume()
+        case .builtin:
+            BundledTTSEngine.shared.resume()
+        case .system:
+            guard synthesizer.isPaused else { return }
+            synthesizer.continueSpeaking()
+        }
+    }
+
+    private func markPaused() {
+        DispatchQueue.main.async {
+            self.isPlaying = false
+            self.isPaused = true
+        }
+    }
+
+    private func markPlaying() {
+        DispatchQueue.main.async {
+            self.isPlaying = true
+            self.isPaused = false
         }
     }
 
@@ -1157,6 +1191,25 @@ public class AudioBookService: NSObject, ObservableObject, AVSpeechSynthesizerDe
         cancelWatchdog()
         cancelSilenceWatchdog()
         stopCastGuard()
+        resetCastSession()
+        resetReadingSession()
+
+        // 先撤掉身份再叫停：stopSpeaking 的回调回来时认不出自己，就不会去推进新起的朗读
+        currentAVUtterance = nil
+        httpPlayer.stop()
+        BundledTTSEngine.shared.stop()
+        isSynthesizing = false
+        playbackNote = nil
+        haltSystemSpeech()
+
+        DispatchQueue.main.async {
+            self.isPlaying = false
+            self.isPaused = false
+            self.currentText = ""
+        }
+    }
+
+    private func resetCastSession() {
         // 停就整条序一起停，别留着半截角色队列
         castActive = false
         castSegments = []
@@ -1175,6 +1228,9 @@ public class AudioBookService: NSObject, ObservableObject, AVSpeechSynthesizerDe
         castRoute = .system
         // 停在半截的在线段不能再把 onFinish 打回来接着推进
         httpPlayer.onFinish = nil
+    }
+
+    private func resetReadingSession() {
         // 按段朗读的队列也一起清，否则下一段的开头会把刚停的朗读接回去
         readingActive = false
         readingItems = []
@@ -1183,57 +1239,53 @@ public class AudioBookService: NSObject, ObservableObject, AVSpeechSynthesizerDe
         readingBlockId = nil
         readingIndex = -1
         readingTotal = 0
-        // 先撤掉身份再叫停：stopSpeaking 的回调回来时认不出自己，就不会去推进新起的朗读
-        currentAVUtterance = nil
-        httpPlayer.stop()
-        BundledTTSEngine.shared.stop()
-        isSynthesizing = false
-        playbackNote = nil
-        // Critical: in iOS AVFoundation, stopSpeaking while isPaused can deadlock mediaserverd.
-        // If paused, we must resume before stopping immediately.
+    }
+
+    private func haltSystemSpeech() {
+        // iOS AVFoundation 里暂停状态下直接 stopSpeaking 可能把 mediaserverd 卡死，
+        // 所以先恢复再立即停。
         if synthesizer.isPaused {
             synthesizer.continueSpeaking()
         }
         if synthesizer.isSpeaking {
             synthesizer.stopSpeaking(at: .immediate)
         }
-        DispatchQueue.main.async {
-            self.isPlaying = false
-            self.isPaused = false
-            self.currentText = ""
-        }
     }
 
     // MARK: - AVSpeechSynthesizerDelegate
     public func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didFinish utterance: AVSpeechUtterance) {
-        // 迟到的旧语句（翻页、重起读留下的）不许推进队列，否则新段会被当成已播完
-        guard utterance === currentAVUtterance else { return }
+        guard isCurrentUtterance(utterance) else { return }
         AppLog.write("[听书] 系统语音 完 · 段\(readingIndex) · \(utterance.speechString.count)字")
         currentAVUtterance = nil
+
         if readingActive {
-            // 按段朗读：这一段播完就续下一段，整章结束才收工
             completeReadingItem()
             return
         }
         if castActive {
-            // 多角色：一段播完继续下一段，不作为整章结束
             completeCastSegment(castToken)
             return
         }
-        DispatchQueue.main.async {
-            self.isPlaying = false
-            self.isPaused = false
-        }
+        markStopped()
     }
 
     public func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didCancel utterance: AVSpeechUtterance) {
-        guard utterance === currentAVUtterance else { return }
+        guard isCurrentUtterance(utterance) else { return }
         currentAVUtterance = nil
+
         if castActive {
             // 被掐掉的这一段立刻作废，别让它的收尾把下一段顶过去
             castToken &+= 1
             castActive = false
         }
+        markStopped()
+    }
+
+    private func isCurrentUtterance(_ utterance: AVSpeechUtterance) -> Bool {
+        utterance === currentAVUtterance
+    }
+
+    private func markStopped() {
         DispatchQueue.main.async {
             self.isPlaying = false
             self.isPaused = false
@@ -1725,28 +1777,22 @@ public class AudioBookService: NSObject, ObservableObject, AVSpeechSynthesizerDe
     public func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer,
                                   willSpeakRangeOfSpeechString characterRange: NSRange,
                                   utterance: AVSpeechUtterance) {
-        guard utterance === currentAVUtterance else { return }
+        guard isCurrentUtterance(utterance) else { return }
         castGuardLastProgress = Date()
-        // 每过一百字落一行：长段是「还在念」还是「卡死了」，日志里得看得出来
-        let spokenChars = characterRange.location + characterRange.length
-        let bucket = spokenChars / 100
-        if bucket > lastSpokenBucket {
-            lastSpokenBucket = bucket
-            AppLog.write("[听书] 系统语音 进度 · \(spokenChars)/\(utterance.speechString.count)字")
-        }
+
+        let spoken = characterRange.location + characterRange.length
+        let bucket = spoken / 100
+        guard bucket > lastSpokenBucket else { return }
+
+        lastSpokenBucket = bucket
+        AppLog.write("[听书] 系统语音 进度 · \(spoken)/\(utterance.speechString.count)字")
     }
 
     public func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didPause utterance: AVSpeechUtterance) {
-        DispatchQueue.main.async {
-            self.isPlaying = false
-            self.isPaused = true
-        }
+        markPaused()
     }
 
     public func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didContinue utterance: AVSpeechUtterance) {
-        DispatchQueue.main.async {
-            self.isPlaying = true
-            self.isPaused = false
-        }
+        markPlaying()
     }
 }
