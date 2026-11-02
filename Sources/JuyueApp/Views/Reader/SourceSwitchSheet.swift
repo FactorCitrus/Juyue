@@ -33,6 +33,11 @@ public struct SourceSwitchSheet: View {
     @State private var runSources: [BookSource] = []
     @State private var reportedSourceUrls: Set<String> = []
     @State private var runKeyword = ""
+    @State private var runSelectedSourceUrls: Set<String> = []
+    @State private var runMatchTitle = true
+    @State private var runMatchAuthor = false
+    @State private var runExact = false
+    @State private var searchRunId = UUID()
     /// 搜索条件默认收起，换源时先看候选；收起状态是临时的，每次打开都收着
     @State private var showSearchOptions = false
 
@@ -115,7 +120,7 @@ public struct SourceSwitchSheet: View {
                             ForEach(Array(results.enumerated()), id: \.element.book.id) { index, item in
                                 resultCard(index: index, item: item, palette: palette)
                             }
-                        } else if !isSearching {
+                        } else if !isSearching && !isPaused {
                             emptyPanel(palette)
                         }
                     }
@@ -495,6 +500,10 @@ public struct SourceSwitchSheet: View {
             totalSources = sources.count
             reportedSourceUrls = []
             runKeyword = requestKeyword(from: trimmedKeyword)
+            runSelectedSourceUrls = selectedSourceUrls
+            runMatchTitle = matchTitle
+            runMatchAuthor = matchAuthor
+            runExact = exactMatch
         }
 
         let remaining = resuming
@@ -508,11 +517,14 @@ public struct SourceSwitchSheet: View {
 
         isSearching = true
         isPaused = false
+        let runId = UUID()
+        searchRunId = runId
         searchTask = Task {
             let stream = BookSearchService.shared.searchMultiSources(sources: remaining, key: runKeyword, page: 1)
             for await (source, books) in stream {
                 if Task.isCancelled { return }
                 await MainActor.run {
+                    guard searchRunId == runId else { return }
                     reportedSourceUrls.insert(source.bookSourceUrl)
                     finishedSources = min(totalSources, finishedSources + 1)
                     // 原样收着，展示时按当前口径筛（改开关不用重新搜一遍）
@@ -524,8 +536,11 @@ public struct SourceSwitchSheet: View {
                 }
             }
             await MainActor.run {
-                isSearching = false
-                isPaused = false
+                // 取消后再到达的收尾不能把「已暂停」冲掉
+                guard searchRunId == runId else { return }
+                if !isPaused {
+                    isSearching = false
+                }
             }
         }
     }
@@ -540,7 +555,17 @@ public struct SourceSwitchSheet: View {
 
     private func resumeSearch() {
         guard isPaused else { return }
-        startSearch(resuming: true)
+        // 暂停期间改了关键词、匹配条件或限定源：按新条件重搜，别续跑旧任务
+        let criteriaChanged = requestKeyword(from: keyword) != runKeyword
+            || selectedSourceUrls != runSelectedSourceUrls
+            || matchTitle != runMatchTitle
+            || matchAuthor != runMatchAuthor
+            || exactMatch != runExact
+        if criteriaChanged {
+            startSearch()
+        } else {
+            startSearch(resuming: true)
+        }
     }
 
     /// 搜索接口一般只认书名，带空格的关键词取最长的那一段去请求
