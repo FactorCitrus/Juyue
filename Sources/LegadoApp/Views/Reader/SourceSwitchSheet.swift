@@ -27,7 +27,17 @@ public struct SourceSwitchSheet: View {
     @State private var totalSources = 0
     @State private var errorMessage: String?
     @State private var keyword: String
-    @State private var sourceFilter: String = ""
+    @State private var selectedSourceUrls: Set<String> = []
+    @State private var showSourcePicker = false
+    @State private var isPaused = false
+    @State private var runSources: [BookSource] = []
+    @State private var reportedSourceUrls: Set<String> = []
+    @State private var runKeyword = ""
+    @State private var runSelectedSourceUrls: Set<String> = []
+    @State private var runMatchTitle = true
+    @State private var runMatchAuthor = false
+    @State private var runExact = false
+    @State private var searchRunId = UUID()
     /// 搜索条件默认收起，换源时先看候选；收起状态是临时的，每次打开都收着
     @State private var showSearchOptions = false
 
@@ -50,8 +60,13 @@ public struct SourceSwitchSheet: View {
 
     private var results: [(source: BookSource, book: SearchBook)] {
         rawResults.filter {
-            SourceMatchRules.matches($0.book, title: book.name, author: book.author, options: options)
+            (selectedSourceUrls.isEmpty || selectedSourceUrls.contains($0.source.bookSourceUrl))
+                && SourceMatchRules.matches($0.book, title: book.name, author: book.author, options: options)
         }
+    }
+
+    private var enabledSources: [BookSource] {
+        bookStore.sources.filter { $0.enabled != false && $0.searchUrl != nil }
     }
 
     /// 给提示用：现在是按什么口径筛的
@@ -74,7 +89,7 @@ public struct SourceSwitchSheet: View {
                     palette: palette,
                     kicker: "SOURCE TRANSFER",
                     title: "换源",
-                    subtitle: "\(isSearching ? "SCANNING" : "READY") · \(results.count) NODES"
+                    subtitle: "\(isSearching ? "SCANNING" : (isPaused ? "PAUSED" : "READY")) · \(results.count) NODES"
                 ) {
                     searchTask?.cancel()
                     dismiss()
@@ -85,7 +100,7 @@ public struct SourceSwitchSheet: View {
                         targetPanel(palette)
                         searchPanel(palette)
 
-                        if isSearching {
+                        if isSearching || isPaused {
                             scanningPanel(palette)
                         }
 
@@ -105,7 +120,7 @@ public struct SourceSwitchSheet: View {
                             ForEach(Array(results.enumerated()), id: \.element.book.id) { index, item in
                                 resultCard(index: index, item: item, palette: palette)
                             }
-                        } else if !isSearching {
+                        } else if !isSearching && !isPaused {
                             emptyPanel(palette)
                         }
                     }
@@ -121,6 +136,14 @@ public struct SourceSwitchSheet: View {
         }
         .onDisappear {
             searchTask?.cancel()
+        }
+        .sheet(isPresented: $showSourcePicker) {
+            SourceSwitchSourcePicker(
+                sources: enabledSources,
+                selection: $selectedSourceUrls,
+                currentSourceUrl: currentSourceUrl,
+                palette: palette
+            )
         }
     }
 
@@ -200,15 +223,39 @@ public struct SourceSwitchSheet: View {
                     NieRDivider(palette: palette)
                     HStack(spacing: 8) {
                         nierField("关键词", text: $keyword, palette: palette)
-                        Button("搜索") { startSearch() }
-                            .font(.system(size: 11, weight: .semibold, design: .monospaced))
-                            .foregroundColor(palette.background)
-                            .padding(.horizontal, 12)
-                            .padding(.vertical, 7)
-                            .background(palette.accent)
-                            .disabled(keyword.trimmingCharacters(in: .whitespaces).isEmpty || (!matchTitle && !matchAuthor))
+                        if isSearching {
+                            searchActionButton("暂停", filled: false, palette: palette) { pauseSearch() }
+                        } else if isPaused {
+                            searchActionButton("继续", filled: true, palette: palette) { resumeSearch() }
+                        } else {
+                            searchActionButton("搜索", filled: true, palette: palette) { startSearch() }
+                                .disabled(keyword.trimmingCharacters(in: .whitespaces).isEmpty || (!matchTitle && !matchAuthor))
+                        }
                     }
-                    nierField("限定源", text: $sourceFilter, palette: palette)
+                    Button {
+                        showSourcePicker = true
+                    } label: {
+                        HStack(spacing: 8) {
+                            Text("限定源")
+                                .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                                .foregroundColor(palette.muted)
+                            Spacer(minLength: 0)
+                            Text(selectedSourceUrls.isEmpty
+                                 ? "全部源"
+                                 : "已选 \(selectedSourceUrls.count) / \(enabledSources.count)")
+                                .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                                .foregroundColor(palette.accent)
+                            Image(systemName: "chevron.right")
+                                .font(.system(size: 10, weight: .semibold))
+                                .foregroundColor(palette.accent)
+                        }
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 8)
+                        .background(palette.background.opacity(0.7))
+                        .overlay(Rectangle().stroke(palette.line.opacity(0.7), lineWidth: 0.6))
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
                     toggleRow("显示书籍详情", isOn: $showDetail, palette: palette)
                 }
             }
@@ -220,7 +267,7 @@ public struct SourceSwitchSheet: View {
         NieRPanel(palette: palette) {
             VStack(alignment: .leading, spacing: 8) {
                 HStack {
-                    Text("SCANNING")
+                    Text(isPaused ? "PAUSED" : "SCANNING")
                         .font(.system(size: 10, weight: .semibold, design: .monospaced))
                         .tracking(0.8)
                         .foregroundColor(palette.accent)
@@ -233,9 +280,29 @@ public struct SourceSwitchSheet: View {
                     palette: palette,
                     progress: totalSources > 0 ? Double(finishedSources) / Double(totalSources) : 0
                 )
+                if isPaused {
+                    Text("已找到 \(rawResults.count) 本 · 继续会从未完成的源接着搜")
+                        .font(.system(size: 10, design: .monospaced))
+                        .foregroundColor(palette.muted)
+                }
             }
         }
         .padding(.horizontal, 16)
+    }
+
+    private func searchActionButton(
+        _ title: String,
+        filled: Bool,
+        palette: NieRPalette,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(title, action: action)
+            .font(.system(size: 11, weight: .semibold, design: .monospaced))
+            .foregroundColor(filled ? palette.background : palette.ink)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 7)
+            .background(filled ? palette.accent : palette.panel)
+            .overlay(Rectangle().stroke(palette.accent.opacity(filled ? 0 : 0.7), lineWidth: 0.8))
     }
 
     private func resultCard(
@@ -399,11 +466,10 @@ public struct SourceSwitchSheet: View {
         }
     }
 
-    private func startSearch() {
+    private func startSearch(resuming: Bool = false) {
         searchTask?.cancel()
-        rawResults = []
+        searchTask = nil
         errorMessage = nil
-        finishedSources = 0
 
         let trimmedKeyword = keyword.trimmingCharacters(in: .whitespaces)
         guard !trimmedKeyword.isEmpty else {
@@ -417,31 +483,50 @@ public struct SourceSwitchSheet: View {
             return
         }
 
-        let filter = sourceFilter.trimmingCharacters(in: .whitespaces).lowercased()
-        var sources = bookStore.sources.filter { $0.enabled != false }
-        if !filter.isEmpty {
-            sources = sources.filter {
-                $0.bookSourceName.lowercased().contains(filter)
-                    || ($0.bookSourceGroup ?? "").lowercased().contains(filter)
+        if !resuming {
+            let sources = selectedSourceUrls.isEmpty
+                ? enabledSources
+                : enabledSources.filter { selectedSourceUrls.contains($0.bookSourceUrl) }
+            guard !sources.isEmpty else {
+                isSearching = false
+                isPaused = false
+                errorMessage = "没有可搜索的书源，先去设置里导入或重新勾选。"
+                return
             }
+            rawResults = []
+            finishedSources = 0
+            isPaused = false
+            runSources = sources
+            totalSources = sources.count
+            reportedSourceUrls = []
+            runKeyword = requestKeyword(from: trimmedKeyword)
+            runSelectedSourceUrls = selectedSourceUrls
+            runMatchTitle = matchTitle
+            runMatchAuthor = matchAuthor
+            runExact = exactMatch
         }
-        totalSources = sources.count
-        isSearching = !sources.isEmpty
-        guard !sources.isEmpty else {
-            errorMessage = filter.isEmpty
-                ? "没有启用的书源，先去设置里导入。"
-                : "没有符合「\(sourceFilter)」的书源。"
+
+        let remaining = resuming
+            ? runSources.filter { !reportedSourceUrls.contains($0.bookSourceUrl) }
+            : runSources
+        guard !remaining.isEmpty else {
+            isSearching = false
+            isPaused = false
             return
         }
 
-        let requestKey = requestKeyword(from: trimmedKeyword)
-
+        isSearching = true
+        isPaused = false
+        let runId = UUID()
+        searchRunId = runId
         searchTask = Task {
-            let stream = BookSearchService.shared.searchMultiSources(sources: sources, key: requestKey, page: 1)
+            let stream = BookSearchService.shared.searchMultiSources(sources: remaining, key: runKeyword, page: 1)
             for await (source, books) in stream {
                 if Task.isCancelled { return }
                 await MainActor.run {
-                    finishedSources += 1
+                    guard searchRunId == runId else { return }
+                    reportedSourceUrls.insert(source.bookSourceUrl)
+                    finishedSources = min(totalSources, finishedSources + 1)
                     // 原样收着，展示时按当前口径筛（改开关不用重新搜一遍）
                     for candidate in books {
                         if !rawResults.contains(where: { $0.book.bookUrl == candidate.bookUrl }) {
@@ -451,8 +536,35 @@ public struct SourceSwitchSheet: View {
                 }
             }
             await MainActor.run {
-                isSearching = false
+                // 取消后再到达的收尾不能把「已暂停」冲掉
+                guard searchRunId == runId else { return }
+                if !isPaused {
+                    isSearching = false
+                }
             }
+        }
+    }
+
+    private func pauseSearch() {
+        guard isSearching else { return }
+        searchTask?.cancel()
+        searchTask = nil
+        isSearching = false
+        isPaused = true
+    }
+
+    private func resumeSearch() {
+        guard isPaused else { return }
+        // 暂停期间改了关键词、匹配条件或限定源：按新条件重搜，别续跑旧任务
+        let criteriaChanged = requestKeyword(from: keyword) != runKeyword
+            || selectedSourceUrls != runSelectedSourceUrls
+            || matchTitle != runMatchTitle
+            || matchAuthor != runMatchAuthor
+            || exactMatch != runExact
+        if criteriaChanged {
+            startSearch()
+        } else {
+            startSearch(resuming: true)
         }
     }
 
@@ -462,4 +574,195 @@ public struct SourceSwitchSheet: View {
         return parts.max(by: { $0.count < $1.count }) ?? raw
     }
 
+}
+
+private struct SourceSwitchSourceGroup: Identifiable {
+    let name: String
+    let sources: [BookSource]
+    var id: String { name }
+}
+
+/// 换源页的「限定源」多选面板。不选表示全部启用源；
+/// 勾选后既限制这一轮换源要扫的源，也即时过滤已返回的候选。
+private struct SourceSwitchSourcePicker: View {    let sources: [BookSource]
+    @Binding var selection: Set<String>
+    let currentSourceUrl: String?
+    let palette: NieRPalette
+    @Environment(\.dismiss) private var dismiss
+    @State private var query = ""
+
+    private var filteredSources: [BookSource] {
+        let key = query.trimmingCharacters(in: .whitespaces)
+        guard !key.isEmpty else { return sources }
+        return sources.filter {
+            $0.bookSourceName.localizedCaseInsensitiveContains(key)
+                || ($0.bookSourceGroup ?? "").localizedCaseInsensitiveContains(key)
+        }
+    }
+
+    private var groupedSources: [SourceSwitchSourceGroup] {
+        var order: [String] = []
+        var map: [String: [BookSource]] = [:]
+        for source in filteredSources {
+            let names = groupNames(for: source)
+            for name in names.isEmpty ? ["未分组"] : names {
+                if map[name] == nil {
+                    order.append(name)
+                    map[name] = []
+                }
+                map[name]?.append(source)
+            }
+        }
+        let sorted = order.sorted { lhs, rhs in
+            if lhs == "未分组" { return false }
+            if rhs == "未分组" { return true }
+            return lhs.localizedStandardCompare(rhs) == .orderedAscending
+        }
+        return sorted.map { SourceSwitchSourceGroup(name: $0, sources: map[$0] ?? []) }
+    }
+
+    private func groupNames(for source: BookSource) -> [String] {
+        (source.bookSourceGroup ?? "")
+            .split(whereSeparator: { ",，、;；".contains($0) })
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+    }
+
+    private func groupRow(_ name: String, sources: [BookSource]) -> some View {
+        let urls = Set(sources.map(\.bookSourceUrl))
+        let selectedCount = urls.intersection(selection).count
+        let allSelected = !urls.isEmpty && selectedCount == urls.count
+        let partiallySelected = selectedCount > 0 && !allSelected
+        return Button {
+            if allSelected {
+                selection.subtract(urls)
+            } else {
+                selection.formUnion(urls)
+            }
+        } label: {
+            HStack(spacing: 8) {
+                Image(systemName: allSelected
+                      ? "checkmark.square.fill"
+                      : (partiallySelected ? "minus.square.fill" : "square"))
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundColor(palette.accent)
+                Text(name)
+                    .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                    .tracking(0.6)
+                    .foregroundColor(palette.ink)
+                Spacer(minLength: 0)
+                Text("\(selectedCount)/\(urls.count)")
+                    .font(.system(size: 9, design: .monospaced))
+                    .foregroundColor(palette.muted)
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 7)
+            .background(palette.background.opacity(0.55))
+            .overlay(Rectangle().stroke(palette.line.opacity(0.55), lineWidth: 0.6))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+
+    var body: some View {
+        NavigationView {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 10) {
+                    HStack(spacing: 6) {
+                        Image(systemName: "magnifyingglass")
+                            .font(.system(size: 11))
+                            .foregroundColor(palette.muted)
+                        TextField("搜索书源…", text: $query)
+                            .textFieldStyle(.plain)
+                            .font(.system(size: 12, design: .monospaced))
+                            .foregroundColor(palette.ink)
+                            #if os(iOS)
+                            .autocapitalization(.none)
+                            .disableAutocorrection(true)
+                            #endif
+                    }
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 8)
+                    .background(palette.panel)
+                    .overlay(Rectangle().stroke(palette.line.opacity(0.7), lineWidth: 0.6))
+
+                    Text(selection.isEmpty
+                         ? "未选择 = 全部启用源 · \(sources.count) 个"
+                         : "已选 \(selection.count) / \(sources.count) 个源")
+                        .font(.system(size: 10, design: .monospaced))
+                        .foregroundColor(palette.muted)
+
+                    LazyVStack(spacing: 8) {
+                        ForEach(groupedSources) { group in
+                            groupRow(group.name, sources: group.sources)
+                            ForEach(group.sources, id: \.bookSourceUrl) { source in
+                                sourceRow(source)
+                            }
+                        }
+                    }
+                }
+                .padding(16)
+            }
+            .background(NieRBackdrop(palette: palette))
+            .navigationTitle("限定源")
+            #if os(iOS)
+            .navigationBarTitleDisplayMode(.inline)
+            #endif
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("清空") { selection.removeAll() }
+                        .disabled(selection.isEmpty)
+                }
+                ToolbarItemGroup(placement: .primaryAction) {
+                    Button("全选") { selection = Set(sources.map(\.bookSourceUrl)) }
+                    Button("完成") { dismiss() }
+                }
+            }
+        }
+    }
+
+    private func sourceRow(_ source: BookSource) -> some View {
+        let isOn = selection.contains(source.bookSourceUrl)
+        return Button {
+            if isOn {
+                selection.remove(source.bookSourceUrl)
+            } else {
+                selection.insert(source.bookSourceUrl)
+            }
+        } label: {
+            HStack(spacing: 10) {
+                Image(systemName: isOn ? "checkmark.square.fill" : "square")
+                    .font(.system(size: 18, weight: .semibold))
+                    .foregroundColor(palette.accent)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(source.bookSourceName)
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundColor(palette.ink)
+                        .lineLimit(1)
+                    if let group = source.bookSourceGroup,
+                       !group.trimmingCharacters(in: .whitespaces).isEmpty {
+                        Text(group)
+                            .font(.system(size: 9, design: .monospaced))
+                            .foregroundColor(palette.muted)
+                            .lineLimit(1)
+                    }
+                }
+                Spacer(minLength: 0)
+                if source.bookSourceUrl == currentSourceUrl {
+                    Text("当前")
+                        .font(.system(size: 9, weight: .semibold, design: .monospaced))
+                        .foregroundColor(palette.accent)
+                        .padding(.horizontal, 5)
+                        .padding(.vertical, 2)
+                        .overlay(Rectangle().stroke(palette.accent.opacity(0.6), lineWidth: 0.6))
+                }
+            }
+            .padding(10)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(palette.panel)
+            .overlay(Rectangle().stroke(palette.line.opacity(0.7), lineWidth: 0.6))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
 }
