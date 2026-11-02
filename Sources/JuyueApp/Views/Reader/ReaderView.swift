@@ -1915,14 +1915,17 @@ public struct ReaderView: View {
     public var onDismiss: (() -> Void)? = nil
 
     public init(book: Book, source: BookSource?, initialChapterIndex: Int? = nil, onDismiss: (() -> Void)? = nil) {
-        self.book = book
         self.source = source
-        self._currentChapterIndex = State(initialValue: initialChapterIndex ?? book.durChapterIndex)
+        self.book = book
         self.onDismiss = onDismiss
+        self._currentChapterIndex = State(initialValue: initialChapterIndex ?? book.durChapterIndex)
     }
 
     private var currentLoadedChapter: LoadedChapter? {
-        loadedChapters.first(where: { $0.chapter.index == currentChapterIndex }) ?? loadedChapters.first
+        if let exact = loadedChapters.first(where: { $0.chapter.index == currentChapterIndex }) {
+            return exact
+        }
+        return loadedChapters.first
     }
 
     /// 只要这一章，查不到就是 nil。朗读路径全走它——
@@ -2222,13 +2225,7 @@ public struct ReaderView: View {
                             errorStateView
                         } else {
                             ZStack {
-                                if readerConfig.pageMode == .scroll {
-                                    infiniteScrollView
-                                } else if readerConfig.pageMode == .simulation {
-                                    simulationPageView.id("sim_\(themeRenderKey)")
-                                } else {
-                                    pageByPageView.id("paged_\(themeRenderKey)")
-                                }
+                                readerCanvas
                             }
                             .frame(maxWidth: .infinity, maxHeight: .infinity)
                             // 按页翻时整页要铺到屏幕边缘：否则状态栏那一条是外层静止的背景，
@@ -2766,6 +2763,17 @@ public struct ReaderView: View {
     }
 
     // MARK: - Mode 1: Infinite Scroll Down (连续滚动)
+    @ViewBuilder
+    private var readerCanvas: some View {
+        if readerConfig.pageMode == .scroll {
+            infiniteScrollView
+        } else if readerConfig.pageMode == .simulation {
+            simulationPageView.id("sim_\(themeRenderKey)")
+        } else {
+            pageByPageView.id("paged_\(themeRenderKey)")
+        }
+    }
+
     private var infiniteScrollView: some View {
         ScrollViewReader { proxy in
             ScrollView(.vertical, showsIndicators: false) {
@@ -3155,9 +3163,13 @@ public struct ReaderView: View {
         blocks.map { $0.imageUrl == "p_end" }
     }
 
+    private var currentPages: [[ContentBlock]] {
+        currentLoadedChapter?.pages ?? []
+    }
+
     private var pageByPageView: some View {
         GeometryReader { geo in
-            let pages = currentLoadedChapter?.pages ?? []
+            let pages = currentPages
 
             ZStack {
                 if pages.isEmpty || currentPageIndex >= pages.count {
@@ -3733,14 +3745,7 @@ public struct ReaderView: View {
                         dragOffset = 0
                     }
                     let nextIdx = currentChapterIndex + 1
-                    // 换章也要走同一段动画事务，否则带 .id 的页面插入/移除不成对，
-                    // 旧页会留在屏幕上叠着新页（看着就像没翻过去）
-                    withAnimation(pageTurnAnimation) {
-                        currentChapterIndex = nextIdx
-                        currentPageIndex = 0
-                        currentReadingBlockId = 0
-                    }
-                    loadInitialChapter(at: nextIdx, targetPageIndex: 0)
+                    turnToChapter(nextIdx)
                 }
             }
         } else {
@@ -4301,6 +4306,17 @@ public struct ReaderView: View {
             .foregroundColor(enabled ? readerConfig.pageTextColor : readerConfig.pageTextColor.opacity(0.3))
         }
         .disabled(!enabled)
+    }
+
+    private func turnToChapter(_ index: Int) {
+        // 换章也要走同一段动画事务，否则带 .id 的页面插入/移除不成对，
+        // 旧页会留在屏幕上叠着新页（看着就像没翻过去）
+        withAnimation(pageTurnAnimation) {
+            currentChapterIndex = index
+            currentPageIndex = 0
+            currentReadingBlockId = 0
+        }
+        loadInitialChapter(at: index, targetPageIndex: 0)
     }
 
     private func previousChapter() {
@@ -8262,6 +8278,18 @@ public struct ReaderView: View {
     }
 
     // MARK: - Data Loading Pipeline
+    private func failInitialLoad(_ message: String) {
+        errorMessage = message
+        isLoadingInitial = false
+    }
+
+    private func openLocalChapters(_ localChapters: [BookChapter]) {
+        self.chapters = localChapters
+        AppLog.write("[阅读] 打开本地书籍，共 \(localChapters.count) 章")
+        currentChapterIndex = min(currentChapterIndex, max(0, localChapters.count - 1))
+        loadInitialChapter(at: currentChapterIndex)
+    }
+
     private func loadTOCAndStart() async {
         if activeBook.origin == "local" {
             var localChapters = BookStore.shared.getChapters(for: activeBook.bookUrl)
@@ -8271,18 +8299,14 @@ public struct ReaderView: View {
                     item.index = offset
                     return item
                 }
-                self.chapters = localChapters
-                AppLog.write("[阅读] 打开本地书籍，共 \(localChapters.count) 章")
-                currentChapterIndex = min(currentChapterIndex, max(0, localChapters.count - 1))
-                loadInitialChapter(at: currentChapterIndex)
+                openLocalChapters(localChapters)
                 return
             }
         }
 
         guard let source = effectiveSource else {
             AppLog.write("[阅读] 打开失败：未找到书籍关联书源")
-            errorMessage = "未找到书籍关联的书源"
-            isLoadingInitial = false
+            failInitialLoad("未找到书籍关联的书源")
             return
         }
 
@@ -8295,9 +8319,7 @@ public struct ReaderView: View {
             for i in 0..<list.count { list[i].index = i }
             self.chapters = list
             AppLog.write("[阅读] 复用缓存目录，共 \(list.count) 章")
-            if currentChapterIndex >= list.count {
-                currentChapterIndex = max(0, list.count - 1)
-            }
+            currentChapterIndex = min(currentChapterIndex, max(0, list.count - 1))
             loadInitialChapter(at: currentChapterIndex)
             Task { await refreshTOCInBackground(source: source) }
             return
@@ -8314,8 +8336,10 @@ public struct ReaderView: View {
                 }
             }
             self.loadingNote = "正在加载章节内容..."
-            for i in 0..<fetchedChapters.count {
-                fetchedChapters[i].index = i
+            fetchedChapters = fetchedChapters.enumerated().map { offset, chapter in
+                var item = chapter
+                item.index = offset
+                return item
             }
             self.chapters = fetchedChapters
             BookStore.shared.saveChapters(fetchedChapters, for: tocCacheKey(source: source))
@@ -8327,8 +8351,7 @@ public struct ReaderView: View {
                     revertSourceSwitch()
                     return
                 }
-                self.errorMessage = "目录为空：书源的目录规则没有匹配到章节，请检查「\(source.bookSourceName)」的目录规则。"
-                self.isLoadingInitial = false
+                self.failInitialLoad("目录为空：书源的目录规则没有匹配到章节，请检查「\(source.bookSourceName)」的目录规则。")
                 return
             }
             currentChapterIndex = min(currentChapterIndex, max(0, fetchedChapters.count - 1))
@@ -8339,8 +8362,7 @@ public struct ReaderView: View {
                 revertSourceSwitch()
                 return
             }
-            self.errorMessage = "目录解析失败: \(error.localizedDescription)"
-            self.isLoadingInitial = false
+            self.failInitialLoad("目录解析失败: \(error.localizedDescription)")
         }
     }
 
@@ -8994,7 +9016,9 @@ public struct ReaderView: View {
         return max(1, adjusted)
     }
 
-    private func buildPageBlocks(from lines: [(text: String, isParagraphEnd: Bool, charStart: Int, paragraphId: Int)],
+    private typealias PageLine = (text: String, isParagraphEnd: Bool, charStart: Int, paragraphId: Int)
+
+    private func buildPageBlocks(from lines: [PageLine],
                                  startingId: inout Int) -> [ContentBlock] {
         var identifier = startingId
         let blocks = lines.map { line -> ContentBlock in
@@ -9027,7 +9051,7 @@ public struct ReaderView: View {
         let usableWidth = Double(max(200, readerContainerSize.width - readerConfig.paddingLeft - readerConfig.paddingRight))
 
         var pages: [[ContentBlock]] = []
-        var currentPageLines: [(text: String, isParagraphEnd: Bool, charStart: Int, paragraphId: Int)] = []
+        var currentPageLines: [PageLine] = []
         var currentPageHeight: CGFloat = 0
         var maxHeightForCurrentPage = firstPageHeight
         var blockIdCounter = 10000
@@ -9093,11 +9117,11 @@ public struct ReaderView: View {
             }
         }
 
-        if !currentPageLines.isEmpty {
-            pages.append(buildPageBlocks(from: currentPageLines, startingId: &blockIdCounter))
+        guard !currentPageLines.isEmpty else {
+            return pages.isEmpty ? [[]] : pages
         }
-
-        return pages.isEmpty ? [[]] : pages
+        pages.append(buildPageBlocks(from: currentPageLines, startingId: &blockIdCounter))
+        return pages
     }
 }
 
@@ -9494,6 +9518,52 @@ private func typographicBounds(_ line: CTLine) -> (ascent: CGFloat, descent: CGF
     CTLineGetTypographicBounds(line, &ascent, &descent, &leading)
     return (ascent, descent, leading)
 }
+private func renderedLineText(
+    _ text: String,
+    index: Int,
+    paragraphEnds: [Bool],
+    conversion: ChineseConversion,
+    indent: CGFloat
+) -> String {
+    let startsParagraph = index == 0
+        || (index - 1 < paragraphEnds.count && paragraphEnds[index - 1])
+    let converted = conversion.apply(text)
+    guard startsParagraph else { return converted }
+    return String(repeating: "　", count: Int(indent.rounded())) + converted
+}
+
+private func layoutCTLine(
+    _ line: CTLine,
+    alignment: ReaderTextAlignment,
+    width: CGFloat,
+    isParagraphEnd: Bool,
+    textLength: Int
+) -> (line: CTLine, penOffset: CGFloat) {
+    if alignment == .justify, !isParagraphEnd, textLength > 5 {
+        return (CTLineCreateJustifiedLine(line, 1.0, width) ?? line, 0)
+    }
+
+    var offset: CGFloat = 0
+    switch alignment {
+    case .center:
+        offset = CGFloat(CTLineGetPenOffsetForFlush(line, 0.5, width))
+    case .trailing:
+        offset = CGFloat(CTLineGetPenOffsetForFlush(line, 1.0, width))
+    default:
+        break
+    }
+    return (line, offset)
+}
+
+private func drawCTLine(_ line: CTLine, in context: CGContext, x: CGFloat, y: CGFloat) {
+    context.saveGState()
+    context.textMatrix = .identity
+    context.translateBy(x: x, y: y)
+    context.scaleBy(x: 1.0, y: -1.0)
+    CTLineDraw(line, context)
+    context.restoreGState()
+}
+
 
 // MARK: - CoreText Two-End Justified Page View (两端对齐与定高排版组件)
 #if os(macOS)
@@ -9637,11 +9707,16 @@ public class CoreTextNSView: NSView {
         let targetWidth = Double(max(100, containerWidth))
         var paragraphOffset: CGFloat = 0
 
-        for (index, lineText) in lines.enumerated() {
+        for index in lines.indices {
+            let lineText = lines[index]
             guard !lineText.isEmpty else { continue }
-            let isParagraphStart = index == 0 || (index - 1 < isParagraphEnd.count && isParagraphEnd[index - 1])
-            let convertedText = chineseConversion.apply(lineText)
-            let renderedText = isParagraphStart ? String(repeating: "　", count: Int(firstLineIndent.rounded())) + convertedText : convertedText
+            let renderedText = renderedLineText(
+                lineText,
+                index: index,
+                paragraphEnds: isParagraphEnd,
+                conversion: chineseConversion,
+                indent: firstLineIndent
+            )
             var attrs: [CFString: Any] = [
                 kCTFontAttributeName: ctFont,
                 kCTForegroundColorAttributeName: textColor.cgColor,
@@ -9657,33 +9732,21 @@ public class CoreTextNSView: NSView {
             let ctLine = CTTypesetterCreateLine(typesetter, CFRange(location: 0, length: (renderedText as NSString).length))
 
             let isEnd = (index < isParagraphEnd.count) ? isParagraphEnd[index] : false
-            let finalLine: CTLine
-            var penOffset: CGFloat = 0
-            if textAlignment == .justify, !isEnd, lineText.count > 5 {
-                finalLine = CTLineCreateJustifiedLine(ctLine, 1.0, targetWidth) ?? ctLine
-            } else {
-                finalLine = ctLine
-                // 居中/靠右 CTLine 自己算不出位置，要用 flush 偏移推过去
-                switch textAlignment {
-                case .center:
-                    penOffset = CGFloat(CTLineGetPenOffsetForFlush(ctLine, 0.5, targetWidth))
-                case .trailing:
-                    penOffset = CGFloat(CTLineGetPenOffsetForFlush(ctLine, 1.0, targetWidth))
-                default:
-                    break
-                }
-            }
+            let placement = layoutCTLine(
+                ctLine,
+                alignment: textAlignment,
+                width: targetWidth,
+                isParagraphEnd: isEnd,
+                textLength: lineText.count
+            )
+            let finalLine = placement.line
+            let penOffset = placement.penOffset
 
             let metrics = typographicBounds(finalLine)
             let baselineY = CGFloat(index) * effectiveLineHeight + metrics.ascent + paragraphOffset
 
             // macOS 版不做段落级标注（标注绘制在 iOS 的 CoreTextUIView 里）
-            ctx.saveGState()
-            ctx.textMatrix = .identity
-            ctx.translateBy(x: penOffset, y: baselineY)
-            ctx.scaleBy(x: 1.0, y: -1.0)
-            CTLineDraw(finalLine, ctx)
-            ctx.restoreGState()
+            drawCTLine(finalLine, in: ctx, x: penOffset, y: baselineY)
 
             if isEnd {
                 if paragraphSeparatorLines > 0 {
@@ -10453,9 +10516,9 @@ public class CoreTextUIView: UIView {
             ctx.restoreGState()
         }
 
-        for (index, lineText) in lines.enumerated() {
+        for index in lines.indices {
+            let lineText = lines[index]
             guard !lineText.isEmpty else { continue }
-            let isParagraphStart = index == 0 || (index - 1 < isParagraphEnd.count && isParagraphEnd[index - 1])
             let lineParagraphId = index < lineParagraphIds.count ? lineParagraphIds[index] : -1
             // 段落 id 之外的兜底：真实章节里热评块可能没有评论地址，id 也可能跨页漂掉，
             // 首行前缀是最后的锚点，认不出来就会退回正文样式（字号、对齐全丢）。
@@ -10475,8 +10538,13 @@ public class CoreTextUIView: UIView {
             let lineFont = isReviewLine ? reviewFont : ctFont
             let lineInset = isReviewLine ? reviewInset : 0
             let lineTargetWidth = max(40, CGFloat(targetWidth) - lineInset * 2)
-            let convertedText = chineseConversion.apply(lineText)
-            let renderedText = isParagraphStart ? String(repeating: "　", count: Int(firstLineIndent.rounded())) + convertedText : convertedText
+            let renderedText = renderedLineText(
+                lineText,
+                index: index,
+                paragraphEnds: isParagraphEnd,
+                conversion: chineseConversion,
+                indent: firstLineIndent
+            )
             var attrs: [CFString: Any] = [
                 kCTFontAttributeName: lineFont,
                 kCTForegroundColorAttributeName: lineTextColor.cgColor,
@@ -10512,22 +10580,15 @@ public class CoreTextUIView: UIView {
                 ? (reviewStyle.alignment == 1 ? .center : .leading)
                 : textAlignment
             let alignWidth: CGFloat = isReviewLine ? lineTargetWidth : CGFloat(targetWidth)
-            let finalLine: CTLine
-            var penOffset: CGFloat = 0
-            if effectiveAlignment == .justify, !isEnd, lineText.count > 5 {
-                finalLine = CTLineCreateJustifiedLine(ctLine, 1.0, alignWidth) ?? ctLine
-            } else {
-                finalLine = ctLine
-                // 居中/靠右 CTLine 自己算不出位置，要用 flush 偏移推过去
-                switch effectiveAlignment {
-                case .center:
-                    penOffset = CGFloat(CTLineGetPenOffsetForFlush(ctLine, 0.5, alignWidth))
-                case .trailing:
-                    penOffset = CGFloat(CTLineGetPenOffsetForFlush(ctLine, 1.0, alignWidth))
-                default:
-                    break
-                }
-            }
+            let placement = layoutCTLine(
+                ctLine,
+                alignment: effectiveAlignment,
+                width: alignWidth,
+                isParagraphEnd: isEnd,
+                textLength: lineText.count
+            )
+            let finalLine = placement.line
+            let penOffset = placement.penOffset
 
             let metrics = typographicBounds(finalLine)
 
@@ -10544,7 +10605,7 @@ public class CoreTextUIView: UIView {
 
             // 逐字边界：CTLine 的字符偏移加上行本身的对齐位移
             let lineUnits = (lineText as NSString).length
-            let convUnits = (convertedText as NSString).length
+            let convUnits = (chineseConversion.apply(lineText) as NSString).length
             let indentUnits = (renderedText as NSString).length - convUnits
             var boundaries: [CGFloat] = []
             boundaries.reserveCapacity(lineUnits + 1)
@@ -10640,12 +10701,7 @@ public class CoreTextUIView: UIView {
                 }
             }
 
-            ctx.saveGState()
-            ctx.textMatrix = .identity
-            ctx.translateBy(x: penOffset + lineInset, y: baselineY)
-            ctx.scaleBy(x: 1.0, y: -1.0)
-            CTLineDraw(finalLine, ctx)
-            ctx.restoreGState()
+            drawCTLine(finalLine, in: ctx, x: penOffset + lineInset, y: baselineY)
 
             if isEnd, let info = commentMap[paragraphId] {
                 let label = info.count >= 99 ? "99+" : "\(info.count)"

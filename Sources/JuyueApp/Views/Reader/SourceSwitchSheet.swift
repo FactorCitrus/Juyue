@@ -29,6 +29,10 @@ public struct SourceSwitchSheet: View {
     @State private var keyword: String
     @State private var selectedSourceUrls: Set<String> = []
     @State private var showSourcePicker = false
+    @State private var isPaused = false
+    @State private var runSources: [BookSource] = []
+    @State private var reportedSourceUrls: Set<String> = []
+    @State private var runKeyword = ""
     /// 搜索条件默认收起，换源时先看候选；收起状态是临时的，每次打开都收着
     @State private var showSearchOptions = false
 
@@ -57,7 +61,7 @@ public struct SourceSwitchSheet: View {
     }
 
     private var enabledSources: [BookSource] {
-        bookStore.sources.filter { $0.enabled != false }
+        bookStore.sources.filter { $0.enabled != false && $0.searchUrl != nil }
     }
 
     /// 给提示用：现在是按什么口径筛的
@@ -80,7 +84,7 @@ public struct SourceSwitchSheet: View {
                     palette: palette,
                     kicker: "SOURCE TRANSFER",
                     title: "换源",
-                    subtitle: "\(isSearching ? "SCANNING" : "READY") · \(results.count) NODES"
+                    subtitle: "\(isSearching ? "SCANNING" : (isPaused ? "PAUSED" : "READY")) · \(results.count) NODES"
                 ) {
                     searchTask?.cancel()
                     dismiss()
@@ -91,7 +95,7 @@ public struct SourceSwitchSheet: View {
                         targetPanel(palette)
                         searchPanel(palette)
 
-                        if isSearching {
+                        if isSearching || isPaused {
                             scanningPanel(palette)
                         }
 
@@ -214,13 +218,14 @@ public struct SourceSwitchSheet: View {
                     NieRDivider(palette: palette)
                     HStack(spacing: 8) {
                         nierField("关键词", text: $keyword, palette: palette)
-                        Button("搜索") { startSearch() }
-                            .font(.system(size: 11, weight: .semibold, design: .monospaced))
-                            .foregroundColor(palette.background)
-                            .padding(.horizontal, 12)
-                            .padding(.vertical, 7)
-                            .background(palette.accent)
-                            .disabled(keyword.trimmingCharacters(in: .whitespaces).isEmpty || (!matchTitle && !matchAuthor))
+                        if isSearching {
+                            searchActionButton("暂停", filled: false, palette: palette) { pauseSearch() }
+                        } else if isPaused {
+                            searchActionButton("继续", filled: true, palette: palette) { resumeSearch() }
+                        } else {
+                            searchActionButton("搜索", filled: true, palette: palette) { startSearch() }
+                                .disabled(keyword.trimmingCharacters(in: .whitespaces).isEmpty || (!matchTitle && !matchAuthor))
+                        }
                     }
                     Button {
                         showSourcePicker = true
@@ -257,7 +262,7 @@ public struct SourceSwitchSheet: View {
         NieRPanel(palette: palette) {
             VStack(alignment: .leading, spacing: 8) {
                 HStack {
-                    Text("SCANNING")
+                    Text(isPaused ? "PAUSED" : "SCANNING")
                         .font(.system(size: 10, weight: .semibold, design: .monospaced))
                         .tracking(0.8)
                         .foregroundColor(palette.accent)
@@ -270,9 +275,29 @@ public struct SourceSwitchSheet: View {
                     palette: palette,
                     progress: totalSources > 0 ? Double(finishedSources) / Double(totalSources) : 0
                 )
+                if isPaused {
+                    Text("已找到 \(rawResults.count) 本 · 继续会从未完成的源接着搜")
+                        .font(.system(size: 10, design: .monospaced))
+                        .foregroundColor(palette.muted)
+                }
             }
         }
         .padding(.horizontal, 16)
+    }
+
+    private func searchActionButton(
+        _ title: String,
+        filled: Bool,
+        palette: NieRPalette,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(title, action: action)
+            .font(.system(size: 11, weight: .semibold, design: .monospaced))
+            .foregroundColor(filled ? palette.background : palette.ink)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 7)
+            .background(filled ? palette.accent : palette.panel)
+            .overlay(Rectangle().stroke(palette.accent.opacity(filled ? 0 : 0.7), lineWidth: 0.8))
     }
 
     private func resultCard(
