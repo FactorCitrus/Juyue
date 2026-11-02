@@ -1,0 +1,172 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>章节标题设计器</title>
+  <link rel="stylesheet" href="designer.css">
+</head>
+<body class="chapter-title-designer">
+  <div class="app-shell" data-mobile-panel="elements">
+
+    <!-- ============ 顶部导航条 ============ -->
+    <header class="topbar">
+      <button class="icon-btn" type="button" data-action="undo" aria-label="撤销" title="撤销">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 14L4 9l5-5M4 9h9a6 6 0 0 1 6 6v0a6 6 0 0 1-6 6h-4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </button>
+      <div class="topbar-title">章节标题</div>
+      <button class="icon-btn" type="button" data-action="redo" aria-label="重做" title="重做">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 14l5-5-5-5M20 9h-9a6 6 0 0 0-6 6v0a6 6 0 0 0 6 6h4" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </button>
+    </header>
+
+    <!-- ============ 主画布舞台 ============ -->
+    <main class="stage-pane">
+      <div class="stage-scroll" id="stageScroll">
+        <div class="canvas-shell" id="canvasShell">
+          <div class="canvas-ruler horizontal" aria-hidden="true"></div>
+          <div class="canvas-ruler vertical" aria-hidden="true"></div>
+          <div class="qr-title-canvas editor-canvas" id="titleCanvas" aria-label="章节标题画布"></div>
+          <div class="guide-line guide-x" id="guideX" aria-hidden="true"></div>
+          <div class="guide-line guide-y" id="guideY" aria-hidden="true"></div>
+        </div>
+      </div>
+      <div class="statusbar" id="statusBar" aria-live="polite">就绪</div>
+    </main>
+
+    <!-- ============ 底部抽屉（元素 / 样式 / 资源 / 源码） ============ -->
+    <section class="drawer" aria-label="工具面板">
+      <div class="drawer-handle" aria-hidden="true"></div>
+
+      <!-- 元素面板 -->
+      <div class="drawer-panel" data-panel="elements">
+        <div class="panel-section">
+          <div class="section-title">添加元素</div>
+          <div class="add-grid" id="addElementButtons"></div>
+        </div>
+        <div class="panel-section">
+          <div class="section-title">
+            <span>图层</span>
+            <button class="text-btn" type="button" data-action="select-canvas">画布</button>
+          </div>
+          <div class="element-list" id="elementList"></div>
+        </div>
+      </div>
+
+      <!-- 样式面板 -->
+      <div class="drawer-panel" data-panel="style">
+        <!-- 选中元素时常驻在样式面板顶部的操作工具栏 -->
+        <div class="selection-bar" id="selectionHud" hidden>
+          <button class="action-tile" type="button" data-action="bring-forward" aria-label="上移层级">
+            <svg viewBox="0 0 24 24"><path d="M7 14l5-5 5 5" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            <span>上移</span>
+          </button>
+          <button class="action-tile" type="button" data-action="send-backward" aria-label="下移层级">
+            <svg viewBox="0 0 24 24"><path d="M7 10l5 5 5-5" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            <span>下移</span>
+          </button>
+          <button class="action-tile" type="button" data-action="lock" aria-label="锁定/解锁">
+            <svg viewBox="0 0 24 24"><rect x="5" y="11" width="14" height="9" rx="2" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M8 11V8a4 4 0 0 1 8 0v3" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+            <span>锁定</span>
+          </button>
+          <button class="action-tile" type="button" data-action="hide" aria-label="隐藏/显示">
+            <svg viewBox="0 0 24 24"><path d="M2 12s3.5-6 10-6 10 6 10 6-3.5 6-10 6S2 12 2 12z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/><circle cx="12" cy="12" r="2.5" fill="none" stroke="currentColor" stroke-width="1.8"/></svg>
+            <span>隐藏</span>
+          </button>
+          <button class="action-tile" type="button" data-action="duplicate" aria-label="复制">
+            <svg viewBox="0 0 24 24"><rect x="8" y="8" width="12" height="12" rx="2" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+            <span>复制</span>
+          </button>
+          <button class="action-tile danger" type="button" data-action="delete" aria-label="删除">
+            <svg viewBox="0 0 24 24"><path d="M4 7h16M9 7V5a2 2 0 0 1 2-2h2a2 2 0 0 1 2 2v2M6 7l1 13a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2l1-13" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            <span>删除</span>
+          </button>
+        </div>
+
+        <div class="panel-section style-header">
+          <div class="section-title">
+            <span id="selectionTitle">画布样式</span>
+            <button class="text-btn" type="button" data-action="validate" title="检查资源完整性">检查</button>
+          </div>
+          <!-- 选中元素时显示的常用动作 -->
+          <div class="quick-actions" id="quickActions" hidden>
+            <button class="chip" type="button" data-align="left" aria-label="左对齐"><svg viewBox="0 0 24 24"><path d="M4 5v14M8 7h12M8 12h8M8 17h12" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg><span>左</span></button>
+            <button class="chip" type="button" data-align="center-x" aria-label="水平居中"><svg viewBox="0 0 24 24"><path d="M12 5v14M4 7h16M7 12h10M4 17h16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg><span>水平</span></button>
+            <button class="chip" type="button" data-align="right" aria-label="右对齐"><svg viewBox="0 0 24 24"><path d="M20 5v14M4 7h12M12 12h8M4 17h12" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg><span>右</span></button>
+            <button class="chip" type="button" data-align="top" aria-label="顶对齐"><svg viewBox="0 0 24 24"><path d="M5 4h14M7 8v12M12 8v8M17 8v12" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg><span>顶</span></button>
+            <button class="chip" type="button" data-align="center-y" aria-label="垂直居中"><svg viewBox="0 0 24 24"><path d="M5 12h14M7 4v16M12 7v10M17 4v16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg><span>垂直</span></button>
+            <button class="chip" type="button" data-align="bottom" aria-label="底对齐"><svg viewBox="0 0 24 24"><path d="M5 20h14M7 4v12M12 8v8M17 4v12" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg><span>底</span></button>
+            <button class="chip" type="button" data-action="center-selected"><span>居中</span></button>
+            <button class="chip" type="button" data-action="fit-width"><span>铺满</span></button>
+            <button class="chip" type="button" data-action="reset-transform"><span>归零</span></button>
+          </div>
+          <div class="property-panel" id="propertyPanel"></div>
+        </div>
+      </div>
+
+      <!-- 资源面板 -->
+      <div class="drawer-panel" data-panel="assets">
+        <div class="panel-section">
+          <div class="section-title">
+            <span>图片资源</span>
+            <span class="asset-import-actions" aria-label="导入图片资源">
+              <button class="text-btn" type="button" data-action="request-import-photos">
+                <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><rect x="4" y="5" width="16" height="14" rx="2" fill="none" stroke="currentColor" stroke-width="1.8"/><circle cx="9" cy="10" r="1.4" fill="currentColor"/><path d="M5.5 17l4-4 3 3 3-4 3.5 5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg>
+                从相册
+              </button>
+              <button class="text-btn" type="button" data-action="request-import-files">
+                <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><path d="M4 6.5A2.5 2.5 0 0 1 6.5 4H10l2 2h5.5A2.5 2.5 0 0 1 20 8.5v7A2.5 2.5 0 0 1 17.5 18h-11A2.5 2.5 0 0 1 4 15.5z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg>
+                从文件
+              </button>
+            </span>
+          </div>
+          <div class="asset-list" id="assetList"></div>
+        </div>
+      </div>
+
+      <!-- 源码面板 -->
+      <div class="drawer-panel source-panel" data-panel="source">
+        <div class="panel-section">
+          <div class="section-title">
+            <span>源码</span>
+            <button class="text-btn primary" type="button" data-action="sync-source">同步到画布</button>
+          </div>
+          <label class="code-label" for="cssSource">CSS</label>
+          <textarea id="cssSource" spellcheck="false" placeholder=".qr-title-canvas { … }"></textarea>
+          <label class="code-label" for="htmlSource">HTML</label>
+          <textarea id="htmlSource" spellcheck="false" placeholder="&lt;div class=&quot;qr-title-canvas&quot;&gt; … &lt;/div&gt;"></textarea>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============ 底部 Tab 栏 ============ -->
+    <nav class="tabbar" role="tablist" aria-label="面板切换">
+      <button class="tab active" type="button" data-mobile-tab="elements" role="tab" aria-selected="true">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="4" width="7" height="7" rx="1.4" fill="none" stroke="currentColor" stroke-width="1.7"/><rect x="13" y="4" width="7" height="7" rx="1.4" fill="none" stroke="currentColor" stroke-width="1.7"/><rect x="4" y="13" width="7" height="7" rx="1.4" fill="none" stroke="currentColor" stroke-width="1.7"/><rect x="13" y="13" width="7" height="7" rx="1.4" fill="none" stroke="currentColor" stroke-width="1.7"/></svg>
+        <span>元素</span>
+      </button>
+      <button class="tab" type="button" data-mobile-tab="style" role="tab" aria-selected="false">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 16l8-12 8 12-4 4H8z" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/><circle cx="12" cy="14" r="1.5" fill="currentColor"/></svg>
+        <span>样式</span>
+      </button>
+      <button class="tab" type="button" data-mobile-tab="assets" role="tab" aria-selected="false">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="5" width="16" height="14" rx="2" fill="none" stroke="currentColor" stroke-width="1.7"/><circle cx="9" cy="10" r="1.5" fill="currentColor"/><path d="M5 17l4-4 3 3 3-4 4 5" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/></svg>
+        <span>资源</span>
+      </button>
+      <button class="tab" type="button" data-mobile-tab="source" role="tab" aria-selected="false">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 8l-4 4 4 4M15 8l4 4-4 4M14 6l-4 12" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        <span>源码</span>
+      </button>
+    </nav>
+  </div>
+
+  <script src="vendor/moveable.min.js"></script>
+  <script>
+    if (!window.Moveable) {
+      document.write('<script src="moveable.min.js"><\/script>');
+    }
+  </script>
+  <script src="designer.js"></script>
+</body>
+</html>

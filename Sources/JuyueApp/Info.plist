@@ -1,0 +1,57 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>NSAppTransportSecurity</key>
+	<dict>
+		<key>NSAllowsArbitraryLoads</key>
+		<true/>
+	</dict>
+	<key>NSHumanReadableCopyright</key>
+	<string>© 2026 FactorCitrus. 橘阅名称与图标保留所有权利。</string>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>用于连接你本机或局域网内的离线语音服务、OPDS / Calibre 书库。</string>
+	<key>CFBundleIcons</key>
+	<dict>
+		<key>CFBundleAlternateIcons</key>
+		<dict>
+			<key>AppIconClassic</key>
+			<dict>
+				<key>CFBundleIconFiles</key>
+				<array>
+					<string>AppIconClassic60x60</string>
+				</array>
+			</dict>
+			<key>AppIconOrange</key>
+			<dict>
+				<key>CFBundleIconFiles</key>
+				<array>
+					<string>AppIconOrange60x60</string>
+				</array>
+			</dict>
+		</dict>
+	</dict>
+	<key>CFBundleIcons~ipad</key>
+	<dict>
+		<key>CFBundleAlternateIcons</key>
+		<dict>
+			<key>AppIconClassic</key>
+			<dict>
+				<key>CFBundleIconFiles</key>
+				<array>
+					<string>AppIconClassic76x76</string>
+					<string>AppIconClassic83.5x83.5</string>
+				</array>
+			</dict>
+			<key>AppIconOrange</key>
+			<dict>
+				<key>CFBundleIconFiles</key>
+				<array>
+					<string>AppIconOrange76x76</string>
+					<string>AppIconOrange83.5x83.5</string>
+				</array>
+			</dict>
+		</dict>
+	</dict>
+</dict>
+</plist>
