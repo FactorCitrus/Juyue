@@ -1626,22 +1626,10 @@ public class ReaderConfig: ObservableObject {
     }
 
     /// 阅读页真正使用的纸色与墨色。显式开了「自定义颜色」就以用户选择为准，
-    /// 界面主题接管其余界面；没开时定制主题仍按主题配色走。
-    public var pageBackgroundColor: Color {
-        if useCustomColors, let custom = Color(hex: customBackgroundHex) {
-            return custom
-        }
-        let appTheme = AppThemeManager.shared.theme
-        return appTheme.overridesReaderAppearance ? appTheme.palette.background : theme.backgroundColor
-    }
+    /// 否则跟随阅读主题；界面主题只决定阅读页以外的外观。
+    public var pageBackgroundColor: Color { backgroundColor }
 
-    public var pageTextColor: Color {
-        if useCustomColors, let custom = Color(hex: customTextHex) {
-            return custom
-        }
-        let appTheme = AppThemeManager.shared.theme
-        return appTheme.overridesReaderAppearance ? appTheme.palette.ink : theme.textColor
-    }
+    public var pageTextColor: Color { textColor }
 
     public init() {
         let d = Self.defaults

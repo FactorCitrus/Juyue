@@ -976,11 +976,9 @@ public struct SettingsView: View {
                     options: ReaderTheme.allCases.map { ($0, $0.rawValue) },
                     columns: 2
                 )
-                if theme.overridesReaderAppearance {
-                    Text("界面主题「\(theme.choice.title)」会接管阅读配色；在阅读页「界面 → 自定义背景与文字颜色」里仍可单独设定底色。")
-                        .font(.caption2)
-                        .foregroundColor(theme.palette.secondaryInk)
-                }
+                Text("阅读主题决定阅读页配色；在阅读页「界面 → 自定义背景与文字颜色」里可单独设定底色。")
+                    .font(.caption2)
+                    .foregroundColor(theme.palette.secondaryInk)
             }
             cardDivider
             settingBlock {

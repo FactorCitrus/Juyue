@@ -7038,10 +7038,8 @@ public struct ReaderView: View {
         .padding(EdgeInsets(top: 14, leading: 18, bottom: max(16, safeInsets.bottom), trailing: 18))
         .modifier(ReaderSettingsCardChrome(
             radius: chromeRadius,
-            // 面板调半透明时不要毛玻璃，否则还是看不清底下的正文
-            fill: theme.overridesReaderAppearance
-                ? theme.palette.surface.opacity(panelSurfaceOpacity)
-                : readerConfig.pageBackgroundColor.opacity(effectivePanelLayerOpacity),
+            // 面板跟着阅读页纸色走，免得定制界面主题下叠出一块异色
+            fill: readerConfig.pageBackgroundColor.opacity(effectivePanelLayerOpacity),
             showsMaterial: effectivePanelOpacity >= 0.99 && theme.choice == .standard,
             ink: chromeInk,
             backdrop: chromeBackground,
@@ -8195,12 +8193,10 @@ public struct ReaderView: View {
                     themeButton(for: t)
                 }
             }
-            if theme.overridesReaderAppearance {
-                Text("界面主题「\(theme.choice.title)」会接管阅读配色；打开下方「自定义背景与文字颜色」则以你的配色为准。")
-                    .font(.system(size: 11))
-                    .foregroundColor(readerConfig.pageTextColor.opacity(0.55))
-                    .frame(maxWidth: .infinity, alignment: .leading)
-            }
+            Text("阅读主题决定阅读页配色；打开下方「自定义背景与文字颜色」则以你的配色为准。")
+                .font(.system(size: 11))
+                .foregroundColor(readerConfig.pageTextColor.opacity(0.55))
+                .frame(maxWidth: .infinity, alignment: .leading)
         }
         .onAppear { AppLog.write("[阅读设置] 主题区已渲染") }
     }
