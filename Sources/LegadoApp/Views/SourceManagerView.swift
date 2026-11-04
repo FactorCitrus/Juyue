@@ -682,6 +682,15 @@ enum SourceDocumentPicker {
                     .font(.caption)
                     .foregroundColor(theme.palette.secondaryInk)
                     .lineLimit(1)
+                if let schemeBadge = BookSourceSchemeClassifier.unsupportedBadge(for: source) {
+                    Text(schemeBadge)
+                        .font(.caption2)
+                        .padding(.horizontal, 5)
+                        .padding(.vertical, 1)
+                        .background(theme.palette.warning.opacity(0.15))
+                        .foregroundColor(theme.palette.warning)
+                        .cornerRadius(4)
+                }
                 if let group = source.bookSourceGroup, !group.isEmpty {
                     Text(group)
                         .font(.caption2)

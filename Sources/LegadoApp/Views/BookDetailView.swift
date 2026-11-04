@@ -15,7 +15,7 @@ public struct BookDetailView: View {
     @Environment(\.dismiss) private var dismiss
 
     let initialBook: Book
-    let source: BookSource?
+    @State private var source: BookSource?
 
     @State private var currentBook: Book
     @State private var chapters: [BookChapter] = []
@@ -37,7 +37,7 @@ public struct BookDetailView: View {
 
     public init(book: Book, source: BookSource? = nil) {
         self.initialBook = book
-        self.source = source
+        self._source = State(initialValue: source)
         self._currentBook = State(initialValue: book)
         self._selectedChapterIndex = State(initialValue: book.durChapterIndex)
     }
@@ -67,8 +67,12 @@ public struct BookDetailView: View {
     }
 
     /// 详情页统一用同一份源判定：显式传入优先，否则按 origin / bookUrlPattern 找。
+    /// 换源后 origin 已变，旧 override 失效，回落到 store 查新源。
     private var resolvedSource: BookSource? {
-        source ?? bookStore.findSource(for: currentBook)
+        if let source, source.bookSourceUrl == currentBook.origin {
+            return source
+        }
+        return bookStore.findSource(for: currentBook)
     }
 
     private var sourceKind: BookSource.Kind {
@@ -216,7 +220,7 @@ public struct BookDetailView: View {
             .sheet(isPresented: $showSourceSwitch) {
                 SourceSwitchSheet(
                     book: currentBook,
-                    currentSourceUrl: source?.bookSourceUrl
+                    currentSourceUrl: resolvedSource?.bookSourceUrl
                 ) { newSource, candidate in
                     switchSource(to: newSource, candidate: candidate)
                 }
@@ -282,7 +286,7 @@ public struct BookDetailView: View {
     @ViewBuilder
     private var readerCoverView: some View {
         let activeBook = isInBookshelf ? currentBookshelfBook : currentBook
-        let resolved = source ?? bookStore.findSource(for: activeBook)
+        let resolved = resolvedSource
         let mediaChapters = chapters.isEmpty
             ? [BookChapter(
                 bookUrl: activeBook.bookUrl,
@@ -328,6 +332,7 @@ public struct BookDetailView: View {
         if !candidate.name.isEmpty { updated.name = candidate.name }
         if let cover = candidate.coverUrl, !cover.isEmpty { updated.coverUrl = cover }
         currentBook = bookStore.changeBookSource(from: currentBook, to: updated)
+        source = newSource
         chapters = []
         Task { await loadBookDetails() }
     }

@@ -17,6 +17,27 @@ final class BookContentServiceTests: XCTestCase {
         XCTAssertFalse(cleaned.contains("showCmt"), cleaned)
     }
 
+    /// `@html` 规则会把页面脚本一起带进来：正文清洗要整段丢掉 script/style，而不是只删标签。
+    func testCleanHtmlDropsScriptAndStyleBlocks() {
+        let html = """
+        <div class="con"><p>第一段</p>
+        <script>
+        R=="W"?"W":
+        R=="X"?"X":
+        </script>
+        <style>.con{color:red}</style>
+        <p>第二段</p><!-- 广告 --></div>
+        """
+
+        let cleaned = BookContentService.cleanHtml(html)
+
+        XCTAssertFalse(cleaned.contains("R=="), cleaned)
+        XCTAssertFalse(cleaned.contains("color:red"), cleaned)
+        XCTAssertFalse(cleaned.contains("广告"), cleaned)
+        XCTAssertTrue(cleaned.contains("第一段"), cleaned)
+        XCTAssertTrue(cleaned.contains("第二段"), cleaned)
+    }
+
     func testPreserveReviewMarkersExtractsInlineGodCard() throws {
         let svg = "<svg><text>神评论</text><text>太好看了</text></svg>"
         let encoded = Data(svg.utf8).base64EncodedString()

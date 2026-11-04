@@ -50,6 +50,10 @@ public struct PageCurlPager: UIViewControllerRepresentable {
     /// 章节标题字号系数，跟滚动模式同一口径
     public let chapterTitleScale: CGFloat
     public let shortTitleLength: Int
+    /// 书源正文规则里的图片样式与解密脚本，透传给插图视图。
+    public let imageStyle: ContentImageStyle
+    public let imageDecode: String?
+    public let source: BookSource?
     /// 长按选中段落：把这一页的块和页内行号交回阅读页
     public var onSelectParagraph: (([ContentBlock], Int, Int) -> Void)? = nil
     /// 选中的段落（起始块 id + 覆盖块数）
@@ -124,6 +128,9 @@ public struct PageCurlPager: UIViewControllerRepresentable {
         backgroundImage: Image?,
         chapterTitleScale: CGFloat,
         shortTitleLength: Int,
+        imageStyle: ContentImageStyle = .defaultStyle,
+        imageDecode: String? = nil,
+        source: BookSource? = nil,
         onSelectParagraph: (([ContentBlock], Int, Int) -> Void)? = nil,
         selectedRange: (start: Int, count: Int)? = nil,
         charSelection: ReaderCharSelection? = nil,
@@ -188,6 +195,9 @@ public struct PageCurlPager: UIViewControllerRepresentable {
         self.backgroundImage = backgroundImage
         self.chapterTitleScale = chapterTitleScale
         self.shortTitleLength = shortTitleLength
+        self.imageStyle = imageStyle
+        self.imageDecode = imageDecode
+        self.source = source
         self.onSelectParagraph = onSelectParagraph
         self.selectedRange = selectedRange
         self.charSelection = charSelection
@@ -502,6 +512,9 @@ public struct PageCurlPager: UIViewControllerRepresentable {
                 backgroundImage: parent.backgroundImage,
                 chapterTitleScale: parent.chapterTitleScale,
                 shortTitleLength: parent.shortTitleLength,
+                imageStyle: parent.imageStyle,
+                imageDecode: parent.imageDecode,
+                source: parent.source,
                 customDatePattern: parent.customDatePattern,
                 customBarText: parent.customBarText,
                 titleHTMLTemplate: parent.titleHTMLTemplate,
@@ -875,6 +888,9 @@ struct PageCurlContent: View {
     let backgroundImage: Image?
     let chapterTitleScale: CGFloat
     let shortTitleLength: Int
+    let imageStyle: ContentImageStyle
+    let imageDecode: String?
+    let source: BookSource?
     let customDatePattern: String
     let customBarText: String
     let titleHTMLTemplate: String
@@ -1118,7 +1134,14 @@ struct PageCurlContent: View {
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
                 } else if blocks.first?.isImage == true, let urlStr = blocks.first?.imageUrl {
-                    ChapterImageView(urlString: urlStr, referer: nil)
+                    ChapterImageView(
+                        urlString: urlStr,
+                        referer: source?.bookSourceUrl,
+                        imageStyle: imageStyle,
+                        imageDecode: imageDecode,
+                        source: source,
+                        baseUrl: nil
+                    )
                 } else {
                     let lines = blocks.map { $0.text }
                     let isParagraphEnd = blocks.map { $0.imageUrl == "p_end" }

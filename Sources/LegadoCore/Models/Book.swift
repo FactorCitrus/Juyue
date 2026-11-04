@@ -210,6 +210,46 @@ public struct BookChapter: Codable, Identifiable, Equatable {
     }
 }
 
+/// 换源后把旧书的阅读位置搬到新目录：先按标题找同一章，找不到再按进度比例折算。
+public enum ChapterPositionMapper {
+    public static func resolve(
+        oldTitle: String?,
+        oldIndex: Int,
+        oldCount: Int,
+        newTitles: [String]
+    ) -> Int {
+        guard !newTitles.isEmpty else { return 0 }
+        let lastIndex = newTitles.count - 1
+
+        if let oldTitle {
+            let target = normalized(oldTitle)
+            if !target.isEmpty,
+               let hit = newTitles.firstIndex(where: { normalized($0) == target }) {
+                return hit
+            }
+        }
+
+        guard oldCount > 0 else {
+            return min(max(oldIndex, 0), lastIndex)
+        }
+        let safeIndex = min(max(oldIndex, 0), oldCount - 1)
+        let mapped = safeIndex * newTitles.count / oldCount
+        return min(max(mapped, 0), lastIndex)
+    }
+
+    /// 去掉空白与书名号 / 引号 / 章节序号常用分隔符，英文转小写。
+    static func normalized(_ title: String) -> String {
+        title.unicodeScalars
+            .filter { !noise.contains($0) }
+            .map(String.init)
+            .joined()
+            .lowercased()
+    }
+
+    private static let noise = CharacterSet.whitespacesAndNewlines
+        .union(CharacterSet(charactersIn: "《》「」『』“”‘’\"'·•:：,，.。!！?？、-—_"))
+}
+
 /// 搜索结果里的一条，带来源标记，跟书架同名的书靠 `origin` 区分。
 public struct SearchBook: Codable, Identifiable, Equatable {
     public var id: String { "\(origin)_\(bookUrl)" }

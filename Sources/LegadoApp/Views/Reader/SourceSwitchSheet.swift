@@ -21,6 +21,8 @@ public struct SourceSwitchSheet: View {
 
     /// 搜回来的原始候选，按当前口径就地筛，改开关不用重搜
     @State private var rawResults: [(source: BookSource, book: SearchBook)] = []
+    /// 跨源同 URL 是两本不同的书，去重按 SearchBook.id（origin + bookUrl）
+    @State private var seenResultIds: Set<String> = []
     @State private var isSearching = false
     @State private var searchTask: Task<Void, Never>?
     @State private var finishedSources = 0
@@ -32,11 +34,10 @@ public struct SourceSwitchSheet: View {
     @State private var isPaused = false
     @State private var runSources: [BookSource] = []
     @State private var reportedSourceUrls: Set<String> = []
+    @State private var failures = SourceSwitchFailureSummary()
+    @State private var showFailureDetails = false
     @State private var runKeyword = ""
     @State private var runSelectedSourceUrls: Set<String> = []
-    @State private var runMatchTitle = true
-    @State private var runMatchAuthor = false
-    @State private var runExact = false
     @State private var searchRunId = UUID()
     /// 搜索条件默认收起，换源时先看候选；收起状态是临时的，每次打开都收着
     @State private var showSearchOptions = false
@@ -51,7 +52,8 @@ public struct SourceSwitchSheet: View {
         self.onSelect = onSelect
         // 名字特别短的书（「家」「序」这种）按书名搜全是噪音，默认用作者当关键词
         let shortTitle = book.name.trimmingCharacters(in: .whitespaces).count <= 2
-        self._keyword = State(initialValue: (shortTitle && !book.author.isEmpty) ? book.author : book.name)
+        let author = Self.cleanAuthor(book.author)
+        self._keyword = State(initialValue: (shortTitle && !author.isEmpty) ? author : book.name)
     }
 
     private var options: SourceMatchOptions {
@@ -59,10 +61,16 @@ public struct SourceSwitchSheet: View {
     }
 
     private var results: [(source: BookSource, book: SearchBook)] {
-        rawResults.filter {
+        let filtered = rawResults.filter {
             (selectedSourceUrls.isEmpty || selectedSourceUrls.contains($0.source.bookSourceUrl))
                 && SourceMatchRules.matches($0.book, title: book.name, author: book.author, options: options)
         }
+        return SourceSwitchResultOrdering.sorted(
+            filtered,
+            title: book.name,
+            author: book.author,
+            currentSourceUrl: currentSourceUrl
+        )
     }
 
     private var enabledSources: [BookSource] {
@@ -80,6 +88,7 @@ public struct SourceSwitchSheet: View {
 
     public var body: some View {
         let palette = NieRPalette(colorScheme)
+        let visibleResults = results
 
         ZStack {
             NieRBackdrop(palette: palette)
@@ -89,7 +98,7 @@ public struct SourceSwitchSheet: View {
                     palette: palette,
                     kicker: "SOURCE TRANSFER",
                     title: "换源",
-                    subtitle: "\(isSearching ? "SCANNING" : (isPaused ? "PAUSED" : "READY")) · \(results.count) NODES"
+                    subtitle: "\(isSearching ? "SCANNING" : (isPaused ? "PAUSED" : "READY")) · \(visibleResults.count) NODES"
                 ) {
                     searchTask?.cancel()
                     dismiss()
@@ -108,16 +117,20 @@ public struct SourceSwitchSheet: View {
                             messagePanel(palette, title: "ERROR", text: errorMessage)
                         }
 
-                        if !results.isEmpty {
+                        if !failures.isEmpty && !isSearching {
+                            failurePanel(palette, hasResults: !visibleResults.isEmpty)
+                        }
+
+                        if !visibleResults.isEmpty {
                             NieRSectionTitle(
                                 palette: palette,
                                 index: "02",
                                 title: "AVAILABLE NODES",
-                                trailing: "\(results.count)"
+                                trailing: "\(visibleResults.count)"
                             )
                             .padding(.horizontal, 16)
 
-                            ForEach(Array(results.enumerated()), id: \.element.book.id) { index, item in
+                            ForEach(Array(visibleResults.enumerated()), id: \.element.book.id) { index, item in
                                 resultCard(index: index, item: item, palette: palette)
                             }
                         } else if !isSearching && !isPaused {
@@ -167,7 +180,7 @@ public struct SourceSwitchSheet: View {
                 HStack(spacing: 10) {
                     Text(book.originName.isEmpty ? "未知来源" : book.originName)
                     if !book.author.isEmpty {
-                        Text("作者 \(cleanAuthor(book.author))")
+                        Text("作者 \(Self.cleanAuthor(book.author))")
                     }
                 }
                 .font(.system(size: 10, design: .monospaced))
@@ -264,30 +277,61 @@ public struct SourceSwitchSheet: View {
     }
 
     private func scanningPanel(_ palette: NieRPalette) -> some View {
-        NieRPanel(palette: palette) {
-            VStack(alignment: .leading, spacing: 8) {
-                HStack {
-                    Text(isPaused ? "PAUSED" : "SCANNING")
-                        .font(.system(size: 10, weight: .semibold, design: .monospaced))
-                        .tracking(0.8)
-                        .foregroundColor(palette.accent)
-                    Spacer()
-                    Text("\(finishedSources) / \(totalSources)")
-                        .font(.system(size: 10, design: .monospaced))
-                        .foregroundColor(palette.muted)
-                }
-                NieRScanBar(
-                    palette: palette,
-                    progress: totalSources > 0 ? Double(finishedSources) / Double(totalSources) : 0
-                )
-                if isPaused {
-                    Text("已找到 \(rawResults.count) 本 · 继续会从未完成的源接着搜")
-                        .font(.system(size: 10, design: .monospaced))
-                        .foregroundColor(palette.muted)
-                }
+        Button {
+            if isPaused {
+                resumeSearch()
+            } else if isSearching {
+                pauseSearch()
             }
+        } label: {
+            NieRPanel(palette: palette) {
+                VStack(alignment: .leading, spacing: 8) {
+                    HStack(spacing: 6) {
+                        Image(systemName: isPaused ? "play.fill" : "pause.fill")
+                            .font(.system(size: 10, weight: .semibold))
+                            .foregroundColor(palette.accent)
+                        Text(isPaused ? "PAUSED" : "SCANNING")
+                            .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                            .tracking(0.8)
+                            .foregroundColor(palette.accent)
+                        Spacer()
+                        HStack(spacing: 6) {
+                            Text("\(finishedSources) / \(totalSources)")
+                                .font(.system(size: 10, design: .monospaced))
+                                .foregroundColor(palette.muted)
+                            if !failures.isEmpty {
+                                Text("· 失败 \(failures.count)")
+                                    .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                                    .foregroundColor(palette.accent)
+                            }
+                        }
+                    }
+                    NieRScanBar(
+                        palette: palette,
+                        progress: totalSources > 0 ? Double(finishedSources) / Double(totalSources) : 0
+                    )
+                    Text(scanHintText)
+                        .font(.system(size: 10, design: .monospaced))
+                        .foregroundColor(palette.muted)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .contentShape(Rectangle())
+            }
+            .contentShape(Rectangle())
         }
+        .buttonStyle(.plain)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(isPaused ? "已暂停搜索，双击继续" : "正在搜索，双击暂停")
+        .accessibilityAddTraits(.isButton)
         .padding(.horizontal, 16)
+    }
+
+    private var scanHintText: String {
+        let failureSuffix = failures.isEmpty ? "" : " · \(failures.count) 个源失败"
+        if isPaused {
+            return "点击继续 · 已找到 \(rawResults.count) 本\(failureSuffix)，从未完成的源接着搜"
+        }
+        return "点击暂停 · 已找到 \(rawResults.count) 本\(failureSuffix)"
     }
 
     private func searchActionButton(
@@ -310,10 +354,18 @@ public struct SourceSwitchSheet: View {
         item: (source: BookSource, book: SearchBook),
         palette: NieRPalette
     ) -> some View {
+        // 旧目录地址指向别的站点时，这条「当前源」其实要重换一次才能把目录拉回本源。
+        let tocMatches = book.tocUrl.isEmpty || Self.host(of: book.tocUrl) == Self.host(of: item.book.bookUrl)
         let isCurrent = item.source.bookSourceUrl == currentSourceUrl
             && item.book.bookUrl == book.bookUrl
+            && tocMatches
 
         return Button {
+            // 当前源没有可换的目标：直接关掉，别清缓存把同一本书重载一遍。
+            guard !isCurrent else {
+                dismiss()
+                return
+            }
             onSelect(item.source, item.book)
             dismiss()
         } label: {
@@ -347,7 +399,7 @@ public struct SourceSwitchSheet: View {
 
                         if showDetail {
                             if !item.book.author.isEmpty {
-                                Text("AUTHOR · \(cleanAuthor(item.book.author))")
+                                Text("AUTHOR · \(Self.cleanAuthor(item.book.author))")
                                     .font(.system(size: 10, design: .monospaced))
                                     .foregroundColor(palette.muted)
                                     .lineLimit(1)
@@ -387,13 +439,79 @@ public struct SourceSwitchSheet: View {
     }
 
     private func emptyPanel(_ palette: NieRPalette) -> some View {
-        messagePanel(
-            palette,
-            title: "NO SIGNAL",
-            text: rawResults.isEmpty
-                ? "没有在其他书源找到这本书。换个匹配方式或关键词再试。"
-                : "搜到 \(rawResults.count) 条，但都不符合当前条件。放宽条件或关掉精确匹配再试。"
+        let state = SourceSwitchEmptyState.resolve(
+            rawResultCount: rawResults.count,
+            failureCount: failures.count,
+            sourceCount: totalSources
         )
+        return messagePanel(palette, title: state.title, text: state.message)
+    }
+
+    /// 失败源列表：默认收起成一句「另有 N 个源失败」，点开看源名和原因。
+    private func failurePanel(_ palette: NieRPalette, hasResults: Bool) -> some View {
+        NieRPanel(palette: palette) {
+            VStack(alignment: .leading, spacing: 8) {
+                Button {
+                    withAnimation(.easeInOut(duration: 0.16)) {
+                        showFailureDetails.toggle()
+                    }
+                } label: {
+                    HStack(spacing: 6) {
+                        Text("FAILED NODES")
+                            .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                            .tracking(0.8)
+                            .foregroundColor(palette.accent)
+                        Text("· \(failures.count)")
+                            .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                            .foregroundColor(palette.accent)
+                        Spacer()
+                        Text(showFailureDetails ? "收起" : "查看原因")
+                            .font(.system(size: 10, design: .monospaced))
+                            .foregroundColor(palette.muted)
+                        Image(systemName: showFailureDetails ? "chevron.up" : "chevron.down")
+                            .font(.system(size: 10, weight: .semibold))
+                            .foregroundColor(palette.accent)
+                    }
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+
+                Text(hasResults
+                     ? "另有 \(failures.count) 个源失败，不影响下面的候选。"
+                     : "\(failures.count) 个源失败。")
+                    .font(.system(size: 11, design: .monospaced))
+                    .foregroundColor(palette.ink.opacity(0.82))
+
+                if showFailureDetails {
+                    NieRDivider(palette: palette)
+                    ForEach(failures.entries) { entry in
+                        HStack(alignment: .firstTextBaseline, spacing: 10) {
+                            Text(entry.sourceName)
+                                .font(.system(size: 11, weight: .semibold))
+                                .foregroundColor(palette.ink)
+                                .lineLimit(1)
+                            Spacer(minLength: 8)
+                            Text(entry.reason)
+                                .font(.system(size: 10, design: .monospaced))
+                                .foregroundColor(palette.muted)
+                                .multilineTextAlignment(.trailing)
+                                .lineLimit(2)
+                        }
+                    }
+
+                    if !isSearching && !isPaused {
+                        Button("重试失败源") { retryFailedSources() }
+                            .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                            .foregroundColor(palette.accent)
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 6)
+                            .overlay(Rectangle().stroke(palette.accent.opacity(0.7), lineWidth: 0.8))
+                            .buttonStyle(.plain)
+                    }
+                }
+            }
+        }
+        .padding(.horizontal, 16)
     }
 
     private func messagePanel(_ palette: NieRPalette, title: String, text: String) -> some View {
@@ -446,7 +564,11 @@ public struct SourceSwitchSheet: View {
         .tint(palette.accent)
     }
 
-    private func cleanAuthor(_ raw: String) -> String {
+    private static func host(of address: String) -> String {
+        URL(string: address)?.host?.lowercased() ?? ""
+    }
+
+    private static func cleanAuthor(_ raw: String) -> String {
         var value = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         for prefix in ["作 者：", "作 者:", "作者：", "作者:"] where value.hasPrefix(prefix) {
             value.removeFirst(prefix.count)
@@ -474,11 +596,13 @@ public struct SourceSwitchSheet: View {
         let trimmedKeyword = keyword.trimmingCharacters(in: .whitespaces)
         guard !trimmedKeyword.isEmpty else {
             isSearching = false
+            isPaused = false
             errorMessage = "先填关键词。"
             return
         }
         guard matchTitle || matchAuthor else {
             isSearching = false
+            isPaused = false
             errorMessage = "先选一个匹配条件。"
             return
         }
@@ -494,6 +618,9 @@ public struct SourceSwitchSheet: View {
                 return
             }
             rawResults = []
+            seenResultIds = []
+            failures.removeAll()
+            showFailureDetails = false
             finishedSources = 0
             isPaused = false
             runSources = sources
@@ -501,9 +628,6 @@ public struct SourceSwitchSheet: View {
             reportedSourceUrls = []
             runKeyword = requestKeyword(from: trimmedKeyword)
             runSelectedSourceUrls = selectedSourceUrls
-            runMatchTitle = matchTitle
-            runMatchAuthor = matchAuthor
-            runExact = exactMatch
         }
 
         let remaining = resuming
@@ -520,18 +644,26 @@ public struct SourceSwitchSheet: View {
         let runId = UUID()
         searchRunId = runId
         searchTask = Task {
-            let stream = BookSearchService.shared.searchMultiSources(sources: remaining, key: runKeyword, page: 1)
-            for await (source, books) in stream {
+            let stream = BookSearchService.shared.searchMultiSourcesDetailed(
+                sources: remaining,
+                key: runKeyword,
+                page: 1
+            )
+            for await outcome in stream {
                 if Task.isCancelled { return }
                 await MainActor.run {
                     guard searchRunId == runId else { return }
-                    reportedSourceUrls.insert(source.bookSourceUrl)
+                    reportedSourceUrls.insert(outcome.source.bookSourceUrl)
                     finishedSources = min(totalSources, finishedSources + 1)
+                    if let failure = outcome.failure {
+                        failures.record(source: outcome.source, failure: failure)
+                        return
+                    }
+                    failures.clear(sourceUrl: outcome.source.bookSourceUrl)
                     // 原样收着，展示时按当前口径筛（改开关不用重新搜一遍）
-                    for candidate in books {
-                        if !rawResults.contains(where: { $0.book.bookUrl == candidate.bookUrl }) {
-                            rawResults.append((source: source, book: candidate))
-                        }
+                    for candidate in outcome.books where !seenResultIds.contains(candidate.id) {
+                        seenResultIds.insert(candidate.id)
+                        rawResults.append((source: outcome.source, book: candidate))
                     }
                 }
             }
@@ -549,23 +681,35 @@ public struct SourceSwitchSheet: View {
         guard isSearching else { return }
         searchTask?.cancel()
         searchTask = nil
+        // 换 runId 后，极端情况下取消前已排队的结果也会被丢弃，不会混进列表
+        searchRunId = UUID()
         isSearching = false
         isPaused = true
     }
 
     private func resumeSearch() {
         guard isPaused else { return }
-        // 暂停期间改了关键词、匹配条件或限定源：按新条件重搜，别续跑旧任务
-        let criteriaChanged = requestKeyword(from: keyword) != runKeyword
-            || selectedSourceUrls != runSelectedSourceUrls
-            || matchTitle != runMatchTitle
-            || matchAuthor != runMatchAuthor
-            || exactMatch != runExact
+        // 暂停期间只有关键词和限定源变了才需要重搜；匹配开关只过滤已搜结果
+        let criteriaChanged = SourceSwitchCriteria.requiresRestart(
+            previous: SourceSwitchCriteria(keyword: runKeyword, sourceUrls: runSelectedSourceUrls),
+            current: SourceSwitchCriteria(keyword: requestKeyword(from: keyword), sourceUrls: selectedSourceUrls)
+        )
         if criteriaChanged {
             startSearch()
         } else {
             startSearch(resuming: true)
         }
+    }
+
+    /// 只重跑这一轮失败的源：把它们从「已上报」里摘出去，再走续跑路径。
+    private func retryFailedSources() {
+        guard !isSearching, !isPaused, !failures.isEmpty else { return }
+        let failedUrls = Set(failures.entries.map(\.sourceUrl))
+        failures.removeAll()
+        showFailureDetails = false
+        reportedSourceUrls.subtract(failedUrls)
+        finishedSources = max(0, finishedSources - failedUrls.count)
+        startSearch(resuming: true)
     }
 
     /// 搜索接口一般只认书名，带空格的关键词取最长的那一段去请求

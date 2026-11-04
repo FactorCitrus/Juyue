@@ -38,6 +38,6 @@ let package = Package(
             ]),
         .testTarget(
             name: "LegadoCoreTests",
-            dependencies: ["LegadoCore"]),
+            dependencies: ["LegadoCore", "ZIPFoundation"]),
     ]
 )

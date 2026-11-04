@@ -579,7 +579,7 @@ public struct ReaderCharAnnotation: Equatable {
     }
 }
 
-public struct ContentBlock: Identifiable {
+public struct ContentBlock: Identifiable, Equatable, Sendable {
     public let id: Int
     public let isImage: Bool
     public let text: String
@@ -1678,6 +1678,14 @@ public struct ReaderView: View {
     /// 换源失败要能退回原来的书源，不然会卡在错误页出不来。
     @State private var previousBook: Book?
     @State private var previousSource: BookSource?
+    /// 换源后首次拿到新目录时，用旧章节定位；正文成功读出后才连同回退状态一起清掉。
+    @State private var sourceSwitchPosition: SourceSwitchPosition?
+
+    private struct SourceSwitchPosition {
+        let title: String?
+        let index: Int
+        let count: Int
+    }
 
     private var activeBook: Book { switchedBook ?? book }
 
@@ -1726,6 +1734,28 @@ public struct ReaderView: View {
 
     private var effectiveSource: BookSource? {
         switchedSource ?? source ?? BookStore.shared.findSource(for: activeBook)
+    }
+
+    /// 书源正文规则里的图片显示样式；未知值和 "0" 都按默认样式处理。
+    private var chapterImageStyle: ContentImageStyle {
+        ContentImageStyle(raw: effectiveSource?.ruleContent?.imageStyle)
+    }
+
+    private var sourceImageDecode: String? {
+        effectiveSource?.ruleContent?.imageDecode
+    }
+
+    /// `callBackJs` 是事件回调，不是正文后处理；这里只派发阅读开始 / 结束，
+    /// 书架增删和按钮类事件尚未接入。异常在 Core 里吞掉，不影响阅读。
+    private func fireSourceEvent(_ event: String) {
+        guard let source = effectiveSource else { return }
+        let book = activeBook
+        let chapter = currentLoadedChapter?.chapter
+            ?? loadedChapters.first?.chapter
+            ?? chapters.first
+        Task.detached(priority: .utility) {
+            SourceEventCallback.fire(event: event, source: source, book: book, chapter: chapter)
+        }
     }
 
     @State private var chapters: [BookChapter] = []
@@ -1877,6 +1907,11 @@ public struct ReaderView: View {
     /// 换章进行中：期间拦掉重复的翻页触发，免得拿旧章的页数推进
     @State private var isSwitchingChapter = false
     @State private var paginationTask: Task<Void, Never>?
+    /// 后台分页任务；布局连续变化时旧任务取消，旧结果用 generation 再挡一次
+    @State private var repaginationTask: Task<Void, Never>?
+    @State private var paginationGeneration: Int = 0
+    /// 布局版本 + 每章分页版本：排版一变，只排当前章和邻居，其余记为脏
+    @State private var paginationTracker = PaginationLayoutTracker()
     @State private var showTitleDesigner = false
     @State private var showReplaceRules = false
     /// 下载缓存这类「做完了」的提示，别用 errorMessage（那是错误页的开关）
@@ -2518,9 +2553,13 @@ public struct ReaderView: View {
         }
         .onAppear { readingTickStart = Date() }
         .onAppear { loadReaderAssets() }
+        .onAppear { fireSourceEvent(SourceEventCallback.startRead) }
+        .onDisappear { fireSourceEvent(SourceEventCallback.endRead) }
         .onDisappear { flushReadingTime() }
         .onDisappear {
+            cancelPaginationWork()
             saveCurrentProgress()
+            BookStore.shared.flushShelf()
             readerConfig.saveLayout(for: activeBook.bookUrl)
             audioService.stop()
         }
@@ -2530,13 +2569,8 @@ public struct ReaderView: View {
         // 字号/行距/段间距/边距/页眉页脚一改，一页能装多少行就变了，必须重排，
         // 旧分页的行数未更新时，页面下半部分会空着
         .onChange(of: layoutSignature) { _ in
-            // 拉滑杆会连着触发很多次，稍微等一下再重排，别每帧都排一遍
-            paginationTask?.cancel()
-            paginationTask = Task { @MainActor in
-                try? await Task.sleep(nanoseconds: 250_000_000)
-                guard !Task.isCancelled else { return }
-                recomputePagination()
-            }
+            // 拉滑杆会连着触发很多次：版本立刻推进，重排本身防抖
+            scheduleLayoutRepagination()
         }
         // 亮度：盖一层黑，不动系统亮度
         .overlay {
@@ -2877,7 +2911,14 @@ public struct ReaderView: View {
                                 // Chapter Paragraphs and Images
                                 ForEach(loadedCh.blocks) { block in
                                     if block.isImage, let urlStr = block.imageUrl {
-                                        ChapterImageView(urlString: urlStr, referer: effectiveSource?.bookSourceUrl)
+                                        ChapterImageView(
+                                            urlString: urlStr,
+                                            referer: effectiveSource?.bookSourceUrl,
+                                            imageStyle: chapterImageStyle,
+                                            imageDecode: sourceImageDecode,
+                                            source: effectiveSource,
+                                            baseUrl: loadedCh.chapter.url
+                                        )
                                             .padding(.leading, readerConfig.paddingLeft)
                                             .padding(.trailing, readerConfig.paddingRight)
                                             .padding(.bottom, readerConfig.paragraphSpacing)
@@ -3193,6 +3234,9 @@ public struct ReaderView: View {
                     : nil,
                 chapterTitleScale: readerConfig.chapterTitleScale,
                 shortTitleLength: readerConfig.shortTitleLength,
+                imageStyle: chapterImageStyle,
+                imageDecode: sourceImageDecode,
+                source: effectiveSource,
                 onSelectParagraph: { page, line, offset in
                     selectCharacters(atLine: line, charOffset: offset, in: page)
                 },
@@ -3335,7 +3379,14 @@ public struct ReaderView: View {
                             }
                             .frame(maxWidth: .infinity, alignment: .leading)
                         } else if pageBlocks.first?.isImage == true, let urlStr = pageBlocks.first?.imageUrl {
-                            ChapterImageView(urlString: urlStr, referer: effectiveSource?.bookSourceUrl)
+                            ChapterImageView(
+                                urlString: urlStr,
+                                referer: effectiveSource?.bookSourceUrl,
+                                imageStyle: chapterImageStyle,
+                                imageDecode: sourceImageDecode,
+                                source: effectiveSource,
+                                baseUrl: currentLoadedChapter?.chapter.url
+                            )
                         } else {
                             let lines = pageBlocks.map { $0.text }
                             let isParagraphEnd = pageBlocks.map { $0.imageUrl == "p_end" }
@@ -3345,7 +3396,10 @@ public struct ReaderView: View {
                             let paragraphCount = CGFloat(isParagraphEnd.filter { $0 }.count - trailingSpacing)
                             // 一页排不满时把剩下的高度匀进段间距，正文才会贴到页脚
                             let titleReserved = currentPageIndex == 0
-                                ? estimatedTitleHeight(currentLoadedChapter?.chapter.title ?? "")
+                                ? ReaderPaginator.estimatedTitleHeight(
+                                    currentLoadedChapter?.chapter.title ?? "",
+                                    layout: makePaginationLayout(version: paginationTracker.layoutVersion)
+                                )
                                 : 0
                             let filledBase = CGFloat(lines.count) * effectiveLineHeight
                             // 余量要把段间距本身先扣掉再匀，否则整页会超出可用高度
@@ -3575,7 +3629,7 @@ public struct ReaderView: View {
         if abs(size.width - readerContainerSize.width) > 6 || abs(size.height - readerContainerSize.height) > 6 {
             DispatchQueue.main.async {
                 self.readerContainerSize = size
-                self.recomputePagination()
+                self.scheduleLayoutRepagination()
             }
         }
     }
@@ -4223,6 +4277,7 @@ public struct ReaderView: View {
     private func jumpToChapter(_ targetIndex: Int, toEnd: Bool = false, forceResumeReading: Bool = false) {
         AppLog.write("[阅读] 换章 → 第 \(targetIndex + 1) 章 / 共 \(chapters.count) 章")
         guard targetIndex >= 0 && targetIndex < chapters.count else { return }
+        cancelPaginationWork()
         // 换章这一步会 stop()：原本在念的得记着，换完接着念，不然用户只看到声音没了
         let wasReading = audioService.isPlaying || audioService.isPaused
         audioService.stop()
@@ -4303,7 +4358,9 @@ public struct ReaderView: View {
     }
 
     private func handlePageModeChange(to newMode: PageMode) {
-        guard let cur = currentLoadedChapter else { return }
+        guard let current = currentLoadedChapter else { return }
+        // 连续模式下不做分页；切到按页 / 切回来都用得到 page 边界，先把脏章补排
+        let cur = repaginatedIfNeeded(current)
 
         if newMode.isPaged {
             // 1. Switching from Continuous Scroll to Page-by-Page:
@@ -4432,6 +4489,14 @@ public struct ReaderView: View {
         AppLog.write("[阅读] 开始更换书源")
         previousBook = activeBook
         previousSource = effectiveSource
+        let oldTitle: String? = chapters.indices.contains(currentChapterIndex)
+            ? chapters[currentChapterIndex].title
+            : activeBook.durChapterTitle
+        sourceSwitchPosition = SourceSwitchPosition(
+            title: oldTitle,
+            index: currentChapterIndex,
+            count: chapters.count
+        )
         let newBook = Book(
             bookUrl: candidate.bookUrl,
             name: candidate.name,
@@ -4464,6 +4529,7 @@ public struct ReaderView: View {
         switchedSource = previousSource
         previousBook = nil
         previousSource = nil
+        sourceSwitchPosition = nil
         BookStore.shared.changeBookSource(from: current, to: target)
         chapters = []
         chapterCache.removeAll()
@@ -6909,6 +6975,7 @@ public struct ReaderView: View {
         let index = currentChapterIndex
         let page = currentPageIndex
         chapterCache[index] = nil
+        paginationTracker.forget(index)
         audioService.stop()
         errorMessage = nil
         loadInitialChapter(at: index, targetPageIndex: page)
@@ -8039,9 +8106,6 @@ public struct ReaderView: View {
                     set: { readerConfig.fontSize = min(max($0, 12), 32) }
                 ), in: 12...32, step: 1)
                     .tint(settingsAccent)
-                    .onChange(of: readerConfig.fontSize) { _ in
-                        recomputePagination()
-                    }
 
                 Text("A+")
                     .font(.system(size: 16, weight: .bold))
@@ -8132,7 +8196,7 @@ public struct ReaderView: View {
                 }
             }
             if theme.overridesReaderAppearance {
-                Text("界面主题「\(theme.choice.title)」正在接管阅读配色；切回「标准」后可单独选择阅读主题。")
+                Text("界面主题「\(theme.choice.title)」会接管阅读配色；打开下方「自定义背景与文字颜色」则以你的配色为准。")
                     .font(.system(size: 11))
                     .foregroundColor(readerConfig.pageTextColor.opacity(0.55))
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -8217,9 +8281,7 @@ public struct ReaderView: View {
             for i in 0..<list.count { list[i].index = i }
             self.chapters = list
             AppLog.write("[阅读] 复用缓存目录，共 \(list.count) 章")
-            if currentChapterIndex >= list.count {
-                currentChapterIndex = max(0, list.count - 1)
-            }
+            currentChapterIndex = initialChapterIndex(in: list)
             loadInitialChapter(at: currentChapterIndex)
             Task { await refreshTOCInBackground(source: source) }
             return
@@ -8253,9 +8315,7 @@ public struct ReaderView: View {
                 self.isLoadingInitial = false
                 return
             }
-            if currentChapterIndex >= fetchedChapters.count {
-                currentChapterIndex = max(0, fetchedChapters.count - 1)
-            }
+            currentChapterIndex = initialChapterIndex(in: fetchedChapters)
             loadInitialChapter(at: currentChapterIndex)
         } catch {
             AppLog.write("[阅读] 目录解析失败 error=\(error.localizedDescription)")
@@ -8272,6 +8332,19 @@ public struct ReaderView: View {
     private func tocCacheKey(source: BookSource?) -> String {
         let sourceKey = source?.bookSourceUrl ?? ""
         return "\(activeBook.bookUrl)#\(sourceKey)"
+    }
+
+    /// 换源后首次进入新目录时按标题/进度定位；平常打开沿用上次的章节索引。
+    private func initialChapterIndex(in list: [BookChapter]) -> Int {
+        guard let pending = sourceSwitchPosition else {
+            return min(currentChapterIndex, max(0, list.count - 1))
+        }
+        return ChapterPositionMapper.resolve(
+            oldTitle: pending.title,
+            oldIndex: pending.index,
+            oldCount: pending.count,
+            newTitles: list.map(\.title)
+        )
     }
 
     /// 后台静默刷新目录：有新增章节就更新列表并落盘；章数没变就不打扰阅读
@@ -8298,15 +8371,17 @@ public struct ReaderView: View {
     private func getOrFetchChapter(at index: Int) async -> LoadedChapter? {
         guard index >= 0 && index < chapters.count else { return nil }
         if let cached = chapterCache[index] {
-            return cached
+            return repaginatedIfNeeded(cached)
         }
         let targetChapter = chapters[index]
         do {
             let content = applyingBookReplaceRules(try await BookContentService.shared.fetchChapterContent(chapter: targetChapter, source: effectiveSource, book: activeBook))
             let blocks = parseContentBlocks(from: content)
-            let pages = paginate(blocks: blocks, title: targetChapter.title)
+            let layout = makePaginationLayout(version: paginationTracker.layoutVersion)
+            let pages = ReaderPaginator.paginate(blocks: blocks, title: targetChapter.title, layout: layout)
             let loaded = LoadedChapter(chapter: targetChapter, content: content, blocks: blocks, pages: pages)
             self.chapterCache[index] = loaded
+            self.paginationTracker.markPaginated(index, version: layout.version)
             AppLog.write("[阅读] 正文加载完成 第 \(index + 1) 章，\(loaded.blocks.count) 段")
             return loaded
         } catch {
@@ -8323,9 +8398,11 @@ public struct ReaderView: View {
             Task { @MainActor in
                 if let content = try? await BookContentService.shared.fetchChapterContent(chapter: prevCh, source: source, book: activeBook) {
                     let blocks = parseContentBlocks(from: content)
-                    let pages = paginate(blocks: blocks, title: prevCh.title)
+                    let layout = makePaginationLayout(version: paginationTracker.layoutVersion)
+                    let pages = ReaderPaginator.paginate(blocks: blocks, title: prevCh.title, layout: layout)
                     let loaded = LoadedChapter(chapter: prevCh, content: content, blocks: blocks, pages: pages)
                     self.chapterCache[index - 1] = loaded
+                    self.paginationTracker.markPaginated(index - 1, version: layout.version)
                 }
             }
         }
@@ -8335,9 +8412,11 @@ public struct ReaderView: View {
             Task { @MainActor in
                 if let content = try? await BookContentService.shared.fetchChapterContent(chapter: nextCh, source: source, book: activeBook) {
                     let blocks = parseContentBlocks(from: content)
-                    let pages = paginate(blocks: blocks, title: nextCh.title)
+                    let layout = makePaginationLayout(version: paginationTracker.layoutVersion)
+                    let pages = ReaderPaginator.paginate(blocks: blocks, title: nextCh.title, layout: layout)
                     let loaded = LoadedChapter(chapter: nextCh, content: content, blocks: blocks, pages: pages)
                     self.chapterCache[index + 1] = loaded
+                    self.paginationTracker.markPaginated(index + 1, version: layout.version)
                 }
             }
         }
@@ -8359,13 +8438,15 @@ public struct ReaderView: View {
             do {
                 let loaded: LoadedChapter
                 if let cached = self.chapterCache[index] {
-                    loaded = cached
+                    loaded = self.repaginatedIfNeeded(cached)
                 } else {
                     let content = applyingBookReplaceRules(try await BookContentService.shared.fetchChapterContent(chapter: currentChapter, source: source, book: activeBook))
                     let blocks = parseContentBlocks(from: content)
-                    let pages = paginate(blocks: blocks, title: currentChapter.title)
+                    let layout = makePaginationLayout(version: paginationTracker.layoutVersion)
+                    let pages = ReaderPaginator.paginate(blocks: blocks, title: currentChapter.title, layout: layout)
                     loaded = LoadedChapter(chapter: currentChapter, content: content, blocks: blocks, pages: pages)
                     self.chapterCache[index] = loaded
+                    self.paginationTracker.markPaginated(index, version: layout.version)
                     ReadingStatsStore.shared.addReading(seconds: 0, characters: loaded.content.count, chapters: 1)
                 }
 
@@ -8417,7 +8498,7 @@ public struct ReaderView: View {
                 if readerConfig.pageMode == .scroll && scrollToTargetEnd && index < self.chapters.count - 1 {
                     let nextIndex = index + 1
                     if let nextCached = self.chapterCache[nextIndex] {
-                        self.loadedChapters = [loaded, nextCached]
+                        self.loadedChapters = [loaded, self.repaginatedIfNeeded(nextCached)]
                     } else {
                         self.loadedChapters = [loaded]
                         Task {
@@ -8450,6 +8531,13 @@ public struct ReaderView: View {
                 BookStore.shared.updateProgress(bookUrl: activeBook.bookUrl, chapterIndex: index, chapterTitle: currentChapter.title, chapterPos: currentPos)
                 self.preCacheNeighbors(around: index)
 
+                // 新源正文已读出，换源成功；回退入口收起，免得后续刷新失败又冒出「换回原书源」。
+                if self.previousBook != nil {
+                    self.previousBook = nil
+                    self.previousSource = nil
+                    self.sourceSwitchPosition = nil
+                }
+
                 if readerConfig.pageMode == .scroll && self.scrollToChapterId == nil {
                     self.scrollToChapterId = scrollToTargetEnd ? "chapter_end_\(index)" : "chapter_\(index)"
                 }
@@ -8474,7 +8562,7 @@ public struct ReaderView: View {
         }
 
         if let cached = chapterCache[nextIndex] {
-            self.loadedChapters.append(cached)
+            self.loadedChapters.append(self.repaginatedIfNeeded(cached))
             self.preCacheNeighbors(around: nextIndex)
             return
         }
@@ -8487,11 +8575,13 @@ public struct ReaderView: View {
             do {
                 let content = applyingBookReplaceRules(try await BookContentService.shared.fetchChapterContent(chapter: nextChapter, source: source, book: activeBook))
                 let blocks = parseContentBlocks(from: content)
-                let pages = paginate(blocks: blocks, title: nextChapter.title)
+                let layout = makePaginationLayout(version: paginationTracker.layoutVersion)
+                let pages = ReaderPaginator.paginate(blocks: blocks, title: nextChapter.title, layout: layout)
                 let loaded = LoadedChapter(chapter: nextChapter, content: content, blocks: blocks, pages: pages)
 
                 self.loadedChapters.append(loaded)
                 self.chapterCache[nextIndex] = loaded
+                self.paginationTracker.markPaginated(nextIndex, version: layout.version)
                 self.isLoadingNextChapter = false
                 self.preCacheNeighbors(around: nextIndex)
             } catch {
@@ -8538,38 +8628,167 @@ public struct ReaderView: View {
         ].joined(separator: "|")
     }
 
-    private func recomputePagination() {
-        AppLog.write("[排版] 触发重排：当前第 \(currentChapterIndex + 1) 章")
-        let charPos = currentChapterCharOffset()
+    // MARK: - 分页（后台 + 按需）
 
-        // 分页是按当前排版算出来的，排版一变缓存里的页也是旧的，就地重排（别直接清空，
-        // 清空会把下一章的预取一起丢掉，换章就得现拉）
-        for (key, cached) in chapterCache {
-            var updated = cached
-            updated.pages = paginate(blocks: cached.blocks, title: cached.chapter.title)
-            chapterCache[key] = updated
-        }
+    /// 当前排版参数的快照。带着版本号一起丢给后台，算完回来先验版本。
+    private func makePaginationLayout(version: Int) -> ReaderPaginationLayout {
+        let font = readerConfig.font
+        return ReaderPaginationLayout(
+            version: version,
+            containerSize: readerContainerSize,
+            fontSize: readerConfig.fontSize,
+            lineSpacing: readerConfig.lineSpacing,
+            letterSpacing: readerConfig.letterSpacing,
+            firstLineIndent: readerConfig.firstLineIndent,
+            paragraphSpacing: readerConfig.paragraphSpacing,
+            reviewFontScale: readerConfig.reviewFontScale,
+            reviewInset: readerConfig.reviewInset,
+            weightLevel: readerConfig.weightLevel,
+            fontPostScriptName: font.postScriptName,
+            fontBoldPostScriptName: font.boldPostScriptName ?? "",
+            punctuationKinsoku: readerConfig.punctuationKinsoku,
+            headerEnabled: readerConfig.headerEnabled,
+            footerEnabled: readerConfig.footerEnabled,
+            headerOffset: readerConfig.headerOffset,
+            footerOffset: readerConfig.footerOffset,
+            paddingTop: readerConfig.paddingTop,
+            paddingBottom: readerConfig.paddingBottom,
+            paddingLeft: readerConfig.paddingLeft,
+            paddingRight: readerConfig.paddingRight,
+            chapterTitleScale: readerConfig.chapterTitleScale,
+            titleHidden: readerConfig.titleAlignment == .hidden
+        )
+    }
 
-        for i in 0..<loadedChapters.count {
-            loadedChapters[i].pages = paginate(blocks: loadedChapters[i].blocks, title: loadedChapters[i].chapter.title)
-        }
+    /// 切换章节、退出阅读：别再让旧布局的排版结果回来动界面。
+    private func cancelPaginationWork() {
+        paginationTask?.cancel()
+        repaginationTask?.cancel()
+        paginationGeneration &+= 1
+    }
 
-        if let cur = currentLoadedChapter, !cur.pages.isEmpty {
-            var accumulated = 0
-            var targetPage = 0
-            for (pIdx, page) in cur.pages.enumerated() {
-                let pageCharCount = page.reduce(0) { $0 + $1.text.count }
-                if accumulated + pageCharCount > charPos {
-                    targetPage = pIdx
-                    break
-                }
-                accumulated += pageCharCount
-                targetPage = pIdx
+    private func pageIndex(forCharacterOffset target: Int, in chapter: LoadedChapter) -> Int {
+        var consumed = 0
+        var lastPage = 0
+        for (index, blocks) in chapter.pages.enumerated() {
+            let length = blocks.reduce(0) { $0 + $1.text.count }
+            if consumed + length > target {
+                return index
             }
-            currentPageIndex = min(targetPage, max(0, cur.pages.count - 1))
+            consumed += length
+            lastPage = index
+        }
+        return min(lastPage, max(0, chapter.pages.count - 1))
+    }
+
+    /// 布局参数一变就立刻推进版本、把所有缓存页标脏；真正的 CoreText 重排等防抖结束再跑。
+    /// 即使防抖被换章 / 退出取消，脏标记也已经落下了，切回该章时会按需补排。
+    private func scheduleLayoutRepagination() {
+        paginationTracker.advanceLayout()
+        paginationGeneration &+= 1
+        paginationTask?.cancel()
+        paginationTask = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 250_000_000)
+            guard !Task.isCancelled else { return }
+            repaginateForCurrentLayout()
+        }
+    }
+
+    /// 排版参数变化：只立即重排当前章和预取邻居，其余缓存章节标脏、用到时再排。
+    private func repaginateForCurrentLayout() {
+        guard !loadedChapters.isEmpty || !chapterCache.isEmpty else { return }
+
+        let generation = paginationGeneration
+        let version = paginationTracker.layoutVersion
+        let layout = makePaginationLayout(version: version)
+
+        let available = Array(Set(chapterCache.keys).union(loadedChapters.map { $0.chapter.index }))
+        let targets = paginationTracker.repaginationPriority(
+            current: currentChapterIndex,
+            neighbors: [currentChapterIndex - 1, currentChapterIndex + 1],
+            available: available
+        )
+        let jobs: [RepaginationJob] = targets.compactMap { index in
+            guard let cached = chapterCache[index] else { return nil }
+            return RepaginationJob(index: index, blocks: cached.blocks, title: cached.chapter.title)
+        }
+        AppLog.write("[排版] 后台重排 v\(version)：第 \(jobs.map { $0.index + 1 }) 章 · 其余 \(max(0, chapterCache.count - jobs.count)) 章标脏")
+
+        repaginationTask?.cancel()
+        repaginationTask = Task { @MainActor in
+            let results = await Task.detached(priority: .userInitiated) { () -> [RepaginationResult] in
+                var results: [RepaginationResult] = []
+                for job in jobs {
+                    if Task.isCancelled { return results }
+                    let pages = ReaderPaginator.paginate(blocks: job.blocks, title: job.title, layout: layout)
+                    results.append(RepaginationResult(index: job.index, blockCount: job.blocks.count, pages: pages))
+                }
+                return results
+            }.value
+            guard !Task.isCancelled else { return }
+            self.applyRepagination(results, version: version, generation: generation)
+        }
+    }
+
+    private struct RepaginationJob: Sendable {
+        let index: Int
+        let blocks: [ContentBlock]
+        let title: String
+    }
+
+    private struct RepaginationResult: Sendable {
+        let index: Int
+        let blockCount: Int
+        let pages: [[ContentBlock]]
+    }
+
+    private func applyRepagination(_ results: [RepaginationResult], version: Int, generation: Int) {
+        // 拖滑杆时上一轮任务可能晚一步回来，generation / 版本对不上就整批丢掉
+        guard generation == paginationGeneration,
+              paginationTracker.acceptsResult(version: version) else { return }
+
+        // 后台算的这段时间用户可能又翻了几页：按应用前的字符偏移重新定位
+        let anchorIndex = currentChapterIndex
+        let anchorOffset = currentChapterCharOffset()
+        var touchedCurrent = false
+
+        for result in results {
+            guard let cached = chapterCache[result.index],
+                  cached.blocks.count == result.blockCount else { continue }
+            var updated = cached
+            updated.pages = result.pages
+            chapterCache[result.index] = updated
+            if let position = loadedChapters.firstIndex(where: { $0.chapter.index == result.index }) {
+                loadedChapters[position].pages = result.pages
+            }
+            paginationTracker.markPaginated(result.index, version: version)
+            if result.index == anchorIndex { touchedCurrent = true }
+        }
+
+        if touchedCurrent, let chapter = currentLoadedChapter, !chapter.pages.isEmpty {
+            currentPageIndex = pageIndex(forCharacterOffset: anchorOffset, in: chapter)
             updateReadingBlockIdFromCurrentPage()
         }
     }
+
+    /// 脏章真正被切换 / 预取到时再重排；只排这一章，代价和按需加载一章一致。
+    @discardableResult
+    private func repaginatedIfNeeded(_ chapter: LoadedChapter) -> LoadedChapter {
+        let version = paginationTracker.layoutVersion
+        guard paginationTracker.isDirty(chapter.chapter.index) else { return chapter }
+
+        let layout = makePaginationLayout(version: version)
+        var updated = chapter
+        updated.pages = ReaderPaginator.paginate(blocks: chapter.blocks, title: chapter.chapter.title, layout: layout)
+        chapterCache[chapter.chapter.index] = updated
+        if let position = loadedChapters.firstIndex(where: { $0.chapter.index == chapter.chapter.index }) {
+            loadedChapters[position].pages = updated.pages
+        }
+        paginationTracker.markPaginated(chapter.chapter.index, version: version)
+        AppLog.write("[排版] 按需重排 · 第 \(chapter.chapter.index + 1) 章")
+        return updated
+    }
+
 
     // MARK: - Paragraph and Page Parser
     /// 智能分段：只处理「特别长、又完全没有段落」的行（不少书源整章塞成一行）。
@@ -8785,113 +9004,6 @@ public struct ReaderView: View {
         )
     }
 
-    /// 一页能放多高（点）：先扣掉页眉页脚和上下边距。
-    /// 首页标题占的高度：按可用宽度估算折行行数，分页和渲染共用同一套算法
-    private func estimatedTitleHeight(_ title: String) -> CGFloat {
-        guard readerConfig.titleAlignment != .hidden else { return 0 }
-        let titleFontSize = readerConfig.fontSize * readerConfig.chapterTitleScale
-        let width = max(120, readerContainerSize.width - readerConfig.paddingLeft - readerConfig.paddingRight)
-        let charsPerLine = max(4, Int(width / (titleFontSize + readerConfig.letterSpacing)))
-        let lines = max(1, min(4, Int(ceil(Double(title.count) / Double(charsPerLine)))))
-        // 略放宽：估小了最后一行会被页脚裁掉
-        return titleFontSize * 1.45 * CGFloat(lines) + 12.0
-    }
-
-    /// 返回高度而非行数：段间距占位，按行数算会低估，
-    /// 超出预算的部分会压到页脚上。
-    private func calculateLayoutMetrics(title: String? = nil) -> (pageHeight: CGFloat, firstPageHeight: CGFloat) {
-        let height = max(400, readerContainerSize.height)
-
-        let barHeight: CGFloat = 19
-        let reserved = (readerConfig.headerEnabled ? barHeight : 0)
-            + (readerConfig.footerEnabled ? barHeight : 0)
-            + (readerConfig.headerEnabled ? readerConfig.headerOffset : 0)
-            + (readerConfig.footerEnabled ? readerConfig.footerOffset : 0)
-            + readerConfig.paddingTop
-            + readerConfig.paddingBottom
-        let usableHeight = max(200, height - reserved - 2)
-
-        // First page has chapter title (+ title padding)
-        let titleHeight = title.map { estimatedTitleHeight($0) } ?? estimatedTitleHeight("第 1 章")
-        let firstPageUsableHeight = max(100, usableHeight - titleHeight)
-
-        return (pageHeight: usableHeight, firstPageHeight: firstPageUsableHeight)
-    }
-
-    /// 把一段正文切成行。
-    ///
-    /// 这里必须跟 `CoreTextPageView` 用同一套字体和字距：换字体或把字距调大后，
-    /// 按默认苹方、不带字距切出来的行，画的时候会宽于量出来的宽度，整页就溢出/错位。
-    /// 热评段用比正文小一号的字，并且左右各留出卡片内边距，
-    /// 所以断行必须按「小字号 + 收窄宽度」来算，跟 draw 那边保持同一口径。
-    private func splitParagraphIntoLines(
-        text: String,
-        width: Double,
-        fontSizeOverride: CGFloat? = nil,
-        horizontalInset: Double = 0,
-        suppressFirstLineIndent: Bool = false
-    ) -> [(text: String, isParagraphEnd: Bool, charStart: Int)] {
-        let fontSize = fontSizeOverride ?? readerConfig.fontSize
-        let font = ReaderFontFactory.ctFont(
-            postScriptName: readerConfig.font.postScriptName,
-            boldPostScriptName: readerConfig.font.boldPostScriptName,
-            size: fontSize,
-            weightLevel: readerConfig.weightLevel
-        )
-        let attributes: [CFString: Any] = [
-            kCTFontAttributeName: font,
-            kCTKernAttributeName: readerConfig.letterSpacing
-        ]
-        guard let attrString = CFAttributedStringCreate(nil, text as CFString, attributes as CFDictionary) else {
-            return [(text, true, 0)]
-        }
-        let typesetter = CTTypesetterCreateWithAttributedString(attrString)
-        var start = 0
-        let textLen = CFStringGetLength(text as CFString)
-        var result: [(text: String, isParagraphEnd: Bool, charStart: Int)] = []
-        let nsStr = text as NSString
-        // 段首会补全角缩进，第一行要按缩进后的宽度切，否则首行一定超宽
-        let indentWidth = suppressFirstLineIndent
-            ? 0
-            : Double(readerConfig.firstLineIndent.rounded()) * Double(fontSize)
-        let textWidth = max(20, width - horizontalInset * 2)
-        var isFirstLine = true
-
-        while start < textLen {
-            let available = isFirstLine ? max(20, textWidth - indentWidth) : textWidth
-            var count = CTTypesetterSuggestLineBreak(typesetter, start, available)
-            if count <= 0 { break }
-            if readerConfig.punctuationKinsoku {
-                count = Self.applyLineBreakRules(nsStr: nsStr, start: start, count: count, textLen: textLen)
-            }
-            let sub = nsStr.substring(with: NSRange(location: start, length: count))
-            let isEnd = (start + count >= textLen)
-            result.append((sub, isEnd, start))
-            start += count
-            isFirstLine = false
-        }
-        return result
-    }
-
-    /// 标点禁则：行首不该出现句读/收尾类标点，行尾不该出现开引号、开括号。
-    /// 行首禁则按「标点挤压」处理：把标点拉到上一行，宽度交给两端对齐吸收；
-    /// 行尾禁则把该字符挪到下一行。CoreText 不做中文禁则，需要在这里补。
-    private static let forbiddenLineStart: Set<unichar> = {
-        var set = Set<unichar>()
-        for scalar in "。，、；：？！…～·）】》」』〉”’.，;:?!)]}%".unicodeScalars where scalar.value <= 0xFFFF {
-            set.insert(unichar(scalar.value))
-        }
-        return set
-    }()
-
-    private static let forbiddenLineEnd: Set<unichar> = {
-        var set = Set<unichar>()
-        for scalar in "（【《「『〈“‘([{".unicodeScalars where scalar.value <= 0xFFFF {
-            set.insert(unichar(scalar.value))
-        }
-        return set
-    }()
-
     /// 连续模式用的是 SwiftUI / TextKit 的断行，插不进 CoreText 那套禁则。
     /// 这里在「不该被换行切开」的位置插 U+2060（WORD JOINER）：TextKit 认这个字符，
     /// 句读标点就不会被甩到行首，开引号开括号也不会被留在行尾。
@@ -8908,170 +9020,79 @@ public struct ReaderView: View {
             out.append(ch)
             guard index + 1 < chars.count else { continue }
             let next = chars[index + 1]
-            if Self.isForbiddenLineStart(next) || Self.isForbiddenLineEnd(ch) {
+            if ReaderPaginator.isForbiddenLineStart(next) || ReaderPaginator.isForbiddenLineEnd(ch) {
                 out += joiner
             }
         }
         return out
     }
-
-    private static func isForbiddenLineStart(_ ch: Character) -> Bool {
-        guard let scalar = String(ch).unicodeScalars.first, scalar.value <= 0xFFFF else { return false }
-        return forbiddenLineStart.contains(unichar(scalar.value))
-    }
-
-    private static func isForbiddenLineEnd(_ ch: Character) -> Bool {
-        guard let scalar = String(ch).unicodeScalars.first, scalar.value <= 0xFFFF else { return false }
-        return forbiddenLineEnd.contains(unichar(scalar.value))
-    }
-
-    private static func applyLineBreakRules(nsStr: NSString, start: Int, count: Int, textLen: Int) -> Int {
-        var adjusted = count
-        // 行首禁则：后方紧跟句读类标点时拉到本行，一次最多两个
-        var pulled = 0
-        var next = start + count
-        while pulled < 2, next < textLen, forbiddenLineStart.contains(nsStr.character(at: next)) {
-            pulled += 1
-            next += 1
-        }
-        adjusted += pulled
-        // 行尾禁则：本行最后一个是开引号/开括号就把它推到下一行
-        if adjusted > 1, forbiddenLineEnd.contains(nsStr.character(at: start + adjusted - 1)) {
-            adjusted -= 1
-        }
-        return max(1, adjusted)
-    }
-
-    private func buildPageBlocks(from lines: [(text: String, isParagraphEnd: Bool, charStart: Int, paragraphId: Int)],
-                                 startingId: inout Int) -> [ContentBlock] {
-        var blocks: [ContentBlock] = []
-        for line in lines {
-            blocks.append(ContentBlock(
-                id: startingId,
-                isImage: false,
-                text: line.text,
-                imageUrl: line.isParagraphEnd ? "p_end" : nil,
-                paragraphId: line.paragraphId,
-                charStart: line.charStart
-            ))
-            startingId += 1
-        }
-        return blocks
-    }
-
-    private func paginate(blocks: [ContentBlock], title: String? = nil) -> [[ContentBlock]] {
-        let metrics = calculateLayoutMetrics(title: title)
-        let normalHeight = metrics.pageHeight
-        let firstPageHeight = metrics.firstPageHeight
-        let lineHeight = readerConfig.fontSize * 1.25 + readerConfig.lineSpacing
-        // 热评卡片：小一号字 + 两侧内边距，跟 CoreTextUIView.draw 的口径一致
-        let reviewScale = max(0.5, readerConfig.reviewFontScale)
-        let reviewInset = Double(max(0, readerConfig.reviewInset))
-        let reviewLineHeight = readerConfig.fontSize * reviewScale * 1.25 + readerConfig.lineSpacing
-        // 跟 CoreTextUIView.reviewBands 同一个口径：卡片上下各多出这段留白
-        let reviewPad = min(14, max(8, readerConfig.paragraphSpacing + 1))
-        // 断行的宽度必须和渲染时用的一致，不然一行排得比页宽，右边就被切掉
-        let usableWidth = Double(max(200, readerContainerSize.width - readerConfig.paddingLeft - readerConfig.paddingRight))
-
-        var pages: [[ContentBlock]] = []
-        var currentPageLines: [(text: String, isParagraphEnd: Bool, charStart: Int, paragraphId: Int)] = []
-        var currentPageHeight: CGFloat = 0
-        var maxHeightForCurrentPage = firstPageHeight
-        var blockIdCounter = 10000
-
-        for block in blocks {
-            if block.isImage {
-                if !currentPageLines.isEmpty {
-                    pages.append(buildPageBlocks(from: currentPageLines, startingId: &blockIdCounter))
-                    currentPageLines = []
-                    currentPageHeight = 0
-                    maxHeightForCurrentPage = normalHeight
-                }
-                pages.append([block])
-                currentPageHeight = 0
-                maxHeightForCurrentPage = normalHeight
-            } else {
-                let isReviewBlock = block.commentCount == -2
-                let pLines = splitParagraphIntoLines(
-                    text: block.text,
-                    width: usableWidth,
-                    fontSizeOverride: isReviewBlock ? readerConfig.fontSize * reviewScale : nil,
-                    horizontalInset: isReviewBlock ? reviewInset : 0,
-                    suppressFirstLineIndent: isReviewBlock
-                )
-                // 卡片整块留在同一页，不然框会从中间被页面切断
-                if isReviewBlock, !currentPageLines.isEmpty {
-                    let spacingBefore: CGFloat = currentPageLines.last?.isParagraphEnd == true
-                        ? readerConfig.paragraphSpacing : 0
-                    let topExtra: CGFloat = currentPageLines.isEmpty
-                        ? 0
-                        : max(0, reviewPad - spacingBefore)
-                    let bottomExtra = max(0, reviewPad - readerConfig.paragraphSpacing)
-                    let blockHeight = spacingBefore
-                        + CGFloat(pLines.count) * reviewLineHeight
-                        + readerConfig.paragraphSpacing
-                        + topExtra
-                        + bottomExtra
-                    if currentPageHeight + blockHeight > maxHeightForCurrentPage,
-                       blockHeight <= normalHeight {
-                        pages.append(buildPageBlocks(from: currentPageLines, startingId: &blockIdCounter))
-                        currentPageLines = []
-                        currentPageHeight = 0
-                        maxHeightForCurrentPage = normalHeight
-                    }
-                }
-                for lineInfo in pLines {
-                    // 段间距算在两个段落之间：上一行是段尾时，这一行之前才加间距，
-                    // 页面最后一行后面不会白留一截
-                    var lineHeightWithSpacing = isReviewBlock ? reviewLineHeight : lineHeight
-                    if currentPageLines.last?.isParagraphEnd == true {
-                        lineHeightWithSpacing += readerConfig.paragraphSpacing
-                    }
-                    if !currentPageLines.isEmpty,
-                       currentPageHeight + lineHeightWithSpacing > maxHeightForCurrentPage {
-                        pages.append(buildPageBlocks(from: currentPageLines, startingId: &blockIdCounter))
-                        currentPageLines = []
-                        currentPageHeight = 0
-                        maxHeightForCurrentPage = normalHeight
-                    }
-                    currentPageLines.append((lineInfo.text, lineInfo.isParagraphEnd, lineInfo.charStart, block.id))
-                    currentPageHeight += lineHeightWithSpacing
-                }
-            }
-        }
-
-        if !currentPageLines.isEmpty {
-            pages.append(buildPageBlocks(from: currentPageLines, startingId: &blockIdCounter))
-        }
-
-        return pages.isEmpty ? [[]] : pages
-    }
 }
 
 // MARK: - Chapter Image Component with Anti-Hotlinking Headers & Cache
+/// 图片解密只允许完成一次；先到的结果（脚本返回值或 5 秒超时）赢。
+private final class ImageDecodeContinuation {
+    private let lock = NSLock()
+    private var finished = false
+    private let continuation: CheckedContinuation<Data?, Never>
+
+    init(_ continuation: CheckedContinuation<Data?, Never>) {
+        self.continuation = continuation
+    }
+
+    func finish(_ value: Data?) {
+        lock.lock()
+        defer { lock.unlock() }
+        guard !finished else { return }
+        finished = true
+        continuation.resume(returning: value)
+    }
+}
+
 public struct ChapterImageView: View {
     public let urlString: String
     public let referer: String?
+    /// `ContentRule.imageStyle`：只影响显示尺寸和对齐，不改 URL 与缓存 key。
+    public let imageStyle: ContentImageStyle
+    /// `ContentRule.imageDecode`：拿到图片 bytes 后按书源脚本解密，失败回退原图。
+    public let imageDecode: String?
+    public let source: BookSource?
+    public let baseUrl: String?
 
     @State private var imageData: Data? = nil
     @State private var isLoading: Bool = false
     @State private var loadFailed: Bool = false
+    @State private var naturalSize: CGSize = .zero
 
     private static let imageCache = NSCache<NSString, NSData>()
 
-    public init(urlString: String, referer: String? = nil) {
+    public init(
+        urlString: String,
+        referer: String? = nil,
+        imageStyle: ContentImageStyle = .defaultStyle,
+        imageDecode: String? = nil,
+        source: BookSource? = nil,
+        baseUrl: String? = nil
+    ) {
         self.urlString = urlString
         self.referer = referer
+        self.imageStyle = imageStyle
+        self.imageDecode = imageDecode
+        self.source = source
+        self.baseUrl = baseUrl
+    }
+
+    private var alignment: Alignment {
+        switch imageStyle.horizontalAlignment {
+        case .leading: return .leading
+        case .trailing: return .trailing
+        case .center: return .center
+        }
     }
 
     public var body: some View {
         Group {
             if let data = imageData, let img = platformImage(from: data) {
-                img
-                    .resizable()
-                    .scaledToFit()
-                    .cornerRadius(8)
-                    .padding(.vertical, 6)
+                styledImage(img)
             } else if isLoading {
                 HStack(spacing: 8) {
                     ProgressView()
@@ -9104,10 +9125,49 @@ public struct ChapterImageView: View {
                     .frame(height: 1)
             }
         }
-        .frame(maxWidth: .infinity, alignment: .center)
+        .frame(maxWidth: .infinity, alignment: alignment)
         .task(id: urlString) {
             await loadImage()
         }
+    }
+
+    /// 安卓 `imageStyle` 的显示语义：FULL 铺满，默认不超过原尺寸并居中，
+    /// TEXT 按小图处理，SINGLE 等同于铺满，LEFT/RIGHT 改对齐。
+    @ViewBuilder
+    private func styledImage(_ picture: Image) -> some View {
+        let ratio = naturalSize.width > 0 && naturalSize.height > 0
+            ? naturalSize.width / naturalSize.height
+            : nil
+        // 安卓按像素比较图片宽度与屏幕宽度；iOS 的布局单位是 pt，
+        // 而 UIImage(data:) 的 scale 恒为 1，所以这里要除以屏幕倍率再比较。
+        let naturalWidth = naturalWidthInPoints
+        let maxWidth: CGFloat? = {
+            switch imageStyle {
+            case .full, .single:
+                return .infinity
+            case .text:
+                return min(max(naturalWidth, 24), 80)
+            case .defaultStyle, .left, .right:
+                return naturalWidth > 0 ? naturalWidth : nil
+            }
+        }()
+
+        Group {
+            if let ratio {
+                Color.clear
+                    .aspectRatio(ratio, contentMode: .fit)
+                    .frame(maxWidth: maxWidth, maxHeight: imageStyle == .text ? 80 : .infinity)
+                    .overlay(picture.resizable().scaledToFit())
+                    .frame(maxWidth: .infinity, alignment: alignment)
+            } else {
+                picture
+                    .resizable()
+                    .scaledToFit()
+                    .frame(maxWidth: .infinity, alignment: alignment)
+            }
+        }
+        .cornerRadius(8)
+        .padding(.vertical, 6)
     }
 
     private func loadImage() async {
@@ -9128,16 +9188,20 @@ public struct ChapterImageView: View {
                 let payload = String(trimmed[trimmed.index(after: comma)...])
                 // 源里的 base64 常带换行和 URL-safe 字符，宽松解码
                 if meta.contains("base64"), let data = Data(base64Encoded: payload, options: [.ignoreUnknownCharacters]) {
-                    if platformImage(from: data) == nil {
-                        AppLog.write("[插图] 解码失败 dataURI kind=\(meta.suffix(40)) bytes=\(data.count)")
+                    let bytes = await decodeIfNeeded(data, src: trimmed)
+                    if platformImage(from: bytes) == nil {
+                        AppLog.write("[插图] 解码失败 dataURI kind=\(meta.suffix(40)) bytes=\(bytes.count)")
                     }
-                    self.imageData = data
+                    self.imageData = bytes
+                    self.naturalSize = naturalImageSize(from: bytes)
                     self.isLoading = false
                     self.loadFailed = false
                     return
                 }
                 if let decoded = payload.removingPercentEncoding, let data = decoded.data(using: .utf8) {
-                    self.imageData = data
+                    let bytes = await decodeIfNeeded(data, src: trimmed)
+                    self.imageData = bytes
+                    self.naturalSize = naturalImageSize(from: bytes)
                     self.isLoading = false
                     self.loadFailed = false
                     return
@@ -9152,7 +9216,9 @@ public struct ChapterImageView: View {
 
         // 1. Check in-memory cache
         if let cached = Self.imageCache.object(forKey: trimmed as NSString) {
-            self.imageData = cached as Data
+            let bytes = cached as Data
+            self.imageData = bytes
+            self.naturalSize = naturalImageSize(from: bytes)
             self.isLoading = false
             self.loadFailed = false
             return
@@ -9160,9 +9226,11 @@ public struct ChapterImageView: View {
 
         // 2. Inline data URI（部分书源把插图直接塞进正文）
         if trimmed.hasPrefix("data:image") {
-            if let data = Self.decodeDataURL(trimmed) {
+            if let raw = Self.decodeDataURL(trimmed) {
+                let data = await decodeIfNeeded(raw, src: trimmed)
                 Self.imageCache.setObject(data as NSData, forKey: trimmed as NSString)
                 self.imageData = data
+                self.naturalSize = naturalImageSize(from: data)
                 self.isLoading = false
                 self.loadFailed = false
             } else {
@@ -9173,9 +9241,11 @@ public struct ChapterImageView: View {
 
         // 3. Check local file
         if trimmed.hasPrefix("file://") {
-            if let url = URL(string: trimmed), let data = try? Data(contentsOf: url) {
+            if let url = URL(string: trimmed), let raw = try? Data(contentsOf: url) {
+                let data = await decodeIfNeeded(raw, src: trimmed)
                 Self.imageCache.setObject(data as NSData, forKey: trimmed as NSString)
                 self.imageData = data
+                self.naturalSize = naturalImageSize(from: data)
                 return
             }
         }
@@ -9206,20 +9276,23 @@ public struct ChapterImageView: View {
                 request.setValue("\(scheme)://\(host)/", forHTTPHeaderField: "Referer")
             }
 
-            let (data, response) = try await URLSession.shared.data(for: request)
-            if let http = response as? HTTPURLResponse, (http.statusCode == 200 || http.statusCode == 304), !data.isEmpty {
+            let (rawData, response) = try await URLSession.shared.data(for: request)
+            if let http = response as? HTTPURLResponse, (http.statusCode == 200 || http.statusCode == 304), !rawData.isEmpty {
+                let data = await decodeIfNeeded(rawData, src: trimmed)
                 if platformImage(from: data) == nil {
                     AppLog.write("[插图] 解码失败 host=\(url.host ?? "-") bytes=\(data.count)")
                 }
                 Self.imageCache.setObject(data as NSData, forKey: trimmed as NSString)
+                let size = naturalImageSize(from: data)
                 await MainActor.run {
                     self.imageData = data
+                    self.naturalSize = size
                     self.isLoading = false
                     self.loadFailed = false
                 }
             } else {
                 let status = (response as? HTTPURLResponse)?.statusCode ?? -1
-                AppLog.write("[插图] 失败 host=\(url.host ?? "-") status=\(status) bytes=\(data.count)")
+                AppLog.write("[插图] 失败 host=\(url.host ?? "-") status=\(status) bytes=\(rawData.count)")
                 Self.dumpRaw(urlString)
                 await MainActor.run {
                     self.isLoading = false
@@ -9234,6 +9307,59 @@ public struct ChapterImageView: View {
                 self.loadFailed = true
             }
         }
+    }
+
+    /// `imageDecode` 是字节级解密；JS 没有超时 API，放到后台任务里跑并用 5 秒兜底。
+    /// 脚本异常、空结果或超时都回退原图，绝不让插图失败影响正文。
+    private func decodeIfNeeded(_ bytes: Data, src: String) async -> Data {
+        guard let script = imageDecode?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+              !script.isEmpty else {
+            return bytes
+        }
+        let source = self.source
+        let base = self.baseUrl
+        let decoded: Data? = await withCheckedContinuation { continuation in
+            let once = ImageDecodeContinuation(continuation)
+            Task.detached(priority: .utility) {
+                once.finish(
+                    ImageDecodeRule.decode(
+                        bytes,
+                        src: src,
+                        script: script,
+                        source: source,
+                        baseUrl: base
+                    )
+                )
+            }
+            DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 5) {
+                once.finish(nil)
+            }
+        }
+        guard let decoded, !decoded.isEmpty else {
+            AppLog.write("[插图] imageDecode 未返回可用数据，使用原图")
+            return bytes
+        }
+        return decoded
+    }
+
+    private func naturalImageSize(from data: Data) -> CGSize {
+        #if canImport(UIKit)
+        return UIImage(data: data)?.size ?? .zero
+        #elseif canImport(AppKit)
+        return NSImage(data: data)?.size ?? .zero
+        #else
+        return .zero
+        #endif
+    }
+
+    private var naturalWidthInPoints: CGFloat {
+        #if canImport(UIKit)
+        let scale = UIScreen.main.scale
+        return scale > 0 ? naturalSize.width / scale : naturalSize.width
+        #else
+        return naturalSize.width
+        #endif
     }
 
     // 原始地址落盘排查用：AppLog 会过滤 URL 的 path/query，这里只写本地 Documents

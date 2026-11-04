@@ -15,6 +15,40 @@ public class BookContentService {
         diagnostics: ((SourceRequestDiagnostic) -> Void)? = nil,
         includeChapters: Bool = true
     ) async throws -> (book: Book, chapters: [BookChapter]) {
+        // 目录地址属于旧源或已失效时，退回书页地址重抓一次：否则目录和正文会一直来自旧站。
+        let staleTOC = !book.tocUrl.isEmpty && book.tocUrl != book.bookUrl
+        do {
+            let result = try await fetchBookDetailPage(
+                book: book, source: source, onProgress: onProgress,
+                diagnostics: diagnostics, includeChapters: includeChapters
+            )
+            if includeChapters, result.chapters.isEmpty, staleTOC {
+                var fallback = book
+                fallback.tocUrl = ""
+                return try await fetchBookDetailPage(
+                    book: fallback, source: source, onProgress: onProgress,
+                    diagnostics: diagnostics, includeChapters: true
+                )
+            }
+            return result
+        } catch {
+            guard staleTOC else { throw error }
+            var fallback = book
+            fallback.tocUrl = ""
+            return try await fetchBookDetailPage(
+                book: fallback, source: source, onProgress: onProgress,
+                diagnostics: diagnostics, includeChapters: includeChapters
+            )
+        }
+    }
+
+    private func fetchBookDetailPage(
+        book: Book,
+        source: BookSource,
+        onProgress: ((Int, Int) -> Void)? = nil,
+        diagnostics: ((SourceRequestDiagnostic) -> Void)? = nil,
+        includeChapters: Bool = true
+    ) async throws -> (book: Book, chapters: [BookChapter]) {
         guard let tocRule = source.ruleToc else {
             return (book, [])
         }
@@ -65,6 +99,21 @@ public class BookContentService {
                 note: "data: 载荷，由 init 脚本取回"
             ), to: diagnostics)
         } else {
+            if let scheme = NetworkClient.unsupportedScheme(in: targetUrl) {
+                let error = UnsupportedBookSourceSchemeError(
+                    scheme: scheme,
+                    sourceName: source.bookSourceName
+                )
+                LegadoLog.log("[BookDetail] ❌ [\(source.bookSourceName)] 自定义协议 \(scheme) 不支持")
+                DiagnosticHub.emit(SourceRequestDiagnostic(
+                    step: "详情",
+                    sourceName: source.bookSourceName,
+                    url: targetUrl,
+                    failureKind: DiagnosticFailure.classify(error),
+                    note: error.localizedDescription
+                ), to: diagnostics)
+                throw error
+            }
             guard let parsedReq = NetworkClient.parseLegadoUrl(targetUrl, defaultHeader: headerToUse, baseUrl: source.bookSourceUrl) else {
                 LegadoLog.log("[BookDetail] ❌ [\(source.bookSourceName)] 详情 URL 解析失败 host=\(URL(string: targetUrl)?.host ?? "-")")
                 return (book, [])
@@ -487,9 +536,10 @@ public class BookContentService {
         // 脱敏：不记章节标题与 URL 路径
         LegadoLog.log("[Content] [\(source.bookSourceName)] 抓正文 第 \(chapter.index + 1) 章 host=\(URL(string: chapterUrl)?.host ?? "-")")
 
-        let bodyString: String
-        let pageBaseUrl: String
-        let jsEngine: JSEngine
+        var bodyString: String
+        var pageBaseUrl: String
+        var jsEngine: JSEngine
+        var extractedText: String?
 
         if let payload = NetworkClient.dataURLPayload(chapterUrl) {
             // data: 协议：章节网址也是打包的，正文规则（ruleContent.content 那段 JS）
@@ -498,45 +548,73 @@ public class BookContentService {
             pageBaseUrl = chapterUrl
             bodyString = payload
         } else {
+            if let scheme = NetworkClient.unsupportedScheme(in: chapterUrl) {
+                let error = UnsupportedBookSourceSchemeError(
+                    scheme: scheme,
+                    sourceName: source.bookSourceName
+                )
+                LegadoLog.log("[Content] ❌ [\(source.bookSourceName)] 自定义协议 \(scheme) 不支持 第 \(chapter.index + 1) 章")
+                DiagnosticHub.emit(SourceRequestDiagnostic(
+                    step: "正文",
+                    sourceName: source.bookSourceName,
+                    url: chapterUrl,
+                    failureKind: DiagnosticFailure.classify(error),
+                    note: error.localizedDescription
+                ), to: diagnostics)
+                throw error
+            }
             guard let parsedReq = NetworkClient.parseLegadoUrl(chapterUrl, defaultHeader: headerToUse, baseUrl: source.bookSourceUrl) else {
                 LegadoLog.log("[Content] ❌ [\(source.bookSourceName)] 正文 URL 解析失败 第 \(chapter.index + 1) 章 host=\(URL(string: chapterUrl)?.host ?? "-")")
                 return ""
             }
-            let started = Date()
-            let response: NetworkResponse
-            do {
-                response = try await NetworkClient.shared.request(
-                    parsed: parsedReq,
-                    timeout: nil,
-                    rateKey: source.bookSourceUrl,
-                    rateLimit: source.rateLimit
-                )
-            } catch {
+            if let page = await ContentWebJs.payload(
+                request: parsedReq,
+                rule: contentRule,
+                timeout: ContentWebJs.defaultTimeout,
+                source: source,
+                book: book
+            ) {
+                jsEngine = page.engine
+                pageBaseUrl = page.baseURL
+                bodyString = page.body
+                extractedText = page.extractedText
+            } else {
+                let started = Date()
+                let response: NetworkResponse
+                do {
+                    response = try await NetworkClient.shared.request(
+                        parsed: parsedReq,
+                        timeout: nil,
+                        rateKey: source.bookSourceUrl,
+                        rateLimit: source.rateLimit
+                    )
+                } catch {
+                    DiagnosticHub.emit(SourceRequestDiagnostic(
+                        step: "正文",
+                        sourceName: source.bookSourceName,
+                        url: parsedReq.url.absoluteString,
+                        elapsedMs: Int64(Date().timeIntervalSince(started) * 1000),
+                        headersSummary: DiagnosticFailure.summarize(parsedReq.headers),
+                        failureKind: DiagnosticFailure.classify(error),
+                        note: "请求失败：\(error.localizedDescription)"
+                    ), to: diagnostics)
+                    throw error
+                }
+                let elapsed = Int64(Date().timeIntervalSince(started) * 1000)
                 DiagnosticHub.emit(SourceRequestDiagnostic(
                     step: "正文",
                     sourceName: source.bookSourceName,
                     url: parsedReq.url.absoluteString,
-                    elapsedMs: Int64(Date().timeIntervalSince(started) * 1000),
-                    headersSummary: DiagnosticFailure.summarize(parsedReq.headers),
-                    failureKind: DiagnosticFailure.classify(error),
-                    note: "请求失败：\(error.localizedDescription)"
+                    statusCode: response.statusCode,
+                    elapsedMs: elapsed,
+                    responseBytes: response.data.count,
+                    responsePreview: DiagnosticPreview.make(response.bodyString),
+                    headersSummary: DiagnosticFailure.summarize(parsedReq.headers)
                 ), to: diagnostics)
-                throw error
+                jsEngine = JSEngine(bookSource: source, baseUrl: parsedReq.url.absoluteString, book: book)
+                pageBaseUrl = parsedReq.url.absoluteString
+                bodyString = response.bodyString
             }
-            let elapsed = Int64(Date().timeIntervalSince(started) * 1000)
-            DiagnosticHub.emit(SourceRequestDiagnostic(
-                step: "正文",
-                sourceName: source.bookSourceName,
-                url: parsedReq.url.absoluteString,
-                statusCode: response.statusCode,
-                elapsedMs: elapsed,
-                responseBytes: response.data.count,
-                responsePreview: DiagnosticPreview.make(response.bodyString),
-                headersSummary: DiagnosticFailure.summarize(parsedReq.headers)
-            ), to: diagnostics)
-            jsEngine = JSEngine(bookSource: source, baseUrl: parsedReq.url.absoluteString, book: book)
-            pageBaseUrl = parsedReq.url.absoluteString
-            bodyString = response.bodyString
         }
 
         // 脚本里会读 `chapter.index`（番茄聚合源判断是否当前章），安卓宿主有这层全局。
@@ -552,34 +630,32 @@ public class BookContentService {
             jsEngine: jsEngine
         )
 
-        var contentText = analyzer.getString(contentRule.content)
+        let nextRule = contentRule.nextContentUrl?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
 
-        // 书源把段评、本章说挂在 HTML 标记里；cleanHtml 会整段洗掉。
-        // 先换成不可见哨兵，正文里保留评论数与跳转地址，阅读页再拆出来。
-        contentText = Self.preserveReviewMarkers(contentText)
-
-        // Apply regex cleanup if specified in source
-        if let replaceRegex = contentRule.replaceRegex, !replaceRegex.isEmpty {
-            let segments = replaceRegex.components(separatedBy: "##")
-            if segments.count >= 2 {
-                let pattern = segments[0]
-                let replacement = segments[1]
-                if let rx = try? NSRegularExpression(pattern: pattern) {
-                    contentText = rx.stringByReplacingMatches(
-                        in: contentText,
-                        range: NSRange(location: 0, length: (contentText as NSString).length),
-                        withTemplate: replacement
-                    )
-                }
-            }
-        }
-
-        // Clean up common web garbage and sanitize HTML tags
-        contentText = BookContentService.cleanHtml(contentText, baseUrl: pageBaseUrl)
-        // 替换净化：正则/普通文本规则过一遍，去广告水印
-        // 这本书被源显式关掉替换净化时跳过（聚合源自己清理过正文，再净化一遍会误伤）
-        if book?.useReplaceRule != false {
-            contentText = TextPurifier.shared.apply(contentText)
+        let contentText: String
+        if nextRule.isEmpty {
+            contentText = assembleSinglePage(
+                analyzer: analyzer,
+                contentRule: contentRule,
+                baseURL: pageBaseUrl,
+                extractedText: extractedText,
+                book: book
+            )
+        } else {
+            contentText = await assemblePaginatedContent(
+                firstAnalyzer: analyzer,
+                firstBaseURL: pageBaseUrl,
+                firstExtractedText: extractedText,
+                initialURL: chapterUrl,
+                chapter: chapter,
+                contentRule: contentRule,
+                nextRule: nextRule,
+                source: source,
+                header: headerToUse,
+                book: book,
+                diagnostics: diagnostics
+            )
         }
 
         if !contentText.isEmpty {
@@ -597,6 +673,335 @@ public class BookContentService {
         ), to: diagnostics)
 
         return contentText
+    }
+
+    // MARK: - 正文拼页
+
+    /// `ContentRule.webJs`：用无声网页打开正文页，在 `didFinish` 后执行脚本。
+    ///
+    /// 脚本返回非空文本时优先采用；返回空则保留渲染后的 HTML，交给原 `content` 规则。
+    /// 抓取器未安装、加载失败或超时都返回 nil，由调用方回退普通请求，不让整章失败。
+    private enum ContentWebJs {
+        static let defaultTimeout: TimeInterval = 20
+
+        struct Page {
+            let body: String
+            let baseURL: String
+            let engine: JSEngine
+            let extractedText: String?
+        }
+
+        static func payload(
+            request: NetworkClient.ParsedRequest,
+            rule: ContentRule,
+            timeout: TimeInterval,
+            source: BookSource,
+            book: Book?
+        ) async -> Page? {
+            let script = rule.webJs?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            let sourceRegex = rule.sourceRegex?
+                .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            let shouldSniff = !sourceRegex.isEmpty
+            // `sourceRegex` 只在 WebView 加载正文页时才有意义；没有 webJs 时，
+            // 只有 URL 明确要求走 WebView 才进来，避免把普通请求也拉去渲染。
+            guard !script.isEmpty || (shouldSniff && request.usesWebView) else {
+                return nil
+            }
+            guard HeadlessWebView.shared.loader != nil else {
+                LegadoLog.log("[Content] [\(source.bookSourceName)] webJs 需要无声网页，当前未安装，改用普通抓取")
+                return nil
+            }
+
+            await SourceRateLimiter.shared.acquire(key: source.bookSourceUrl, limit: source.rateLimit)
+            let js = script.isEmpty ? nil : JSEngine.unwrapJsScript(script)
+            do {
+                let result = try await NetworkClient.shared.headlessFetch(
+                    parsed: request,
+                    javaScript: js,
+                    timeout: timeout,
+                    capturesResourceURLs: shouldSniff
+                )
+                let baseURL = result.finalURL.absoluteString
+                if shouldSniff,
+                   let matched = SourceURLSniffer.firstMatch(in: result.resourceURLs, pattern: sourceRegex) {
+                    LegadoLog.log("[Content] [\(source.bookSourceName)] sourceRegex 命中资源 URL")
+                    return Page(
+                        body: matched,
+                        baseURL: baseURL,
+                        engine: JSEngine(bookSource: source, baseUrl: baseURL, book: book),
+                        extractedText: nil
+                    )
+                }
+                if shouldSniff {
+                    LegadoLog.log("[Content] [\(source.bookSourceName)] sourceRegex 未命中，按页面 HTML 处理")
+                }
+                let extracted = WebJsContent.text(from: result.javaScriptResult)
+                if extracted == nil,
+                   result.html.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    LegadoLog.log("[Content] [\(source.bookSourceName)] webJs 结果与页面 HTML 都为空，改用普通抓取")
+                    return nil
+                }
+                LegadoLog.log(
+                    "[Content] [\(source.bookSourceName)] webJs 命中 "
+                        + (extracted == nil ? "空结果，用页面 HTML" : "\(extracted?.count ?? 0) 字")
+                )
+                return Page(
+                    body: result.html,
+                    baseURL: baseURL,
+                    engine: JSEngine(bookSource: source, baseUrl: baseURL, book: book),
+                    extractedText: extracted
+                )
+            } catch {
+                LegadoLog.log("[Content] [\(source.bookSourceName)] webJs 失败，回退普通抓取：\(error.localizedDescription)")
+                return nil
+            }
+        }
+    }
+
+    // 测试需要直接验证 payAction / callBackJs / imageStyle 不进入正文变换链，
+    // 所以保持 internal 而不是 private。
+    func assembleSinglePage(
+        analyzer: RuleAnalyzer,
+        contentRule: ContentRule,
+        baseURL: String,
+        extractedText: String? = nil,
+        book: Book?
+    ) -> String {
+        var text = extractedText ?? ContentRuleExtractor.text(from: analyzer, rule: contentRule)
+        text = Self.preserveReviewMarkers(text)
+        text = Self.applyReplaceRegex(contentRule.replaceRegex, to: text)
+        text = BookContentService.cleanHtml(text, baseUrl: baseURL)
+        if book?.useReplaceRule != false {
+            text = TextPurifier.shared.apply(text)
+        }
+        return text
+    }
+
+    /// 按 `nextContentUrl` 逐页取正文并拼接。
+    ///
+    /// 页数上限、URL 去重和整体 deadline 都在这里兜住：中途失败、超时或被取消时
+    /// 返回已经拿到的页，而不是让整章失败。替换净化等全部拼完再跑一次，避免每页
+    /// 重复套规则。
+    private func assemblePaginatedContent(
+        firstAnalyzer: RuleAnalyzer,
+        firstBaseURL: String,
+        firstExtractedText: String?,
+        initialURL: String,
+        chapter: BookChapter,
+        contentRule: ContentRule,
+        nextRule: String,
+        source: BookSource,
+        header: String?,
+        book: Book?,
+        diagnostics: ((SourceRequestDiagnostic) -> Void)?
+    ) async -> String {
+        var segments: [String] = []
+        let firstSegment = cleanPage(
+            firstAnalyzer,
+            rule: contentRule,
+            baseURL: firstBaseURL,
+            extractedText: firstExtractedText
+        )
+        if !firstSegment.isEmpty { segments.append(firstSegment) }
+
+        var currentAnalyzer = firstAnalyzer
+        var currentBaseURL = firstBaseURL
+        var visited: Set<String> = [firstBaseURL, initialURL]
+        var fetched = 1
+        let deadline = Date().addingTimeInterval(ContentPagination.totalDeadline)
+
+        pagination: while fetched < ContentPagination.pageLimit {
+            if Task.isCancelled { break }
+            let candidates = BookContentService.extractURLs(
+                from: currentAnalyzer,
+                rule: nextRule,
+                baseUrl: currentBaseURL
+            )
+            let pending = ContentPagination.nextURLs(
+                candidates: candidates,
+                visited: visited,
+                fetchedCount: fetched
+            )
+            guard !pending.isEmpty else { break }
+
+            for url in pending {
+                if Task.isCancelled { break pagination }
+                guard fetched < ContentPagination.pageLimit else { break pagination }
+
+                let remaining = ContentPagination.remaining(deadline)
+                guard remaining > 0 else {
+                    LegadoLog.log("[Content] [\(source.bookSourceName)] 分页超时，返回已抓 \(fetched) 页")
+                    break pagination
+                }
+
+                visited.insert(url)
+                guard let next = await fetchContentPage(
+                    url: url,
+                    chapter: chapter,
+                    source: source,
+                    contentRule: contentRule,
+                    header: header,
+                    book: book,
+                    timeout: remaining,
+                    diagnostics: diagnostics
+                ) else {
+                    LegadoLog.log("[Content] [\(source.bookSourceName)] 分页抓取失败，返回已抓 \(fetched) 页")
+                    break pagination
+                }
+
+                fetched += 1
+                let segment = cleanPage(
+                    next.analyzer,
+                    rule: contentRule,
+                    baseURL: next.baseURL,
+                    extractedText: next.extractedText
+                )
+                if !segment.isEmpty { segments.append(segment) }
+                currentAnalyzer = next.analyzer
+                currentBaseURL = next.baseURL
+            }
+        }
+
+        if fetched > 1 {
+            LegadoLog.log("[Content] [\(source.bookSourceName)] 正文分页 \(fetched) 页 / \(segments.count) 段")
+        }
+
+        var text = segments.joined(separator: "\n\n")
+        if book?.useReplaceRule != false {
+            text = TextPurifier.shared.apply(text)
+        }
+        return text
+    }
+
+    private struct PaginatedPage {
+        let analyzer: RuleAnalyzer
+        let baseURL: String
+        let extractedText: String?
+
+        init(analyzer: RuleAnalyzer, baseURL: String, extractedText: String? = nil) {
+            self.analyzer = analyzer
+            self.baseURL = baseURL
+            self.extractedText = extractedText
+        }
+    }
+
+    private func fetchContentPage(
+        url: String,
+        chapter: BookChapter,
+        source: BookSource,
+        contentRule: ContentRule,
+        header: String?,
+        book: Book?,
+        timeout: TimeInterval,
+        diagnostics: ((SourceRequestDiagnostic) -> Void)?
+    ) async -> PaginatedPage? {
+        let body: String
+        let baseURL: String
+        let engine: JSEngine
+        var extractedText: String?
+
+        if let payload = NetworkClient.dataURLPayload(url) {
+            body = payload
+            baseURL = url
+            engine = JSEngine(bookSource: source, baseUrl: url, book: book)
+        } else {
+            guard let parsed = NetworkClient.parseLegadoUrl(
+                url,
+                defaultHeader: header,
+                baseUrl: source.bookSourceUrl
+            ) else {
+                return nil
+            }
+
+            if let page = await ContentWebJs.payload(
+                request: parsed,
+                rule: contentRule,
+                timeout: min(timeout, ContentWebJs.defaultTimeout),
+                source: source,
+                book: book
+            ) {
+                body = page.body
+                baseURL = page.baseURL
+                engine = page.engine
+                extractedText = page.extractedText
+            } else {
+                let started = Date()
+                let response: NetworkResponse
+                do {
+                    response = try await NetworkClient.shared.request(
+                        parsed: parsed,
+                        timeout: timeout,
+                        rateKey: source.bookSourceUrl,
+                        rateLimit: source.rateLimit
+                    )
+                } catch {
+                    DiagnosticHub.emit(SourceRequestDiagnostic(
+                        step: "正文分页",
+                        sourceName: source.bookSourceName,
+                        url: parsed.url.absoluteString,
+                        elapsedMs: Int64(Date().timeIntervalSince(started) * 1000),
+                        headersSummary: DiagnosticFailure.summarize(parsed.headers),
+                        failureKind: DiagnosticFailure.classify(error),
+                        note: "请求失败：\(error.localizedDescription)"
+                    ), to: diagnostics)
+                    return nil
+                }
+
+                DiagnosticHub.emit(SourceRequestDiagnostic(
+                    step: "正文分页",
+                    sourceName: source.bookSourceName,
+                    url: parsed.url.absoluteString,
+                    statusCode: response.statusCode,
+                    elapsedMs: Int64(Date().timeIntervalSince(started) * 1000),
+                    responseBytes: response.data.count,
+                    responsePreview: DiagnosticPreview.make(response.bodyString),
+                    headersSummary: DiagnosticFailure.summarize(parsed.headers)
+                ), to: diagnostics)
+
+                body = response.bodyString
+                baseURL = parsed.url.absoluteString
+                engine = JSEngine(bookSource: source, baseUrl: baseURL, book: book)
+            }
+        }
+
+        engine.context.setObject(
+            ["index": chapter.index, "title": chapter.title, "url": url],
+            forKeyedSubscript: "chapter" as NSString
+        )
+        return PaginatedPage(
+            analyzer: RuleAnalyzer(
+                content: body,
+                baseUrl: baseURL,
+                bookSource: source,
+                jsEngine: engine
+            ),
+            baseURL: baseURL,
+            extractedText: extractedText
+        )
+    }
+
+    /// 单页正文清洗：只做页面自己的事，替换净化留给拼接后的整段。
+    private func cleanPage(
+        _ analyzer: RuleAnalyzer,
+        rule: ContentRule,
+        baseURL: String,
+        extractedText: String? = nil
+    ) -> String {
+        var text = extractedText ?? ContentRuleExtractor.text(from: analyzer, rule: rule)
+        text = Self.preserveReviewMarkers(text)
+        text = Self.applyReplaceRegex(rule.replaceRegex, to: text)
+        return BookContentService.cleanHtml(text, baseUrl: baseURL)
+    }
+
+    private static func applyReplaceRegex(_ spec: String?, to text: String) -> String {
+        guard let spec, !spec.isEmpty else { return text }
+        let fields = spec.components(separatedBy: "##")
+        guard fields.count >= 2,
+              let regex = try? NSRegularExpression(pattern: fields[0]) else {
+            return text
+        }
+        let range = NSRange(location: 0, length: (text as NSString).length)
+        return regex.stringByReplacingMatches(in: text, options: [], range: range, withTemplate: fields[1])
     }
 
     private static let reviewCommentMarkerStart = "\u{E000}C\u{1F}"
@@ -739,10 +1144,20 @@ public class BookContentService {
     }
 
     // MARK: - Chapter Content Cache
-    private func chapterCacheDirectory(bookUrl: String) -> URL {
-        let base = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
-        let folder = base
+    /// 正文清洗规则变了就换命名空间：老版本缓存下来的脏正文否则会一直被读出来。
+    private static let chapterCacheNamespace = "v2"
+
+    private static var chapterCacheRoot: URL {
+        FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("ChapterCache", isDirectory: true)
+    }
+
+    private static var chapterCacheVersionedRoot: URL {
+        chapterCacheRoot.appendingPathComponent(chapterCacheNamespace, isDirectory: true)
+    }
+
+    private func chapterCacheDirectory(bookUrl: String) -> URL {
+        let folder = Self.chapterCacheVersionedRoot
             .appendingPathComponent(CryptoUtils.md5(bookUrl), isDirectory: true)
         if !FileManager.default.fileExists(atPath: folder.path) {
             try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
@@ -772,8 +1187,7 @@ public class BookContentService {
 
     /// 清掉所有书的章节缓存。设置里「清理阅读缓存」走这里。
     public func clearAllChapterCaches() {
-        let cacheBase = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
-        try? FileManager.default.removeItem(at: cacheBase.appendingPathComponent("ChapterCache"))
+        try? FileManager.default.removeItem(at: Self.chapterCacheRoot)
     }
 
     public func hasCachedChapter(bookUrl: String, chapterIndex: Int) -> Bool {
@@ -829,9 +1243,7 @@ public class BookContentService {
 
     /// 所有书的缓存章节总数，清理前给用户一个确认数字。
     public func getTotalCacheCount() -> Int {
-        let cacheBase = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
-        let root = cacheBase.appendingPathComponent("ChapterCache")
-        guard let dirs = try? FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: nil) else { return 0 }
+        guard let dirs = try? FileManager.default.contentsOfDirectory(at: Self.chapterCacheVersionedRoot, includingPropertiesForKeys: nil) else { return 0 }
         var total = 0
         for dir in dirs {
             let files = (try? FileManager.default.contentsOfDirectory(atPath: dir.path)) ?? []
@@ -876,6 +1288,20 @@ public class BookContentService {
                 }
             }
         }
+
+        // 成对标签里的脚本/样式不能只删标签：`@html` 类正文规则会把整段 JS 留在正文里。
+        text = text.replacingOccurrences(
+            of: "(?is)<script\\b[^>]*>.*?</script\\s*>", with: "", options: .regularExpression
+        )
+        text = text.replacingOccurrences(
+            of: "(?is)<style\\b[^>]*>.*?</style\\s*>", with: "", options: .regularExpression
+        )
+        text = text.replacingOccurrences(
+            of: "(?is)<noscript\\b[^>]*>.*?</noscript\\s*>", with: "", options: .regularExpression
+        )
+        text = text.replacingOccurrences(
+            of: "(?s)<!--.*?-->", with: "", options: .regularExpression
+        )
 
         // Convert <br> and <br/> to newlines
         text = text.replacingOccurrences(of: "(?i)<br\\s*/?>", with: "\n", options: .regularExpression)
@@ -1021,6 +1447,48 @@ public enum TextReplaceRules {
             result = result.replacingOccurrences(of: rule.from, with: rule.to)
         }
         return result
+    }
+}
+
+// MARK: - 正文规则与分页规划
+
+enum ContentRuleExtractor {
+    /// `content` 取不到正文时回退 `subContent`；两者都空才算空。
+    static func text(from analyzer: RuleAnalyzer, rule: ContentRule) -> String {
+        let primary = analyzer.getString(rule.content)
+        if !primary.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return primary
+        }
+        return analyzer.getString(rule.subContent)
+    }
+}
+
+/// 正文分页的纯逻辑：去重、页数上限、整体 deadline 判定。
+enum ContentPagination {
+    static let pageLimit = 10
+    static let totalDeadline: TimeInterval = 30
+
+    static func nextURLs(
+        candidates: [String],
+        visited: Set<String>,
+        fetchedCount: Int,
+        limit: Int = pageLimit
+    ) -> [String] {
+        guard fetchedCount < limit else { return [] }
+        var seen = visited
+        var urls: [String] = []
+        for raw in candidates {
+            let address = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !address.isEmpty, !seen.contains(address) else { continue }
+            seen.insert(address)
+            urls.append(address)
+            if fetchedCount + urls.count >= limit { break }
+        }
+        return urls
+    }
+
+    static func remaining(_ deadline: Date, now: Date = Date()) -> TimeInterval {
+        max(0, deadline.timeIntervalSince(now))
     }
 }
 

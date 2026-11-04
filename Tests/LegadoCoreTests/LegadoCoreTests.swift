@@ -982,6 +982,87 @@ final class LegadoCoreTests: XCTestCase {
         XCTAssertTrue(chapters.last!.title.contains("第27话"))
         XCTAssertEqual(chapters.last!.index, chapters.count - 1)
     }
+
+    func testChapterPositionMapperMatchesNormalizedTitle() throws {
+        let titles = ["第一章 开端", "第二章　相遇", "第三章 告别"]
+        XCTAssertEqual(
+            ChapterPositionMapper.resolve(
+                oldTitle: "第二章 相遇",
+                oldIndex: 1,
+                oldCount: 3,
+                newTitles: titles
+            ),
+            1
+        )
+        XCTAssertEqual(
+            ChapterPositionMapper.resolve(
+                oldTitle: "「第三章 告别」",
+                oldIndex: 0,
+                oldCount: 3,
+                newTitles: titles
+            ),
+            2
+        )
+    }
+
+    func testChapterPositionMapperFallsBackToRatio() throws {
+        let titles = (1...20).map { "第\($0)章" }
+        XCTAssertEqual(
+            ChapterPositionMapper.resolve(
+                oldTitle: "不存在的章节",
+                oldIndex: 5,
+                oldCount: 10,
+                newTitles: titles
+            ),
+            10
+        )
+        XCTAssertEqual(
+            ChapterPositionMapper.resolve(
+                oldTitle: nil,
+                oldIndex: 0,
+                oldCount: 10,
+                newTitles: titles
+            ),
+            0
+        )
+    }
+
+    func testChapterPositionMapperHandlesEmptyAndOutOfRange() throws {
+        XCTAssertEqual(
+            ChapterPositionMapper.resolve(oldTitle: "第一章", oldIndex: 3, oldCount: 10, newTitles: []),
+            0
+        )
+        XCTAssertEqual(
+            ChapterPositionMapper.resolve(oldTitle: nil, oldIndex: 99, oldCount: 10, newTitles: ["A", "B"]),
+            1
+        )
+        XCTAssertEqual(
+            ChapterPositionMapper.resolve(oldTitle: nil, oldIndex: -5, oldCount: 10, newTitles: ["A", "B"]),
+            0
+        )
+        XCTAssertEqual(
+            ChapterPositionMapper.resolve(oldTitle: nil, oldIndex: 5, oldCount: 0, newTitles: ["A", "B"]),
+            1
+        )
+    }
+
+    func testPinnedSourcesSortFirst() throws {
+        var pinned = BookSource(bookSourceUrl: "https://pinned.example", bookSourceName: "Pinned")
+        pinned.weight = 0
+        pinned.respondTime = 5_000
+        pinned.customOrder = -1
+
+        var heavy = BookSource(bookSourceUrl: "https://heavy.example", bookSourceName: "Heavy")
+        heavy.weight = 100
+        heavy.respondTime = 10
+
+        var light = BookSource(bookSourceUrl: "https://light.example", bookSourceName: "Light")
+        light.weight = 1
+        light.respondTime = 1_000
+
+        let ordered = [light, pinned, heavy].sorted(by: BookSource.selectionOrder)
+        XCTAssertEqual(ordered.map(\.bookSourceName), ["Pinned", "Heavy", "Light"])
+    }
 }
 
 class MockWebDAVURLProtocol: URLProtocol {

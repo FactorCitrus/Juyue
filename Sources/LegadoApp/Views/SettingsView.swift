@@ -977,7 +977,7 @@ public struct SettingsView: View {
                     columns: 2
                 )
                 if theme.overridesReaderAppearance {
-                    Text("界面主题「\(theme.choice.title)」正在接管阅读配色；切回「标准」后可单独选择阅读底色。")
+                    Text("界面主题「\(theme.choice.title)」会接管阅读配色；在阅读页「界面 → 自定义背景与文字颜色」里仍可单独设定底色。")
                         .font(.caption2)
                         .foregroundColor(theme.palette.secondaryInk)
                 }
@@ -2747,9 +2747,134 @@ struct DownloadedImportFile: Identifiable {
     let url: URL
     let fileName: String
     let displayName: String
+    /// 下载时建的临时目录；导入页关闭后整个删掉。
+    var workingDirectory: URL?
+
+    func cleanup() {
+        if let workingDirectory {
+            try? FileManager.default.removeItem(at: workingDirectory)
+        } else {
+            try? FileManager.default.removeItem(at: url)
+        }
+    }
 }
 
-/// 网页里下载下来的文件不直接猜类型，先列可导入方式让用户选。
+enum ImportDownloadError: LocalizedError {
+    case invalidResponse
+    case badStatus(Int)
+    case notText
+    case unsupportedLink
+
+    var errorDescription: String? {
+        switch self {
+        case .invalidResponse: return "服务器没有返回文件"
+        case .badStatus(let code): return "HTTP \(code)"
+        case .notText: return "返回内容不是 UTF-8 文本"
+        case .unsupportedLink: return "暂不支持这个链接"
+        }
+    }
+}
+
+/// 网页和文章正文共用：带 WebView Cookie / 当前页 Referer 下载到临时目录。
+enum ImportDownloader {
+    static func download(
+        url: URL,
+        referer: URL?,
+        cookies: [HTTPCookie] = [],
+        displayName: String
+    ) async throws -> DownloadedImportFile {
+        let (data, response) = try await URLSession.shared.data(
+            for: makeRequest(url: url, referer: referer, cookies: cookies)
+        )
+        try validate(response)
+
+        let http = response as? HTTPURLResponse
+        let name = DownloadLinkClassifier.suggestedFileName(
+            url: url,
+            contentDisposition: http?.value(forHTTPHeaderField: "Content-Disposition"),
+            mimeType: http?.mimeType ?? response.mimeType
+        )
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("ImportDownload-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let destination = directory.appendingPathComponent(name)
+        try data.write(to: destination, options: .atomic)
+        return DownloadedImportFile(
+            url: destination,
+            fileName: name,
+            displayName: displayName,
+            workingDirectory: directory
+        )
+    }
+
+    static func loadText(from url: URL, referer: URL?) async throws -> String {
+        let (data, response) = try await URLSession.shared.data(
+            for: makeRequest(url: url, referer: referer, cookies: [])
+        )
+        try validate(response)
+        guard let text = String(data: data, encoding: .utf8) else {
+            throw ImportDownloadError.notText
+        }
+        return text
+    }
+
+    private static func makeRequest(url: URL, referer: URL?, cookies: [HTTPCookie]) -> URLRequest {
+        var request = URLRequest(url: url)
+        request.timeoutInterval = 60
+        request.setValue(NetworkClient.defaultUserAgent, forHTTPHeaderField: "User-Agent")
+        if let referer {
+            request.setValue(referer.absoluteString, forHTTPHeaderField: "Referer")
+        }
+        var merged: [String: HTTPCookie] = [:]
+        for cookie in HTTPCookieStorage.shared.cookies(for: url) ?? [] {
+            merged["\(cookie.name)|\(cookie.domain)|\(cookie.path)"] = cookie
+        }
+        for cookie in cookies {
+            merged["\(cookie.name)|\(cookie.domain)|\(cookie.path)"] = cookie
+        }
+        for (key, value) in HTTPCookie.requestHeaderFields(with: Array(merged.values)) {
+            request.setValue(value, forHTTPHeaderField: key)
+        }
+        return request
+    }
+
+    private static func validate(_ response: URLResponse) throws {
+        guard let http = response as? HTTPURLResponse else {
+            throw ImportDownloadError.invalidResponse
+        }
+        guard (200..<400).contains(http.statusCode) else {
+            throw ImportDownloadError.badStatus(http.statusCode)
+        }
+    }
+}
+
+/// 正文里的 legado:// / juyue://import/... 深链。
+enum RemoteSourceImporter {
+    @MainActor
+    static func importSource(route: String, sourceURL: String, referer: URL?) async throws -> String {
+        guard let url = URL(string: sourceURL) else {
+            throw ImportDownloadError.unsupportedLink
+        }
+        let text = try await ImportDownloader.loadText(from: url, referer: referer)
+        switch route {
+        case "rssSource":
+            let sources = try SubscribeSourceService.decodeSources(from: text)
+            guard !sources.isEmpty else {
+                throw NSError(domain: "Import", code: 4,
+                              userInfo: [NSLocalizedDescriptionKey: "没读到订阅源"])
+            }
+            let merged = SubscribeSourceStore.shared.merge(sources)
+            return "订阅源已更新：新增 \(merged.added) 个，更新 \(merged.updated) 个。"
+        case "bookSource":
+            let count = try BookStore.shared.importSources(json: text)
+            return "书源已导入：新增或更新 \(count) 个。"
+        default:
+            throw ImportDownloadError.unsupportedLink
+        }
+    }
+}
+
+/// 下载下来的文件先逐条识别，再让用户勾选要导入哪些类型。
 struct DownloadedImportSheet: View {
     let sourceName: String
     let file: DownloadedImportFile
@@ -2757,63 +2882,24 @@ struct DownloadedImportSheet: View {
 
     @Environment(\.dismiss) private var dismiss
     @Environment(\.appTheme) private var theme
+    @State private var scan: ImportScanResult?
+    @State private var selectedKinds: Set<ImportAssetKind> = []
     @State private var message: String?
     @State private var importing = false
-    /// 备份包点一下就恢复，误触代价太大；先弹一次确认。
+    /// 备份包一导入就会合并数据，先弹一次确认。
     @State private var showBackupConfirm = false
+    @State private var didCleanup = false
 
-    private enum ImportKind: String, Identifiable {
-        case bookSource = "书源 JSON"
-        case subscribeSource = "订阅源 JSON"
-        case purifier = "净化规则"
-        case book = "书籍文件"
-        case font = "字体"
-        case backup = "备份包"
-
-        var id: String { rawValue }
-        var symbol: String {
-            switch self {
-            case .bookSource: return "square.stack.3d.up"
-            case .subscribeSource: return "dot.radiowaves.left.and.right"
-            case .purifier: return "wand.and.stars"
-            case .book: return "book.closed"
-            case .font: return "textformat"
-            case .backup: return "externaldrive"
-            }
+    private var assetRows: [ImportAsset] {
+        if let scan, !scan.orderedAssets.isEmpty {
+            return scan.orderedAssets
         }
+        // 认不出来时保留旧的“当书籍导入”兜底。
+        return [ImportAsset(kind: .book, files: [file.url])]
     }
 
-    private var candidates: [ImportKind] {
-        let ext = file.url.pathExtension.lowercased()
-        if ["ttf", "otf", "ttc"].contains(ext) { return [.font] }
-
-        var result: [ImportKind] = []
-        if ext == "zip" { result.append(.backup) }
-        if ["epub", "pdf", "mobi", "azw3", "cbz", "cb7"].contains(ext) {
-            result.append(.book)
-        }
-        if ["json", "txt"].contains(ext), let text = try? String(contentsOf: file.url, encoding: .utf8) {
-            if ReplacementRulesView.parseRules(text) != nil {
-                result.append(.purifier)
-            }
-            let data = Data(text.utf8)
-            if (try? JSONDecoder().decode([BookSource].self, from: data)) != nil {
-                result.append(.bookSource)
-            }
-            if let sources = try? SubscribeSourceService.decodeSources(from: text),
-               let first = sources.first,
-               first.ruleArticles != nil || first.sortUrl != nil || first.sourceIcon != nil {
-                result.append(.subscribeSource)
-            }
-            if ext == "txt" {
-                if !result.contains(.purifier) { result.append(.purifier) }
-                result.append(.book)
-            }
-        }
-        if result.isEmpty {
-            result.append(.book)
-        }
-        return result
+    private var importButtonTitle: String {
+        importing ? "导入中…" : "导入所选（\(selectedKinds.count)）"
     }
 
     var body: some View {
@@ -2835,33 +2921,58 @@ struct DownloadedImportSheet: View {
                 }
                 .appThemedRows()
 
-                Section(header: Text("选择导入方式")) {
-                    ForEach(candidates) { kind in
-                        Button {
-                            if kind == .backup {
-                                showBackupConfirm = true
-                            } else {
-                                importFile(as: kind)
-                            }
-                        } label: {
-                            HStack(spacing: 12) {
-                                Image(systemName: kind.symbol)
-                                    .foregroundColor(theme.palette.accent)
-                                    .frame(width: 26)
-                                Text(kind.rawValue)
-                                    .foregroundColor(theme.palette.ink)
-                                Spacer()
-                                if importing {
-                                    ProgressView().controlSize(.small)
-                                } else {
-                                    Image(systemName: "chevron.right")
-                                        .font(.caption)
-                                        .foregroundColor(theme.palette.secondaryInk)
-                                }
-                            }
-                            .padding(.vertical, 3)
+                Section(header: Text("选择要导入的内容")) {
+                    if scan == nil {
+                        HStack(spacing: 10) {
+                            ProgressView()
+                            Text("正在识别文件…")
+                                .font(.caption)
+                                .foregroundColor(theme.palette.secondaryInk)
                         }
+                    } else {
+                        ForEach(assetRows) { asset in
+                            Button {
+                                toggle(asset.kind)
+                            } label: {
+                                HStack(spacing: 12) {
+                                    Image(systemName: selectedKinds.contains(asset.kind)
+                                          ? "checkmark.circle.fill" : "circle")
+                                        .foregroundColor(selectedKinds.contains(asset.kind)
+                                                         ? theme.palette.accent : theme.palette.secondaryInk)
+                                    Image(systemName: asset.kind.symbol)
+                                        .foregroundColor(theme.palette.accent)
+                                        .frame(width: 24)
+                                    Text(asset.kind.title)
+                                        .foregroundColor(theme.palette.ink)
+                                    Spacer()
+                                    if asset.isApproximate {
+                                        Text("按行识别")
+                                            .font(.caption2)
+                                            .foregroundColor(theme.palette.secondaryInk)
+                                    } else {
+                                        Text("\(asset.count) 个")
+                                            .font(theme.typography.mono)
+                                            .foregroundColor(theme.palette.secondaryInk)
+                                    }
+                                }
+                                .padding(.vertical, 3)
+                            }
+                            .disabled(importing)
+                        }
+
+                        Button("全选") {
+                            selectedKinds = Set(assetRows.map(\.kind))
+                        }
+                        .font(.caption)
                         .disabled(importing)
+                    }
+
+                    if let scan, !scan.notes.isEmpty {
+                        ForEach(scan.notes, id: \.self) { note in
+                            Text(note)
+                                .font(.caption2)
+                                .foregroundColor(theme.palette.warning)
+                        }
                     }
                 }
                 .appThemedRows()
@@ -2883,7 +2994,7 @@ struct DownloadedImportSheet: View {
             .alert("恢复这个备份包？", isPresented: $showBackupConfirm) {
                 Button("取消", role: .cancel) {}
                 Button("恢复") {
-                    importFile(as: .backup)
+                    performImport()
                 }
             } message: {
                 Text("备份里的书、书源和设置会合并进当前数据，已有内容不会被清空。")
@@ -2893,46 +3004,104 @@ struct DownloadedImportSheet: View {
                     Button("关闭") { dismiss() }
                 }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("完成") { dismiss() }
-                        .disabled(message == nil)
+                    Button(importButtonTitle) { beginImport() }
+                        .disabled(importing || scan == nil || selectedKinds.isEmpty)
                 }
             }
+            .task { await prepare() }
+            .onDisappear { cleanupIfNeeded() }
         }
     }
 
-    private func importFile(as kind: ImportKind) {
+    private func prepare() async {
+        guard scan == nil else { return }
+        let fileURL = file.url
+        let result = await Task.detached(priority: .userInitiated) {
+            ImportSniffer.scan(fileURL: fileURL)
+        }.value
+        scan = result
+        // 备份包不默认勾选：带来源文件的 zip 不应该一点就恢复整个备份。
+        let rows = result.orderedAssets
+        let contentKinds = rows.map(\.kind).filter { $0 != .backup }
+        if contentKinds.isEmpty, rows.contains(where: { $0.kind == .backup }) {
+            selectedKinds = [.backup]
+        } else {
+            selectedKinds = Set(contentKinds.isEmpty ? [.book] : contentKinds)
+        }
+    }
+
+    private func toggle(_ kind: ImportAssetKind) {
+        guard !importing else { return }
+        if selectedKinds.contains(kind) {
+            selectedKinds.remove(kind)
+        } else {
+            selectedKinds.insert(kind)
+        }
+    }
+
+    private func beginImport() {
+        guard !importing, !selectedKinds.isEmpty else { return }
+        if selectedKinds.contains(.backup) {
+            showBackupConfirm = true
+        } else {
+            performImport()
+        }
+    }
+
+    private func cleanupIfNeeded() {
+        guard !didCleanup else { return }
+        didCleanup = true
+        if let directory = scan?.extractionDirectory {
+            try? FileManager.default.removeItem(at: directory)
+        }
+        file.cleanup()
+    }
+
+    private func performImport() {
+        guard let scan else { return }
+        let kinds = selectedKinds
         importing = true
         message = nil
         Task { @MainActor in
             do {
-                let result: String
-                switch kind {
-                case .bookSource:
-                    result = "书源导入：\(try BookStore.shared.importSources(json: try textContent())) 个"
-                case .subscribeSource:
-                    let sources = try SubscribeSourceService.decodeSources(from: try textContent())
+                var parts: [String] = []
+                if kinds.contains(.bookSource), let asset = scan.assets[.bookSource] {
+                    let count = try BookStore.shared.importSources(json: jsonArray(asset.items))
+                    parts.append("书源 \(count) 个")
+                }
+                if kinds.contains(.subscribeSource), let asset = scan.assets[.subscribeSource] {
+                    let sources = try SubscribeSourceService.decodeSources(from: jsonArray(asset.items))
                     let merged = SubscribeSourceStore.shared.merge(sources)
-                    result = "订阅源导入：新增 \(merged.added) 个，更新 \(merged.updated) 个"
-                case .purifier:
-                    let rules = try purifierRules()
+                    parts.append("订阅源 新增 \(merged.added) / 更新 \(merged.updated)")
+                }
+                if kinds.contains(.purifier), let asset = scan.assets[.purifier] {
+                    let rules = try purifierRules(from: asset)
                     var added = 0
                     for rule in rules where !TextPurifier.shared.rules.contains(where: {
-                        $0.pattern == rule.pattern && $0.replacement == rule.replacement && $0.isRegex == rule.isRegex
+                        $0.pattern == rule.pattern
+                            && $0.replacement == rule.replacement
+                            && $0.isRegex == rule.isRegex
                     }) {
                         TextPurifier.shared.rules.append(rule)
                         added += 1
                     }
-                    result = "净化规则导入：新增 \(added) 条"
-                case .book:
-                    let book = try BookStore.shared.importFile(from: file.url)
-                    result = "书籍已加入书架：\(book.name)"
-                case .font:
-                    guard let font = CustomFontService.shared.importFont(from: file.url) else {
-                        throw NSError(domain: "Import", code: 1,
-                                      userInfo: [NSLocalizedDescriptionKey: "字体注册失败，只支持 ttf / otf / ttc"])
+                    parts.append("净化规则 \(added) 条")
+                }
+                if kinds.contains(.book), let asset = scan.assets[.book] {
+                    var imported = 0
+                    for url in asset.files where (try? BookStore.shared.importFile(from: url)) != nil {
+                        imported += 1
                     }
-                    result = "字体已导入：\(font.displayName)"
-                case .backup:
+                    parts.append("书籍 \(imported) 本")
+                }
+                if kinds.contains(.font), let asset = scan.assets[.font] {
+                    var imported = 0
+                    for url in asset.files where CustomFontService.shared.importFont(from: url) != nil {
+                        imported += 1
+                    }
+                    parts.append("字体 \(imported) 个")
+                }
+                if kinds.contains(.backup) {
                     let restored = try WebDAVService.shared.restoreFromZip(fileUrl: file.url)
                     let counts = BookStore.shared.restoreFromWebDAV(
                         books: restored.books, sources: restored.sources, mode: .merge
@@ -2942,9 +3111,10 @@ struct DownloadedImportSheet: View {
                        let payload = AppSettingsBackup.decode(data) {
                         settingsNote = "，设置：\(AppSettingsBackup.apply(payload, mode: .merge))"
                     }
-                    result = "备份恢复：新增书籍 \(counts.booksAdded) 本，新增书源 \(counts.sourcesAdded) 个\(settingsNote)"
+                    parts.append("备份恢复：新增书籍 \(counts.booksAdded) 本，新增书源 \(counts.sourcesAdded) 个\(settingsNote)")
                 }
                 importing = false
+                let result = parts.isEmpty ? "没有可导入的内容" : "导入完成：" + parts.joined(separator: "，")
                 message = result
                 onFinish(result)
             } catch {
@@ -2952,6 +3122,11 @@ struct DownloadedImportSheet: View {
                 message = "导入失败：\(error.localizedDescription)"
             }
         }
+    }
+
+    private func jsonArray(_ items: [Data]) -> String {
+        let objects = items.compactMap { String(data: $0, encoding: .utf8) }
+        return "[" + objects.joined(separator: ",") + "]"
     }
 
     private func textContent() throws -> String {
@@ -2962,7 +3137,16 @@ struct DownloadedImportSheet: View {
         return text
     }
 
-    private func purifierRules() throws -> [ReplacementRule] {
+    private func purifierRules(from asset: ImportAsset) throws -> [ReplacementRule] {
+        if !asset.items.isEmpty,
+           let rules = ReplacementRulesView.parseRules(jsonArray(asset.items)),
+           !rules.isEmpty {
+            return rules
+        }
+        return try purifierRulesFromText()
+    }
+
+    private func purifierRulesFromText() throws -> [ReplacementRule] {
         let text = try textContent()
         if let rules = ReplacementRulesView.parseRules(text), !rules.isEmpty {
             return rules
@@ -3036,6 +3220,7 @@ struct SubscribeSourceWebView: View {
             ZStack {
                 SubscribeSourceWebViewBox(
                     webView: webView,
+                    sourceName: source.sourceName,
                     onLoadingChanged: { loading in
                         isLoading = loading
                         updateNavigationState()
@@ -3048,7 +3233,14 @@ struct SubscribeSourceWebView: View {
                     },
                     onLegadoURL: handleLegadoURL,
                     onExternalURL: openExternal,
-                    onDownloadURL: downloadFile
+                    onDownloadedFile: { file in
+                        isLoading = false
+                        pendingImportFile = file
+                    },
+                    onDownloadFailed: { message in
+                        isLoading = false
+                        statusMessage = "下载失败：\(message)"
+                    }
                 )
 
                 if loadError != nil {
@@ -3171,7 +3363,8 @@ struct SubscribeSourceWebView: View {
 
     private func handleLegadoURL(_ url: URL) {
         guard let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
-              components.scheme?.lowercased() == "legado" else {
+              let scheme = components.scheme?.lowercased(),
+              scheme == "juyue" || scheme == "legado" else {
             return
         }
         let route = components.path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
@@ -3265,45 +3458,19 @@ struct SubscribeSourceWebView: View {
         NSWorkspace.shared.open(url)
         #endif
     }
-
-    private func downloadFile(_ url: URL) {
-        isLoading = true
-        Task {
-            do {
-                let (data, response) = try await URLSession.shared.data(from: url)
-                let suggested = response.suggestedFilename
-                    ?? url.lastPathComponent
-                let safeName = suggested.isEmpty ? "download" : suggested
-                let tempURL = FileManager.default.temporaryDirectory
-                    .appendingPathComponent(UUID().uuidString + "-" + safeName)
-                try data.write(to: tempURL)
-                await MainActor.run {
-                    isLoading = false
-                    pendingImportFile = DownloadedImportFile(
-                        url: tempURL,
-                        fileName: safeName,
-                        displayName: source.sourceName
-                    )
-                }
-            } catch {
-                await MainActor.run {
-                    isLoading = false
-                    statusMessage = "下载失败：\(error.localizedDescription)"
-                }
-            }
-        }
-    }
 }
 
 #if os(iOS)
 private struct SubscribeSourceWebViewBox: UIViewRepresentable {
     let webView: WKWebView
+    let sourceName: String
     let onLoadingChanged: (Bool) -> Void
     let onTitleChanged: (String) -> Void
     let onURLChanged: (URL?) -> Void
     let onLegadoURL: (URL) -> Void
     let onExternalURL: (URL) -> Void
-    let onDownloadURL: (URL) -> Void
+    let onDownloadedFile: (DownloadedImportFile) -> Void
+    let onDownloadFailed: (String) -> Void
 
     func makeUIView(context: Context) -> WKWebView {
         webView.navigationDelegate = context.coordinator
@@ -3316,8 +3483,10 @@ private struct SubscribeSourceWebViewBox: UIViewRepresentable {
         Coordinator(parent: self)
     }
 
-    final class Coordinator: NSObject, WKNavigationDelegate {
+    final class Coordinator: NSObject, WKNavigationDelegate, WKDownloadDelegate {
         private let parent: SubscribeSourceWebViewBox
+        private var activeDownloads: [WKDownload] = []
+        private var destinations: [ObjectIdentifier: (name: String, file: URL, directory: URL)] = [:]
 
         init(parent: SubscribeSourceWebViewBox) {
             self.parent = parent
@@ -3326,36 +3495,118 @@ private struct SubscribeSourceWebViewBox: UIViewRepresentable {
         func webView(
             _ webView: WKWebView,
             decidePolicyFor navigationAction: WKNavigationAction,
-            decisionHandler: @escaping (WKNavigationActionPolicy) -> Void
+            preferences: WKWebpagePreferences,
+            decisionHandler: @escaping (WKNavigationActionPolicy, WKWebpagePreferences) -> Void
         ) {
             if let url = navigationAction.request.url {
                 let scheme = url.scheme?.lowercased() ?? ""
-                if scheme == "legado" {
+                if scheme == "juyue" || scheme == "legado" {
                     parent.onLegadoURL(url)
-                    decisionHandler(.cancel)
+                    decisionHandler(.cancel, preferences)
+                    return
+                }
+                if navigationAction.shouldPerformDownload {
+                    decisionHandler(.download, preferences)
                     return
                 }
                 if !scheme.isEmpty && !["http", "https", "about", "data", "file", "blob"].contains(scheme) {
                     parent.onExternalURL(url)
-                    decisionHandler(.cancel)
+                    decisionHandler(.cancel, preferences)
                     return
                 }
-                if Self.isDownloadable(url) {
-                    parent.onDownloadURL(url)
-                    decisionHandler(.cancel)
+                if (scheme == "http" || scheme == "https"), DownloadLinkClassifier.isDownloadable(url) {
+                    decisionHandler(.download, preferences)
+                    return
+                }
+            }
+            decisionHandler(.allow, preferences)
+        }
+
+        func webView(
+            _ webView: WKWebView,
+            decidePolicyFor navigationResponse: WKNavigationResponse,
+            decisionHandler: @escaping (WKNavigationResponsePolicy) -> Void
+        ) {
+            if navigationResponse.isForMainFrame {
+                let http = navigationResponse.response as? HTTPURLResponse
+                let disposition = http?.value(forHTTPHeaderField: "Content-Disposition")
+                let mime = http?.mimeType ?? navigationResponse.response.mimeType
+                if DownloadLinkClassifier.isAttachment(disposition)
+                    || DownloadLinkClassifier.isBinaryMIME(mime)
+                    || !navigationResponse.canShowMIMEType {
+                    decisionHandler(.download)
                     return
                 }
             }
             decisionHandler(.allow)
         }
 
-        private static let downloadExtensions: Set<String> = [
-            "txt", "json", "ttf", "otf", "ttc", "zip", "epub", "pdf",
-            "mobi", "azw3", "cbz", "cb7"
-        ]
+        func webView(_ webView: WKWebView, navigationAction: WKNavigationAction, didBecome download: WKDownload) {
+            start(download)
+        }
 
-        private static func isDownloadable(_ url: URL) -> Bool {
-            downloadExtensions.contains(url.pathExtension.lowercased())
+        func webView(_ webView: WKWebView, navigationResponse: WKNavigationResponse, didBecome download: WKDownload) {
+            start(download)
+        }
+
+        private func start(_ download: WKDownload) {
+            download.delegate = self
+            activeDownloads.append(download)
+            parent.onLoadingChanged(true)
+        }
+
+        func download(
+            _ download: WKDownload,
+            decideDestinationUsing response: URLResponse,
+            suggestedFilename: String,
+            completionHandler: @escaping (URL?) -> Void
+        ) {
+            let http = response as? HTTPURLResponse
+            let disposition = http?.value(forHTTPHeaderField: "Content-Disposition")
+            let mime = http?.mimeType ?? response.mimeType
+            var name = DownloadLinkClassifier.suggestedFileName(
+                url: response.url ?? URL(fileURLWithPath: suggestedFilename),
+                contentDisposition: disposition,
+                mimeType: mime,
+                fallback: suggestedFilename
+            )
+            if (name as NSString).pathExtension.isEmpty,
+               let ext = DownloadLinkClassifier.fileExtension(forMIME: mime) {
+                name += ".\(ext)"
+            }
+            let directory = FileManager.default.temporaryDirectory
+                .appendingPathComponent("ImportDownload-\(UUID().uuidString)", isDirectory: true)
+            do {
+                try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            } catch {
+                completionHandler(nil)
+                return
+            }
+            let destination = directory.appendingPathComponent(name)
+            destinations[ObjectIdentifier(download)] = (name, destination, directory)
+            completionHandler(destination)
+        }
+
+        func downloadDidFinish(_ download: WKDownload) {
+            let id = ObjectIdentifier(download)
+            activeDownloads.removeAll { $0 === download }
+            guard let info = destinations.removeValue(forKey: id) else { return }
+            let file = DownloadedImportFile(
+                url: info.file,
+                fileName: info.name,
+                displayName: parent.sourceName,
+                workingDirectory: info.directory
+            )
+            parent.onDownloadedFile(file)
+        }
+
+        func download(_ download: WKDownload, didFailWithError error: Error, resumeData: Data?) {
+            let id = ObjectIdentifier(download)
+            activeDownloads.removeAll { $0 === download }
+            if let info = destinations.removeValue(forKey: id) {
+                try? FileManager.default.removeItem(at: info.directory)
+            }
+            parent.onDownloadFailed(error.localizedDescription)
         }
 
         func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
@@ -3382,12 +3633,14 @@ private struct SubscribeSourceWebViewBox: UIViewRepresentable {
 #elseif os(macOS)
 private struct SubscribeSourceWebViewBox: NSViewRepresentable {
     let webView: WKWebView
+    let sourceName: String
     let onLoadingChanged: (Bool) -> Void
     let onTitleChanged: (String) -> Void
     let onURLChanged: (URL?) -> Void
     let onLegadoURL: (URL) -> Void
     let onExternalURL: (URL) -> Void
-    let onDownloadURL: (URL) -> Void
+    let onDownloadedFile: (DownloadedImportFile) -> Void
+    let onDownloadFailed: (String) -> Void
 
     func makeNSView(context: Context) -> WKWebView {
         webView.navigationDelegate = context.coordinator
@@ -3400,8 +3653,10 @@ private struct SubscribeSourceWebViewBox: NSViewRepresentable {
         Coordinator(parent: self)
     }
 
-    final class Coordinator: NSObject, WKNavigationDelegate {
+    final class Coordinator: NSObject, WKNavigationDelegate, WKDownloadDelegate {
         private let parent: SubscribeSourceWebViewBox
+        private var activeDownloads: [WKDownload] = []
+        private var destinations: [ObjectIdentifier: (name: String, file: URL, directory: URL)] = [:]
 
         init(parent: SubscribeSourceWebViewBox) {
             self.parent = parent
@@ -3410,36 +3665,118 @@ private struct SubscribeSourceWebViewBox: NSViewRepresentable {
         func webView(
             _ webView: WKWebView,
             decidePolicyFor navigationAction: WKNavigationAction,
-            decisionHandler: @escaping (WKNavigationActionPolicy) -> Void
+            preferences: WKWebpagePreferences,
+            decisionHandler: @escaping (WKNavigationActionPolicy, WKWebpagePreferences) -> Void
         ) {
             if let url = navigationAction.request.url {
                 let scheme = url.scheme?.lowercased() ?? ""
-                if scheme == "legado" {
+                if scheme == "juyue" || scheme == "legado" {
                     parent.onLegadoURL(url)
-                    decisionHandler(.cancel)
+                    decisionHandler(.cancel, preferences)
+                    return
+                }
+                if navigationAction.shouldPerformDownload {
+                    decisionHandler(.download, preferences)
                     return
                 }
                 if !scheme.isEmpty && !["http", "https", "about", "data", "file", "blob"].contains(scheme) {
                     parent.onExternalURL(url)
-                    decisionHandler(.cancel)
+                    decisionHandler(.cancel, preferences)
                     return
                 }
-                if Self.isDownloadable(url) {
-                    parent.onDownloadURL(url)
-                    decisionHandler(.cancel)
+                if (scheme == "http" || scheme == "https"), DownloadLinkClassifier.isDownloadable(url) {
+                    decisionHandler(.download, preferences)
+                    return
+                }
+            }
+            decisionHandler(.allow, preferences)
+        }
+
+        func webView(
+            _ webView: WKWebView,
+            decidePolicyFor navigationResponse: WKNavigationResponse,
+            decisionHandler: @escaping (WKNavigationResponsePolicy) -> Void
+        ) {
+            if navigationResponse.isForMainFrame {
+                let http = navigationResponse.response as? HTTPURLResponse
+                let disposition = http?.value(forHTTPHeaderField: "Content-Disposition")
+                let mime = http?.mimeType ?? navigationResponse.response.mimeType
+                if DownloadLinkClassifier.isAttachment(disposition)
+                    || DownloadLinkClassifier.isBinaryMIME(mime)
+                    || !navigationResponse.canShowMIMEType {
+                    decisionHandler(.download)
                     return
                 }
             }
             decisionHandler(.allow)
         }
 
-        private static let downloadExtensions: Set<String> = [
-            "txt", "json", "ttf", "otf", "ttc", "zip", "epub", "pdf",
-            "mobi", "azw3", "cbz", "cb7"
-        ]
+        func webView(_ webView: WKWebView, navigationAction: WKNavigationAction, didBecome download: WKDownload) {
+            start(download)
+        }
 
-        private static func isDownloadable(_ url: URL) -> Bool {
-            downloadExtensions.contains(url.pathExtension.lowercased())
+        func webView(_ webView: WKWebView, navigationResponse: WKNavigationResponse, didBecome download: WKDownload) {
+            start(download)
+        }
+
+        private func start(_ download: WKDownload) {
+            download.delegate = self
+            activeDownloads.append(download)
+            parent.onLoadingChanged(true)
+        }
+
+        func download(
+            _ download: WKDownload,
+            decideDestinationUsing response: URLResponse,
+            suggestedFilename: String,
+            completionHandler: @escaping (URL?) -> Void
+        ) {
+            let http = response as? HTTPURLResponse
+            let disposition = http?.value(forHTTPHeaderField: "Content-Disposition")
+            let mime = http?.mimeType ?? response.mimeType
+            var name = DownloadLinkClassifier.suggestedFileName(
+                url: response.url ?? URL(fileURLWithPath: suggestedFilename),
+                contentDisposition: disposition,
+                mimeType: mime,
+                fallback: suggestedFilename
+            )
+            if (name as NSString).pathExtension.isEmpty,
+               let ext = DownloadLinkClassifier.fileExtension(forMIME: mime) {
+                name += ".\(ext)"
+            }
+            let directory = FileManager.default.temporaryDirectory
+                .appendingPathComponent("ImportDownload-\(UUID().uuidString)", isDirectory: true)
+            do {
+                try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            } catch {
+                completionHandler(nil)
+                return
+            }
+            let destination = directory.appendingPathComponent(name)
+            destinations[ObjectIdentifier(download)] = (name, destination, directory)
+            completionHandler(destination)
+        }
+
+        func downloadDidFinish(_ download: WKDownload) {
+            let id = ObjectIdentifier(download)
+            activeDownloads.removeAll { $0 === download }
+            guard let info = destinations.removeValue(forKey: id) else { return }
+            let file = DownloadedImportFile(
+                url: info.file,
+                fileName: info.name,
+                displayName: parent.sourceName,
+                workingDirectory: info.directory
+            )
+            parent.onDownloadedFile(file)
+        }
+
+        func download(_ download: WKDownload, didFailWithError error: Error, resumeData: Data?) {
+            let id = ObjectIdentifier(download)
+            activeDownloads.removeAll { $0 === download }
+            if let info = destinations.removeValue(forKey: id) {
+                try? FileManager.default.removeItem(at: info.directory)
+            }
+            parent.onDownloadFailed(error.localizedDescription)
         }
 
         func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
@@ -4537,6 +4874,24 @@ struct SubscribeArticleView: View {
     @State private var content = ""
     @State private var isLoading = true
     @State private var isFromCache = false
+    @State private var isDownloading = false
+    @State private var pendingImportFile: DownloadedImportFile?
+    @State private var statusMessage: String?
+
+    private var articleContent: AttributedString {
+        var attributed = AttributedString(content)
+        guard let base = URL(string: article.link) else { return attributed }
+        for link in ArticleLinkExtractor.links(in: content, baseURL: base) {
+            guard let stringRange = Range(link.range, in: content),
+                  let indexRange = Range<AttributedString.Index>(stringRange, in: attributed) else {
+                continue
+            }
+            attributed[indexRange].link = link.url
+            attributed[indexRange].foregroundColor = theme.palette.accent
+            attributed[indexRange].underlineStyle = .single
+        }
+        return attributed
+    }
 
     var body: some View {
         NavigationView {
@@ -4572,13 +4927,27 @@ struct SubscribeArticleView: View {
                             .font(.caption2)
                             .foregroundColor(theme.palette.accent)
                     }
+                    if isDownloading {
+                        HStack(spacing: 6) {
+                            ProgressView().controlSize(.small)
+                            Text("正在下载…")
+                                .font(.caption2)
+                                .foregroundColor(theme.palette.secondaryInk)
+                        }
+                    }
                     if isLoading {
                         ProgressView().padding(.top, 20)
-                    } else {
-                        Text(content.isEmpty ? "没取到正文，点右上角去网页看。" : content)
+                    } else if content.isEmpty {
+                        Text("没取到正文，点右上角去网页看。")
                             .font(.system(size: 16))
                             .lineSpacing(6)
                             .foregroundColor(theme.palette.ink)
+                    } else {
+                        Text(articleContent)
+                            .font(.system(size: 16))
+                            .lineSpacing(6)
+                            .foregroundColor(theme.palette.ink)
+                            .environment(\.openURL, OpenURLAction { handleLink($0) })
                     }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -4619,6 +4988,19 @@ struct SubscribeArticleView: View {
                     }
                 }
             }
+            .alert("订阅", isPresented: Binding(
+                get: { statusMessage != nil },
+                set: { if !$0 { statusMessage = nil } }
+            )) {
+                Button("好", role: .cancel) {}
+            } message: {
+                Text(statusMessage ?? "")
+            }
+            .sheet(item: $pendingImportFile) { file in
+                DownloadedImportSheet(sourceName: source.sourceName, file: file) { result in
+                    statusMessage = result
+                }
+            }
             .task {
                 articleState.markRead(sourceUrl: source.sourceUrl, article: article)
                 if let cached = articleState.cachedContent(sourceUrl: source.sourceUrl, article: article) {
@@ -4638,6 +5020,64 @@ struct SubscribeArticleView: View {
                     )
                 }
                 isLoading = false
+            }
+        }
+    }
+
+    private func handleLink(_ url: URL) -> OpenURLAction.Result {
+        switch DownloadLinkClassifier.schemeKind(url) {
+        case .importDeepLink:
+            handleImportLink(url)
+            return .handled
+        case .data, .blob:
+            statusMessage = "这种链接由网页脚本生成，暂时下载不了。"
+            return .handled
+        case .downloadable:
+            startDownload(url)
+            return .handled
+        case .web, .externalDeepLink, .other:
+            return .systemAction
+        }
+    }
+
+    private func handleImportLink(_ url: URL) {
+        guard let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
+              components.host == "import",
+              let src = components.queryItems?.first(where: { $0.name == "src" })?.value,
+              !src.isEmpty else {
+            statusMessage = "暂不支持这个导入链接：\(url.absoluteString)"
+            return
+        }
+        let route = components.path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        Task { @MainActor in
+            do {
+                statusMessage = try await RemoteSourceImporter.importSource(
+                    route: route,
+                    sourceURL: src,
+                    referer: URL(string: article.link)
+                )
+            } catch {
+                statusMessage = "导入失败：\(error.localizedDescription)"
+            }
+        }
+    }
+
+    private func startDownload(_ url: URL) {
+        guard !isDownloading else { return }
+        isDownloading = true
+        let referer = URL(string: article.link) ?? URL(string: source.sourceUrl)
+        Task { @MainActor in
+            do {
+                let file = try await ImportDownloader.download(
+                    url: url,
+                    referer: referer,
+                    displayName: source.sourceName
+                )
+                isDownloading = false
+                pendingImportFile = file
+            } catch {
+                isDownloading = false
+                statusMessage = "下载失败：\(error.localizedDescription)"
             }
         }
     }

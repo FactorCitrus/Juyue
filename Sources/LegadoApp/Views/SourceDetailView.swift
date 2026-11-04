@@ -175,7 +175,7 @@ public struct SourceDetailView: View {
                             Text("这个源自带自定义按钮，橘阅暂时不显示。")
                         }
                         if currentSource.eventListener == true {
-                            Text("这个源用到了事件监听，橘阅暂时不支持。")
+                            Text("这个源用到了事件监听；橘阅目前只在开始 / 结束阅读时触发回调。")
                         }
                     }
                     .font(.caption2)

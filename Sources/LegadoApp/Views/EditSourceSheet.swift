@@ -555,7 +555,7 @@ struct ContentRuleEditor: View {
             RuleFieldSpec("图片样式", "imageStyle", hint: "DEFAULT / FULL", multiline: false, \.imageStyle),
             RuleFieldSpec("图片解码 JS", "imageDecode", hint: "图片解码", multiline: true, \.imageDecode),
             RuleFieldSpec("付费操作", "payAction", hint: "付费章节动作", multiline: true, \.payAction),
-            RuleFieldSpec("回调 JS", "callBackJs", hint: "正文加载完成后的回调", multiline: true, \.callBackJs)
+            RuleFieldSpec("回调 JS", "callBackJs", hint: "事件回调 JS（event 为事件名）", multiline: true, \.callBackJs)
         ])
     }
 }

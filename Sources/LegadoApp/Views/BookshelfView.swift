@@ -2047,45 +2047,13 @@ public struct BookshelfView: View {
 
     @ViewBuilder
     private func readerCoverView(for book: Book) -> some View {
-        let source = bookStore.findSource(for: book)
-        NavigationView {
-            if source == nil, book.origin != "local",
-               !book.bookUrl.hasPrefix("file://"), !book.bookUrl.hasPrefix("epub://"),
-               !book.bookUrl.hasPrefix("txt://") {
-                MissingBookSourceView(book: book) {
-                    selectedBook = nil
-                    readerInitialChapter = nil
-                }
-            } else if let source, source.kind != .text {
-                let cached = bookStore.getChapters(for: book.bookUrl)
-                let chapters = cached.isEmpty
-                    ? [BookChapter(
-                        bookUrl: book.bookUrl,
-                        url: book.tocUrl.isEmpty ? book.bookUrl : book.tocUrl,
-                        title: book.name,
-                        index: 0
-                    )]
-                    : cached
-                MediaBookReaderView(
-                    book: book,
-                    source: source,
-                    chapters: chapters,
-                    initialChapterIndex: readerInitialChapter ?? book.durChapterIndex
-                ) {
-                    selectedBook = nil
-                    readerInitialChapter = nil
-                }
-            } else {
-                ReaderView(
-                    book: book,
-                    source: source,
-                    initialChapterIndex: readerInitialChapter,
-                    onDismiss: {
-                        selectedBook = nil
-                        readerInitialChapter = nil
-                    }
-                )
-            }
+        ShelfReaderDestination(
+            book: book,
+            source: bookStore.findSource(for: book),
+            initialChapter: readerInitialChapter
+        ) {
+            selectedBook = nil
+            readerInitialChapter = nil
         }
     }
 
@@ -2120,6 +2088,71 @@ public struct BookshelfView: View {
         .padding()
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .appThemePageBackground()
+    }
+}
+
+/// 书架点开一本书后落到哪里：正常进阅读，「书源不在了」时给出换源入口。
+/// 换源成功后原地切到新书新源，不再把人退回书架。
+private struct ShelfReaderDestination: View {
+    let book: Book
+    let source: BookSource?
+    let initialChapter: Int?
+    let onDismiss: () -> Void
+
+    @State private var switchedBook: Book?
+    @State private var switchedSource: BookSource?
+
+    private var activeBook: Book { switchedBook ?? book }
+    private var activeSource: BookSource? { switchedSource ?? source }
+
+    var body: some View {
+        NavigationView {
+            content
+        }
+    }
+
+    @ViewBuilder
+    private var content: some View {
+        if sourceIsGone {
+            MissingBookSourceView(book: activeBook, onDismiss: onDismiss) { newBook, newSource in
+                switchedBook = newBook
+                switchedSource = newSource
+            }
+        } else if let activeSource, activeSource.kind != .text {
+            MediaBookReaderView(
+                book: activeBook,
+                source: activeSource,
+                chapters: chapters,
+                initialChapterIndex: initialChapter ?? activeBook.durChapterIndex,
+                onDismiss: onDismiss
+            )
+        } else {
+            ReaderView(
+                book: activeBook,
+                source: activeSource,
+                initialChapterIndex: initialChapter,
+                onDismiss: onDismiss
+            )
+        }
+    }
+
+    private var sourceIsGone: Bool {
+        guard activeSource == nil, activeBook.origin != "local" else { return false }
+        let url = activeBook.bookUrl
+        return !url.hasPrefix("file://")
+            && !url.hasPrefix("epub://")
+            && !url.hasPrefix("txt://")
+    }
+
+    private var chapters: [BookChapter] {
+        let stored = BookStore.shared.getChapters(for: activeBook.bookUrl)
+        if !stored.isEmpty { return stored }
+        return [BookChapter(
+            bookUrl: activeBook.bookUrl,
+            url: activeBook.tocUrl.isEmpty ? activeBook.bookUrl : activeBook.tocUrl,
+            title: activeBook.name,
+            index: 0
+        )]
     }
 }
 

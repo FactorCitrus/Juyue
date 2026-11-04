@@ -8,6 +8,8 @@ import LegadoCore
 struct MissingBookSourceView: View {
     let book: Book
     let onDismiss: () -> Void
+    /// 换源成功：把新书和新源交回宿主，直接在原地进阅读，而不是退回书架。
+    let onSwitched: (Book, BookSource) -> Void
 
     @ObservedObject private var store = BookStore.shared
     @State private var showSourceSwitch = false
@@ -45,7 +47,7 @@ struct MissingBookSourceView: View {
                 if let cover = candidate.coverUrl, !cover.isEmpty { updated.coverUrl = cover }
                 _ = store.changeBookSource(from: book, to: updated)
                 showSourceSwitch = false
-                onDismiss()
+                onSwitched(updated, newSource)
             }
         }
         .navigationTitle(book.name)

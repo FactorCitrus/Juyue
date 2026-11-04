@@ -47,6 +47,8 @@ public struct LegadoApp: App {
 
     public init() {
         AppLog.install()
+        // 书源里的 webView / webJs 走无声 WKWebView，Core 只认这个运行时注入的实现。
+        HeadlessWebViewFetcher.install()
         // 启动这一条带齐环境：出问题先把这份头几行发过来，机型、系统、剩余空间、
         // 当前挂在哪个引擎和语音源，四样都在里面，不用再问一轮。
         AppLog.write("[启动] \(Self.deviceModel) · iOS \(ProcessInfo.processInfo.operatingSystemVersionString) · 可用 \(Self.freeDiskGB)GB · 引擎=\(TTSEngineChoice.current.rawValue) 源=\(TTSEngineChoice.current == .http ? (TTSourceSelection.activeId.map(String.init) ?? "-") : "不使用") · uptime=\(Int(ProcessInfo.processInfo.systemUptime / 60))m")
@@ -248,6 +250,10 @@ public struct LegadoApp: App {
             rootContent
                 .onChange(of: scenePhase) { phase in
                     AppLog.write("[生命周期] \(phase)")
+                    // 进后台 / 退出前把防抖中的阅读进度写盘，别等系统把进程收走
+                    if phase != .active {
+                        BookStore.shared.flushShelf()
+                    }
                 }
         }
     }

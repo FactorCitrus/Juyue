@@ -32,6 +32,13 @@ public class BookStore: ObservableObject {
     /// 搜索实测的响应时间批量落盘，避免一搜 50 个源就写 50 次 UserDefaults。
     private var respondTimeSaveWorkItem: DispatchWorkItem?
 
+    /// 阅读进度这种高频改动走防抖；结构变化（增删书、换源、导入）仍然立刻写。
+    private let shelfWriter = DebouncedPersistenceWriter<[Book]>(
+        queue: DispatchQueue(label: "legado.bookshelf.persist", qos: .utility),
+        encode: { books in try? JSONEncoder().encode(books) },
+        sink: { data in UserDefaults.standard.set(data, forKey: StoreKey.bookshelf) }
+    )
+
     /// 书签 / 笔记：按书存，读取时按书过滤
     @Published public var bookmarks: [BookBookmark] = []
 
@@ -471,8 +478,14 @@ public class BookStore: ObservableObject {
     }
 
     public func saveBookshelf() {
-        encode(bookshelf, forKey: booksKey)
+        shelfWriter.writeNow(bookshelf)
     }
+
+    /// 阅读进度这类高频变化只标脏，静默 0.8 秒后合并写一次。
+    private func scheduleShelfPersist() { shelfWriter.schedule(bookshelf, delay: 0.8) }
+
+    /// 进后台 / 退出阅读 / 退出 App：把还没落盘的进度立刻写完。
+    public func flushShelf() { shelfWriter.flush() }
 
     private func decode<T: Decodable>(_ type: T.Type, forKey key: String) -> T? {
         guard let data = UserDefaults.standard.data(forKey: key) else { return nil }
@@ -657,13 +670,28 @@ public class BookStore: ObservableObject {
             target.coverUrl = oldCover
         }
         if target.bookUrl != oldBook.bookUrl {
-            bookshelf.removeAll { $0.bookUrl == oldBook.bookUrl }
-            chaptersCache.removeValue(forKey: oldBook.bookUrl)
+            // 目录地址属于旧源：沿用它会让换源后的目录和正文继续从旧站抓。
+            if target.tocUrl == oldBook.tocUrl {
+                target.tocUrl = ""
+            }
+            target.totalChapterNum = 0
+        }
+        guard let oldIndex = bookshelf.firstIndex(where: { $0.bookUrl == oldBook.bookUrl }) else {
+            // 未上架的书换源只用于阅读，不能被顺带写进书架。
+            if target.bookUrl != oldBook.bookUrl {
+                discardChapterCache(for: oldBook.bookUrl)
+            }
+            return target
+        }
+        if target.bookUrl != oldBook.bookUrl {
+            bookshelf.remove(at: oldIndex)
+            discardChapterCache(for: oldBook.bookUrl)
         }
         if let index = bookshelf.firstIndex(where: { $0.bookUrl == target.bookUrl }) {
             bookshelf[index] = target
         } else {
-            bookshelf.insert(target, at: 0)
+            // 旧书在书架时放回它原来的位置，别因为换源就顶到最前面。
+            bookshelf.insert(target, at: min(oldIndex, bookshelf.count))
         }
         saveBookshelf()
         return target
@@ -678,7 +706,7 @@ public class BookStore: ObservableObject {
         bookshelf[index].durChapterTitle = chapterTitle
         bookshelf[index].durChapterTime = stamp
         bookshelf[index].lastCheckTime = stamp
-        saveBookshelf()
+        scheduleShelfPersist()
 
         // 本地进度已经落盘，WebDAV 只是副本：没配就跳过，失败也不回滚。
         let snapshot = bookshelf[index]
@@ -742,7 +770,7 @@ public class BookStore: ObservableObject {
     /// 只解析、不改仓库，供导入预览使用。
     public func planImportSources(json: String) throws -> [SourceImportEntry] {
         guard let data = json.data(using: .utf8) else { return [] }
-        let imported = try JSONDecoder().decode([BookSource].self, from: data)
+        let imported = try BookSource.decodeList(from: data)
 
         var entries: [SourceImportEntry] = []
         var seenURLs = Set<String>()
@@ -804,7 +832,7 @@ public class BookStore: ObservableObject {
 
     public func importSources(json: String) throws -> Int {
         guard let data = json.data(using: .utf8) else { return 0 }
-        let imported = try JSONDecoder().decode([BookSource].self, from: data)
+        let imported = try BookSource.decodeList(from: data)
 
         var offsetByUrl: [String: Int] = [:]
         var offsetByName: [String: Int] = [:]
@@ -1112,6 +1140,18 @@ public class BookStore: ObservableObject {
     private func chapterFileURL(for bookUrl: String) -> URL {
         getDocumentsDirectory()
             .appendingPathComponent("chapters_\(CryptoUtils.md5(bookUrl)).json")
+    }
+
+    /// 换源 / 删书时把旧 bookUrl 的内存和磁盘目录缓存一起丢掉，否则每次换源都留一份。
+    /// 目录缓存键是「bookUrl#书源」，所以要把这条书的所有源都扫掉。
+    private func discardChapterCache(for bookUrl: String) {
+        let keys = Set([bookUrl]).union(
+            chaptersCache.keys.filter { $0 == bookUrl || $0.hasPrefix(bookUrl + "#") }
+        )
+        for key in keys {
+            chaptersCache.removeValue(forKey: key)
+            try? FileManager.default.removeItem(at: chapterFileURL(for: key))
+        }
     }
 
     public func saveChapters(_ chapters: [BookChapter], for bookUrl: String) {

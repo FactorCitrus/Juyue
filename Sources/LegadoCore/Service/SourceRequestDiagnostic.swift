@@ -156,6 +156,9 @@ public enum LogRedaction {
 /// 失败归因：只做能从错误对象里读出来的分类，读不出就 `other`。
 public enum DiagnosticFailure {
     public static func classify(_ error: Error) -> String {
+        if let schemeError = error as? UnsupportedBookSourceSchemeError {
+            return "scheme(\(schemeError.scheme))"
+        }
         if let urlError = error as? URLError {
             switch urlError.code {
             case .cannotFindHost, .dnsLookupFailed:

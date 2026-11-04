@@ -44,3 +44,128 @@ final class JsRuleSuffixTests: XCTestCase {
         XCTAssertEqual(plain.getString(#"<js>"原样返回"</js>"#), "原样返回")
     }
 }
+
+final class SourceCompatibilityNetworkTests: XCTestCase {
+
+    /// 相对地址统一走 URL(string:relativeTo:)，不带 `/` 的也要按 base 解析；
+    /// fragment 在发请求前剥掉；base 不合法时不能拼出半截地址。
+    func testRelativeAddressResolution() {
+        let base = "https://example.com/book/index.html"
+
+        XCTAssertEqual(
+            NetworkClient.parseLegadoUrl("/chapter/1", baseUrl: base)?.url.absoluteString,
+            "https://example.com/chapter/1"
+        )
+        XCTAssertEqual(
+            NetworkClient.parseLegadoUrl("chapter/1", baseUrl: base)?.url.absoluteString,
+            "https://example.com/book/chapter/1"
+        )
+        XCTAssertEqual(
+            NetworkClient.parseLegadoUrl("https://other.example/a#part", baseUrl: base)?.url.absoluteString,
+            "https://other.example/a"
+        )
+
+        XCTAssertEqual(
+            NetworkClient.parseLegadoUrl("https://ok.example/a", baseUrl: "不是网址")?.url.absoluteString,
+            "https://ok.example/a"
+        )
+        XCTAssertNil(NetworkClient.parseLegadoUrl("chapter/1", baseUrl: "不是网址"))
+    }
+
+    /// 书源站还大量用 GBK/GB2312：响应头优先，没有头就嗅 HTML meta。
+    func testReplyPackagerDecodesGBK() throws {
+        let cfEncoding = CFStringConvertIANACharSetNameToEncoding("GBK" as CFString)
+        let encoding = String.Encoding(rawValue: CFStringConvertEncodingToNSStringEncoding(cfEncoding))
+        let bytes = try XCTUnwrap("中文测试".data(using: encoding))
+
+        let response = try XCTUnwrap(HTTPURLResponse(
+            url: URL(string: "https://example.com")!,
+            statusCode: 200,
+            httpVersion: "HTTP/1.1",
+            headerFields: ["Content-Type": "text/html; charset=GBK"]
+        ))
+        XCTAssertEqual(NetworkClient.package(bytes: bytes, response: response).bodyString, "中文测试")
+
+        let html = #"<html><head><meta charset="gb2312"><title>中文测试</title></head></html>"#
+        let htmlBytes = try XCTUnwrap(html.data(using: encoding))
+        XCTAssertTrue(NetworkClient.package(bytes: htmlBytes, response: nil).bodyString.contains("中文测试"))
+    }
+
+    /// 非 base64 的 data: 文本也要能解出来。
+    func testDataURLPlainTextPayload() {
+        let payload = "<div>斗破苍穹</div>"
+        let encoded = payload.addingPercentEncoding(withAllowedCharacters: .alphanumerics)!
+        XCTAssertEqual(NetworkClient.dataURLPayload("data:text/plain,\(encoded)"), payload)
+        XCTAssertNil(NetworkClient.dataURLPayload("data:text/plain,"))
+    }
+}
+
+final class SearchTemplateRenderTests: XCTestCase {
+
+    /// JS 只拼出带 {{key}}/{{page}} 的地址时，要再用模板渲染一次；
+    /// 但 <js> 块不能重复执行。
+    func testSearchURLJSResultRendersPlaceholdersAgain() {
+        let source = BookSource(bookSourceUrl: "https://example.com", bookSourceName: "js源")
+        let engine = JSEngine(bookSource: source, baseUrl: source.bookSourceUrl)
+
+        let template = #"<js>var hits = (typeof hits === "undefined" ? 0 : hits) + 1; "https://m.example.com/search?q={{key}}&p={{page}}&hits=" + hits</js>"#
+        let rendered = BookSearchService.renderSearchURL(template, key: "斗破苍穹", page: 2, engine: engine)
+
+        XCTAssertEqual(rendered, "https://m.example.com/search?q=斗破苍穹&p=2&hits=1")
+    }
+}
+
+final class DataURLSearchTests: XCTestCase {
+
+    /// 搜索地址是 data: 包时直接在本机跑规则，不发网络请求。
+    func testSearchFromDataURLWithoutNetwork() async throws {
+        let html = #"<div class="item"><a href="https://example.com/book/1">斗破苍穹</a></div>"#
+        let encoded = html.addingPercentEncoding(withAllowedCharacters: .alphanumerics)!
+        let dataURL = "data:text/html,\(encoded)"
+
+        var rule = SearchRule()
+        rule.bookList = "class.item"
+        rule.name = "tag.a@text"
+        rule.bookUrl = "tag.a@href"
+
+        var source = BookSource(bookSourceUrl: "https://example.com", bookSourceName: "data源")
+        source.searchUrl = dataURL
+        source.ruleSearch = rule
+
+        let books = try await BookSearchService().search(source: source, key: "斗破")
+        XCTAssertEqual(books.count, 1)
+        XCTAssertEqual(books.first?.name, "斗破苍穹")
+        XCTAssertEqual(books.first?.bookUrl, "https://example.com/book/1")
+    }
+
+    /// 并发窗口（10 个）不能漏源：源数超过窗口时每个源都要出一次结果。
+    func testMultiSourceSearchCoversEverySourceBeyondWindow() async {
+        let html = #"<div class="item"><a href="https://example.com/book/1">斗破苍穹</a></div>"#
+        let encoded = html.addingPercentEncoding(withAllowedCharacters: .alphanumerics)!
+        let dataURL = "data:text/html,\(encoded)"
+
+        var rule = SearchRule()
+        rule.bookList = "class.item"
+        rule.name = "tag.a@text"
+        rule.bookUrl = "tag.a@href"
+
+        let sources = (0..<30).map { index -> BookSource in
+            var source = BookSource(
+                bookSourceUrl: "https://example.com/\(index)",
+                bookSourceName: "源\(index)"
+            )
+            source.searchUrl = dataURL
+            source.ruleSearch = rule
+            return source
+        }
+
+        var outcomes: [SearchSourceOutcome] = []
+        for await outcome in BookSearchService().searchMultiSourcesDetailed(sources: sources, key: "斗破") {
+            outcomes.append(outcome)
+        }
+
+        XCTAssertEqual(outcomes.count, sources.count)
+        XCTAssertEqual(Set(outcomes.map { $0.source.bookSourceUrl }).count, sources.count)
+        XCTAssertTrue(outcomes.allSatisfy { $0.books.count == 1 })
+    }
+}

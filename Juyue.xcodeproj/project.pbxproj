@@ -10,6 +10,132 @@
 	<string>54</string>
 	<key>objects</key>
 	<dict>
+		<key>A1855DBF6B8EA4EF7D1A571F</key>
+		<dict>
+			<key>isa</key>
+			<string>PBXFileReference</string>
+			<key>lastKnownFileType</key>
+			<string>sourcecode.swift</string>
+			<key>path</key>
+			<string>Sources/LegadoCore/Service/BookSourceScheme.swift</string>
+			<key>sourceTree</key>
+			<string>&lt;group&gt;</string>
+		</dict>
+		<key>5C194B2A3B63E34EFD8C93FF</key>
+		<dict>
+			<key>fileRef</key>
+			<string>A1855DBF6B8EA4EF7D1A571F</string>
+			<key>isa</key>
+			<string>PBXBuildFile</string>
+		</dict>
+		<key>1F81AB68ACEFE2CB30CABE75</key>
+		<dict>
+			<key>isa</key>
+			<string>PBXFileReference</string>
+			<key>lastKnownFileType</key>
+			<string>sourcecode.swift</string>
+			<key>path</key>
+			<string>Sources/LegadoCore/Service/ContentRuleSupport.swift</string>
+			<key>sourceTree</key>
+			<string>&lt;group&gt;</string>
+		</dict>
+		<key>E7247E5806345CB951342579</key>
+		<dict>
+			<key>fileRef</key>
+			<string>1F81AB68ACEFE2CB30CABE75</string>
+			<key>isa</key>
+			<string>PBXBuildFile</string>
+		</dict>
+		<key>F8FB5996FE5B9ED5593346BE</key>
+		<dict>
+			<key>isa</key>
+			<string>PBXFileReference</string>
+			<key>lastKnownFileType</key>
+			<string>sourcecode.swift</string>
+			<key>path</key>
+			<string>Sources/LegadoCore/Engine/JsoupShim.swift</string>
+			<key>sourceTree</key>
+			<string>&lt;group&gt;</string>
+		</dict>
+		<key>15C3174196F69C1E653C7655</key>
+		<dict>
+			<key>fileRef</key>
+			<string>F8FB5996FE5B9ED5593346BE</string>
+			<key>isa</key>
+			<string>PBXBuildFile</string>
+		</dict>
+		<key>62174555CF1823F705CE8BCA</key>
+		<dict>
+			<key>isa</key>
+			<string>PBXFileReference</string>
+			<key>lastKnownFileType</key>
+			<string>sourcecode.swift</string>
+			<key>path</key>
+			<string>Sources/LegadoApp/Services/HeadlessWebViewFetcher.swift</string>
+			<key>sourceTree</key>
+			<string>&lt;group&gt;</string>
+		</dict>
+		<key>8BCB199A2FFBD6D943801FEE</key>
+		<dict>
+			<key>isa</key>
+			<string>PBXFileReference</string>
+			<key>lastKnownFileType</key>
+			<string>sourcecode.swift</string>
+			<key>path</key>
+			<string>Sources/LegadoCore/Engine/HeadlessWebView.swift</string>
+			<key>sourceTree</key>
+			<string>&lt;group&gt;</string>
+		</dict>
+		<key>68BFE44996E3C22BB2CA3588</key>
+		<dict>
+			<key>fileRef</key>
+			<string>62174555CF1823F705CE8BCA</string>
+			<key>isa</key>
+			<string>PBXBuildFile</string>
+		</dict>
+		<key>665E373B41BA873AB63EA504</key>
+		<dict>
+			<key>fileRef</key>
+			<string>8BCB199A2FFBD6D943801FEE</string>
+			<key>isa</key>
+			<string>PBXBuildFile</string>
+		</dict>
+		<key>8BD48FA873B1D4E1E21538B6</key>
+		<dict>
+			<key>isa</key>
+			<string>PBXFileReference</string>
+			<key>lastKnownFileType</key>
+			<string>sourcecode.swift</string>
+			<key>path</key>
+			<string>Sources/LegadoCore/Service/SourceSwitchResultOrdering.swift</string>
+			<key>sourceTree</key>
+			<string>&lt;group&gt;</string>
+		</dict>
+		<key>82C3A69B9AB3AA50858D38C4</key>
+		<dict>
+			<key>fileRef</key>
+			<string>8BD48FA873B1D4E1E21538B6</string>
+			<key>isa</key>
+			<string>PBXBuildFile</string>
+		</dict>
+		<key>26925897A30E325902A3DA57</key>
+		<dict>
+			<key>isa</key>
+			<string>PBXFileReference</string>
+			<key>lastKnownFileType</key>
+			<string>sourcecode.swift</string>
+			<key>path</key>
+			<string>Sources/LegadoCore/Service/ImportAssetSupport.swift</string>
+			<key>sourceTree</key>
+			<string>&lt;group&gt;</string>
+		</dict>
+		<key>C575D321B0D297111CAC22F5</key>
+		<dict>
+			<key>fileRef</key>
+			<string>26925897A30E325902A3DA57</string>
+			<key>isa</key>
+			<string>PBXBuildFile</string>
+		</dict>
 		<key>C9A65C4EBBE51CD4295A8CA7</key>
 		<dict>
 			<key>isa</key>
@@ -614,7 +740,7 @@
 				<key>CODE_SIGN_STYLE</key>
 				<string>Automatic</string>
 				<key>CURRENT_PROJECT_VERSION</key>
-				<string>5.0.23</string>
+				<string>5.1.0</string>
 				<key>DEVELOPMENT_TEAM</key>
 				<string></string>
 				<key>ENABLE_PREVIEWS</key>
@@ -636,7 +762,7 @@
 				<key>LD_RUNPATH_SEARCH_PATHS</key>
 				<string>$(inherited) @executable_path/Frameworks</string>
 				<key>MARKETING_VERSION</key>
-				<string>5.0.23</string>
+				<string>5.1.0</string>
 				<key>PRODUCT_BUNDLE_IDENTIFIER</key>
 				<string>com.factorcitrus.juyue</string>
 				<key>PRODUCT_NAME</key>
@@ -909,6 +1035,16 @@
 				<string>E1BD9F822CAA81583692CC4A</string>
 				<string>D490C1B48204AFC3A8C09FB5</string>
 				<string>C9A65C4EBBE51CD4295A8CA7</string>
+				<string>26925897A30E325902A3DA57</string>
+				<string>8BD48FA873B1D4E1E21538B6</string>
+				<string>62174555CF1823F705CE8BCA</string>
+				<string>8BCB199A2FFBD6D943801FEE</string>
+				<string>F8FB5996FE5B9ED5593346BE</string>
+				<string>1F81AB68ACEFE2CB30CABE75</string>
+				<string>A1855DBF6B8EA4EF7D1A571F</string>
+				<string>1A0DF2CA4C8FA38F9642B346</string>
+				<string>DFE3471D376FF9D7CBC8B0BB</string>
+				<string>54C4E1B0C1B4A264EA12124F</string>
 			</array>
 			<key>isa</key>
 			<string>PBXGroup</string>
@@ -1140,6 +1276,16 @@
 				<string>BD0200000000000000BF11E04</string>
 				<string>BD0200000000000000BF11E06</string>
 				<string>BD0200000000000000BF11E08</string>
+				<string>C575D321B0D297111CAC22F5</string>
+				<string>82C3A69B9AB3AA50858D38C4</string>
+				<string>68BFE44996E3C22BB2CA3588</string>
+				<string>665E373B41BA873AB63EA504</string>
+				<string>15C3174196F69C1E653C7655</string>
+				<string>E7247E5806345CB951342579</string>
+				<string>5C194B2A3B63E34EFD8C93FF</string>
+				<string>1A5AC0FF8BEC7C1DAF0F2DA6</string>
+				<string>38DC4ACB069A20E6FCFCE9FF</string>
+				<string>D90900D2E44AB751DEAF1DA8</string>
 			</array>
 			<key>isa</key>
 			<string>PBXSourcesBuildPhase</string>
@@ -1714,7 +1860,7 @@
 				<key>CODE_SIGN_STYLE</key>
 				<string>Automatic</string>
 				<key>CURRENT_PROJECT_VERSION</key>
-				<string>5.0.23</string>
+				<string>5.1.0</string>
 				<key>DEVELOPMENT_TEAM</key>
 				<string></string>
 				<key>ENABLE_PREVIEWS</key>
@@ -1736,7 +1882,7 @@
 				<key>LD_RUNPATH_SEARCH_PATHS</key>
 				<string>$(inherited) @executable_path/Frameworks</string>
 				<key>MARKETING_VERSION</key>
-				<string>5.0.23</string>
+				<string>5.1.0</string>
 				<key>PRODUCT_BUNDLE_IDENTIFIER</key>
 				<string>com.factorcitrus.juyue</string>
 				<key>PRODUCT_NAME</key>
@@ -1795,7 +1941,7 @@
 				<key>CODE_SIGN_STYLE</key>
 				<string>Automatic</string>
 				<key>CURRENT_PROJECT_VERSION</key>
-				<string>5.0.23</string>
+				<string>5.1.0</string>
 				<key>DEVELOPMENT_TEAM</key>
 				<string></string>
 				<key>ENABLE_PREVIEWS</key>
@@ -1819,7 +1965,7 @@
 				<key>LD_RUNPATH_SEARCH_PATHS</key>
 				<string>$(inherited) @executable_path/Frameworks</string>
 				<key>MARKETING_VERSION</key>
-				<string>5.0.23</string>
+				<string>5.1.0</string>
 				<key>PRODUCT_BUNDLE_IDENTIFIER</key>
 				<string>com.factorcitrus.juyue.reader</string>
 				<key>PRODUCT_NAME</key>
@@ -2489,7 +2635,7 @@
 				<key>CODE_SIGN_STYLE</key>
 				<string>Automatic</string>
 				<key>CURRENT_PROJECT_VERSION</key>
-				<string>5.0.23</string>
+				<string>5.1.0</string>
 				<key>DEVELOPMENT_TEAM</key>
 				<string></string>
 				<key>GENERATE_INFOPLIST_FILE</key>
@@ -2497,7 +2643,7 @@
 				<key>LD_RUNPATH_SEARCH_PATHS</key>
 				<string>$(inherited) @executable_path/Frameworks @loader_path/Frameworks</string>
 				<key>MARKETING_VERSION</key>
-				<string>5.0.23</string>
+				<string>5.1.0</string>
 				<key>PRODUCT_BUNDLE_IDENTIFIER</key>
 				<string>com.factorcitrus.juyue.uitests</string>
 				<key>PRODUCT_NAME</key>
@@ -2521,7 +2667,7 @@
 				<key>CODE_SIGN_STYLE</key>
 				<string>Automatic</string>
 				<key>CURRENT_PROJECT_VERSION</key>
-				<string>5.0.23</string>
+				<string>5.1.0</string>
 				<key>DEVELOPMENT_TEAM</key>
 				<string></string>
 				<key>GENERATE_INFOPLIST_FILE</key>
@@ -2529,7 +2675,7 @@
 				<key>LD_RUNPATH_SEARCH_PATHS</key>
 				<string>$(inherited) @executable_path/Frameworks @loader_path/Frameworks</string>
 				<key>MARKETING_VERSION</key>
-				<string>5.0.23</string>
+				<string>5.1.0</string>
 				<key>PRODUCT_BUNDLE_IDENTIFIER</key>
 				<string>com.factorcitrus.juyue.uitests</string>
 				<key>PRODUCT_NAME</key>
@@ -2582,6 +2728,60 @@
 			<string>C0DE00000000000000000010</string>
 			<key>productType</key>
 			<string>com.apple.product-type.bundle.ui-testing</string>
+		</dict>
+		<key>1A5AC0FF8BEC7C1DAF0F2DA6</key>
+		<dict>
+			<key>fileRef</key>
+			<string>1A0DF2CA4C8FA38F9642B346</string>
+			<key>isa</key>
+			<string>PBXBuildFile</string>
+		</dict>
+		<key>1A0DF2CA4C8FA38F9642B346</key>
+		<dict>
+			<key>isa</key>
+			<string>PBXFileReference</string>
+			<key>lastKnownFileType</key>
+			<string>sourcecode.swift</string>
+			<key>path</key>
+			<string>Sources/LegadoCore/Service/ReaderPaginationPlanner.swift</string>
+			<key>sourceTree</key>
+			<string>&lt;group&gt;</string>
+		</dict>
+		<key>38DC4ACB069A20E6FCFCE9FF</key>
+		<dict>
+			<key>fileRef</key>
+			<string>DFE3471D376FF9D7CBC8B0BB</string>
+			<key>isa</key>
+			<string>PBXBuildFile</string>
+		</dict>
+		<key>DFE3471D376FF9D7CBC8B0BB</key>
+		<dict>
+			<key>isa</key>
+			<string>PBXFileReference</string>
+			<key>lastKnownFileType</key>
+			<string>sourcecode.swift</string>
+			<key>path</key>
+			<string>Sources/LegadoCore/Service/DebouncedPersistenceWriter.swift</string>
+			<key>sourceTree</key>
+			<string>&lt;group&gt;</string>
+		</dict>
+		<key>D90900D2E44AB751DEAF1DA8</key>
+		<dict>
+			<key>fileRef</key>
+			<string>54C4E1B0C1B4A264EA12124F</string>
+			<key>isa</key>
+			<string>PBXBuildFile</string>
+		</dict>
+		<key>54C4E1B0C1B4A264EA12124F</key>
+		<dict>
+			<key>isa</key>
+			<string>PBXFileReference</string>
+			<key>lastKnownFileType</key>
+			<string>sourcecode.swift</string>
+			<key>path</key>
+			<string>Sources/LegadoApp/Views/Reader/ReaderPaginator.swift</string>
+			<key>sourceTree</key>
+			<string>&lt;group&gt;</string>
 		</dict>
 	</dict>
 	<key>rootObject</key>
