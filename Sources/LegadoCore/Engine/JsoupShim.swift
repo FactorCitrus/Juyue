@@ -331,6 +331,25 @@ enum JsoupShim {
             return connection(url: url, headers: updated, data: data, fetch: fetch, in: context)
         }
 
+        func chained(_ key: String, _ value: JSValue) -> JSValue {
+            var updated = headers
+            if value.isUndefined || value.isNull {
+                return JSValue(object: updated[key] ?? "", in: context)
+            }
+            updated[key] = string(value)
+            return connection(url: url, headers: updated, data: data, fetch: fetch, in: context)
+        }
+
+        let chainUserAgent: @convention(block) (JSValue, JSValue) -> JSValue = { value, _ in
+            chained("User-Agent", value)
+        }
+        let chainCookie: @convention(block) (JSValue, JSValue) -> JSValue = { value, _ in
+            chained("Cookie", value)
+        }
+        let chainReferrer: @convention(block) (JSValue, JSValue) -> JSValue = { value, _ in
+            chained("Referer", value)
+        }
+
         let chainValue: @convention(block) (JSValue) -> JSValue = { value in
             connection(url: url, headers: headers, data: data, fetch: fetch, in: context)
         }
@@ -345,9 +364,9 @@ enum JsoupShim {
         object.setValue(post, forProperty: "post")
         object.setValue(execute, forProperty: "execute")
         object.setValue(chain, forProperty: "header")
-        object.setValue(chain, forProperty: "userAgent")
-        object.setValue(chain, forProperty: "cookie")
-        object.setValue(chain, forProperty: "referrer")
+        object.setValue(chainUserAgent, forProperty: "userAgent")
+        object.setValue(chainCookie, forProperty: "cookie")
+        object.setValue(chainReferrer, forProperty: "referrer")
         object.setValue(chainData, forProperty: "data")
         object.setValue(chainValue, forProperty: "timeout")
         object.setValue(chainValue, forProperty: "ignoreContentType")

@@ -123,6 +123,8 @@ public struct BookDetailView: View {
 
                         Spacer(minLength: 24)
                     }
+                    .frame(maxWidth: 760)
+                    .frame(maxWidth: .infinity)
                 }
 
                 // Fixed Bottom Action Bar (Add to shelf + Read Now)
@@ -311,6 +313,7 @@ public struct BookDetailView: View {
                 })
             }
         }
+            .stackNavigationStyle()
     }
 
     // MARK: - Header Card
@@ -697,6 +700,8 @@ public struct BookDetailView: View {
         }
         .padding(.horizontal)
         .padding(.vertical, 10)
+        .frame(maxWidth: 620)
+        .frame(maxWidth: .infinity)
         .background(theme.palette.surface)
         .overlay(alignment: .top) {
             if theme.isClassTrial {
@@ -930,6 +935,7 @@ struct BookCoverPickerSheet: View {
             }
             .task { await loadCandidates() }
         }
+            .stackNavigationStyle()
     }
 
     @ViewBuilder
@@ -1357,6 +1363,7 @@ struct BookInfoEditSheet: View {
                 }
             }
         }
+            .stackNavigationStyle()
     }
 
     /// 拿书名去所有启用的书源搜，收各家给出的封面当候选

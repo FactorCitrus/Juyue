@@ -231,6 +231,7 @@ public struct SourceWebLoginView: View {
                 extractCookies()
             }
         }
+            .stackNavigationStyle()
     }
 
     // MARK: - Bottom Control Bar
@@ -298,6 +299,7 @@ public struct SourceWebLoginView: View {
                 }
             }
         }
+            .stackNavigationStyle()
     }
 
     // MARK: - Cookie Extraction & Saving

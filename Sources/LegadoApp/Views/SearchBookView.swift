@@ -306,6 +306,8 @@ public struct SearchBookView: View {
                 .listStyle(.plain)
             }
         }
+        .frame(maxWidth: 860)
+        .frame(maxWidth: .infinity)
         .navigationTitle("聚合搜索")
         #if os(iOS)
         .navigationBarTitleDisplayMode(.inline)
@@ -875,6 +877,7 @@ struct SearchSourcePickerSheet: View {
                 }
             }
         }
+            .stackNavigationStyle()
     }
 
     private func toggle(_ url: String) {

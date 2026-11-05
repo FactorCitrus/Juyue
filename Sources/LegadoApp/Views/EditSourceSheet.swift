@@ -210,6 +210,7 @@ public struct EditSourceSheet: View {
                 }
             }
         }
+            .stackNavigationStyle()
     }
 
     @ViewBuilder

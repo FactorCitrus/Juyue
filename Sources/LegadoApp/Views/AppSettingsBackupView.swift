@@ -170,7 +170,7 @@ struct AppSettingsBackupView: View {
 
     private func pickFile() {
         #if os(iOS)
-        SettingsDocumentPicker.present(contentTypes: [.json, .plainText]) { urls in
+        SystemDocumentPicker.present(contentTypes: [.json, .plainText]) { urls in
             guard let url = urls.first else { return }
             let accessed = url.startAccessingSecurityScopedResource()
             defer { if accessed { url.stopAccessingSecurityScopedResource() } }
@@ -240,6 +240,7 @@ struct AppSettingsBackupView: View {
                 }
             }
         }
+            .stackNavigationStyle()
     }
 
     private func importPreview(_ payload: AppSettingsPayload) -> some View {
@@ -291,12 +292,14 @@ struct AppSettingsBackupView: View {
                 }
             }
         }
+            .stackNavigationStyle()
     }
 }
 
-#if os(iOS)
-/// 设置备份用的系统文档选择器。从 sheet 里触发 `fileImporter` 在部分 iOS 版本收不到回调。
-private enum SettingsDocumentPicker {
+/// 系统文档选择器。真机上从 SwiftUI 的 `fileImporter` 选完文件经常收不到回调（模拟器不复现），
+/// 表现为「按了打开没反应」；`asCopy` 还会先拷进沙盒，不用再管 security-scoped 资源。
+enum SystemDocumentPicker {
+    #if os(iOS)
     private static var retained: Delegate?
 
     static func present(contentTypes: [UTType], onPicked: @escaping ([URL]) -> Void) {
@@ -331,15 +334,27 @@ private enum SettingsDocumentPicker {
             // 选择器还在退场时立刻弹预览 sheet，SwiftUI 会把这次 presentation 丢掉，
             // 表现就是「选完文件什么都没发生」。等退场动画结束再回调。
             let callback = onPicked
-            SettingsDocumentPicker.retained = nil
+            SystemDocumentPicker.retained = nil
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
                 callback(urls)
             }
         }
 
         func documentPickerWasCancelled(_ controller: UIDocumentPickerViewController) {
-            SettingsDocumentPicker.retained = nil
+            SystemDocumentPicker.retained = nil
         }
     }
+    #else
+    static func present(contentTypes: [UTType], onPicked: @escaping ([URL]) -> Void) {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = contentTypes
+        panel.allowsMultipleSelection = false
+        let picksFolders = contentTypes.contains { $0.conforms(to: .folder) }
+        panel.canChooseFiles = !picksFolders
+        panel.canChooseDirectories = picksFolders
+        if panel.runModal() == .OK, let url = panel.url {
+            onPicked([url])
+        }
+    }
+    #endif
 }
-#endif

@@ -209,6 +209,7 @@ public struct TTSourceManagerView: View {
         .sheet(isPresented: $showCustomSetup) {
             // 这页本来靠上级导航栈推，塞进 sheet 得自己给一层，不然没有返回键
             NavigationView { CustomTTSSetupView() }
+                .stackNavigationStyle()
         }
     }
 
@@ -470,6 +471,7 @@ struct TTSOnlinePresetPicker: View {
                 }
             }
         }
+            .stackNavigationStyle()
     }
 }
 
@@ -824,6 +826,7 @@ struct TTSOnlinePresetSheet: View {
                 }
             }
         }
+            .stackNavigationStyle()
     }
 }
 

@@ -366,6 +366,16 @@ private struct AppThemedListModifier: ViewModifier {
 }
 
 extension View {
+    /// iPad 上把 NavigationView 固定成 push 栈；StackNavigationViewStyle 在 macOS 上不存在。
+    @ViewBuilder
+    func stackNavigationStyle() -> some View {
+        #if os(iOS)
+        navigationViewStyle(.stack)
+        #else
+        self
+        #endif
+    }
+
     func appThemedList() -> some View {
         modifier(AppThemedListModifier())
     }

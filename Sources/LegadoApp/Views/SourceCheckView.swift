@@ -301,6 +301,7 @@ struct SourceCheckView: View {
                 }
             }
         }
+            .stackNavigationStyle()
     }
 
     private func labeled(_ title: String, _ value: String) -> some View {
@@ -375,6 +376,7 @@ struct SourceCheckView: View {
                 }
             }
         }
+            .stackNavigationStyle()
     }
 
     private func toggleGroup(_ group: String) {

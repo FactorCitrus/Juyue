@@ -1891,7 +1891,6 @@ public struct ReaderView: View {
     @State private var showReadingPanel = false
     @State private var replaceInput = ""
     @State private var showAggregateSearch = false
-    @State private var showBackgroundImagePicker: Bool = false
     #if os(iOS)
     /// 正文背景图：iOS 16 起从相册选（用 Any 存，避开 PhotosPickerItem 的可用性限制）
     @State private var backgroundPhotoItem: Any?
@@ -2356,6 +2355,8 @@ public struct ReaderView: View {
                     VStack(spacing: 0) {
                         Spacer()
                         readingSettingsCard
+                            // 大屏上限宽居中：滑轨不会拉成一米长，面板也不贴满两边
+                            .frame(maxWidth: 620)
                     }
                     // 底部贴住屏幕物理边缘，别再露出正文页脚那一条
                     .ignoresSafeArea(edges: .bottom)
@@ -2539,6 +2540,7 @@ public struct ReaderView: View {
             NavigationView {
                 SearchBookView()
             }
+                .stackNavigationStyle()
         }
         .alert("替换这一段", isPresented: $showReplaceInput) {
             TextField("替换成（留空 = 删除）", text: $replaceInput)
@@ -2657,9 +2659,15 @@ public struct ReaderView: View {
         return nil
     }
 
+    private func presentBackgroundImagePicker() {
+        SystemDocumentPicker.present(contentTypes: [.image]) { urls in
+            guard let url = urls.first else { return }
+            importBackgroundImage(from: url)
+        }
+    }
+
     /// 选择器给的 URL 出沙箱就失效，必须拷进 App 自己的目录再记路径。
-    private func importBackgroundImage(from url: URL) {
-        let scoped = url.startAccessingSecurityScopedResource()
+    private func importBackgroundImage(from url: URL) {        let scoped = url.startAccessingSecurityScopedResource()
         defer { if scoped { url.stopAccessingSecurityScopedResource() } }
         guard let dir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first else {
             readerConfig.backgroundImagePath = url.path
@@ -2684,7 +2692,7 @@ public struct ReaderView: View {
     /// 两条路径的间距口径一致，切换设计不应该跳版。
     @ViewBuilder
     private func chapterTitleView(chapterIndex: Int, title: String) -> some View {
-        let width = max(120, readerContainerSize.width - readerConfig.paddingLeft - readerConfig.paddingRight)
+        let width = max(120, readerContainerSize.width - contentPaddingLeft - contentPaddingRight)
         if readerConfig.hasDesignedChapterTitle {
             ChapterTitleHTMLView(
                 htmlTemplate: readerConfig.chapterTitleHTMLTemplate,
@@ -2693,8 +2701,8 @@ public struct ReaderView: View {
                 chapterTitle: title,
                 chapterNumber: "第 \(chapterIndex + 1) 章"
             )
-            .padding(.leading, readerConfig.paddingLeft)
-            .padding(.trailing, readerConfig.paddingRight)
+            .padding(.leading, contentPaddingLeft)
+            .padding(.trailing, contentPaddingRight)
             .padding(.top, readerConfig.chapterTopSpacing)
             .padding(.bottom, readerConfig.chapterTitleSpacing)
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -2702,8 +2710,8 @@ public struct ReaderView: View {
             Text(title)
                 .font(.system(size: readerConfig.fontSize * readerConfig.chapterTitleScale, weight: .semibold))
                 .foregroundColor(chromeInk)
-                .padding(.leading, readerConfig.paddingLeft)
-                .padding(.trailing, readerConfig.paddingRight)
+                .padding(.leading, contentPaddingLeft)
+                .padding(.trailing, contentPaddingRight)
                 .padding(.top, readerConfig.chapterTopSpacing)
                 .padding(.bottom, readerConfig.chapterTitleSpacing)
         }
@@ -2873,8 +2881,8 @@ public struct ReaderView: View {
                         .frame(height: 0.5)
                 }
             }
-            .padding(.leading, readerConfig.paddingLeft)
-            .padding(.trailing, readerConfig.paddingRight)
+            .padding(.leading, contentPaddingLeft)
+            .padding(.trailing, contentPaddingRight)
             .padding(.vertical, 4)
         }
     }
@@ -2919,8 +2927,8 @@ public struct ReaderView: View {
                                             source: effectiveSource,
                                             baseUrl: loadedCh.chapter.url
                                         )
-                                            .padding(.leading, readerConfig.paddingLeft)
-                                            .padding(.trailing, readerConfig.paddingRight)
+                                            .padding(.leading, contentPaddingLeft)
+                                            .padding(.trailing, contentPaddingRight)
                                             .padding(.bottom, readerConfig.paragraphSpacing)
                                             .id("block_\(loadedCh.chapter.index)_\(block.id)")
                                             .background(
@@ -2940,8 +2948,8 @@ public struct ReaderView: View {
                                             )
                                     } else if block.commentCount == -2 {
                                         godReviewCard(block)
-                                            .padding(.leading, readerConfig.paddingLeft)
-                                            .padding(.trailing, readerConfig.paddingRight)
+                                            .padding(.leading, contentPaddingLeft)
+                                            .padding(.trailing, contentPaddingRight)
                                             .padding(.bottom, readerConfig.paragraphSpacing)
                                             .id("block_\(loadedCh.chapter.index)_\(block.id)")
                                             .background(
@@ -2960,8 +2968,8 @@ public struct ReaderView: View {
                                             )
                                     } else {
                                         scrollBody(block: block, chapterIndex: loadedCh.chapter.index)
-                                            .padding(.leading, readerConfig.paddingLeft)
-                                            .padding(.trailing, readerConfig.paddingRight)
+                                            .padding(.leading, contentPaddingLeft)
+                                            .padding(.trailing, contentPaddingRight)
                                             .padding(.bottom, readerConfig.paragraphSpacing)
                                             // 段落级长按：连续滚动里一个 block 就是一段
                                             .onLongPressGesture {
@@ -3253,8 +3261,8 @@ public struct ReaderView: View {
                 titleProjectJSON: readerConfig.chapterTitleProjectJSON,
                 paddingTop: readerConfig.paddingTop,
                 paddingBottom: readerConfig.paddingBottom,
-                paddingLeft: readerConfig.paddingLeft,
-                paddingRight: readerConfig.paddingRight,
+                paddingLeft: contentPaddingLeft,
+                paddingRight: contentPaddingRight,
                 headerOffset: readerConfig.headerOffset,
                 footerOffset: readerConfig.footerOffset,
                 titleAlignment: readerConfig.titleAlignment,
@@ -3337,7 +3345,7 @@ public struct ReaderView: View {
                     }
                 } else {
                     let pageBlocks = pages[currentPageIndex]
-                    let usableWidth = max(200, readerContainerSize.width - readerConfig.paddingLeft - readerConfig.paddingRight)
+                    let usableWidth = max(200, readerContainerSize.width - contentPaddingLeft - contentPaddingRight)
 
                     // GeometryReader 是贪高的：不把正文这块钉死高度，它会吃掉整页，
                     // 把 19pt 的页脚挤出可视区
@@ -3466,8 +3474,8 @@ public struct ReaderView: View {
 
                         Spacer(minLength: 0)
                         }
-                        .padding(.leading, readerConfig.paddingLeft)
-                        .padding(.trailing, readerConfig.paddingRight)
+                        .padding(.leading, contentPaddingLeft)
+                        .padding(.trailing, contentPaddingRight)
                         .padding(.top, readerConfig.paddingTop)
                         .padding(.bottom, readerConfig.paddingBottom)
                         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
@@ -3633,6 +3641,24 @@ public struct ReaderView: View {
             }
         }
     }
+
+    /// 正文最大行宽：按字号折算成约 40 字一行。iPhone 宽度本来就够不到，
+    /// iPad 横屏和分屏的宽窗口靠它收窄，行不会一路铺到屏幕两边。
+    private var readerContentMaxWidth: CGFloat {
+        min(760, max(360, readerConfig.fontSize * 40))
+    }
+
+    /// 为了守住最大行宽，在用户边距之外补出的左右对称留白。
+    /// 分页、渲染、滚动三条链路都用这一份值，断行和绘制才不会两套口径。
+    private var readerSideInset: CGFloat {
+        let containerWidth = readerContainerSize.width
+        guard containerWidth > 0 else { return 0 }
+        let horizontalPadding = readerConfig.paddingLeft + readerConfig.paddingRight
+        return max(0, (containerWidth - horizontalPadding - readerContentMaxWidth) / 2)
+    }
+
+    private var contentPaddingLeft: CGFloat { readerConfig.paddingLeft + readerSideInset }
+    private var contentPaddingRight: CGFloat { readerConfig.paddingRight + readerSideInset }
 
     /// 当前页第一段的 block id：页首可能是图片、热评卡片，跳过去找第一段能读的。
     /// 分页里的块是「行」——id 是行号（10000 起），paragraphId 才是正文段号；
@@ -3949,6 +3975,8 @@ public struct ReaderView: View {
         .padding(.horizontal, 20)
         .padding(.top, 14)
         .padding(.bottom, 10)
+        .frame(maxWidth: 700)
+        .frame(maxWidth: .infinity)
         .background(
             chromeBackground
                 .opacity(0.97)
@@ -4624,6 +4652,7 @@ public struct ReaderView: View {
                 }
             }
         }
+            .stackNavigationStyle()
     }
 
     /// 书签 / 笔记：加、看、跳、删
@@ -4746,6 +4775,7 @@ public struct ReaderView: View {
                 }
             }
         }
+            .stackNavigationStyle()
     }
 
     /// 排序 / 类型菜单
@@ -5841,7 +5871,7 @@ public struct ReaderView: View {
         #if os(iOS)
         guard let rect = scrollHitRegistry.rect(forBlockId: block.id, chapterIndex: chapterIndex) else { return nil }
         // registry 的 frame 含左右内边距，减掉才是正文的排版宽度
-        let width = rect.width - readerConfig.paddingLeft - readerConfig.paddingRight
+        let width = rect.width - contentPaddingLeft - contentPaddingRight
         guard width > 10 else { return nil }
         return ReaderScrollTextMetrics.Context(
             text: applyingKinsoku(block.text),
@@ -5849,7 +5879,7 @@ public struct ReaderView: View {
             lineSpacing: readerConfig.lineSpacing,
             kerning: readerConfig.letterSpacing,
             alignment: coreTextAlignment,
-            origin: CGPoint(x: rect.minX + readerConfig.paddingLeft, y: rect.minY),
+            origin: CGPoint(x: rect.minX + contentPaddingLeft, y: rect.minY),
             width: width
         )
         #else
@@ -6007,7 +6037,8 @@ public struct ReaderView: View {
             Rectangle()
                 .fill(readerHexColor(hit.color ?? "#2F7BF6").opacity(0.85))
                 .frame(height: 1.5)
-                .padding(.horizontal, readerConfig.paddingLeft)
+                .padding(.leading, contentPaddingLeft)
+                .padding(.trailing, contentPaddingRight)
         }
     }
 
@@ -6243,7 +6274,7 @@ public struct ReaderView: View {
     private var readerOverlayPresented: Bool {
         showBookmarks || showTOC || showSearch || showTTSSettings || showBookInfo
             || showSourceSwitch || showTitleDesigner || showReplaceRules
-            || showAggregateSearch || showBackgroundImagePicker || showReplaceInput
+            || showAggregateSearch || showReplaceInput
             || showComments || directCommentTarget != nil
     }
 
@@ -7045,15 +7076,6 @@ public struct ReaderView: View {
             backdrop: chromeBackground,
             layerOpacity: effectivePanelLayerOpacity
         ))
-        .fileImporter(
-            isPresented: $showBackgroundImagePicker,
-            allowedContentTypes: [.image],
-            allowsMultipleSelection: false
-        ) { result in
-            if case .success(let urls) = result, let url = urls.first {
-                importBackgroundImage(from: url)
-            }
-        }
         .onAppear {
             AppLog.write("[阅读设置] 面板卡片已渲染 折叠=\(panelCollapsed)")
         }
@@ -7757,13 +7779,13 @@ public struct ReaderView: View {
                                 .foregroundColor(readerConfig.pageTextColor.opacity(0.8))
                         }
                     } else {
-                        Button("选择图片…") { showBackgroundImagePicker = true }
+                        Button("选择图片…") { presentBackgroundImagePicker() }
                             .font(.system(size: 12))
                             .buttonStyle(.plain)
                             .foregroundColor(readerConfig.pageTextColor.opacity(0.8))
                     }
                     #else
-                    Button("选择图片…") { showBackgroundImagePicker = true }
+                    Button("选择图片…") { presentBackgroundImagePicker() }
                         .font(.system(size: 12))
                         .buttonStyle(.plain)
                         .foregroundColor(readerConfig.pageTextColor.opacity(0.8))
@@ -8649,8 +8671,8 @@ public struct ReaderView: View {
             footerOffset: readerConfig.footerOffset,
             paddingTop: readerConfig.paddingTop,
             paddingBottom: readerConfig.paddingBottom,
-            paddingLeft: readerConfig.paddingLeft,
-            paddingRight: readerConfig.paddingRight,
+            paddingLeft: contentPaddingLeft,
+            paddingRight: contentPaddingRight,
             chapterTitleScale: readerConfig.chapterTitleScale,
             titleHidden: readerConfig.titleAlignment == .hidden
         )
@@ -9530,6 +9552,7 @@ public struct ReaderSearchSheet: View {
                 }
             }
         }
+            .stackNavigationStyle()
     }
 }
 
@@ -9830,6 +9853,7 @@ struct ReplaceRulesView: View {
                 }
             }
         }
+            .stackNavigationStyle()
     }
 
     private func ruleRow(_ rule: ReplaceRule) -> some View {
@@ -9929,6 +9953,7 @@ struct ReplaceRuleEditor: View {
                 }
             }
         }
+            .stackNavigationStyle()
     }
 }
 

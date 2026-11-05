@@ -83,6 +83,7 @@ struct MediaBookReaderView: View {
                 mediaChapterSheet
             }
         }
+            .stackNavigationStyle()
         .task(id: currentIndex) {
             await load()
         }
@@ -244,6 +245,7 @@ struct MediaBookReaderView: View {
                 }
             }
         }
+            .stackNavigationStyle()
     }
 
     private func go(_ delta: Int) {

@@ -138,6 +138,8 @@ public struct SourceSwitchSheet: View {
                         }
                     }
                     .padding(.bottom, 28)
+                    .frame(maxWidth: 760)
+                    .frame(maxWidth: .infinity)
                 }
             }
         }
@@ -863,6 +865,7 @@ private struct SourceSwitchSourcePicker: View {    let sources: [BookSource]
                 }
             }
         }
+            .stackNavigationStyle()
     }
 
     private func sourceRow(_ source: BookSource) -> some View {

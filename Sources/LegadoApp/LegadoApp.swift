@@ -316,6 +316,7 @@ private struct DebugTTSLauncher: ViewModifier {
         content.sheet(isPresented: $isPresented) {
             switch openTarget {
             case "sources": NavigationView { TTSourceManagerView() }
+                .stackNavigationStyle()
             default: TTSSettingsSheet()
             }
         }
@@ -580,6 +581,7 @@ struct ScriptBrowserSheet: View {
                     }
                 }
         }
+            .stackNavigationStyle()
         .onAppear {
             webView.navigationDelegate = loader
             load(request.url)

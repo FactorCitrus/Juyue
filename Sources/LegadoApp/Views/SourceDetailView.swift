@@ -277,6 +277,7 @@ public struct SourceDetailView: View {
             NavigationView {
                 SearchBookView()
             }
+                .stackNavigationStyle()
         }
         .sheet(isPresented: $showCookieSheet) {
             cookieSheet
@@ -421,6 +422,7 @@ public struct SourceDetailView: View {
                 }
             }
         }
+            .stackNavigationStyle()
     }
 
     // MARK: - Account Info Subview

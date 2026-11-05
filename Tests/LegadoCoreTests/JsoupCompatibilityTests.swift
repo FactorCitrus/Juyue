@@ -1,4 +1,5 @@
 import XCTest
+import JavaScriptCore
 @testable import LegadoCore
 
 /// 书源兼容 P2：`org.jsoup` shim 与 `java.getElements`。
@@ -230,5 +231,31 @@ final class JsoupCompatibilityTests: XCTestCase {
         XCTAssertEqual(engine.eval(script: "java.getElements(page, 'div[').size()") as? Int, 0)
         XCTAssertEqual(engine.eval(script: "java.getElements('', 'a.item').size()") as? Int, 0)
         XCTAssertNil(engine.lastError)
+    }
+
+    // MARK: - 请求头方法
+
+    func testConnectHeaderMethodsUseRealHttpNames() {
+        let context = JSContext()!
+        var seen: [String: String] = [:]
+        JsoupShim.install(context: context, fetch: { [html] _, headers, _, _ in
+            seen = headers
+            return (html, 200)
+        })
+
+        _ = context.evaluateScript("""
+        org.jsoup.Jsoup.connect('https://example.com/a')
+          .userAgent('UA-from-source')
+          .referrer('https://example.com/ref')
+          .cookie('sid=1')
+          .execute()
+        """)
+        XCTAssertNil(context.exception, "\(String(describing: context.exception))")
+
+        XCTAssertEqual(seen["User-Agent"], "UA-from-source")
+        XCTAssertEqual(seen["Referer"], "https://example.com/ref")
+        XCTAssertEqual(seen["Cookie"], "sid=1")
+        XCTAssertNil(seen["userAgent"])
+        XCTAssertNil(seen["referrer"])
     }
 }

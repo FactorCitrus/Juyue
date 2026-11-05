@@ -296,7 +296,6 @@ public struct BookshelfView: View {
     @State private var showingLunarLog = false
     @State private var navigateToDetailBook: Book? = nil
     @State private var isSearchActive: Bool = false
-    @State private var showFileImporter: Bool = false
     @State private var selectedGroupId: UUID? = nil
     @State private var showNewGroupAlert: Bool = false
     @State private var newGroupName: String = ""
@@ -313,6 +312,8 @@ public struct BookshelfView: View {
     @State private var hoveredBookUrl: String? = nil
     @State private var lastLiveTarget: String? = nil
     @State private var cardFrames: [String: CGRect] = [:]
+    /// 书架实际可用的窗口宽度（分屏、Slide Over 会变），不读 UIScreen。
+    @State private var shelfAvailableWidth: CGFloat = 0
 
     public init() {}
 
@@ -1109,7 +1110,7 @@ public struct BookshelfView: View {
             .accessibilityLabel("搜索书籍")
 
             Button {
-                showFileImporter = true
+                presentImportPicker()
             } label: {
                 Image(systemName: "doc.badge.plus")
             }
@@ -1325,33 +1326,39 @@ public struct BookshelfView: View {
         return Array(repeating: GridItem(.flexible(), spacing: 12), count: count)
     }
 
-    /// 卡片越小列数越多：大卡 2 列，中卡 3 列，小卡 4 列。
+    /// 卡片越小列数越多，同时按窗口实际宽度铺满：iPhone 仍是 2/3/4 列，
+    /// iPad 全屏或分屏会自动多出几列，不再把两张卡拉成半屏宽。
     private var autoColumnCount: Int {
         let scale = shelfConfig.cardScale
-        if scale >= 0.95 { return 2 }
-        if scale >= 0.75 { return 3 }
-        return 4
+        let targetWidth: CGFloat
+        let maxColumns: Int
+        if scale >= 0.95 {
+            targetWidth = 180
+            maxColumns = 6
+        } else if scale >= 0.75 {
+            targetWidth = 110
+            maxColumns = 8
+        } else {
+            targetWidth = 78
+            maxColumns = 10
+        }
+        let fit = Int(((shelfContentWidth + 12) / (targetWidth + 12)).rounded(.down))
+        return max(2, min(maxColumns, fit))
     }
 
-    /// 列数越多卡片越窄，封面同步压低，避免拉成细长条。
+    /// 封面高度跟着卡片宽度走，保持竖版书封比例；不再用固定 210pt，
+    /// 否则 iPad 上一张 660pt 宽的卡只剩一条横带。
     private var gridCoverHeight: CGFloat {
-        let columns = autoColumnCount
-        let columnFactor: CGFloat
-        switch columns {
-        case 2: columnFactor = 1
-        case 3: columnFactor = 0.86
-        default: columnFactor = 0.74
-        }
-        return (210 * shelfConfig.cardScale * columnFactor).rounded()
+        (gridCardWidth * 1.4).rounded()
     }
 
     private var shelfContentWidth: CGFloat {
         #if os(iOS)
-        let width = UIScreen.main.bounds.width
-        return width > 0 ? width - 32 : 343
+        let window = shelfAvailableWidth > 0 ? shelfAvailableWidth : 390
         #else
-        return 720
+        let window = shelfAvailableWidth > 0 ? shelfAvailableWidth : 752
         #endif
+        return max(280, window - 32)
     }
 
     private var gridCardWidth: CGFloat {
@@ -1849,6 +1856,36 @@ public struct BookshelfView: View {
         #endif
     }
 
+    private func presentImportPicker() {
+        AppLog.write("[导入] 打开文件选择器")
+        SystemDocumentPicker.present(contentTypes: [.epub, .plainText, .pdf, .zip, .archive]) { urls in
+            handleImportedFiles(urls)
+        }
+    }
+
+    private func handleImportedFiles(_ urls: [URL]) {
+        guard let url = urls.first else {
+            AppLog.write("[导入] 选择器没有返回文件")
+            return
+        }
+        let ext = url.pathExtension.lowercased()
+        AppLog.write("[导入] 已选文件 type=\(ext.isEmpty ? "?" : ext)")
+        // asCopy 已经拷进沙盒；这里仍然取一次作用域，兼容未来换成非 asCopy 的情况
+        let canAccess = url.startAccessingSecurityScopedResource()
+        defer {
+            if canAccess { url.stopAccessingSecurityScopedResource() }
+        }
+        do {
+            let imported = try bookStore.importFile(from: url)
+            AppLog.write("[导入] 本地文件成功 type=\(ext.isEmpty ? "?" : ext)")
+            selectedBook = imported
+        } catch {
+            AppLog.write("[导入] 本地文件失败 type=\(ext.isEmpty ? "?" : ext) error=\(error.localizedDescription)")
+            importErrorMessage = "导入失败: \(error.localizedDescription)"
+            showImportAlert = true
+        }
+    }
+
     /// 验收用：`JUYUE_OPEN_BOOK=<序号 或 书名片段>` 启动后直接翻开一本书，
     /// 省掉「书架里手点封面」这一步。只活在 Debug / 模拟器里。
     /// 验收用：`JUYUE_IMPORT_TXT=<容器里的绝对路径>` 启动时先导一本本地书，
@@ -1911,6 +1948,15 @@ public struct BookshelfView: View {
             }
             .background(AppThemeBackdrop())
             .background(
+                GeometryReader { proxy in
+                    Color.clear
+                        .onAppear { shelfAvailableWidth = proxy.size.width }
+                        .onChange(of: proxy.size.width) { newWidth in
+                            shelfAvailableWidth = newWidth
+                        }
+                }
+            )
+            .background(
                 Group {
                     // Programmatic push to SearchBookView
                     NavigationLink(
@@ -1972,34 +2018,6 @@ public struct BookshelfView: View {
             #if os(iOS)
             .navigationBarHidden(true)
             #endif
-            .fileImporter(
-                isPresented: $showFileImporter,
-                allowedContentTypes: [.epub, .plainText, .pdf, .zip, .archive],
-                allowsMultipleSelection: false
-            ) { result in
-                switch result {
-                case .success(let urls):
-                    guard let url = urls.first else { return }
-                    let ext = url.pathExtension.lowercased()
-                    let canAccess = url.startAccessingSecurityScopedResource()
-                    defer {
-                        if canAccess { url.stopAccessingSecurityScopedResource() }
-                    }
-                    do {
-                        let imported = try bookStore.importFile(from: url)
-                        AppLog.write("[导入] 本地文件成功 type=\(ext.isEmpty ? "?" : ext)")
-                        selectedBook = imported
-                    } catch {
-                        AppLog.write("[导入] 本地文件失败 type=\(ext.isEmpty ? "?" : ext) error=\(error.localizedDescription)")
-                        importErrorMessage = "导入失败: \(error.localizedDescription)"
-                        showImportAlert = true
-                    }
-                case .failure(let error):
-                    AppLog.write("[导入] 文件选择失败 error=\(error.localizedDescription)")
-                    importErrorMessage = "打开文件失败: \(error.localizedDescription)"
-                    showImportAlert = true
-                }
-            }
             .alert(importErrorMessage ?? "", isPresented: $showImportAlert) {
                 Button("确定", role: .cancel) {}
             }
@@ -2032,6 +2050,8 @@ public struct BookshelfView: View {
             }
             #endif
         }
+        // iPad 上不让 NavigationView 自行变双栏，否则书架被塞进左栏、右侧一片空白
+        .stackNavigationStyle()
         #if !os(iOS)
         if let book = selectedBook {
             readerCoverView(for: book)
@@ -2109,6 +2129,7 @@ private struct ShelfReaderDestination: View {
         NavigationView {
             content
         }
+            .stackNavigationStyle()
     }
 
     @ViewBuilder

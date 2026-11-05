@@ -178,6 +178,7 @@ public struct CategoryExploreView: View {
                 refreshCachedSources(sources)
             }
         }
+            .stackNavigationStyle()
     }
 
     // MARK: - Level 1: Source Switcher Bar
@@ -351,6 +352,7 @@ public struct CategoryExploreView: View {
                 }
             }
         }
+            .stackNavigationStyle()
     }
 
     private var switcherBackgroundColor: Color {
@@ -569,6 +571,8 @@ public struct CategoryExploreView: View {
             #if os(iOS)
             .listStyle(.plain)
             #endif
+            .frame(maxWidth: 900)
+            .frame(maxWidth: .infinity)
             .refreshable {
                 await refresh()
             }
@@ -765,6 +769,7 @@ public struct CategoryExploreView: View {
                 }
             }
         }
+            .stackNavigationStyle()
     }
 
     // MARK: - Logic & Actions

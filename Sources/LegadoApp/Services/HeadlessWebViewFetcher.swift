@@ -138,10 +138,11 @@ private final class HeadlessPage: NSObject, WKNavigationDelegate {
         }
 
         // 与安卓 BackstageWebView 对齐：脚本里可以直接用 result / src / baseUrl。
+        // 挂到 window 上而不是 var 声明，脚本自己写 let/const 同名变量才不会报重复声明。
         let prelude = """
-        var result = document.documentElement ? document.documentElement.outerHTML : '';
-        var src = result;
-        var baseUrl = String(location.href || '');
+        window.result = document.documentElement ? document.documentElement.outerHTML : '';
+        window.src = window.result;
+        window.baseUrl = String(location.href || '');
         """
         webView.evaluateJavaScript(prelude + "\n" + script) { [weak self] value, error in
             guard let self else { return }

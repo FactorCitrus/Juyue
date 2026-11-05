@@ -20,7 +20,6 @@ public struct TTSSettingsSheet: View {
     @State private var paramsExpanded = false
     /// 授权自检那几屏日志默认收起，展开才占地方
     @State private var authExpanded = false
-    @State private var importingModel = false
     @State private var importNote: String?
     @State private var showCloudPicker = false
     @State private var cloudPreset: TTSOnlinePreset?
@@ -269,28 +268,6 @@ public struct TTSSettingsSheet: View {
             didSyncTab = true
             syncEngineTab()
         }
-        .fileImporter(
-            isPresented: $importingModel,
-            allowedContentTypes: [.folder],
-            allowsMultipleSelection: false
-        ) { result in
-            switch result {
-            case .success(let urls):
-                guard let url = urls.first else { return }
-                do {
-                    let model = try modelStore.importModel(from: url)
-                    importNote = "已导入：\(model.name)"
-                    TTSEngineChoice.current = .builtIn
-                    engineTab = .builtIn
-                    BundledTTSEngine.shared.invalidate()
-                    audio.applySettingsChangeRestart()
-                } catch {
-                    importNote = "导入失败：\(error.localizedDescription)"
-                }
-            case .failure(let error):
-                importNote = "导入失败：\(error.localizedDescription)"
-            }
-        }
         .sheet(isPresented: $showCloudPicker) {
             TTSOnlinePresetPicker { preset in
                 showCloudPicker = false
@@ -311,6 +288,7 @@ public struct TTSSettingsSheet: View {
         .sheet(isPresented: $showCustomSetup) {
             // 自定义云服务跟「接入自建 TTS」是同一页，这里得自带一层导航，不然退不出去
             NavigationView { CustomTTSSetupView() }
+                .stackNavigationStyle()
         }
         .sheet(item: $cloudPreset) { preset in
             TTSOnlinePresetSheet(preset: preset) { values in
@@ -544,7 +522,7 @@ public struct TTSSettingsSheet: View {
                 .accessibilityIdentifier("tts.baidu.authdetails")
             } else {
                 Button {
-                    importingModel = true
+                    presentModelFolderPicker()
                 } label: {
                     Label("导入音色模型…", systemImage: "square.and.arrow.down")
                 }
@@ -800,6 +778,22 @@ public struct TTSSettingsSheet: View {
         try? store.load()
         sources = store.sources
         activeId = TTSourceSelection.activeId
+    }
+
+    private func presentModelFolderPicker() {
+        SystemDocumentPicker.present(contentTypes: [.folder]) { urls in
+            guard let url = urls.first else { return }
+            do {
+                let model = try modelStore.importModel(from: url)
+                importNote = "已导入：\(model.name)"
+                TTSEngineChoice.current = .builtIn
+                engineTab = .builtIn
+                BundledTTSEngine.shared.invalidate()
+                audio.applySettingsChangeRestart()
+            } catch {
+                importNote = "导入失败：\(error.localizedDescription)"
+            }
+        }
     }
 
     /// 云服务加完直接切过去：用户点「接入云服务」就是想让书用这条念，不是只想列表里多一行。
@@ -1147,6 +1141,7 @@ struct TTSPageShell<Content: View>: View {
     var body: some View {
         if embedsNavigation {
             NavigationView { chrome }
+                .stackNavigationStyle()
         } else {
             chrome
         }

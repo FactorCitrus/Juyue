@@ -243,19 +243,21 @@ public final class ScriptBrowser {
             let cookies = CookieJar.shared.cookieString(for: url)
             if !cookies.isEmpty { fields["Cookie"] = cookies }
         }
-        let headerLine = fields.map { "\($0.key): \($0.value)" }.joined(separator: "\n")
-        guard let parsed = NetworkClient.parseLegadoUrl(
-            url,
-            defaultHeader: headerLine.isEmpty ? nil : headerLine
-        ) else {
+        guard let parsed = NetworkClient.parseLegadoUrl(url) else {
             return ("", 0)
+        }
+
+        // defaultHeader 遇到含 "=" 的值会整段当成 Cookie，书源头必须直接并入。
+        var merged = parsed.headers
+        for (name, value) in fields {
+            merged[name] = value
         }
 
         let upper = method.uppercased()
         let request = NetworkClient.ParsedRequest(
             url: parsed.url,
             method: upper,
-            headers: parsed.headers,
+            headers: merged,
             body: upper == "POST" ? (body ?? "").data(using: .utf8) : nil,
             usesWebView: parsed.usesWebView
         )

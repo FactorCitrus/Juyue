@@ -481,6 +481,7 @@ public enum ImportSniffer {
             let base = (entry.path as NSString).lastPathComponent
             guard !base.isEmpty, !base.hasPrefix(".") else { continue }
 
+            // 中央目录声明的体积可以被伪造，真正写盘时按实际解压字节再计一次。
             totalBytes += Int(clamping: entry.uncompressedSize)
             guard totalBytes <= maxTotalUncompressedBytes else { throw ImportSnifferError.archiveTooLarge }
 
@@ -497,7 +498,23 @@ public enum ImportSniffer {
             usedNames.insert(name)
 
             let destination = directory.appendingPathComponent(name)
-            _ = try archive.extract(entry, to: destination)
+            manager.createFile(atPath: destination.path, contents: nil)
+            let handle = try FileHandle(forWritingTo: destination)
+            var written = 0
+            do {
+                _ = try archive.extract(entry, consumer: { chunk in
+                    written += chunk.count
+                    guard written <= maxTotalUncompressedBytes else {
+                        throw ImportSnifferError.archiveTooLarge
+                    }
+                    try handle.write(contentsOf: chunk)
+                })
+                try handle.close()
+            } catch {
+                try? handle.close()
+                try? manager.removeItem(at: destination)
+                throw error
+            }
             files.append(destination)
         }
         return files

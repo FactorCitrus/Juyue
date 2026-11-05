@@ -319,6 +319,8 @@ public struct SourceManagerView: View {
             .listStyle(.inset)
 #endif
             .appThemedList()
+            .frame(maxWidth: 900)
+            .frame(maxWidth: .infinity)
             .navigationTitle("书源管理")
             .toolbar {
                 ToolbarItem(placement: .primaryAction) {
@@ -361,6 +363,7 @@ public struct SourceManagerView: View {
                 NavigationView {
                     SearchBookView()
                 }
+                    .stackNavigationStyle()
             }
             .sheet(isPresented: $showGroupManager) {
                 SourceGroupManagerView()
@@ -501,6 +504,7 @@ public struct SourceManagerView: View {
                 }
             }
         }
+            .stackNavigationStyle()
     }
 
     private func copySourceJSON(_ source: BookSource) {
@@ -803,6 +807,7 @@ enum SourceDocumentPicker {
                 }
             }
         }
+            .stackNavigationStyle()
     }
 
     private func toggleGroup(_ group: String) {
@@ -877,6 +882,7 @@ enum SourceDocumentPicker {
                 }
             }
         }
+            .stackNavigationStyle()
     }
 
     private func importFromText() {
@@ -1119,6 +1125,7 @@ public struct SourceLoginSheet: View {
             }
             .onAppear(perform: parseLoginUi)
         }
+            .stackNavigationStyle()
     }
 
     private func parseLoginUi() {
@@ -1350,6 +1357,7 @@ struct SourceGroupManagerView: View {
                         }
                     }
                 }
+                    .stackNavigationStyle()
             }
             .alert("删除分组", isPresented: Binding(
                 get: { deleteTarget != nil },
@@ -1371,6 +1379,7 @@ struct SourceGroupManagerView: View {
                 Text(message ?? "")
             }
         }
+            .stackNavigationStyle()
     }
 
     private func count(for group: String) -> Int {

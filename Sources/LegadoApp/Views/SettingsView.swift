@@ -153,6 +153,7 @@ public struct SettingsView: View {
     @StateObject private var appIcon = AppIconManager.shared
     @ObservedObject private var themeManager = AppThemeManager.shared
     @Environment(\.appTheme) private var theme
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
 
     @AppStorage("legado_app_theme") private var appTheme: String = "system"
     /// 缓存章节时顺手抓书评（段评 / 本章说）首页
@@ -166,7 +167,6 @@ public struct SettingsView: View {
     @State private var webDAVStatusText: String = "未配置"
     @State private var clearCacheMessage: String? = nil
     @State private var showAppIconOptions: Bool = false
-    @State private var showLogoImporter = false
     @State private var logoPhotoItem: Any?
     @State private var iconGroupExpanded = false
     @State private var titleGroupExpanded = true
@@ -180,6 +180,12 @@ public struct SettingsView: View {
             get: { shelfConfig.badgeColor },
             set: { shelfConfig.badgeColorHex = $0.hexString ?? shelfConfig.badgeColorHex }
         )
+    }
+
+    /// iPhone 两列；iPad（regular 宽度）三列，避免卡片被拉成整屏宽。
+    private var boardColumns: [GridItem] {
+        let count = horizontalSizeClass == .regular ? 3 : 2
+        return Array(repeating: GridItem(.flexible(), spacing: 12), count: count)
     }
 
     /// 与书架页一致：卡片越小列数越多。
@@ -198,10 +204,7 @@ public struct SettingsView: View {
                         settingsHero
                         boardTile(.read, height: 132)
                         LazyVGrid(
-                            columns: [
-                                GridItem(.flexible(), spacing: 12),
-                                GridItem(.flexible(), spacing: 12)
-                            ],
+                            columns: boardColumns,
                             spacing: 12
                         ) {
                             boardTile(.display)
@@ -215,6 +218,8 @@ public struct SettingsView: View {
                     .padding(.horizontal, 16)
                     .padding(.top, 8)
                     .padding(.bottom, 110)
+                    .frame(maxWidth: 860)
+                    .frame(maxWidth: .infinity)
                 }
                 .background(AppThemeBackdrop())
 
@@ -272,6 +277,7 @@ public struct SettingsView: View {
                 Text(appIcon.errorMessage ?? "")
             }
         }
+            .stackNavigationStyle()
     }
 
     @ViewBuilder
@@ -538,6 +544,8 @@ public struct SettingsView: View {
                     }
                     .padding(16)
                     .padding(.bottom, 40)
+                    .frame(maxWidth: 860)
+                    .frame(maxWidth: .infinity)
                     .onAppear {
                         AppLog.write("[设置] 板块内容已渲染 \(board.title)")
                     }
@@ -1156,19 +1164,6 @@ public struct SettingsView: View {
 
         sectionCard("书架标题与图标", tag: "TITLE") {
             shelfTitlePreview
-                .fileImporter(
-                    isPresented: $showLogoImporter,
-                    allowedContentTypes: [.image],
-                    allowsMultipleSelection: false
-                ) { result in
-                    if case .success(let urls) = result, let url = urls.first {
-                        let scoped = url.startAccessingSecurityScopedResource()
-                        defer { if scoped { url.stopAccessingSecurityScopedResource() } }
-                        if let data = try? Data(contentsOf: url), shelfLogo.save(data) {
-                            AppLog.write("[设置] 书架图标已更换（文件）")
-                        }
-                    }
-                }
             cardDivider
             Button {
                 withAnimation(.easeInOut(duration: 0.18)) { iconGroupExpanded.toggle() }
@@ -1204,14 +1199,14 @@ public struct SettingsView: View {
                             }
                         } else {
                             Button(ShelfLogoStorage.hasImage ? "更换图片" : "选择图片…") {
-                                showLogoImporter = true
+                                presentLogoPicker()
                             }
                             .font(.system(size: 13, weight: .medium))
                             .foregroundColor(theme.palette.accent)
                         }
                         #else
                         Button(ShelfLogoStorage.hasImage ? "更换图片" : "选择图片…") {
-                            showLogoImporter = true
+                            presentLogoPicker()
                         }
                         .font(.system(size: 13, weight: .medium))
                         .foregroundColor(theme.palette.accent)
@@ -1551,6 +1546,15 @@ public struct SettingsView: View {
     private var shelfTitlePreviewText: String {
         let text = shelfConfig.titleText.trimmingCharacters(in: .whitespacesAndNewlines)
         return text.isEmpty ? "我的书架" : text
+    }
+
+    private func presentLogoPicker() {
+        SystemDocumentPicker.present(contentTypes: [.image]) { urls in
+            guard let url = urls.first else { return }
+            if let data = try? Data(contentsOf: url), shelfLogo.save(data) {
+                AppLog.write("[设置] 书架图标已更换（文件）")
+            }
+        }
     }
 
     private func shelfGroupLabel(_ title: String, icon: String, summary: String, expanded: Bool) -> some View {
@@ -1967,7 +1971,6 @@ struct ReplacementRulesView: View {
     @State private var showImport = false
     @State private var importText = ""
     @State private var importMessage: String?
-    @State private var showFileImporter = false
 
     var body: some View {
         List {
@@ -2085,7 +2088,7 @@ struct ReplacementRulesView: View {
                 }
 
                 Button {
-                    showFileImporter = true
+                    presentRulesFilePicker()
                 } label: {
                     Label("从文件导入", systemImage: "doc")
                 }
@@ -2108,25 +2111,18 @@ struct ReplacementRulesView: View {
                         .disabled(importText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 }
             }
-            .fileImporter(
-                isPresented: $showFileImporter,
-                allowedContentTypes: [.json, .plainText, .item],
-                allowsMultipleSelection: false
-            ) { result in
-                switch result {
-                case .success(let urls):
-                    guard let url = urls.first else { return }
-                    let scoped = url.startAccessingSecurityScopedResource()
-                    defer { if scoped { url.stopAccessingSecurityScopedResource() } }
-                    if let text = try? String(contentsOf: url, encoding: .utf8) {
-                        importText = text
-                        importRules(text)
-                    } else {
-                        importMessage = "读不了这个文件"
-                    }
-                case .failure(let error):
-                    importMessage = "选择文件失败：\(error.localizedDescription)"
-                }
+        }
+            .stackNavigationStyle()
+    }
+
+    private func presentRulesFilePicker() {
+        SystemDocumentPicker.present(contentTypes: [.json, .plainText, .item]) { urls in
+            guard let url = urls.first else { return }
+            if let text = try? String(contentsOf: url, encoding: .utf8) {
+                importText = text
+                importRules(text)
+            } else {
+                importMessage = "读不了这个文件"
             }
         }
     }
@@ -2241,6 +2237,7 @@ struct ReplacementRuleEditor: View {
                 }
             }
         }
+            .stackNavigationStyle()
     }
 }
 
@@ -3009,6 +3006,7 @@ struct DownloadedImportSheet: View {
             .task { await prepare() }
             .onDisappear { cleanupIfNeeded() }
         }
+            .stackNavigationStyle()
     }
 
     private func prepare() async {
@@ -3809,7 +3807,6 @@ struct SubscribeSourcesView: View {
     @State private var importText = ""
     @State private var importURL = ""
     @State private var message: String?
-    @State private var showFileImporter = false
     @State private var editing: SubscribeSource?
     @State private var webLoginSource: SubscribeSource?
     @State private var searchText = ""
@@ -4153,7 +4150,7 @@ struct SubscribeSourcesView: View {
                 importText: $importText,
                 importURL: $importURL,
                 onDone: { text in message = text },
-                onPickFile: { showFileImporter = true }
+                onPickFile: { presentSourceFilePicker() }
             )
         }
         .sheet(item: $editing) { source in
@@ -4170,20 +4167,18 @@ struct SubscribeSourcesView: View {
                         }
                     }
             }
+                .stackNavigationStyle()
         }
-        .fileImporter(isPresented: $showFileImporter, allowedContentTypes: [.json, .plainText]) { result in
-            switch result {
-            case .success(let url):
-                let canAccess = url.startAccessingSecurityScopedResource()
-                defer { if canAccess { url.stopAccessingSecurityScopedResource() } }
-                if let data = try? Data(contentsOf: url),
-                   let text = String(data: data, encoding: .utf8) {
-                    preparePendingImport(text, label: url.lastPathComponent)
-                } else {
-                    message = "文件读不出来。"
-                }
-            case .failure(let error):
-                message = "打开文件失败：\(error.localizedDescription)"
+    }
+
+    private func presentSourceFilePicker() {
+        SystemDocumentPicker.present(contentTypes: [.json, .plainText]) { urls in
+            guard let url = urls.first else { return }
+            if let data = try? Data(contentsOf: url),
+               let text = String(data: data, encoding: .utf8) {
+                preparePendingImport(text, label: url.lastPathComponent)
+            } else {
+                message = "文件读不出来。"
             }
         }
     }
@@ -4500,6 +4495,7 @@ struct SubscribeImportSheet: View {
                 }
             }
         }
+            .stackNavigationStyle()
     }
 
     private func preparePreview(_ text: String) {
@@ -4612,6 +4608,7 @@ struct SubscribeSourceEditor: View {
                 }
             }
         }
+            .stackNavigationStyle()
     }
 }
 
@@ -5020,6 +5017,7 @@ struct SubscribeArticleView: View {
                 isLoading = false
             }
         }
+            .stackNavigationStyle()
     }
 
     private func handleLink(_ url: URL) -> OpenURLAction.Result {
