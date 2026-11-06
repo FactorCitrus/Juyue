@@ -118,8 +118,9 @@ Juyue/
 
 ## GitHub Actions 持续集成与发布
 
-项目配置了自动化的 GitHub Actions 工作流：
-- **推送主分支 `main`** 会自动触发构建与测试，编译打包未签名 `Legado-v*.ipa`，并**自动发布到 GitHub Releases** 供侧载安装。
+项目配置了 GitHub Actions 工作流：
+- **构建与测试**：推送 `main` 会触发 `gpl-audit`，跑许可证与合规检查。
+- **发版**：打包发布**只能手动触发**——Actions → `Build & Release` → `Run workflow`。发版是对外分发动作，不跟随 push 自动发生。
 - **支持的侧载方式 (Sideloading)**：
   - **TrollStore**（巨魔商店，推荐，免越狱免证书签名，永久有效）
   - **AltStore / SideStore**（个人免费证书签名）

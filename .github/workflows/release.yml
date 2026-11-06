@@ -1,17 +1,9 @@
 name: Build & Release
 
 on:
-  push:
-    branches:
-      - main
-    paths:
-      - 'VERSION'
-      - 'CHANGELOG.md'
-      - 'Sources/**'
-      - 'Juyue.xcodeproj/**'
-      - 'Package.swift'
-      # 改发布流程本身也得跑一遍，不然 workflow 的修补要等下次改源码才验证得到
-      - '.github/workflows/release.yml'
+  # 只允许手动触发：GitHub → Actions → Build & Release → Run workflow。
+  # 不跟随 push。发版是一个对外分发动作，必须由人主动确认；
+  # 改一行源码就自动往外扔一个安装包，出了事没人来得及叫停。
   workflow_dispatch:
 
 concurrency:
