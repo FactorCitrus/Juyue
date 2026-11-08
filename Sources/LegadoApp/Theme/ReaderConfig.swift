@@ -1,4 +1,7 @@
 import SwiftUI
+#if canImport(LegadoCore)
+import LegadoCore
+#endif
 #if canImport(UIKit)
 import UIKit
 #endif
@@ -1166,6 +1169,9 @@ public enum ReaderBarContent: String, CaseIterable, Identifiable {
     case batteryBar = "电量条"
     case chapterCount = "共 N 章"
     case chaptersShort = "N 章"
+    case chapterWordCount = "本章字数"
+    case pageWordCount = "本页字数"
+    case bookWordCount = "全书字数"
     case elapsedReadingTime = "阅读时长"
     case remainingReadingTime = "剩余时间"
     case userText = "自定义"
@@ -1180,6 +1186,38 @@ public enum ReaderBarContent: String, CaseIterable, Identifiable {
         default:
             return false
         }
+    }
+
+    /// 选择器分组：一屏 24 个芯片太密，按类别分开找起来快
+    public var group: ReaderBarGroup {
+        switch self {
+        case .none, .bookName, .chapterTitle, .shortChapterTitle, .chapterCount, .chaptersShort,
+             .chapterWordCount, .pageWordCount, .bookWordCount:
+            return .book
+        case .progress, .pageInfo, .pagePercent, .pageNumberLabel, .bookPercent, .bookPercentBar:
+            return .progress
+        case .time, .clockWithSeconds, .date, .weekday, .userDate,
+             .elapsedReadingTime, .remainingReadingTime:
+            return .time
+        case .batteryLevel, .batteryIcon, .batteryGlyphWithPercent, .batteryBar:
+            return .device
+        case .userText:
+            return .custom
+        }
+    }
+}
+
+public enum ReaderBarGroup: String, CaseIterable, Identifiable {
+    case book = "书籍"
+    case progress = "进度"
+    case time = "时间"
+    case device = "设备"
+    case custom = "自定义"
+
+    public var id: String { rawValue }
+
+    public var items: [ReaderBarContent] {
+        ReaderBarContent.allCases.filter { $0.group == self }
     }
 }
 
@@ -1468,6 +1506,32 @@ public class ReaderConfig: ObservableObject {
         didSet { Self.defaults.set(smartParagraphs, forKey: "reader_smart_paragraphs") }
     }
 
+    /// 自动分段时先合并硬换行：只对整章没有空行分隔的正文生效，
+    /// 免得把已经分好段的书再搅一遍。
+    @Published public var autoParagraphMerge: Bool = true {
+        didSet { Self.defaults.set(autoParagraphMerge, forKey: "reader_auto_paragraph_merge") }
+    }
+
+    /// 自动分段的目标段长（字）
+    @Published public var paragraphTargetLength: Int = 100 {
+        didSet { Self.defaults.set(paragraphTargetLength, forKey: "reader_paragraph_target_length") }
+    }
+
+    /// 插图显示模式：0 适应宽度 / 1 原始尺寸 / 2 铺满宽度
+    @Published public var imageDisplayMode: Int = 0 {
+        didSet { Self.defaults.set(imageDisplayMode, forKey: "reader_image_display_mode") }
+    }
+
+    /// 插图最大宽度（占正文宽度的百分比）
+    @Published public var imageMaxWidthPercent: CGFloat = 100 {
+        didSet { Self.defaults.set(Double(imageMaxWidthPercent), forKey: "reader_image_max_width_percent") }
+    }
+
+    /// 漫画/PDF 自动裁掉四周白边
+    @Published public var comicTrimBorders: Bool = false {
+        didSet { Self.defaults.set(comicTrimBorders, forKey: "reader_comic_trim_borders") }
+    }
+
     /// 标点禁则：行首不出现句读/收尾类标点，行尾不出现开引号、开括号。
     /// 按页翻走 CoreText 断行，连续模式走 TextKit 的 word joiner，两套都听这个开关
     @Published public var punctuationKinsoku: Bool = true {
@@ -1715,6 +1779,15 @@ public class ReaderConfig: ObservableObject {
         footerRight = Self.loadBar("reader_footer_right", fallback: footerRight)
         if d.object(forKey: "reader_bar_divider") != nil { barDivider = d.bool(forKey: "reader_bar_divider") }
         if d.object(forKey: "reader_smart_paragraphs") != nil { smartParagraphs = d.bool(forKey: "reader_smart_paragraphs") }
+        if d.object(forKey: "reader_auto_paragraph_merge") != nil { autoParagraphMerge = d.bool(forKey: "reader_auto_paragraph_merge") }
+        if d.object(forKey: "reader_paragraph_target_length") != nil {
+            paragraphTargetLength = min(max(40, d.integer(forKey: "reader_paragraph_target_length")), 200)
+        }
+        if d.object(forKey: "reader_image_display_mode") != nil { imageDisplayMode = d.integer(forKey: "reader_image_display_mode") }
+        if d.object(forKey: "reader_image_max_width_percent") != nil {
+            imageMaxWidthPercent = CGFloat(min(max(30, d.double(forKey: "reader_image_max_width_percent")), 100))
+        }
+        if d.object(forKey: "reader_comic_trim_borders") != nil { comicTrimBorders = d.bool(forKey: "reader_comic_trim_borders") }
         if d.object(forKey: "reader_punctuation_kinsoku") != nil { punctuationKinsoku = d.bool(forKey: "reader_punctuation_kinsoku") }
         if d.object(forKey: "reader_shared_layout") != nil { sharedLayout = d.bool(forKey: "reader_shared_layout") }
         if d.object(forKey: "reader_custom_colors") != nil { useCustomColors = d.bool(forKey: "reader_custom_colors") }
@@ -1829,6 +1902,10 @@ public struct ReaderBarContext {
     public var shortTitleLength: Int = 6
     public var customDatePattern: String = "M月d日"
     public var customBarText: String = ""
+    /// 字数字符口径（不含空白）；0 表示还不知道，显示为空
+    public var chapterCharCount: Int = 0
+    public var pageCharCount: Int = 0
+    public var bookCharCount: Int = 0
 
     public init() {}
 }
@@ -1917,6 +1994,12 @@ public func readerBarText(_ content: ReaderBarContent, _ ctx: ReaderBarContext) 
         return ctx.chapterCount > 0 ? "共 \(ctx.chapterCount) 章" : ""
     case .chaptersShort:
         return ctx.chapterCount > 0 ? "\(ctx.chapterCount)章" : ""
+    case .chapterWordCount:
+        return ctx.chapterCharCount > 0 ? "\(ctx.chapterCharCount) 字" : ""
+    case .pageWordCount:
+        return ctx.pageCharCount > 0 ? "\(ctx.pageCharCount) 字" : ""
+    case .bookWordCount:
+        return ctx.bookCharCount > 0 ? "\(ctx.bookCharCount) 字" : ""
     case .elapsedReadingTime:
         guard let start = ctx.sessionStart else { return "" }
         return barDurationText(Date().timeIntervalSince(start))
@@ -2027,19 +2110,56 @@ public final class ReplaceRuleStore: ObservableObject {
     }
 
     private let key = "reader_replace_rules_v1"
+    private let migrationKey = "reader_replace_rules_migrated_v1"
 
     private init() {
+        var list: [ReplaceRule] = []
         if let data = UserDefaults.standard.data(forKey: key),
-           let list = try? JSONDecoder().decode([ReplaceRule].self, from: data) {
-            rules = list
-        } else {
-            rules = []
+           let decoded = try? JSONDecoder().decode([ReplaceRule].self, from: data) {
+            list = decoded
         }
+        // 旧版「替换净化」的规则存在 TextPurifier 里，第一次启动并过来，之后只留一份
+        if !UserDefaults.standard.bool(forKey: migrationKey) {
+            for legacy in TextPurifier.shared.rules {
+                let exists = list.contains {
+                    $0.pattern == legacy.pattern
+                        && $0.replacement == legacy.replacement
+                        && $0.isRegex == legacy.isRegex
+                }
+                if !exists {
+                    list.append(ReplaceRule(
+                        name: legacy.name,
+                        pattern: legacy.pattern,
+                        replacement: legacy.replacement,
+                        isRegex: legacy.isRegex,
+                        enabled: legacy.enabled,
+                        bookUrl: nil
+                    ))
+                }
+            }
+            UserDefaults.standard.set(true, forKey: migrationKey)
+        }
+        rules = list
+        pushGlobalRulesToPurifier()
     }
 
     private func save() {
         if let data = try? JSONEncoder().encode(rules) {
             UserDefaults.standard.set(data, forKey: key)
+        }
+        pushGlobalRulesToPurifier()
+    }
+
+    /// 章节抓取在 Core 层，只能看到同步过去的全局规则；本书规则由阅读界面套用。
+    private func pushGlobalRulesToPurifier() {
+        TextPurifier.shared.rules = rules.filter(\.isGlobal).map {
+            ReplacementRule(
+                name: $0.name,
+                pattern: $0.pattern,
+                replacement: $0.replacement,
+                isRegex: $0.isRegex,
+                enabled: $0.enabled
+            )
         }
     }
 
@@ -2075,6 +2195,11 @@ extension ReaderConfig {
         justifyLastPage = true
         barDivider = false
         smartParagraphs = true
+        autoParagraphMerge = true
+        paragraphTargetLength = 100
+        imageDisplayMode = 0
+        imageMaxWidthPercent = 100
+        comicTrimBorders = false
         punctuationKinsoku = true
         titleAlignment = .center
         headerLeft = [.bookName]

@@ -173,6 +173,65 @@ final class JsoupCompatibilityTests: XCTestCase {
         XCTAssertNil(engine.lastError)
     }
 
+    // MARK: - org.jsoup.nodes 构造
+
+    func testNewElementAppendAndHtmlRoundTrip() {
+        let engine = makeEngine()
+
+        XCTAssertEqual(
+            engine.eval(script: """
+            var el = new org.jsoup.nodes.Element('div');
+            el.append('<span class="x">正文</span>');
+            el.html()
+            """) as? String,
+            "<span class=\"x\">正文</span>"
+        )
+        XCTAssertNil(engine.lastError)
+    }
+
+    func testNewElementsAddElements() {
+        let engine = makeEngine()
+
+        XCTAssertEqual(
+            engine.eval(script: """
+            var first = new org.jsoup.nodes.Element('a');
+            first.text('一');
+            var second = new org.jsoup.nodes.Element('a');
+            second.text('二');
+            var els = new org.jsoup.nodes.Elements();
+            els.add(first);
+            els.add(second);
+            els.size() + ':' + els.text()
+            """) as? String,
+            "2:一 二"
+        )
+        XCTAssertNil(engine.lastError)
+    }
+
+    func testAttrWriteReadBackAndRemove() {
+        let engine = makeEngine()
+
+        XCTAssertEqual(
+            engine.eval(script: """
+            var el = new org.jsoup.nodes.Element('a');
+            el.attr('href', 'b/9');
+            el.attr('data-id', '9');
+            el.attr('href') + '/' + el.attr('data-id')
+            """) as? String,
+            "b/9/9"
+        )
+        XCTAssertEqual(
+            engine.eval(script: """
+            var el = new org.jsoup.nodes.Element('a');
+            el.attr('href', 'x');
+            el.attr('href', null);
+            el.hasAttr('href')
+            """) as? Bool,
+            false
+        )
+        XCTAssertNil(engine.lastError)
+    }
+
     // MARK: - java.getElements
 
     func testJavaGetElementsMatchesJsoup() {
@@ -230,6 +289,35 @@ final class JsoupCompatibilityTests: XCTestCase {
 
         XCTAssertEqual(engine.eval(script: "java.getElements(page, 'div[').size()") as? Int, 0)
         XCTAssertEqual(engine.eval(script: "java.getElements('', 'a.item').size()") as? Int, 0)
+        XCTAssertNil(engine.lastError)
+    }
+
+    // MARK: - java.getElement
+
+    func testJavaGetElementReadsJSONPathFromCurrentResult() {
+        let engine = makeEngine()
+        let json = #"{"tree":[{"path":"a"},{"path":"b"}]}"#
+
+        XCTAssertEqual(
+            engine.eval(script: "java.getElement('$..tree[*]').length", result: json) as? Int,
+            2
+        )
+        XCTAssertEqual(
+            engine.eval(script: "java.getElement('$..tree[*]')[1].path", result: json) as? String,
+            "b"
+        )
+        XCTAssertNil(engine.lastError)
+    }
+
+    func testJavaGetElementWithoutMatchIsEmptyArray() {
+        let engine = makeEngine()
+
+        // 洛娅橙首页的内容不是 JSON，取不到 blobs 时脚本会 Array.from(结果)，
+        // 回 null 会让 Array.from 抛错，必须回空数组。
+        XCTAssertEqual(
+            engine.eval(script: "java.getElement('$..blobs[*]').length", result: "A") as? Int,
+            0
+        )
         XCTAssertNil(engine.lastError)
     }
 

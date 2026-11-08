@@ -81,7 +81,7 @@ public final class RuleAnalyzer {
             return urlString
         }
         let trimmed = urlString.trimmingCharacters(in: .whitespacesAndNewlines)
-        if trimmed.hasPrefix("http://") || trimmed.hasPrefix("https://") {
+        if trimmed.hasPrefix("http://") || trimmed.hasPrefix("https://") || trimmed.lowercased().hasPrefix("data:") {
             return trimmed
         }
         guard let resolved = URL(string: trimmed, relativeTo: baseObject) else {
@@ -216,6 +216,19 @@ public final class RuleAnalyzer {
     }
 
     // MARK: - 列表求值
+
+    /// 行字段值本身可能写成 `@js:…` / `<js>…</js>`（洛娅橙用这种写法把行数据编码成
+    /// `data:` 地址）。规则没写 JS、值里带了才需要再求值一次，`result` 保留当前行。
+    public func resolveLazyJavaScript(_ value: String, isUrl: Bool = false) -> String {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        let resolved: String
+        if trimmed.hasPrefix("@js:") || (trimmed.contains("<js>") && trimmed.contains("</js>")) {
+            resolved = getString(trimmed)
+        } else {
+            resolved = value
+        }
+        return isUrl ? resolveUrl(resolved) : resolved
+    }
 
     public func getStringList(_ rule: String?, isUrl: Bool = false) -> [String] {
         guard let raw = rule?.trimmingCharacters(in: .whitespacesAndNewlines), raw.isEmpty == false else {

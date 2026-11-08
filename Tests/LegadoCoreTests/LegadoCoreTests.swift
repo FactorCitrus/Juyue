@@ -1095,3 +1095,72 @@ class MockWebDAVURLProtocol: URLProtocol {
 
     override func stopLoading() {}
 }
+
+// MARK: - 订阅源抓取
+
+final class SubscribeSourceFetchTests: XCTestCase {
+    /// `data:;base64,<占位>,<扩展>` 解不出载荷时不能真发请求，
+    /// 规则脚本按 baseUrl 分支走（洛娅橙的首页就是这种写法）。
+    func testDataPseudoURLStillEvaluatesRules() async throws {
+        let source = SubscribeSource(
+            sourceUrl: "https://example.com",
+            sourceName: "伪data源",
+            singleUrl: false,
+            sortUrl: #"首页::data:;base64,qq,{"type":"sy"}"#,
+            ruleArticles: #"<js>[{n:'主页',u:'https://example.com/home'}]</js>"#,
+            ruleTitle: "n",
+            ruleLink: "u"
+        )
+        let page = try await SubscribeSourceService.fetchPage(source: source)
+        XCTAssertEqual(page.articles.count, 1)
+        XCTAssertEqual(page.articles.first?.title, "主页")
+        XCTAssertEqual(page.articles.first?.link, "https://example.com/home")
+    }
+
+    /// 分页规则只回页码时，当前地址里的 page 参数要 +1。
+    func testBumpPageFromBareNumber() {
+        XCTAssertEqual(
+            SubscribeSourceService.bumpPage(
+                in: "https://yuancang.cc/api/v1/sources?page=1&page_size=60&category_id=1&sort=newest",
+                from: 1
+            ),
+            "https://yuancang.cc/api/v1/sources?page=2&page_size=60&category_id=1&sort=newest"
+        )
+        XCTAssertNil(SubscribeSourceService.bumpPage(in: "https://example.com/list", from: 3))
+    }
+
+    /// 行值里的 `@js:` 链接要再求值一次（洛娅橙用它拼 data: 地址）。
+    func testLazyJSArticleLinkIsEvaluated() async throws {
+        let source = SubscribeSource(
+            sourceUrl: "https://example.com",
+            sourceName: "懒JS源",
+            singleUrl: false,
+            sortUrl: #"首页::data:;base64,qq,{"type":"sy"}"#,
+            ruleArticles: #"<js>[{n:'条目',u:`@js:'data:;base64,QQ,{"type":"url"}'`}]</js>"#,
+            ruleTitle: "n",
+            ruleLink: "u"
+        )
+        let page = try await SubscribeSourceService.fetchPage(source: source)
+        XCTAssertEqual(page.articles.count, 1)
+        XCTAssertEqual(page.articles.first?.link, #"data:;base64,QQ,{"type":"url"}"#)
+    }
+
+    /// 正文链接是 `@js:` 拼出的 data: 地址时，要解出载荷交给 ruleContent。
+    func testFetchContentHandlesLazyJSDataLink() async throws {
+        let source = SubscribeSource(
+            sourceUrl: "https://example.com",
+            sourceName: "懒JS正文",
+            singleUrl: false,
+            ruleArticles: "<js>[]</js>",
+            ruleTitle: "n",
+            ruleLink: "u",
+            ruleContent: "@js:result"
+        )
+        let article = SubscribeArticle(
+            title: "条目",
+            link: #"@js:'data:;base64,Qk9EWS0xMjM=,{"type":"url"}'"#
+        )
+        let text = try await SubscribeSourceService.fetchContent(article: article, source: source)
+        XCTAssertEqual(text, "BODY-123")
+    }
+}

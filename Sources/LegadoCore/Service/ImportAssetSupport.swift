@@ -17,7 +17,7 @@ public enum DownloadedLinkKind: Equatable, Sendable {
 public enum DownloadLinkClassifier {
     public static let downloadExtensions: Set<String> = [
         "txt", "json", "ttf", "otf", "ttc", "zip", "epub", "pdf",
-        "mobi", "azw3", "cbz", "cb7"
+        "mobi", "azw", "azw3", "prc", "fb2", "umd", "cbz", "cb7", "apk"
     ]
 
     public static let binaryMIMETypes: Set<String> = [
@@ -30,6 +30,10 @@ public enum DownloadLinkClassifier {
         "application/epub",
         "application/x-mobipocket-ebook",
         "application/vnd.amazon.ebook",
+        "application/x-fictionbook+xml",
+        "application/x-fictionbook",
+        "application/fb2",
+        "application/x-umd",
         "application/x-cbz",
         "application/x-cb7",
         "application/gzip",
@@ -58,12 +62,37 @@ public enum DownloadLinkClassifier {
         }
     }
 
+    /// `yuedu://opapp/<下载地址>` 是订阅源交给「外部下载器」的写法，iOS 上没有对应 App，
+    /// 解析出里面的 http(s) 地址交给内置下载。
+    public static func opappTarget(_ url: URL) -> URL? {
+        guard ["juyue", "legado", "yuedu"].contains((url.scheme ?? "").lowercased()),
+              url.host?.lowercased() == "opapp",
+              let range = url.absoluteString.range(of: "opapp/") else {
+            return nil
+        }
+        var tail = String(url.absoluteString[range.upperBound...])
+        if let cut = tail.firstIndex(where: { $0 == "?" || $0 == "#" }) {
+            tail = String(tail[..<cut])
+        }
+        tail = tail.removingPercentEncoding ?? tail
+        let lower = tail.lowercased()
+        guard lower.hasPrefix("http://") || lower.hasPrefix("https://") else { return nil }
+        return URL(string: tail)
+    }
+
     public static func fileExtension(of url: URL) -> String {
         url.pathExtension.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
     }
 
     public static func isDownloadable(_ url: URL) -> Bool {
         downloadExtensions.contains(fileExtension(of: url))
+    }
+
+    /// 蓝奏云分享页：地址本身不是文件直链，要先跑页面脚本才给下载地址。
+    /// 这类链接交给内置网页打开，由 WKWebView 接管真正的下载。
+    public static func isLanzouCloud(_ url: URL) -> Bool {
+        guard let host = url.host?.lowercased() else { return false }
+        return host.contains("lanzou") && host.hasSuffix(".com")
     }
 
     public static func normalizedMIME(_ raw: String?) -> String {
@@ -128,6 +157,8 @@ public enum DownloadLinkClassifier {
         case "application/epub+zip", "application/epub": return "epub"
         case "application/x-mobipocket-ebook": return "mobi"
         case "application/vnd.amazon.ebook": return "azw3"
+        case "application/x-fictionbook+xml", "application/x-fictionbook", "application/fb2": return "fb2"
+        case "application/x-umd": return "umd"
         case "application/x-cbz": return "cbz"
         case "application/x-cb7": return "cb7"
         case "font/ttf", "application/x-font-ttf", "application/font-sfnt": return "ttf"
@@ -396,7 +427,9 @@ public enum ImportSniffer {
     public static let maxArchiveEntries = 500
     public static let maxTotalUncompressedBytes = 200 * 1024 * 1024
     public static let maxItemsPerKind = 5000
-    public static let bookExtensions: Set<String> = ["epub", "pdf", "mobi", "azw3", "cbz", "cb7"]
+    public static let bookExtensions: Set<String> = [
+        "epub", "pdf", "mobi", "azw", "azw3", "prc", "fb2", "umd", "cbz", "cb7"
+    ]
     public static let fontExtensions: Set<String> = ["ttf", "otf", "ttc"]
 
     /// 扫一个下载文件：按扩展名分流；zip 安全解压后逐个文件识别。

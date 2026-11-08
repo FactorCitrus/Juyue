@@ -43,9 +43,31 @@ enum JsoupShim {
         }
         jsoupClass.setValue(connect, forProperty: "connect")
 
+        // `new org.jsoup.nodes.Element("div")` 这类 DOM 构造在 Rhino 里走构造函数。
+        // JS 构造函数返回对象时会直接采用返回值，所以这里包一层转给 Swift。
+        let makeElement: @convention(block) (JSValue, JSValue) -> JSValue = { tag, baseUri in
+            element(tag: string(tag), baseUri: string(baseUri), in: context)
+        }
+        context.setObject(makeElement, forKeyedSubscript: "__juyueNewElement" as NSString)
+        let makeElements: @convention(block) () -> JSValue = { wrapper(Elements(), in: context) }
+        context.setObject(makeElements, forKeyedSubscript: "__juyueNewElements" as NSString)
+        context.evaluateScript("""
+        function __juyueElementCtor(tag, baseUri) { return __juyueNewElement(tag, baseUri); }
+        function __juyueElementsCtor() {
+          var out = __juyueNewElements();
+          for (var i = 0; i < arguments.length; i++) { out.add(arguments[i]); }
+          return out;
+        }
+        """)
+
         // 包结构要和 Rhino 一致：`org.jsoup.Jsoup` 是类，`org.jsoup` 是包。
         let jsoupPackage: JSValue = JSValue(newObjectIn: context) ?? JSValue(undefinedIn: context)
         jsoupPackage.setValue(jsoupClass, forProperty: "Jsoup")
+
+        let nodes: JSValue = JSValue(newObjectIn: context) ?? JSValue(undefinedIn: context)
+        nodes.setValue(context.objectForKeyedSubscript("__juyueElementCtor"), forProperty: "Element")
+        nodes.setValue(context.objectForKeyedSubscript("__juyueElementsCtor"), forProperty: "Elements")
+        jsoupPackage.setValue(nodes, forProperty: "nodes")
 
         let org: JSValue = JSValue(newObjectIn: context) ?? JSValue(undefinedIn: context)
         org.setValue(jsoupPackage, forProperty: "jsoup")
@@ -57,6 +79,19 @@ enum JsoupShim {
     static func document(html: String, baseUri: String, in context: JSContext) -> JSValue {
         let parsed = (try? SwiftSoup.parse(html, baseUri)) ?? Document(baseUri)
         return wrapper(Elements([parsed]), in: context, indexable: false)
+    }
+
+    /// 建一个空标签节点。标签名只放行常规字符，其余按 div 处理，避免拼出奇怪的 HTML。
+    static func element(tag: String, baseUri: String, in context: JSContext) -> JSValue {
+        let name = tag.trimmingCharacters(in: .whitespacesAndNewlines)
+        let safe = name.isEmpty || !name.allSatisfy({ $0.isLetter || $0.isNumber || $0 == "-" || $0 == "_" })
+            ? "div"
+            : name
+        let parsed = (try? SwiftSoup.parse("<\(safe)></\(safe)>", baseUri)) ?? Document(baseUri)
+        guard let node = parsed.body()?.children().first() else {
+            return wrapper(Elements(), in: context, indexable: false)
+        }
+        return wrapper(Elements([node]), in: context, indexable: false)
     }
 
     /// 把一段节点集合包装成 JS 对象。Document / Element / Elements 共用一套方法，
@@ -107,15 +142,44 @@ enum JsoupShim {
             return wrapper(selectElements(css, from: elements), in: context)
         }
 
-        let text: @convention(block) () -> String = { (try? elements.text()) ?? "" }
+        let text: @convention(block) (JSValue, JSValue) -> JSValue = { value, _ in
+            if value.isUndefined {
+                return JSValue(object: (try? elements.text()) ?? "", in: context)
+            }
+            let newText = string(value)
+            for element in elements.array() {
+                _ = try? element.text(newText)
+            }
+            return object
+        }
         let ownText: @convention(block) () -> String = {
             elements.array().compactMap { $0.ownText() }.joined(separator: " ")
         }
-        let html: @convention(block) () -> String = { (try? elements.html()) ?? "" }
+        let html: @convention(block) (JSValue, JSValue) -> JSValue = { value, _ in
+            if value.isUndefined {
+                return JSValue(object: (try? elements.html()) ?? "", in: context)
+            }
+            _ = try? elements.html(string(value))
+            return object
+        }
         let outerHtml: @convention(block) () -> String = { (try? elements.outerHtml()) ?? "" }
 
-        let attr: @convention(block) (JSValue) -> String = { name in
-            (try? elements.attr(string(name))) ?? ""
+        let attr: @convention(block) (JSValue, JSValue) -> JSValue = { name, value in
+            let key = string(name)
+            if value.isUndefined {
+                return JSValue(object: (try? elements.attr(key)) ?? "", in: context)
+            }
+            if value.isNull {
+                for element in elements.array() {
+                    _ = try? element.removeAttr(key)
+                }
+                return object
+            }
+            let newValue = string(value)
+            for element in elements.array() {
+                _ = try? element.attr(key, newValue)
+            }
+            return object
         }
         let hasAttr: @convention(block) (JSValue) -> Bool = { name in
             elements.hasAttr(string(name))
@@ -151,6 +215,67 @@ enum JsoupShim {
         let val: @convention(block) () -> String = {
             guard let element = elements.first() else { return "" }
             return (try? element.val()) ?? ""
+        }
+
+        // DOM 构造与改写：脚本会先 new Element(...) 拼节点，再 append/attr 改内容。
+        let hasClassFn: @convention(block) (JSValue) -> Bool = { name in
+            elements.first()?.hasClass(string(name)) ?? false
+        }
+        let addClassFn: @convention(block) (JSValue) -> JSValue = { name in
+            let value = string(name)
+            for element in elements.array() {
+                _ = try? element.addClass(value)
+            }
+            return object
+        }
+        let removeClassFn: @convention(block) (JSValue) -> JSValue = { name in
+            let value = string(name)
+            for element in elements.array() {
+                _ = try? element.removeClass(value)
+            }
+            return object
+        }
+        let removeAttrFn: @convention(block) (JSValue) -> JSValue = { name in
+            let key = string(name)
+            for element in elements.array() {
+                _ = try? element.removeAttr(key)
+            }
+            return object
+        }
+        let appendFn: @convention(block) (JSValue) -> JSValue = { value in
+            let markup = string(value)
+            for element in elements.array() {
+                _ = try? element.append(markup)
+            }
+            return object
+        }
+        let prependFn: @convention(block) (JSValue) -> JSValue = { value in
+            let markup = string(value)
+            for element in elements.array() {
+                _ = try? element.prepend(markup)
+            }
+            return object
+        }
+        let appendChildFn: @convention(block) (JSValue) -> JSValue = { child in
+            guard let node = nodeElements(child)?.first() else { return object }
+            for element in elements.array() {
+                _ = try? element.appendChild(node)
+            }
+            return object
+        }
+        let prependChildFn: @convention(block) (JSValue) -> JSValue = { child in
+            guard let node = nodeElements(child)?.first() else { return object }
+            for element in elements.array() {
+                _ = try? element.prependChild(node)
+            }
+            return object
+        }
+        let addFn: @convention(block) (JSValue) -> Bool = { item in
+            guard let incoming = nodeElements(item) else { return false }
+            for element in incoming.array() {
+                elements.add(element)
+            }
+            return !incoming.isEmpty()
         }
 
         let getElementsByTag: @convention(block) (JSValue) -> JSValue = { tag in
@@ -245,6 +370,17 @@ enum JsoupShim {
         setHidden(head, "head", on: object, in: context)
         setHidden(toArray, "toArray", on: object, in: context)
         setHidden(remove, "remove", on: object, in: context)
+        setHidden(hasClassFn, "hasClass", on: object, in: context)
+        setHidden(addClassFn, "addClass", on: object, in: context)
+        setHidden(removeClassFn, "removeClass", on: object, in: context)
+        setHidden(removeAttrFn, "removeAttr", on: object, in: context)
+        setHidden(appendFn, "append", on: object, in: context)
+        setHidden(prependFn, "prepend", on: object, in: context)
+        setHidden(appendChildFn, "appendChild", on: object, in: context)
+        setHidden(prependChildFn, "prependChild", on: object, in: context)
+        setHidden(addFn, "add", on: object, in: context)
+        // 包装对象带着原始节点，脚本把节点传回来时（appendChild / add）还能接上
+        setHidden(NodeBox(elements), "__juyueNode", on: object, in: context)
 
         if indexable {
             setHidden(elements.size(), "length", on: object, in: context)
@@ -331,6 +467,10 @@ enum JsoupShim {
             return connection(url: url, headers: updated, data: data, fetch: fetch, in: context)
         }
 
+        let chainValue: @convention(block) (JSValue) -> JSValue = { _ in
+            connection(url: url, headers: headers, data: data, fetch: fetch, in: context)
+        }
+
         func chained(_ key: String, _ value: JSValue) -> JSValue {
             var updated = headers
             if value.isUndefined || value.isNull {
@@ -348,10 +488,6 @@ enum JsoupShim {
         }
         let chainReferrer: @convention(block) (JSValue, JSValue) -> JSValue = { value, _ in
             chained("Referer", value)
-        }
-
-        let chainValue: @convention(block) (JSValue) -> JSValue = { value in
-            connection(url: url, headers: headers, data: data, fetch: fetch, in: context)
         }
 
         let chainData: @convention(block) (JSValue, JSValue) -> JSValue = { name, value in
@@ -430,9 +566,31 @@ enum JsoupShim {
         return value.toString() ?? ""
     }
 
+    /// 从包装对象上取回原始节点，脚本把节点当参数传回来时用。
+    private static func nodeElements(_ value: JSValue) -> Elements? {
+        guard value.isObject else { return nil }
+        // 参数通常是 wrapper 生成的 JS 对象，节点挂在它的 `__juyueNode` 上
+        if let box = value.objectForKeyedSubscript("__juyueNode")?.toObject() as? NodeBox {
+            return box.elements
+        }
+        return (value.toObject() as? NodeBox)?.elements
+    }
+
     private static func formEncode(_ text: String) -> String {
         var allowed = CharacterSet.alphanumerics
         allowed.insert(charactersIn: "-._~")
         return text.addingPercentEncoding(withAllowedCharacters: allowed) ?? text
+    }
+}
+
+@objc private protocol NodeBoxExport: JSExport {}
+
+/// 把 Swift 侧的节点集合挂在 JS 包装对象上。脚本会先 `new Element(...)` 拼节点，
+/// 再把它传给 `appendChild` / `Elements.add`，这时要能拿回真正的节点对象。
+private final class NodeBox: NSObject, NodeBoxExport {
+    let elements: Elements
+
+    init(_ elements: Elements) {
+        self.elements = elements
     }
 }

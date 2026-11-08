@@ -187,6 +187,8 @@ public struct BookChapter: Codable, Identifiable, Equatable {
     public var isVip: Bool?
     public var tag: String?
     public var content: String?
+    /// 正文字符数（不含空白）。老数据没有这个字段，解出来是 nil。
+    public var wordCount: Int?
 
     public init(
         bookUrl: String,
@@ -198,7 +200,8 @@ public struct BookChapter: Codable, Identifiable, Equatable {
         isVip: Bool? = false,
         tag: String? = nil,
         // 正文缓存回填时才有
-        content: String? = nil
+        content: String? = nil,
+        wordCount: Int? = nil
     ) {
         self.bookUrl = bookUrl
         self.url = url
@@ -207,6 +210,14 @@ public struct BookChapter: Codable, Identifiable, Equatable {
         self.isVip = isVip
         self.tag = tag
         self.content = content
+        self.wordCount = wordCount
+    }
+}
+
+/// 字数口径：只数字符，空白不算。中英文都按字符数，避免混排时两套标准。
+public enum ChapterWordCounter {
+    public static func count(_ text: String) -> Int {
+        text.reduce(0) { $1.isWhitespace ? $0 : $0 + 1 }
     }
 }
 

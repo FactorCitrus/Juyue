@@ -13,6 +13,10 @@ import WebKit
 #if canImport(PhotosUI)
 import PhotosUI
 #endif
+#if canImport(AVKit)
+import AVKit
+import AVFoundation
+#endif
 #if canImport(LegadoCore)
 import LegadoCore
 #endif
@@ -1965,12 +1969,16 @@ struct FontDocumentPicker: UIViewControllerRepresentable {
 // MARK: - 替换净化
 /// 正文替换净化：规则按顺序过一遍，用来去广告、水印、站点名
 struct ReplacementRulesView: View {
-    @ObservedObject private var purifier = TextPurifier.shared
+    @ObservedObject private var store = ReplaceRuleStore.shared
     @Environment(\.appTheme) private var theme
-    @State private var editing: ReplacementRule? = nil
+    @State private var editing: ReplaceRule? = nil
+    @State private var editingIsNew = false
     @State private var showImport = false
     @State private var importText = ""
     @State private var importMessage: String?
+
+    /// 设置页只管全局规则；本书规则在阅读界面的「替换净化」里编辑
+    private var rules: [ReplaceRule] { store.rules.filter(\.isGlobal) }
 
     var body: some View {
         List {
@@ -1984,7 +1992,8 @@ struct ReplacementRulesView: View {
             Section {
                 HStack(spacing: 8) {
                     TerminalActionTile(symbol: "plus", title: "新增规则", detail: "文本 / 正则") {
-                        editing = ReplacementRule(name: "", pattern: "", replacement: "")
+                        editingIsNew = true
+                        editing = ReplaceRule(bookUrl: nil)
                     }
                     TerminalActionTile(symbol: "square.and.arrow.down", title: "一键导入", detail: "JSON 规则包") {
                         importText = ""
@@ -1997,7 +2006,7 @@ struct ReplacementRulesView: View {
             .appThemedRows()
 
             Section(header: Text("规则（从上到下依次执行）")) {
-                if purifier.rules.isEmpty {
+                if rules.isEmpty {
                     VStack(spacing: 8) {
                         Image(systemName: "wand.and.stars")
                             .font(.system(size: 28))
@@ -2011,7 +2020,7 @@ struct ReplacementRulesView: View {
                     .frame(maxWidth: .infinity)
                     .padding(.vertical, 18)
                 }
-                ForEach(Array(purifier.rules.enumerated()), id: \.element.id) { index, rule in
+                ForEach(Array(rules.enumerated()), id: \.element.id) { index, rule in
                     HStack(alignment: .top, spacing: 10) {
                         VStack(alignment: .leading, spacing: 3) {
                             HStack(spacing: 6) {
@@ -2039,10 +2048,14 @@ struct ReplacementRulesView: View {
                             .labelsHidden()
                     }
                     .contentShape(Rectangle())
-                    .onTapGesture { editing = rule }
+                    .onTapGesture {
+                        editingIsNew = false
+                        editing = rule
+                    }
                 }
                 .onDelete { indexSet in
-                    purifier.rules.remove(atOffsets: indexSet)
+                    let ids = indexSet.map { rules[$0].id }
+                    store.rules.removeAll { ids.contains($0.id) }
                 }
             }
             .appThemedRows()
@@ -2057,11 +2070,11 @@ struct ReplacementRulesView: View {
         .appThemedList()
         .navigationTitle("替换净化")
         .sheet(item: $editing) { rule in
-            ReplacementRuleEditor(rule: rule) { saved in
-                if let idx = purifier.rules.firstIndex(where: { $0.id == saved.id }) {
-                    purifier.rules[idx] = saved
+            ReplaceRuleEditor(rule: rule, isNew: editingIsNew) { saved in
+                if let idx = store.rules.firstIndex(where: { $0.id == saved.id }) {
+                    store.rules[idx] = saved
                 } else {
-                    purifier.rules.append(saved)
+                    store.rules.append(saved)
                 }
             }
         }
@@ -2134,11 +2147,11 @@ struct ReplacementRulesView: View {
         }
         var added = 0
         for rule in parsed {
-            let duplicate = purifier.rules.contains {
+            let duplicate = store.rules.contains {
                 $0.pattern == rule.pattern && $0.replacement == rule.replacement && $0.isRegex == rule.isRegex
             }
             if !duplicate {
-                purifier.rules.append(rule)
+                store.rules.append(rule)
                 added += 1
             }
         }
@@ -2149,7 +2162,7 @@ struct ReplacementRulesView: View {
     }
 
     /// 认安卓 legado 的导出格式，也认本 App 自己存的键
-    static func parseRules(_ json: String) -> [ReplacementRule]? {
+    static func parseRules(_ json: String) -> [ReplaceRule]? {
         let trimmed = json.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty, let data = trimmed.data(using: .utf8),
               let object = try? JSONSerialization.jsonObject(with: data) else { return nil }
@@ -2161,7 +2174,7 @@ struct ReplacementRulesView: View {
             items = (dict["rules"] as? [Any]) ?? [dict]
         }
 
-        var rules: [ReplacementRule] = []
+        var rules: [ReplaceRule] = []
         for item in items {
             guard let dict = item as? [String: Any] else { continue }
             var pattern = (dict["pattern"] as? String) ?? ""
@@ -2171,73 +2184,27 @@ struct ReplacementRulesView: View {
                 if let flag = rawRegex as? Bool { isRegex = flag }
             }
             guard !pattern.isEmpty else { continue }
-            rules.append(ReplacementRule(
+            rules.append(ReplaceRule(
                 name: (dict["name"] as? String) ?? "",
                 pattern: pattern,
                 replacement: (dict["replacement"] as? String) ?? "",
                 isRegex: isRegex,
-                enabled: (dict["enabled"] as? Bool) ?? true
+                enabled: (dict["enabled"] as? Bool) ?? true,
+                bookUrl: nil
             ))
         }
         return rules.isEmpty ? nil : rules
     }
 
-    private func enabledBinding(_ rule: ReplacementRule) -> Binding<Bool> {
+    private func enabledBinding(_ rule: ReplaceRule) -> Binding<Bool> {
         Binding(
             get: { rule.enabled },
             set: { value in
-                if let idx = purifier.rules.firstIndex(where: { $0.id == rule.id }) {
-                    purifier.rules[idx].enabled = value
+                if let idx = store.rules.firstIndex(where: { $0.id == rule.id }) {
+                    store.rules[idx].enabled = value
                 }
             }
         )
-    }
-}
-
-struct ReplacementRuleEditor: View {
-    @Environment(\.dismiss) private var dismiss
-    @Environment(\.appTheme) private var theme
-    @State private var draft: ReplacementRule
-    private let onSave: (ReplacementRule) -> Void
-
-    init(rule: ReplacementRule, onSave: @escaping (ReplacementRule) -> Void) {
-        _draft = State(initialValue: rule)
-        self.onSave = onSave
-    }
-
-    var body: some View {
-        NavigationView {
-            Form {
-                TextField("名称（可留空）", text: $draft.name)
-                Toggle("按正则匹配", isOn: $draft.isRegex)
-                TextField(draft.isRegex ? "正则表达式" : "要查找的文本", text: $draft.pattern)
-                    .autocorrectionDisabled()
-                    #if os(iOS)
-                    .textInputAutocapitalization(.never)
-                    #endif
-                TextField("替换成（留空＝删掉）", text: $draft.replacement)
-                    .autocorrectionDisabled()
-                Toggle("启用", isOn: $draft.enabled)
-            }
-            .appThemedList()
-            .navigationTitle("编辑规则")
-            #if os(iOS)
-            .navigationBarTitleDisplayMode(.inline)
-            #endif
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("取消") { dismiss() }
-                }
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("保存") {
-                        onSave(draft)
-                        dismiss()
-                    }
-                    .disabled(draft.pattern.isEmpty)
-                }
-            }
-        }
-            .stackNavigationStyle()
     }
 }
 
@@ -3073,12 +3040,12 @@ struct DownloadedImportSheet: View {
                 if kinds.contains(.purifier), let asset = scan.assets[.purifier] {
                     let rules = try purifierRules(from: asset)
                     var added = 0
-                    for rule in rules where !TextPurifier.shared.rules.contains(where: {
+                    for rule in rules where !ReplaceRuleStore.shared.rules.contains(where: {
                         $0.pattern == rule.pattern
                             && $0.replacement == rule.replacement
                             && $0.isRegex == rule.isRegex
                     }) {
-                        TextPurifier.shared.rules.append(rule)
+                        ReplaceRuleStore.shared.rules.append(rule)
                         added += 1
                     }
                     parts.append("净化规则 \(added) 条")
@@ -3133,7 +3100,7 @@ struct DownloadedImportSheet: View {
         return text
     }
 
-    private func purifierRules(from asset: ImportAsset) throws -> [ReplacementRule] {
+    private func purifierRules(from asset: ImportAsset) throws -> [ReplaceRule] {
         if !asset.items.isEmpty,
            let rules = ReplacementRulesView.parseRules(jsonArray(asset.items)),
            !rules.isEmpty {
@@ -3142,12 +3109,12 @@ struct DownloadedImportSheet: View {
         return try purifierRulesFromText()
     }
 
-    private func purifierRulesFromText() throws -> [ReplacementRule] {
+    private func purifierRulesFromText() throws -> [ReplaceRule] {
         let text = try textContent()
         if let rules = ReplacementRulesView.parseRules(text), !rules.isEmpty {
             return rules
         }
-        var rules: [ReplacementRule] = []
+        var rules: [ReplaceRule] = []
         for rawLine in text.components(separatedBy: .newlines) {
             let line = rawLine.trimmingCharacters(in: .whitespacesAndNewlines)
             if line.isEmpty || line.hasPrefix("#") || line.hasPrefix("//") { continue }
@@ -3162,8 +3129,9 @@ struct DownloadedImportSheet: View {
                 }
             }
             if !pattern.isEmpty {
-                rules.append(ReplacementRule(name: "", pattern: pattern,
-                                             replacement: replacement, isRegex: true, enabled: true))
+                rules.append(ReplaceRule(name: "", pattern: pattern,
+                                         replacement: replacement, isRegex: true, enabled: true,
+                                         bookUrl: nil))
             }
         }
         guard !rules.isEmpty else {
@@ -3171,6 +3139,162 @@ struct DownloadedImportSheet: View {
                           userInfo: [NSLocalizedDescriptionKey: "没读到净化规则"])
         }
         return rules
+    }
+}
+
+/// 网盘分享页：蓝奏云这类地址不是文件直链，要先在内置网页里跑脚本、
+/// 用户点一下下载，再由 WKWebView 接管，下完直接进导入面板。
+struct ImportWebPage: Identifiable {
+    let id = UUID()
+    let url: URL
+    let title: String
+}
+
+struct ImportWebSheet: View {
+    let page: ImportWebPage
+    let onFinish: (String) -> Void
+
+    @Environment(\.dismiss) private var dismiss
+    @Environment(\.appTheme) private var theme
+    @State private var webView: WKWebView
+    @State private var isLoading = true
+    @State private var title = ""
+    @State private var currentURL: URL?
+    @State private var canGoBack = false
+    @State private var canGoForward = false
+    @State private var pendingImportFile: DownloadedImportFile?
+    @State private var statusMessage: String?
+
+    init(page: ImportWebPage, onFinish: @escaping (String) -> Void) {
+        self.page = page
+        self.onFinish = onFinish
+        let config = WKWebViewConfiguration()
+        config.websiteDataStore = .default()
+        if #available(iOS 14.0, macOS 11.0, *) {
+            config.defaultWebpagePreferences.allowsContentJavaScript = true
+        }
+        let webView = WKWebView(frame: .zero, configuration: config)
+        webView.customUserAgent = NetworkClient.defaultUserAgent
+        webView.allowsBackForwardNavigationGestures = true
+        _webView = State(initialValue: webView)
+    }
+
+    var body: some View {
+        NavigationView {
+            VStack(spacing: 0) {
+                if isLoading {
+                    ProgressView()
+                        .progressViewStyle(.linear)
+                        .tint(theme.palette.accent)
+                }
+
+                SubscribeSourceWebViewBox(
+                    webView: webView,
+                    sourceName: page.title,
+                    onLoadingChanged: { loading in
+                        isLoading = loading
+                        updateNavigationState()
+                    },
+                    onTitleChanged: { if !$0.isEmpty { title = $0 } },
+                    onURLChanged: { url in
+                        currentURL = url
+                        updateNavigationState()
+                    },
+                    onLegadoURL: { _ in },
+                    onExternalURL: openExternal,
+                    onDownloadedFile: { file in
+                        isLoading = false
+                        pendingImportFile = file
+                    },
+                    onDownloadFailed: { message in
+                        isLoading = false
+                        statusMessage = "下载失败：\(message)"
+                    }
+                )
+
+                Divider()
+
+                HStack(spacing: 24) {
+                    Button {
+                        webView.goBack()
+                    } label: {
+                        Image(systemName: "chevron.left")
+                    }
+                    .disabled(!canGoBack)
+
+                    Button {
+                        webView.goForward()
+                    } label: {
+                        Image(systemName: "chevron.right")
+                    }
+                    .disabled(!canGoForward)
+
+                    Button {
+                        webView.reload()
+                    } label: {
+                        Image(systemName: "arrow.clockwise")
+                    }
+
+                    Spacer()
+
+                    Button {
+                        if let currentURL { openExternal(currentURL) }
+                    } label: {
+                        Image(systemName: "safari")
+                    }
+                    .disabled(currentURL == nil)
+                }
+                .font(.system(size: 17, weight: .medium))
+                .foregroundColor(theme.palette.accent)
+                .padding(.horizontal, 22)
+                .padding(.vertical, 10)
+                .background(theme.palette.surface)
+            }
+            .background(AppThemeBackdrop())
+            .appThemedPage()
+            .navigationTitle(title.isEmpty ? page.title : title)
+            #if os(iOS)
+            .navigationBarTitleDisplayMode(.inline)
+            #endif
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("关闭") { dismiss() }
+                }
+            }
+            .onAppear {
+                if webView.url == nil {
+                    isLoading = true
+                    webView.load(URLRequest(url: page.url))
+                }
+            }
+            .sheet(item: $pendingImportFile) { file in
+                DownloadedImportSheet(sourceName: page.title, file: file) { result in
+                    statusMessage = result
+                    onFinish(result)
+                }
+            }
+            .alert("下载", isPresented: Binding(
+                get: { statusMessage != nil },
+                set: { if !$0 { statusMessage = nil } }
+            )) {
+                Button("好", role: .cancel) {}
+            } message: {
+                Text(statusMessage ?? "")
+            }
+        }
+    }
+
+    private func updateNavigationState() {
+        canGoBack = webView.canGoBack
+        canGoForward = webView.canGoForward
+    }
+
+    private func openExternal(_ url: URL) {
+        #if os(iOS)
+        UIApplication.shared.open(url)
+        #elseif os(macOS)
+        NSWorkspace.shared.open(url)
+        #endif
     }
 }
 
@@ -3470,6 +3594,7 @@ private struct SubscribeSourceWebViewBox: UIViewRepresentable {
 
     func makeUIView(context: Context) -> WKWebView {
         webView.navigationDelegate = context.coordinator
+        webView.uiDelegate = context.coordinator
         return webView
     }
 
@@ -3479,7 +3604,7 @@ private struct SubscribeSourceWebViewBox: UIViewRepresentable {
         Coordinator(parent: self)
     }
 
-    final class Coordinator: NSObject, WKNavigationDelegate, WKDownloadDelegate {
+    final class Coordinator: NSObject, WKNavigationDelegate, WKUIDelegate, WKDownloadDelegate {
         private let parent: SubscribeSourceWebViewBox
         private var activeDownloads: [WKDownload] = []
         private var destinations: [ObjectIdentifier: (name: String, file: URL, directory: URL)] = [:]
@@ -3490,11 +3615,38 @@ private struct SubscribeSourceWebViewBox: UIViewRepresentable {
 
         func webView(
             _ webView: WKWebView,
+            createWebViewWith configuration: WKWebViewConfiguration,
+            for navigationAction: WKNavigationAction,
+            windowFeatures: WKWindowFeatures
+        ) -> WKWebView? {
+            // target=_blank / window.open 打开的链接 WKWebView 默认不处理，
+            // 不接管时下载按钮点了没反应。改在同一个 webView 里加载，交给导航代理判下载。
+            guard let url = navigationAction.request.url else { return nil }
+            if let target = DownloadLinkClassifier.opappTarget(url) {
+                webView.load(URLRequest(url: target))
+                return nil
+            }
+            let scheme = url.scheme?.lowercased() ?? ""
+            if scheme == "juyue" || scheme == "legado" {
+                parent.onLegadoURL(url)
+                return nil
+            }
+            webView.load(navigationAction.request)
+            return nil
+        }
+
+        func webView(
+            _ webView: WKWebView,
             decidePolicyFor navigationAction: WKNavigationAction,
             preferences: WKWebpagePreferences,
             decisionHandler: @escaping (WKNavigationActionPolicy, WKWebpagePreferences) -> Void
         ) {
             if let url = navigationAction.request.url {
+                if let target = DownloadLinkClassifier.opappTarget(url) {
+                    webView.load(URLRequest(url: target))
+                    decisionHandler(.cancel, preferences)
+                    return
+                }
                 let scheme = url.scheme?.lowercased() ?? ""
                 if scheme == "juyue" || scheme == "legado" {
                     parent.onLegadoURL(url)
@@ -3640,6 +3792,7 @@ private struct SubscribeSourceWebViewBox: NSViewRepresentable {
 
     func makeNSView(context: Context) -> WKWebView {
         webView.navigationDelegate = context.coordinator
+        webView.uiDelegate = context.coordinator
         return webView
     }
 
@@ -3649,7 +3802,7 @@ private struct SubscribeSourceWebViewBox: NSViewRepresentable {
         Coordinator(parent: self)
     }
 
-    final class Coordinator: NSObject, WKNavigationDelegate, WKDownloadDelegate {
+    final class Coordinator: NSObject, WKNavigationDelegate, WKUIDelegate, WKDownloadDelegate {
         private let parent: SubscribeSourceWebViewBox
         private var activeDownloads: [WKDownload] = []
         private var destinations: [ObjectIdentifier: (name: String, file: URL, directory: URL)] = [:]
@@ -3660,11 +3813,38 @@ private struct SubscribeSourceWebViewBox: NSViewRepresentable {
 
         func webView(
             _ webView: WKWebView,
+            createWebViewWith configuration: WKWebViewConfiguration,
+            for navigationAction: WKNavigationAction,
+            windowFeatures: WKWindowFeatures
+        ) -> WKWebView? {
+            // target=_blank / window.open 打开的链接 WKWebView 默认不处理，
+            // 不接管时下载按钮点了没反应。改在同一个 webView 里加载，交给导航代理判下载。
+            guard let url = navigationAction.request.url else { return nil }
+            if let target = DownloadLinkClassifier.opappTarget(url) {
+                webView.load(URLRequest(url: target))
+                return nil
+            }
+            let scheme = url.scheme?.lowercased() ?? ""
+            if scheme == "juyue" || scheme == "legado" {
+                parent.onLegadoURL(url)
+                return nil
+            }
+            webView.load(navigationAction.request)
+            return nil
+        }
+
+        func webView(
+            _ webView: WKWebView,
             decidePolicyFor navigationAction: WKNavigationAction,
             preferences: WKWebpagePreferences,
             decisionHandler: @escaping (WKNavigationActionPolicy, WKWebpagePreferences) -> Void
         ) {
             if let url = navigationAction.request.url {
+                if let target = DownloadLinkClassifier.opappTarget(url) {
+                    webView.load(URLRequest(url: target))
+                    decisionHandler(.cancel, preferences)
+                    return
+                }
                 let scheme = url.scheme?.lowercased() ?? ""
                 if scheme == "juyue" || scheme == "legado" {
                     parent.onLegadoURL(url)
@@ -3725,7 +3905,7 @@ private struct SubscribeSourceWebViewBox: NSViewRepresentable {
             _ download: WKDownload,
             decideDestinationUsing response: URLResponse,
             suggestedFilename: String,
-            completionHandler: @escaping (URL?) -> Void
+            completionHandler: @escaping @MainActor @Sendable (URL?) -> Void
         ) {
             let http = response as? HTTPURLResponse
             let disposition = http?.value(forHTTPHeaderField: "Content-Disposition")
@@ -4867,17 +5047,29 @@ struct SubscribeArticleView: View {
     @Environment(\.appTheme) private var theme
     @ObservedObject private var articleState = SubscribeArticleStateStore.shared
     @State private var content = ""
+    @State private var contentBaseURL = ""
+    @State private var mediaHeaders: [String: String] = [:]
     @State private var isLoading = true
     @State private var isFromCache = false
     @State private var isDownloading = false
     @State private var pendingImportFile: DownloadedImportFile?
+    @State private var pendingWebPage: ImportWebPage?
     @State private var statusMessage: String?
 
-    private var articleContent: AttributedString {
-        var attributed = AttributedString(content)
-        guard let base = URL(string: article.link) else { return attributed }
-        for link in ArticleLinkExtractor.links(in: content, baseURL: base) {
-            guard let stringRange = Range(link.range, in: content),
+    private var blocks: [SubscribeArticleBlock] {
+        SubscribeArticleBlock.parse(content)
+    }
+
+    private var linkBaseURL: URL? {
+        if contentBaseURL.hasPrefix("http"), let url = URL(string: contentBaseURL) { return url }
+        return URL(string: article.link)
+    }
+
+    private func attributedText(_ text: String) -> AttributedString {
+        var attributed = AttributedString(text)
+        guard let base = linkBaseURL else { return attributed }
+        for link in ArticleLinkExtractor.links(in: text, baseURL: base) {
+            guard let stringRange = Range(link.range, in: text),
                   let indexRange = Range<AttributedString.Index>(stringRange, in: attributed) else {
                 continue
             }
@@ -4892,17 +5084,9 @@ struct SubscribeArticleView: View {
         NavigationView {
             ScrollView {
                 VStack(alignment: .leading, spacing: 12) {
-                    if let url = URL(string: article.imageUrl ?? "") {
-                        AsyncImage(url: url) { phase in
-                            switch phase {
-                            case .success(let image):
-                                image.resizable().scaledToFit()
-                            default:
-                                EmptyView()
-                            }
-                        }
-                        .frame(maxWidth: .infinity)
-                        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                    if let cover = article.imageUrl, !cover.isEmpty {
+                        SubscribeBodyImage(urlString: cover, headers: mediaHeaders)
+                            .frame(maxWidth: .infinity)
                     }
                     Text(article.title)
                         .font(.title3.bold())
@@ -4938,11 +5122,23 @@ struct SubscribeArticleView: View {
                             .lineSpacing(6)
                             .foregroundColor(theme.palette.ink)
                     } else {
-                        Text(articleContent)
-                            .font(.system(size: 16))
-                            .lineSpacing(6)
-                            .foregroundColor(theme.palette.ink)
-                            .environment(\.openURL, OpenURLAction { handleLink($0) })
+                        VStack(alignment: .leading, spacing: 14) {
+                            ForEach(blocks) { block in
+                                switch block.kind {
+                                case .text:
+                                    Text(attributedText(block.value))
+                                        .font(.system(size: 16))
+                                        .lineSpacing(6)
+                                        .foregroundColor(theme.palette.ink)
+                                        .frame(maxWidth: .infinity, alignment: .leading)
+                                        .environment(\.openURL, OpenURLAction { handleLink($0) })
+                                case .image:
+                                    SubscribeBodyImage(urlString: block.value, headers: mediaHeaders)
+                                case .video:
+                                    SubscribeBodyVideo(urlString: block.value, headers: mediaHeaders)
+                                }
+                            }
+                        }
                     }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -4996,22 +5192,39 @@ struct SubscribeArticleView: View {
                     statusMessage = result
                 }
             }
+            .sheet(item: $pendingWebPage) { page in
+                ImportWebSheet(page: page) { result in
+                    statusMessage = result
+                }
+            }
             .task {
                 articleState.markRead(sourceUrl: source.sourceUrl, article: article)
                 if let cached = articleState.cachedContent(sourceUrl: source.sourceUrl, article: article) {
                     content = cached
+                    contentBaseURL = article.link
+                    mediaHeaders = SubscribeSourceService.mediaRequestHeaders(
+                        source: source, header: source.header, referer: article.link
+                    )
                     isFromCache = true
                     isLoading = false
                 }
-                let fetched = (try? await SubscribeSourceService.fetchContent(article: article, source: source)) ?? ""
-                if !fetched.isEmpty {
-                    content = fetched
+                let detail = try? await SubscribeSourceService.fetchContentDetail(
+                    article: article, source: source
+                )
+                if let detail, !detail.text.isEmpty {
+                    content = detail.text
+                    contentBaseURL = detail.baseURL.isEmpty ? article.link : detail.baseURL
+                    mediaHeaders = detail.headers
                     isFromCache = false
                     articleState.cacheContent(
                         sourceUrl: source.sourceUrl,
                         sourceName: source.sourceName,
                         article: article,
-                        content: fetched
+                        content: detail.text
+                    )
+                } else if mediaHeaders.isEmpty {
+                    mediaHeaders = SubscribeSourceService.mediaRequestHeaders(
+                        source: source, header: source.header, referer: article.link
                     )
                 }
                 isLoading = false
@@ -5021,6 +5234,11 @@ struct SubscribeArticleView: View {
     }
 
     private func handleLink(_ url: URL) -> OpenURLAction.Result {
+        // 订阅源正文里的 `yuedu://opapp/<下载地址>`：iOS 没有外部下载器，直接内置下载。
+        if let target = DownloadLinkClassifier.opappTarget(url) {
+            startDownload(target)
+            return .handled
+        }
         switch DownloadLinkClassifier.schemeKind(url) {
         case .importDeepLink:
             handleImportLink(url)
@@ -5031,7 +5249,14 @@ struct SubscribeArticleView: View {
         case .downloadable:
             startDownload(url)
             return .handled
-        case .web, .externalDeepLink, .other:
+        case .web:
+            // 蓝奏云这类分享页得先跑页面脚本才给直链，放进内置网页里点下载
+            if DownloadLinkClassifier.isLanzouCloud(url) {
+                pendingWebPage = ImportWebPage(url: url, title: "下载")
+                return .handled
+            }
+            return .systemAction
+        case .externalDeepLink, .other:
             return .systemAction
         }
     }
@@ -5076,6 +5301,316 @@ struct SubscribeArticleView: View {
                 statusMessage = "下载失败：\(error.localizedDescription)"
             }
         }
+    }
+}
+
+// MARK: - 订阅正文的图片 / 视频
+
+/// 正文里的图片、视频在 cleanHtml 阶段已经换成 `[image:url]`、`[video:url]`。
+/// 这里按标记切块：文字照常走链接识别，媒体交给原生视图。
+private struct SubscribeArticleBlock: Identifiable {
+    enum Kind { case text, image, video }
+
+    let id: Int
+    let kind: Kind
+    let value: String
+
+    static func parse(_ text: String) -> [SubscribeArticleBlock] {
+        guard !text.isEmpty else { return [] }
+        let pattern = "\\[(image|video):([^\\]]+)\\]"
+        guard let regex = try? NSRegularExpression(pattern: pattern) else {
+            return [SubscribeArticleBlock(id: 0, kind: .text, value: text)]
+        }
+        let ns = text as NSString
+        var result: [SubscribeArticleBlock] = []
+        var cursor = 0
+        var identifier = 0
+
+        func appendText(_ chunk: String) {
+            let trimmed = chunk.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else { return }
+            result.append(SubscribeArticleBlock(id: identifier, kind: .text, value: trimmed))
+            identifier += 1
+        }
+
+        for match in regex.matches(in: text, range: NSRange(location: 0, length: ns.length)) {
+            if match.range.location > cursor {
+                appendText(ns.substring(with: NSRange(
+                    location: cursor, length: match.range.location - cursor
+                )))
+            }
+            let kind = ns.substring(with: match.range(at: 1)).lowercased()
+            let url = ns.substring(with: match.range(at: 2))
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            if !url.isEmpty {
+                result.append(SubscribeArticleBlock(
+                    id: identifier, kind: kind == "video" ? .video : .image, value: url
+                ))
+                identifier += 1
+            }
+            cursor = match.range.location + match.range.length
+        }
+        if cursor < ns.length {
+            appendText(ns.substring(from: cursor))
+        }
+        return result
+    }
+}
+
+/// 正文图片：按订阅源请求头去取，反盗链站点才给图。点击全屏，长按可存相册 / 浏览器打开。
+private struct SubscribeBodyImage: View {
+    let urlString: String
+    let headers: [String: String]
+
+    @Environment(\.appTheme) private var theme
+    @State private var image: PlatformImage?
+    @State private var failed = false
+    @State private var showFullScreen = false
+
+    private static let cache: NSCache<NSString, PlatformImage> = {
+        let cache = NSCache<NSString, PlatformImage>()
+        cache.countLimit = 40
+        return cache
+    }()
+
+    var body: some View {
+        Group {
+            if let image {
+                imageView(image)
+                    .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                    .contextMenu { contextMenu(image) }
+                    .onTapGesture { showFullScreen = true }
+            } else if failed {
+                Button {
+                    Task { await load(force: true) }
+                } label: {
+                    VStack(spacing: 6) {
+                        Image(systemName: "photo.badge.exclamationmark")
+                            .font(.system(size: 22))
+                        Text("图片加载失败，点一下重试").font(.caption)
+                    }
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 24)
+                    .background(theme.palette.secondaryInk.opacity(0.08))
+                    .cornerRadius(8)
+                    .foregroundColor(theme.palette.secondaryInk)
+                }
+                .buttonStyle(.plain)
+            } else {
+                ProgressView()
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 24)
+            }
+        }
+        .task(id: headerSignature) { await load() }
+        #if os(iOS)
+        .fullScreenCover(isPresented: $showFullScreen) { viewer }
+        #else
+        .sheet(isPresented: $showFullScreen) { viewer }
+        #endif
+    }
+
+    private var viewer: some View {
+        ZStack {
+            Color.black.ignoresSafeArea()
+            if let image {
+                ScrollView([.vertical, .horizontal]) {
+                    imageView(image).padding()
+                }
+            }
+            VStack {
+                HStack {
+                    Spacer()
+                    Button { showFullScreen = false } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .font(.system(size: 28))
+                            .foregroundColor(.white.opacity(0.85))
+                    }
+                    .padding()
+                }
+                Spacer()
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func imageView(_ image: PlatformImage) -> some View {
+        #if canImport(UIKit)
+        Image(uiImage: image).resizable().scaledToFit().frame(maxWidth: .infinity)
+        #else
+        Image(nsImage: image).resizable().scaledToFit().frame(maxWidth: .infinity)
+        #endif
+    }
+
+    @ViewBuilder
+    private func contextMenu(_ image: PlatformImage) -> some View {
+        #if canImport(UIKit)
+        Button {
+            ImageExport.saveToPhotos(image)
+        } label: {
+            Label("保存到相册", systemImage: "square.and.arrow.down")
+        }
+        #else
+        Button {
+            let panel = NSSavePanel()
+            panel.nameFieldStringValue = "image.png"
+            guard panel.runModal() == .OK, let url = panel.url,
+                  let tiff = image.tiffRepresentation,
+                  let rep = NSBitmapImageRep(data: tiff),
+                  let png = rep.representation(using: .png, properties: [:]) else { return }
+            try? png.write(to: url)
+        } label: {
+            Label("保存图片…", systemImage: "square.and.arrow.down")
+        }
+        #endif
+        if let url = Self.makeURL(urlString) {
+            Link(destination: url) {
+                Label("在浏览器打开", systemImage: "safari")
+            }
+        }
+    }
+
+    private var headerSignature: String {
+        headers.map { "\($0.key)=\($0.value)" }.sorted().joined(separator: "&")
+    }
+
+    private func load(force: Bool = false) async {
+        if !force, let cached = Self.cache.object(forKey: urlString as NSString) {
+            image = cached
+            return
+        }
+        failed = false
+        if urlString.lowercased().hasPrefix("data:") {
+            if let decoded = Self.decodeDataURL(urlString) {
+                image = decoded
+                Self.cache.setObject(decoded, forKey: urlString as NSString)
+            } else {
+                failed = true
+            }
+            return
+        }
+        guard let url = Self.makeURL(urlString) else { failed = true; return }
+        var request = URLRequest(url: url)
+        request.timeoutInterval = 30
+        for (key, value) in headers {
+            request.setValue(value, forHTTPHeaderField: key)
+        }
+        if request.value(forHTTPHeaderField: "Cookie") == nil {
+            let cookies = HTTPCookieStorage.shared.cookies(for: url) ?? []
+            for (key, value) in HTTPCookie.requestHeaderFields(with: cookies) {
+                request.setValue(value, forHTTPHeaderField: key)
+            }
+        }
+        do {
+            let (data, response) = try await URLSession.shared.data(for: request)
+            if let http = response as? HTTPURLResponse, !(200..<400).contains(http.statusCode) {
+                failed = true
+                return
+            }
+            guard let decoded = PlatformImage(data: data) else { failed = true; return }
+            image = decoded
+            Self.cache.setObject(decoded, forKey: urlString as NSString)
+        } catch {
+            failed = true
+        }
+    }
+
+    private static func makeURL(_ string: String) -> URL? {
+        URL(string: string)
+            ?? URL(string: string.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? "")
+    }
+
+    private static func decodeDataURL(_ string: String) -> PlatformImage? {
+        guard let comma = string.firstIndex(of: ",") else { return nil }
+        let meta = string[..<comma].lowercased()
+        let payload = String(string[string.index(after: comma)...])
+        let data: Data?
+        if meta.contains("base64") {
+            data = Data(base64Encoded: payload, options: .ignoreUnknownCharacters)
+        } else {
+            data = payload.removingPercentEncoding?.data(using: .utf8)
+        }
+        guard let data else { return nil }
+        return PlatformImage(data: data)
+    }
+}
+
+/// 正文视频：HLS / MP4 直接 AVPlayer 播，Referer 和 Cookie 一起带上。
+private struct SubscribeBodyVideo: View {
+    let urlString: String
+    let headers: [String: String]
+
+    @Environment(\.appTheme) private var theme
+    @State private var player: AVPlayer?
+    @State private var builtSignature = ""
+
+    private var headerSignature: String {
+        headers.map { "\($0.key)=\($0.value)" }.sorted().joined(separator: "&")
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            if let player {
+                VideoPlayer(player: player)
+                    .aspectRatio(16.0 / 9.0, contentMode: .fit)
+                    .frame(maxWidth: .infinity)
+                    .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+            } else if isPlayable {
+                ProgressView()
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 24)
+            } else {
+                VStack(spacing: 8) {
+                    Image(systemName: "play.rectangle")
+                        .font(.system(size: 24))
+                    Text("这个格式要用浏览器播放").font(.caption)
+                }
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 24)
+                .background(theme.palette.secondaryInk.opacity(0.08))
+                .cornerRadius(8)
+                .foregroundColor(theme.palette.secondaryInk)
+            }
+            if let url = remoteURL {
+                Link(destination: url) {
+                    Label("在浏览器打开", systemImage: "safari")
+                        .font(.system(size: 13, weight: .semibold))
+                }
+            }
+        }
+        .task(id: headerSignature) { setup() }
+        .onDisappear { player?.pause() }
+    }
+
+    private var remoteURL: URL? {
+        URL(string: urlString)
+            ?? URL(string: urlString.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? "")
+    }
+
+    private var isPlayable: Bool {
+        guard let url = remoteURL else { return false }
+        let ext = url.pathExtension.lowercased()
+        if ["m3u8", "mp4", "m4v", "mov"].contains(ext) { return true }
+        if urlString.lowercased().contains(".m3u8") { return true }
+        // 没扩展名的多是流地址，交给 AVPlayer 试一次
+        return ext.isEmpty
+    }
+
+    private func setup() {
+        guard isPlayable, let url = remoteURL else { return }
+        let signature = headerSignature
+        if player != nil, builtSignature == signature { return }
+        var options: [String: Any] = [:]
+        if !headers.isEmpty {
+            options["AVURLAssetHTTPHeaderFieldsKey"] = headers
+        }
+        let cookies = HTTPCookieStorage.shared.cookies(for: url) ?? []
+        if !cookies.isEmpty {
+            options["AVURLAssetHTTPCookiesKey"] = cookies
+        }
+        let asset = AVURLAsset(url: url, options: options.isEmpty ? nil : options)
+        player = AVPlayer(playerItem: AVPlayerItem(asset: asset))
+        builtSignature = signature
     }
 }
 

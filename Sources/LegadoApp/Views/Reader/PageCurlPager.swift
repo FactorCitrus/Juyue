@@ -93,6 +93,9 @@ public struct PageCurlPager: UIViewControllerRepresentable {
     public let chapterTitleText: String
     public let chapterIndex: Int
     public let chapterCount: Int
+    /// 本章 / 全书字数（不含空白），页眉页脚显示用
+    public let chapterCharCount: Int
+    public let bookCharCount: Int
     public let startIndex: Int
     public let onIndexChange: (Int) -> Void
     public let onReachEnd: () -> Void
@@ -161,6 +164,8 @@ public struct PageCurlPager: UIViewControllerRepresentable {
         chapterTitleText: String,
         chapterIndex: Int,
         chapterCount: Int,
+        chapterCharCount: Int = 0,
+        bookCharCount: Int = 0,
         startIndex: Int,
         onIndexChange: @escaping (Int) -> Void,
         onReachEnd: @escaping () -> Void,
@@ -228,6 +233,8 @@ public struct PageCurlPager: UIViewControllerRepresentable {
         self.chapterTitleText = chapterTitleText
         self.chapterIndex = chapterIndex
         self.chapterCount = chapterCount
+        self.chapterCharCount = chapterCharCount
+        self.bookCharCount = bookCharCount
         self.startIndex = startIndex
         self.onIndexChange = onIndexChange
         self.onReachEnd = onReachEnd
@@ -253,6 +260,7 @@ public struct PageCurlPager: UIViewControllerRepresentable {
         controller.isDoubleSided = true
         controller.view.backgroundColor = UIColor(backgroundColor)
         context.coordinator.installSwipeHooks(on: controller)
+        AppLog.write("[PageCurl] make start=\(startIndex) pages=\(pages.count) ch=\(loadedChapterIndex)")
         // 正面 + 背面；实际投递几张由 apply 按当前书脊裁
         apply(
             context.coordinator.pagePair(at: clampedIndex),
@@ -291,7 +299,13 @@ public struct PageCurlPager: UIViewControllerRepresentable {
             wanted = Array(target.prefix(1))
         }
         controller.isDoubleSided = true
+        AppLog.write("[PageCurl] apply \(animate ? "anim" : "hard") \(direction == .forward ? "F" : "R") tags=\(wanted.map(\.view.tag)) before=\(visibleTags(controller))")
         controller.setViewControllers(wanted, direction: direction, animated: animate)
+        AppLog.write("[PageCurl] applied -> now=\(visibleTags(controller))")
+    }
+
+    private func visibleTags(_ controller: UIPageViewController) -> [Int] {
+        (controller.viewControllers ?? []).map(\.view.tag)
     }
 
     public func updateUIViewController(_ controller: UIPageViewController, context: Context) {
@@ -302,18 +316,17 @@ public struct PageCurlPager: UIViewControllerRepresentable {
 
         // 配色、字体、排版这些变了要重建当前页，否则托管的页面还是旧样式
         let signature = renderSignature
+        AppLog.write("[PageCurl] update idx=\(context.coordinator.index) clamped=\(clampedIndex) pages=\(pages.count) ch=\(loadedChapterIndex) lastCh=\(context.coordinator.lastLoadedChapterIndex.map(String.init) ?? "nil") turning=\(context.coordinator.isTurning) sig=\(context.coordinator.lastSignature == signature ? "same" : "changed") visible=\(visibleTags(controller))")
         // 换章：在 pager 里按方向卷过去，别硬切、也别重建 pager。
         // （旧写法是给 pager 加 .id 让 SwiftUI 重建，换章就没有卷页动画了）
         if let previousChapter = context.coordinator.lastLoadedChapterIndex, previousChapter != loadedChapterIndex {
             let forward = loadedChapterIndex > previousChapter
+            AppLog.write("[PageCurl] branch=chapter \(previousChapter)->\(loadedChapterIndex) target=\(clampedIndex)")
             context.coordinator.lastLoadedChapterIndex = loadedChapterIndex
-            context.coordinator.lastSignature = signature
-            context.coordinator.index = clampedIndex
-            apply(
-                context.coordinator.pagePair(at: clampedIndex),
-                to: controller,
-                direction: forward ? .forward : .reverse,
-                animated: true
+            context.coordinator.beginProgrammaticTurn(
+                to: clampedIndex,
+                on: controller,
+                forward: forward
             )
             return
         }
@@ -323,12 +336,14 @@ public struct PageCurlPager: UIViewControllerRepresentable {
             if context.coordinator.isTurning {
                 // 手指还压着、页面正在卷：这一下刷新会掐掉转场，等落了地再补
                 context.coordinator.pendingSignatureRefresh = true
+                AppLog.write("[PageCurl] branch=sig-deferred idx=\(context.coordinator.index) clamped=\(clampedIndex)")
             } else {
                 context.coordinator.lastSignature = signature
                 // 朗读换段和翻页常常同一帧到：刷新用的下标要跟 startIndex 走，
                 // 老下标会把刚翻过去的那页又画回原来那张
                 let target = clampedIndex
                 let forward = target >= context.coordinator.index
+                AppLog.write("[PageCurl] branch=sig idx=\(context.coordinator.index)->\(target)")
                 context.coordinator.index = target
                 apply(
                     context.coordinator.pagePair(at: target),
@@ -341,15 +356,35 @@ public struct PageCurlPager: UIViewControllerRepresentable {
         }
 
         let current = context.coordinator.index
-        guard current != clampedIndex else { return }
-        let direction: UIPageViewController.NavigationDirection = clampedIndex > current ? .forward : .reverse
-        apply(
-            context.coordinator.pagePair(at: clampedIndex),
-            to: controller,
-            direction: direction,
-            animated: true
+        guard current != clampedIndex else {
+            // 自愈：转场被掐断时 UIKit 不会回调 didFinish，index 却已经写成目标页了，
+            // 之后下标一直相等、屏幕永远停在旧页。这里按可见页对账，对不上就硬投一次。
+            let visible = context.coordinator.visibleFrontIndex(controller)
+            if !context.coordinator.isTurning, let visible, visible != clampedIndex {
+                AppLog.write("[PageCurl] 自愈 visible=\(visible) desired=\(clampedIndex)")
+                context.coordinator.lastSignature = signature
+                context.coordinator.index = clampedIndex
+                apply(
+                    context.coordinator.pagePair(at: clampedIndex),
+                    to: controller,
+                    direction: .forward,
+                    animated: false
+                )
+                return
+            }
+            AppLog.write("[PageCurl] branch=noop visible=\(visibleTags(controller))")
+            return
+        }
+        if context.coordinator.isTurning {
+            // 转场进行中，落地后有对账兜底
+            return
+        }
+        AppLog.write("[PageCurl] branch=step \(current)->\(clampedIndex)")
+        context.coordinator.beginProgrammaticTurn(
+            to: clampedIndex,
+            on: controller,
+            forward: clampedIndex > current
         )
-        context.coordinator.index = clampedIndex
     }
 
     private var clampedIndex: Int {
@@ -393,6 +428,7 @@ public struct PageCurlPager: UIViewControllerRepresentable {
         parts.append(chapterTitleText)
         parts.append(bookName)
         parts.append("\(chapterIndex)/\(chapterCount)")
+        parts.append("wc\(chapterCharCount)/\(bookCharCount)")
         // 选中与标注也要进指纹：每页是托管缓存着的，不进指纹的话长按选中只改了状态，
         // 屏幕上那一页还是旧画面，看着就像「长按没选中」；下划线/底色同理，要翻页才出现
         parts.append(selectedRange.map { "sel\($0.start)+\($0.count)" } ?? "sel-")
@@ -417,6 +453,8 @@ public struct PageCurlPager: UIViewControllerRepresentable {
         /// 用户看到的就是「一翻页自己翻回来」。先记账，落地后再补一次刷新。
         var isTurning = false
         var pendingSignatureRefresh = false
+        /// 程序化卷页的流水号：新一次转场会作废上一次的落地对账
+        var settleToken = 0
 
         init(_ parent: PageCurlPager) {
             self.parent = parent
@@ -478,7 +516,8 @@ public struct PageCurlPager: UIViewControllerRepresentable {
             let host = UIHostingController(rootView: PageCurlContent(
                 blocks: page,
                 onLongPressLine: { [parent] line, charOffset in
-                    parent.onSelectParagraph?(page, line, charOffset)
+                    // 图文混排的页：行号按纯文字块计，选区只在文字段里走
+                    parent.onSelectParagraph?(page.filter { !$0.isImage }, line, charOffset)
                 },
                 selectedRange: parent.selectedRange,
                 charSelection: parent.charSelection,
@@ -536,8 +575,9 @@ public struct PageCurlPager: UIViewControllerRepresentable {
                 bookName: parent.bookName,
                 chapterTitleText: parent.chapterTitleText,
                 chapterIndex: parent.chapterIndex,
-                chapterCount: parent.chapterCount
-                ,
+                chapterCount: parent.chapterCount,
+                chapterCharCount: parent.chapterCharCount,
+                bookCharCount: parent.bookCharCount,
                 pageIndex: index,
                 pageCount: parent.pages.count
             ))
@@ -658,6 +698,7 @@ public struct PageCurlPager: UIViewControllerRepresentable {
         @objc private func handleSwipe(_ gesture: UISwipeGestureRecognizer) {
             NSLog("[PageCurl] swipe dir=\(gesture.direction.rawValue) index=\(index) pages=\(parent.pages.count)")
             Coordinator.swipeHits += 1
+            guard !isTurning else { return }
             switch gesture.direction {
             case .left:
                 if index >= parent.pages.count - 1 {
@@ -689,6 +730,11 @@ public struct PageCurlPager: UIViewControllerRepresentable {
         @objc private func handlePanEnd(_ pan: UIPanGestureRecognizer) {
             let view = pan.view ?? pan.view?.window
             NSLog("[PageCurl] pan state=\(pan.state.rawValue) tx=\(pan.translation(in: view).x) index=\(index) pages=\(parent.pages.count)")
+            guard !isTurning else {
+                boundaryForward = false
+                boundaryBackward = false
+                return
+            }
             let translation = pan.translation(in: view)
             let velocity = pan.velocity(in: view)
             let forward = translation.x < -20 || velocity.x < -250
@@ -769,6 +815,8 @@ public struct PageCurlPager: UIViewControllerRepresentable {
         }
 
         private func step(forward: Bool) {
+            guard !isTurning else { return }
+            AppLog.write("[PageCurl] step \(forward ? "F" : "R") idx=\(index) pages=\(parent.pages.count)")
             if forward {
                 if index + 1 < parent.pages.count {
                     parent.onIndexChange(index + 1)
@@ -819,6 +867,15 @@ public struct PageCurlPager: UIViewControllerRepresentable {
             willTransitionTo pendingViewControllers: [UIViewController]
         ) {
             isTurning = true
+            AppLog.write("[PageCurl] willTransition -> \(pendingViewControllers.map(\.view.tag)) now=\((pageViewController.viewControllers ?? []).map(\.view.tag)) idx=\(index)")
+            // 兜底：手势被系统半途吞掉时 didFinish 不会来，别让闸门一直关着
+            let token = settleToken
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) { [weak self, weak pageViewController] in
+                guard let self, let pageViewController, self.isTurning, self.settleToken == token else { return }
+                AppLog.write("[PageCurl] 手势转场未回调落地，强制放闸")
+                self.isTurning = false
+                self.settle(on: pageViewController)
+            }
         }
 
         public func pageViewController(
@@ -829,7 +886,12 @@ public struct PageCurlPager: UIViewControllerRepresentable {
         ) {
             // 手势结束（不管落没落地）先放开闸门，否则取消一次手势就把刷新卡死
             isTurning = false
+            AppLog.write("[PageCurl] didFinish fin=\(finished) done=\(completed) prev=\(previousViewControllers.map(\.view.tag)) now=\((pageViewController.viewControllers ?? []).map(\.view.tag)) idx=\(index)")
             guard completed, let controllers = pageViewController.viewControllers, !controllers.isEmpty else {
+                // 没落地：屏幕退回原来那页，index 也得跟着退，否则下一次对账会认错页
+                if let visible = visibleFrontIndex(pageViewController) {
+                    index = visible
+                }
                 flushPendingSignatureRefresh(on: pageViewController)
                 return
             }
@@ -838,6 +900,57 @@ public struct PageCurlPager: UIViewControllerRepresentable {
             index = front.view.tag
             parent.onIndexChange(index)
             flushPendingSignatureRefresh(on: pageViewController)
+        }
+
+        /// 程序化卷页（点边缘、换章）。UIKit 只在手指转场时回调 willTransitionTo/
+        /// didFinishAnimating，setViewControllers 的动画一声不响，光靠 isTurning 拦不住
+        /// 动画期间插进来的手势；转场被掐断后 index 已是目标页，下标相等就再也不修。
+        /// 所以这里自己上闸：动画期间关触摸，落地后按可见页对一遍账。
+        func beginProgrammaticTurn(
+            to target: Int,
+            on pager: UIPageViewController,
+            forward: Bool
+        ) {
+            isTurning = true
+            pendingSignatureRefresh = false
+            lastSignature = parent.renderSignature
+            index = target
+            pager.view.isUserInteractionEnabled = false
+            parent.apply(
+                pagePair(at: target),
+                to: pager,
+                direction: forward ? .forward : .reverse,
+                animated: true
+            )
+            settleToken += 1
+            let token = settleToken
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [weak self, weak pager] in
+                guard let self, let pager, self.settleToken == token else { return }
+                self.isTurning = false
+                pager.view.isUserInteractionEnabled = true
+                self.settle(on: pager)
+            }
+        }
+
+        /// 落地对账：可见页跟 startIndex 对不上就硬投修正，顺手补掉攒下的刷新
+        private func settle(on pager: UIPageViewController) {
+            guard !parent.pages.isEmpty else { return }
+            let desired = min(max(0, parent.startIndex), parent.pages.count - 1)
+            let visible = visibleFrontIndex(pager)
+            AppLog.write("[PageCurl] settle check visible=\(visible.map(String.init) ?? "nil") desired=\(desired) pending=\(pendingSignatureRefresh)")
+            if visible == desired, !pendingSignatureRefresh { return }
+            AppLog.write("[PageCurl] settle visible=\(visible.map(String.init) ?? "nil") desired=\(desired) pending=\(pendingSignatureRefresh)")
+            pendingSignatureRefresh = false
+            lastSignature = parent.renderSignature
+            index = desired
+            parent.apply(pagePair(at: desired), to: pager, direction: .forward, animated: false)
+        }
+
+        func visibleFrontIndex(_ pager: UIPageViewController) -> Int? {
+            let controllers = pager.viewControllers ?? []
+            guard !controllers.isEmpty else { return nil }
+            let front = controllers.first { $0 is UIHostingController<PageCurlContent> } ?? controllers[0]
+            return front.view.tag
         }
 
         /// 转场期间攒下的刷新在这里一次性补上：朗读底色、选中块都靠它落到新页
@@ -913,6 +1026,8 @@ struct PageCurlContent: View {
     let chapterTitleText: String
     let chapterIndex: Int
     let chapterCount: Int
+    let chapterCharCount: Int
+    let bookCharCount: Int
     let pageIndex: Int
     let pageCount: Int
 
@@ -933,6 +1048,11 @@ struct PageCurlContent: View {
         ctx.shortTitleLength = shortTitleLength
         ctx.customDatePattern = customDatePattern
         ctx.customBarText = customBarText
+        ctx.chapterCharCount = chapterCharCount
+        ctx.pageCharCount = blocks.reduce(0) { total, block in
+            total + (block.isImage ? 0 : ChapterWordCounter.count(block.text))
+        }
+        ctx.bookCharCount = bookCharCount
         return readerBarText(content, ctx)
     }
 
@@ -1133,15 +1253,8 @@ struct PageCurlContent: View {
                         }
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
-                } else if blocks.first?.isImage == true, let urlStr = blocks.first?.imageUrl {
-                    ChapterImageView(
-                        urlString: urlStr,
-                        referer: source?.bookSourceUrl,
-                        imageStyle: imageStyle,
-                        imageDecode: imageDecode,
-                        source: source,
-                        baseUrl: nil
-                    )
+                } else if blocks.contains(where: { $0.isImage }) {
+                    segmentedContent(usableWidth: usableWidth, bodyHeight: bodyHeight)
                 } else {
                     let lines = blocks.map { $0.text }
                     let isParagraphEnd = blocks.map { $0.imageUrl == "p_end" }
@@ -1208,6 +1321,123 @@ struct PageCurlContent: View {
             .padding(.trailing, paddingRight)
             .padding(.top, paddingTop)
             .padding(.bottom, paddingBottom)
+    }
+
+    /// 图文同页：文字段 / 插图 / 文字段竖着排，高度口径跟分页器一致。
+    @ViewBuilder
+    private func segmentedContent(usableWidth: CGFloat, bodyHeight: CGFloat) -> some View {
+        let segments = ReaderPageSegment.split(blocks)
+        let effectiveLineHeight = fontSize * 1.25 + lineSpacing
+        let barsReserved = (showHeader ? 19 + max(0, headerOffset) : 0)
+            + (showFooter ? 19 + max(0, footerOffset) : 0)
+        let pageHeight = max(120, bodyHeight - barsReserved - paddingTop - paddingBottom)
+        let config = ReaderConfig.shared
+        let textOffsets = textLineOffsets(segments)
+
+        VStack(alignment: .leading, spacing: 0) {
+            ForEach(segments) { segment in
+                switch segment.kind {
+                case .image:
+                    if let block = segment.blocks.first, let urlStr = block.imageUrl {
+                        let size = ReaderPaginator.imageDisplaySize(
+                            for: block,
+                            usableWidth: usableWidth,
+                            maxImageHeight: pageHeight,
+                            displayMode: config.imageDisplayMode,
+                            maxWidthPercent: config.imageMaxWidthPercent,
+                            styleFullWidth: imageStyle == .full || imageStyle == .single,
+                            styleSmall: imageStyle == .text
+                        )
+                        ChapterImageView(
+                            urlString: urlStr,
+                            referer: source?.bookSourceUrl,
+                            imageStyle: imageStyle,
+                            imageDecode: imageDecode,
+                            source: source,
+                            baseUrl: nil,
+                            forcedSize: size
+                        )
+                    }
+                case .review:
+                    if let block = segment.blocks.first {
+                        GodReviewCardView(
+                            text: block.text,
+                            imageURL: block.imageUrl,
+                            referer: source?.bookSourceUrl,
+                            accent: accentColor,
+                            textColor: textColor,
+                            onAccentColor: onAccentColor,
+                            alignment: reviewStyle.alignment
+                        ) {
+                            if let url = block.commentURL {
+                                onCommentTap?(url)
+                            }
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                case .text:
+                    let offset = textOffsets[segment.id] ?? 0
+                    let segmentHeight = ReaderPageSegment.textHeight(
+                        segment.blocks,
+                        lineHeight: effectiveLineHeight,
+                        paragraphSpacing: paragraphSpacing
+                    )
+                    CoreTextPageView(
+                        lines: segment.blocks.map { $0.text },
+                        isParagraphEnd: segment.blocks.map { $0.imageUrl == "p_end" },
+                        fontSize: fontSize,
+                        lineSpacing: lineSpacing,
+                        textColor: textColor,
+                        width: usableWidth,
+                        height: segmentHeight,
+                        letterSpacing: letterSpacing,
+                        paragraphSpacing: paragraphSpacing,
+                        firstLineIndent: firstLineIndent,
+                        weightLevel: weightLevel,
+                        chineseConversion: chineseConversion,
+                        fontPostScriptName: fontPostScriptName,
+                        boldPostScriptName: boldPostScriptName,
+                        textAlignment: textAlignment,
+                        underlineEnabled: underlineEnabled,
+                        underlineColor: underlineColor,
+                        paragraphSeparatorLines: paragraphSeparatorLines,
+                        paragraphSeparatorColor: paragraphSeparatorColor,
+                        lineBlockIds: segment.blocks.map(\.id),
+                        lineParagraphIds: segment.blocks.map(\.paragraphId),
+                        lineCharStarts: segment.blocks.map(\.charStart),
+                        selectedRange: selectedRange,
+                        charSelection: charSelection,
+                        charAnnotations: charAnnotations,
+                        annotationRanges: annotationRanges,
+                        onLongPressLine: { line, charOffset in
+                            onLongPressLine?(offset + line, charOffset)
+                        },
+                        readingBlockId: readingBlockId,
+                        readingTintColor: readingTintColor,
+                        commentMap: commentMap,
+                        pageBackgroundColor: backgroundColor,
+                        reviewAccentColor: accentColor,
+                        reviewStyle: reviewStyle,
+                        reviewURLs: reviewURLs,
+                        onCommentTap: onCommentTap
+                    )
+                    .frame(width: usableWidth, height: segmentHeight, alignment: .topLeading)
+                }
+            }
+            Spacer(minLength: 0)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+    }
+
+    /// 每段文字在「整页纯文字块数组」里的起始行号；长按回调要用它换成整页行号
+    private func textLineOffsets(_ segments: [ReaderPageSegment]) -> [Int: Int] {
+        var offsets: [Int: Int] = [:]
+        var running = 0
+        for segment in segments where segment.kind == .text {
+            offsets[segment.id] = running
+            running += segment.blocks.count
+        }
+        return offsets
     }
 
     /// 首页标题占的高度：跟左右翻页用同一套估算

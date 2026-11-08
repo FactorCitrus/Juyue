@@ -1311,7 +1311,7 @@ public struct BookshelfView: View {
                     index: index,
                     isSelected: false,
                     coverWidth: (60 * scale).rounded(),
-                    coverHeight: (84 * scale).rounded(),
+                    coverHeight: (90 * scale).rounded(),
                     coverOverride: dragCover
                 )
                 .frame(width: shelfContentWidth)
@@ -1346,10 +1346,10 @@ public struct BookshelfView: View {
         return max(2, min(maxColumns, fit))
     }
 
-    /// 封面高度跟着卡片宽度走，保持竖版书封比例；不再用固定 210pt，
-    /// 否则 iPad 上一张 660pt 宽的卡只剩一条横带。
+    /// 卡片外层 `.frame(width: gridCardWidth)`，内容再被 `.padding(9)` 内缩，
+    /// 封面可用宽度是 gridCardWidth - 18；按这个宽度取 2:3 才能把封面正好填满。
     private var gridCoverHeight: CGFloat {
-        (gridCardWidth * 1.4).rounded()
+        (max(0, gridCardWidth - 18) * 1.5).rounded()
     }
 
     private var shelfContentWidth: CGFloat {
@@ -1422,7 +1422,7 @@ public struct BookshelfView: View {
                     if let coverOverride {
                         coverOverride
                             .resizable()
-                            .aspectRatio(contentMode: .fill)
+                            .aspectRatio(contentMode: .fit)
                     } else if book.coverUrl != nil {
                         BookCoverImage(
                             urlString: book.coverUrl,
@@ -1432,7 +1432,8 @@ public struct BookshelfView: View {
                         DefaultBookCover(book: book)
                     }
                 }
-                .frame(maxWidth: .infinity)
+                // 宽度必须定死：只给 maxWidth 时，图片会按自身比例把整张卡撑开
+                .frame(width: max(0, gridCardWidth - 18))
                 .frame(height: gridCoverHeight)
                 .clipped()
                 .overlay(
@@ -1452,7 +1453,7 @@ public struct BookshelfView: View {
                         startPoint: .top,
                         endPoint: .bottom
                     )
-                    .frame(height: 42)
+                    .frame(height: 24)
                 }
 
                 if isOrganizing {
@@ -1559,7 +1560,7 @@ public struct BookshelfView: View {
         let isSelected = selectedBookIDs.contains(book.bookUrl)
         let scale = shelfConfig.cardScale
         let coverWidth = (60 * scale).rounded()
-        let coverHeight = (84 * scale).rounded()
+        let coverHeight = (90 * scale).rounded()
 
         let card = Button {
             if isOrganizing {
@@ -1659,7 +1660,7 @@ public struct BookshelfView: View {
                 if let coverOverride {
                     coverOverride
                         .resizable()
-                        .aspectRatio(contentMode: .fill)
+                        .aspectRatio(contentMode: .fit)
                 } else if book.coverUrl != nil {
                     BookCoverImage(
                         urlString: book.coverUrl,
@@ -1815,7 +1816,7 @@ public struct BookshelfView: View {
                     index: index,
                     isSelected: false,
                     coverWidth: (60 * scale).rounded(),
-                    coverHeight: (84 * scale).rounded(),
+                    coverHeight: (90 * scale).rounded(),
                     coverOverride: cover
                 )
                 .frame(width: shelfContentWidth)
@@ -1858,7 +1859,13 @@ public struct BookshelfView: View {
 
     private func presentImportPicker() {
         AppLog.write("[导入] 打开文件选择器")
-        SystemDocumentPicker.present(contentTypes: [.epub, .plainText, .pdf, .zip, .archive]) { urls in
+        // mobi/azw3/fb2/umd 这类没有系统内置 UTType，按扩展名现造一个；
+        // 造不出来就跳过，别让整个选择器打不开。
+        let ebookTypes = ["mobi", "azw", "azw3", "prc", "fb2", "umd"]
+            .compactMap { UTType(filenameExtension: $0) }
+        SystemDocumentPicker.present(
+            contentTypes: [.epub, .plainText, .pdf, .zip, .archive] + ebookTypes
+        ) { urls in
             handleImportedFiles(urls)
         }
     }
@@ -2241,7 +2248,7 @@ struct BookRow: View {
                 if book.coverUrl != nil {
                     // 走统一的封面视图：相册选的本地封面也在这儿显示
                     BookCoverImage(urlString: book.coverUrl)
-                    .frame(width: 54, height: 74)
+                    .frame(width: 54, height: 81)
                     .cornerRadius(6)
                     .clipped()
                 } else {
@@ -2296,7 +2303,7 @@ struct BookRow: View {
     private var coverPlaceholder: some View {
         RoundedRectangle(cornerRadius: 6)
             .fill(Color.accentColor.opacity(0.12))
-            .frame(width: 54, height: 74)
+            .frame(width: 54, height: 81)
             .overlay(
                 Image(systemName: "book.closed.fill")
                     .font(.title2)

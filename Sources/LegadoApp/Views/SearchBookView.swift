@@ -717,12 +717,13 @@ public struct SearchResultRow: View {
                 case .success(let image):
                     image
                         .resizable()
-                        .scaledToFill()
+                        .scaledToFit()
                 default:
                     coverPlaceholder
                 }
             }
             .frame(width: 52, height: 72)
+            .background(theme.palette.elevated)
             .cornerRadius(6)
             .clipped()
         } else {

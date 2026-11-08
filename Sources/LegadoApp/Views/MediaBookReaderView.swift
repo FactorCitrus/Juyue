@@ -11,12 +11,25 @@ import AppKit
 import LegadoCore
 #endif
 
+/// 漫画阅读模式：竖排连续（条漫）或左右翻页（页漫）。
+enum ComicReadMode: String {
+    case vertical
+    case paged
+}
+
+/// 翻页时单页图片怎么摆。
+enum ComicFitMode: String, CaseIterable {
+    case width
+    case height
+    case original
+}
+
 /// 音频 / 图片 / 视频 / 文件源的阅读页。
 ///
 /// 文本源仍走 ReaderView；这里按 `bookSourceType` 分流：
 /// - 音频：AVPlayer 播放章节地址
 /// - 视频：AVKit VideoPlayer
-/// - 图片：按章节抓图，纵向连续阅读
+/// - 图片：按章节抓图，支持竖排连续与左右翻页
 /// - 文件：下载到临时目录后交给系统分享 / 打开
 struct MediaBookReaderView: View {
     let book: Book
@@ -30,7 +43,20 @@ struct MediaBookReaderView: View {
     @State private var isLoading = false
     @State private var errorMessage: String?
     @State private var showChapterList = false
+    @State private var pageIndex = 0
+    @State private var showPageJump = false
+    @AppStorage("comic.readMode") private var comicReadModeRaw = ComicReadMode.vertical.rawValue
+    @AppStorage("comic.rtl") private var comicRTL = true
+    @AppStorage("comic.fit") private var comicFitRaw = ComicFitMode.width.rawValue
     @StateObject private var player = MediaPlayerController()
+
+    private var comicReadMode: ComicReadMode {
+        ComicReadMode(rawValue: comicReadModeRaw) ?? .vertical
+    }
+
+    private var comicFit: ComicFitMode {
+        ComicFitMode(rawValue: comicFitRaw) ?? .width
+    }
 
     init(
         book: Book,
@@ -72,6 +98,24 @@ struct MediaBookReaderView: View {
                     Button("关闭") { onDismiss() }
                 }
                 ToolbarItem(placement: .primaryAction) {
+                    if kind == .image, comicReadMode == .paged, !(payload?.urls.isEmpty ?? true) {
+                        Button {
+                            showPageJump = true
+                        } label: {
+                            Image(systemName: "number")
+                        }
+                    }
+                }
+                ToolbarItem(placement: .primaryAction) {
+                    if kind == .image {
+                        Menu {
+                            comicSettingsMenu
+                        } label: {
+                            Image(systemName: "slider.horizontal.3")
+                        }
+                    }
+                }
+                ToolbarItem(placement: .primaryAction) {
                     Button {
                         showChapterList = true
                     } label: {
@@ -81,6 +125,14 @@ struct MediaBookReaderView: View {
             }
             .sheet(isPresented: $showChapterList) {
                 mediaChapterSheet
+            }
+            .sheet(isPresented: $showPageJump) {
+                ComicPageJumpSheet(
+                    pageCount: payload?.urls.count ?? 0,
+                    currentPage: pageIndex
+                ) { target in
+                    pageIndex = target
+                }
             }
         }
             .stackNavigationStyle()
@@ -159,18 +211,8 @@ struct MediaBookReaderView: View {
             VideoPlayer(player: player.player)
                 .onAppear { loadPlayer(payload) }
         case .image:
-            ScrollView {
-                LazyVStack(spacing: 0) {
-                    ForEach(Array(payload.urls.enumerated()), id: \.offset) { _, url in
-                        RemoteMediaImage(
-                            urlString: url,
-                            headers: payload.headers,
-                            rateKey: payload.rateKey,
-                            rateLimit: payload.rateLimit
-                        )
-                            .frame(maxWidth: .infinity)
-                    }
-                }
+            GeometryReader { proxy in
+                comicContent(payload, size: proxy.size)
             }
         case .file:
             FileMediaView(
@@ -185,6 +227,56 @@ struct MediaBookReaderView: View {
         }
     }
 
+    @ViewBuilder
+    private func comicContent(_ payload: MediaChapterPayload, size: CGSize) -> some View {
+        if comicReadMode == .vertical {
+            ScrollView {
+                LazyVStack(spacing: 0) {
+                    ForEach(Array(payload.urls.enumerated()), id: \.offset) { _, url in
+                        RemoteMediaImage(
+                            urlString: url,
+                            headers: payload.headers,
+                            rateKey: payload.rateKey,
+                            rateLimit: payload.rateLimit
+                        )
+                        .frame(maxWidth: .infinity)
+                    }
+                }
+            }
+        } else {
+            ComicPagedView(
+                urls: payload.urls,
+                headers: payload.headers,
+                rateKey: payload.rateKey,
+                rateLimit: payload.rateLimit,
+                fit: comicFit,
+                rtl: comicRTL,
+                doublePage: size.width > size.height,
+                containerSize: size,
+                pageIndex: $pageIndex
+            )
+        }
+    }
+
+    @ViewBuilder
+    private var comicSettingsMenu: some View {
+        Picker("阅读模式", selection: $comicReadModeRaw) {
+            Text("连续竖排").tag(ComicReadMode.vertical.rawValue)
+            Text("左右翻页").tag(ComicReadMode.paged.rawValue)
+        }
+        if comicReadMode == .paged {
+            Picker("翻页方向", selection: $comicRTL) {
+                Text("从右往左（日漫）").tag(true)
+                Text("从左往右").tag(false)
+            }
+            Picker("图片缩放", selection: $comicFitRaw) {
+                Text("适应宽度").tag(ComicFitMode.width.rawValue)
+                Text("适应高度").tag(ComicFitMode.height.rawValue)
+                Text("原始尺寸").tag(ComicFitMode.original.rawValue)
+            }
+        }
+    }
+
     private var bottomBar: some View {
         HStack {
             Button {
@@ -196,9 +288,17 @@ struct MediaBookReaderView: View {
 
             Spacer()
 
-            Text("\(min(currentIndex + 1, chapters.count)) / \(chapters.count)")
-                .font(.caption.monospacedDigit())
-                .foregroundColor(.white.opacity(0.7))
+            VStack(spacing: 2) {
+                Text("\(min(currentIndex + 1, chapters.count)) / \(chapters.count)")
+                    .font(.caption.monospacedDigit())
+                    .foregroundColor(.white.opacity(0.7))
+                if kind == .image, comicReadMode == .paged,
+                   let count = payload?.urls.count, count > 0 {
+                    Text("第 \(min(pageIndex + 1, count)) / \(count) 页")
+                        .font(.caption2.monospacedDigit())
+                        .foregroundColor(.white.opacity(0.55))
+                }
+            }
 
             Spacer()
 
@@ -267,6 +367,7 @@ struct MediaBookReaderView: View {
         isLoading = true
         errorMessage = nil
         payload = nil
+        pageIndex = 0
         player.stop()
         do {
             let result = try await BookMediaService.shared.resolveChapter(
@@ -410,6 +511,11 @@ private final class RemoteImageLoader: ObservableObject {
     @Published var image: PlatformImage?
     @Published var failed = false
 
+    func reset() {
+        image = nil
+        failed = false
+    }
+
     func load(urlString: String, headers: [String: String], rateKey: String, rateLimit: SourceRateLimit?) async {
         if let rateLimit {
             await SourceRateLimiter.shared.acquire(key: rateKey, limit: rateLimit)
@@ -451,20 +557,14 @@ private struct RemoteMediaImage: View {
     let headers: [String: String]
     let rateKey: String
     let rateLimit: SourceRateLimit?
+    var fit: ComicFitMode = .width
+    var containerSize: CGSize? = nil
     @StateObject private var loader = RemoteImageLoader()
 
     var body: some View {
         Group {
             if let image = loader.image {
-                #if canImport(UIKit)
-                Image(uiImage: image)
-                    .resizable()
-                    .scaledToFit()
-                #elseif canImport(AppKit)
-                Image(nsImage: image)
-                    .resizable()
-                    .scaledToFit()
-                #endif
+                fittedImage(image)
             } else if loader.failed {
                 VStack(spacing: 8) {
                     Image(systemName: "exclamationmark.triangle")
@@ -473,15 +573,218 @@ private struct RemoteMediaImage: View {
                         .font(.caption)
                 }
                 .foregroundColor(.white.opacity(0.6))
-                .frame(height: 220)
+                .frame(width: containerSize?.width, height: containerSize?.height ?? 220)
             } else {
                 ProgressView()
-                    .frame(height: 220)
+                    .frame(width: containerSize?.width, height: containerSize?.height ?? 220)
             }
         }
         .task(id: urlString) {
+            loader.reset()
             await loader.load(urlString: urlString, headers: headers, rateKey: rateKey, rateLimit: rateLimit)
         }
+    }
+
+    @ViewBuilder
+    private func fittedImage(_ image: PlatformImage) -> some View {
+        let content = platformImage(image)
+
+        if let containerSize, containerSize.width > 1, containerSize.height > 1 {
+            scrollableImage(content, image: image, in: containerSize)
+        } else {
+            content
+                .resizable()
+                .scaledToFit()
+        }
+    }
+
+    private func scrollableImage(_ content: Image, image: PlatformImage, in containerSize: CGSize) -> some View {
+        let size = displaySize(of: image, in: containerSize)
+        var axes: Axis.Set = []
+        if size.height > containerSize.height + 1 { axes.insert(.vertical) }
+        if size.width > containerSize.width + 1 { axes.insert(.horizontal) }
+        return ScrollView(axes, showsIndicators: false) {
+            content
+                .resizable()
+                .frame(width: size.width, height: size.height)
+        }
+        .frame(width: containerSize.width, height: containerSize.height)
+    }
+
+    private func platformImage(_ image: PlatformImage) -> Image {
+        #if canImport(UIKit)
+        Image(uiImage: image)
+        #else
+        Image(nsImage: image)
+        #endif
+    }
+
+    private func displaySize(of image: PlatformImage, in container: CGSize) -> CGSize {
+        let natural = image.size
+        guard natural.width > 0, natural.height > 0 else { return container }
+        switch fit {
+        case .width:
+            let scale = container.width / natural.width
+            return CGSize(width: container.width, height: natural.height * scale)
+        case .height:
+            let scale = container.height / natural.height
+            return CGSize(width: natural.width * scale, height: container.height)
+        case .original:
+            return natural
+        }
+    }
+}
+
+// MARK: - 漫画翻页
+
+/// 左右翻页：不依赖系统分页控件，手写位移 + 手势，RTL/LTR 与双页都能直接控制。
+private struct ComicPagedView: View {
+    let urls: [String]
+    let headers: [String: String]
+    let rateKey: String
+    let rateLimit: SourceRateLimit?
+    let fit: ComicFitMode
+    let rtl: Bool
+    let doublePage: Bool
+    let containerSize: CGSize
+    @Binding var pageIndex: Int
+
+    @GestureState private var dragOffset: CGFloat = 0
+
+    /// 阅读顺序的分页单元。双页时两页一组；右到左时组内右手边是前一页。
+    private var units: [[Int]] {
+        guard doublePage else { return urls.indices.map { [$0] } }
+        var result: [[Int]] = []
+        var page = 0
+        while page < urls.count {
+            if page + 1 < urls.count {
+                result.append(rtl ? [page + 1, page] : [page, page + 1])
+            } else {
+                result.append([page])
+            }
+            page += 2
+        }
+        return result
+    }
+
+    /// 显示顺序：右到左时把阅读顺序倒过来，手指右滑才是翻到下一页。
+    private var displayIndex: Int {
+        displayIndex(forPage: pageIndex)
+    }
+
+    private var visibleDisplays: [Int] {
+        [displayIndex - 1, displayIndex, displayIndex + 1].filter { units.indices.contains($0) }
+    }
+
+    var body: some View {
+        ZStack {
+            Color.black
+            ForEach(visibleDisplays, id: \.self) { display in
+                unitView(display)
+                    .frame(width: containerSize.width, height: containerSize.height)
+                    .offset(x: CGFloat(display - displayIndex) * containerSize.width + dragOffset)
+            }
+        }
+        .frame(width: containerSize.width, height: containerSize.height)
+        .clipped()
+        .contentShape(Rectangle())
+        .gesture(
+            DragGesture(minimumDistance: 12)
+                .updating($dragOffset) { value, state, _ in
+                    state = value.translation.width
+                }
+                .onEnded { value in
+                    let threshold = max(containerSize.width * 0.18, 40)
+                    if value.predictedEndTranslation.width < -threshold {
+                        setDisplay(displayIndex + 1)
+                    } else if value.predictedEndTranslation.width > threshold {
+                        setDisplay(displayIndex - 1)
+                    }
+                }
+        )
+        .animation(.easeOut(duration: 0.22), value: displayIndex)
+    }
+
+    private func unitView(_ display: Int) -> some View {
+        let unit = units[unitIndex(forDisplay: display)]
+        let width = containerSize.width / CGFloat(max(unit.count, 1))
+        return HStack(spacing: 0) {
+            ForEach(unit, id: \.self) { page in
+                RemoteMediaImage(
+                    urlString: urls[page],
+                    headers: headers,
+                    rateKey: rateKey,
+                    rateLimit: rateLimit,
+                    fit: fit,
+                    containerSize: CGSize(width: width, height: containerSize.height)
+                )
+            }
+        }
+    }
+
+    private func unitIndex(forDisplay display: Int) -> Int {
+        rtl ? units.count - 1 - display : display
+    }
+
+    private func displayIndex(forPage page: Int) -> Int {
+        let unit = units.firstIndex { $0.contains(page) } ?? 0
+        return rtl ? units.count - 1 - unit : unit
+    }
+
+    private func setDisplay(_ display: Int) {
+        guard !units.isEmpty else { return }
+        let clamped = min(max(display, 0), units.count - 1)
+        let unit = units[unitIndex(forDisplay: clamped)]
+        pageIndex = unit.min() ?? pageIndex
+    }
+}
+
+// MARK: - 跳页
+
+private struct ComicPageJumpSheet: View {
+    let pageCount: Int
+    let currentPage: Int
+    let onJump: (Int) -> Void
+
+    @Environment(\.dismiss) private var dismiss
+    @State private var input = ""
+
+    private var typedPage: Int? {
+        Int(input.trimmingCharacters(in: .whitespacesAndNewlines))
+    }
+
+    var body: some View {
+        NavigationView {
+            VStack(alignment: .leading, spacing: 16) {
+                Text("共 \(pageCount) 页，当前第 \(min(currentPage + 1, max(pageCount, 1))) 页")
+                    .font(.footnote)
+                    .foregroundColor(.secondary)
+                TextField("页码 1–\(pageCount)", text: $input)
+                    .textFieldStyle(.roundedBorder)
+                    #if os(iOS)
+                    .keyboardType(.numberPad)
+                    #endif
+                Button("跳转") {
+                    guard let page = typedPage, (1...max(pageCount, 1)).contains(page) else { return }
+                    onJump(page - 1)
+                    dismiss()
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(typedPage == nil)
+                Spacer()
+            }
+            .padding(20)
+            .navigationTitle("跳页")
+            #if os(iOS)
+            .navigationBarTitleDisplayMode(.inline)
+            #endif
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("取消") { dismiss() }
+                }
+            }
+        }
+        .stackNavigationStyle()
     }
 }
 

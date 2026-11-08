@@ -1194,6 +1194,14 @@ public class BookStore: ObservableObject {
         return parsed.book
     }
 
+    /// MOBI/AZW3、FB2、UMD 走同一套：解析器负责拆章落盘，这里只管入库。
+    public func importLocalBook(from fileUrl: URL) throws -> Book {
+        let parsed = try LocalBookParser.shared.parse(url: fileUrl)
+        saveChapters(parsed.chapters, for: parsed.book.bookUrl)
+        upsertShelf(parsed.book)
+        return parsed.book
+    }
+
     /// TXT 编码没有统一约定：先按 UTF-8 试，再按 GB18030（老小说站主流），
     /// 最后按 UTF-8 容错解，保证任何字节都能出文本。
     private func decodeTxt(_ data: Data) -> String {
@@ -1285,6 +1293,8 @@ public class BookStore: ObservableObject {
             return try importComic(from: fileUrl)
         case "pdf":
             return try importPDF(from: fileUrl)
+        case "mobi", "azw", "azw3", "prc", "fb2", "umd":
+            return try importLocalBook(from: fileUrl)
         default:
             return try importEpub(from: fileUrl)
         }

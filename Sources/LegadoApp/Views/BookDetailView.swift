@@ -1120,17 +1120,29 @@ struct BookCoverImage: View {
         }
     }
 
-    /// 封面必须被父容器框住：横图/超大图只裁剪，不允许把卡片撑宽。
+    /// 封面必须被父容器框住：整张封面完整显示，同图模糊放大做背景填满空位。
     @ViewBuilder
     private func styledImage(_ image: Image) -> some View {
         if contentMode == .fill {
-            Color.clear
-                .overlay {
+            // 背景层尺寸必须定死：只给 maxWidth 时 scaledToFill 会把 ZStack 撑到图片自身比例，
+            // 上层 scaledToFit 跟着铺满整个盒子，再被外层裁掉，封面就成了中心裁切
+            GeometryReader { proxy in
+                let size = proxy.size
+                ZStack {
+                    theme.palette.elevated
                     image
                         .resizable()
                         .scaledToFill()
+                        .frame(width: size.width, height: size.height)
+                        .blur(radius: 16)
+                        .opacity(0.32)
+                        .clipped()
+                    image
+                        .resizable()
+                        .scaledToFit()
+                        .frame(width: size.width, height: size.height)
                 }
-                .clipped()
+            }
         } else {
             image
                 .resizable()

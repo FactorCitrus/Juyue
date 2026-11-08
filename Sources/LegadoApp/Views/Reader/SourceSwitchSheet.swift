@@ -39,6 +39,9 @@ public struct SourceSwitchSheet: View {
     @State private var runKeyword = ""
     @State private var runSelectedSourceUrls: Set<String> = []
     @State private var searchRunId = UUID()
+    /// 源多时结果是成串到达的，先攒起来合并提交，避免每个源各刷一次整页
+    @State private var pendingOutcomes: [SearchSourceOutcome] = []
+    @State private var isFlushScheduled = false
     /// 搜索条件默认收起，换源时先看候选；收起状态是临时的，每次打开都收着
     @State private var showSearchOptions = false
 
@@ -645,6 +648,8 @@ public struct SourceSwitchSheet: View {
         isPaused = false
         let runId = UUID()
         searchRunId = runId
+        pendingOutcomes.removeAll()
+        isFlushScheduled = false
         searchTask = Task {
             let stream = BookSearchService.shared.searchMultiSourcesDetailed(
                 sources: remaining,
@@ -655,26 +660,53 @@ public struct SourceSwitchSheet: View {
                 if Task.isCancelled { return }
                 await MainActor.run {
                     guard searchRunId == runId else { return }
-                    reportedSourceUrls.insert(outcome.source.bookSourceUrl)
-                    finishedSources = min(totalSources, finishedSources + 1)
-                    if let failure = outcome.failure {
-                        failures.record(source: outcome.source, failure: failure)
-                        return
-                    }
-                    failures.clear(sourceUrl: outcome.source.bookSourceUrl)
-                    // 原样收着，展示时按当前口径筛（改开关不用重新搜一遍）
-                    for candidate in outcome.books where !seenResultIds.contains(candidate.id) {
-                        seenResultIds.insert(candidate.id)
-                        rawResults.append((source: outcome.source, book: candidate))
+                    pendingOutcomes.append(outcome)
+                    // 20 条一次或 120ms 一次，谁先到按谁提交
+                    if pendingOutcomes.count >= 20 {
+                        flushPendingOutcomes(runId: runId)
+                    } else if !isFlushScheduled {
+                        isFlushScheduled = true
+                        Task { @MainActor in
+                            try? await Task.sleep(nanoseconds: 120_000_000)
+                            flushPendingOutcomes(runId: runId)
+                        }
                     }
                 }
             }
             await MainActor.run {
                 // 取消后再到达的收尾不能把「已暂停」冲掉
                 guard searchRunId == runId else { return }
+                flushPendingOutcomes(runId: runId)
                 if !isPaused {
                     isSearching = false
                 }
+            }
+        }
+    }
+
+    /// 把攒下的源结果一次性写进 UI。runId 变了（暂停/重搜）就直接丢弃。
+    @MainActor
+    private func flushPendingOutcomes(runId: UUID) {
+        isFlushScheduled = false
+        guard searchRunId == runId else {
+            pendingOutcomes.removeAll()
+            return
+        }
+        guard !pendingOutcomes.isEmpty else { return }
+        let outcomes = pendingOutcomes
+        pendingOutcomes.removeAll()
+        for outcome in outcomes {
+            reportedSourceUrls.insert(outcome.source.bookSourceUrl)
+            finishedSources = min(totalSources, finishedSources + 1)
+            if let failure = outcome.failure {
+                failures.record(source: outcome.source, failure: failure)
+                continue
+            }
+            failures.clear(sourceUrl: outcome.source.bookSourceUrl)
+            // 原样收着，展示时按当前口径筛（改开关不用重新搜一遍）
+            for candidate in outcome.books where !seenResultIds.contains(candidate.id) {
+                seenResultIds.insert(candidate.id)
+                rawResults.append((source: outcome.source, book: candidate))
             }
         }
     }

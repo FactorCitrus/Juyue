@@ -1195,6 +1195,20 @@ public class BookContentService {
         return FileManager.default.fileExists(atPath: file.path)
     }
 
+    /// 只扫本地缓存统计字数，不发网络请求；没缓存的章节不返回。
+    /// 不建目录、不碰章节模型，适合丢到后台队列跑。
+    public static func cachedChapterWordCounts(bookUrl: String, indices: [Int]) -> [Int: Int] {
+        let folder = chapterCacheVersionedRoot
+            .appendingPathComponent(CryptoUtils.md5(bookUrl), isDirectory: true)
+        var counts: [Int: Int] = [:]
+        for index in indices {
+            let file = folder.appendingPathComponent("\(index).txt")
+            guard let content = try? String(contentsOf: file, encoding: .utf8) else { continue }
+            counts[index] = ChapterWordCounter.count(content)
+        }
+        return counts
+    }
+
     private var preDownloadTask: Task<Void, Never>? = nil
 
     /// 仿照 Android Legado preDownload()：在后台自动预缓存当前章节前后各 10 章
@@ -1275,6 +1289,27 @@ public class BookContentService {
 
     private static func cleanHtmlUncached(_ raw: String, baseUrl: String? = nil) -> String {
         var text = raw
+
+        // 视频标签在纯文本里没法显示，换成 [video:url] 标记，由订阅正文那层换成播放器
+        if let videoRegex = try? NSRegularExpression(pattern: "(?is)<video\\b[^>]*>.*?</video\\s*>") {
+            let nsText = text as NSString
+            for match in videoRegex.matches(in: text, range: NSRange(location: 0, length: nsText.length)).reversed() {
+                let tag = nsText.substring(with: match.range)
+                let src = extractVideoSrc(from: tag, baseUrl: baseUrl)
+                let replacement = src.map { "\n\n[video:\($0)]\n\n" } ?? "\n\n"
+                text = (text as NSString).replacingCharacters(in: match.range, with: replacement)
+            }
+        }
+        // <video> 里没写 src、只写了 <source>，或者散落在外面的 <source>：按扩展名认视频
+        if let sourceRegex = try? NSRegularExpression(pattern: "(?i)<source\\b[^>]*>") {
+            let nsText = text as NSString
+            for match in sourceRegex.matches(in: text, range: NSRange(location: 0, length: nsText.length)).reversed() {
+                let tag = nsText.substring(with: match.range)
+                guard let src = extractVideoSrc(from: tag, baseUrl: baseUrl),
+                      tag.lowercased().contains("video/") || looksLikeVideo(src) else { continue }
+                text = (text as NSString).replacingCharacters(in: match.range, with: "\n\n[video:\(src)]\n\n")
+            }
+        }
 
         // Convert <img> tags to \n\n[image:url]\n\n before stripping HTML tags
         let imgPattern = "(?i)<img\\s+[^>]*?>"
@@ -1369,15 +1404,35 @@ public class BookContentService {
         }
 
         // Resolve relative URL
-        if src.hasPrefix("http://") || src.hasPrefix("https://") { return src }
-        if src.hasPrefix("//") { return "https:" + src }
+        return resolveMediaURL(src, baseUrl: baseUrl)
+    }
 
-        // 剩下的都是相对地址：没有基准 URL 就原样返回，交给上层决定
-        guard let base = baseUrl, let baseObj = URL(string: base) else { return src }
-        if src.hasPrefix("/") {
-            return "\(baseObj.scheme ?? "https")://\(baseObj.host ?? "")" + src
+    private static func extractVideoSrc(from tag: String, baseUrl: String?) -> String? {
+        for pattern in ["(?i)src\\s*=\\s*[\"']([^\"']+)[\"']",
+                        "(?i)data-src\\s*=\\s*[\"']([^\"']+)[\"']"] {
+            guard let found = firstCapture(in: tag, pattern: pattern) else { continue }
+            let cleaned = found.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !cleaned.isEmpty, !cleaned.hasPrefix("data:") else { continue }
+            return resolveMediaURL(cleaned, baseUrl: baseUrl)
         }
-        return baseObj.deletingLastPathComponent().appendingPathComponent(src).absoluteString
+        return nil
+    }
+
+    private static func looksLikeVideo(_ url: String) -> Bool {
+        let lower = url.lowercased()
+        return [".m3u8", ".mp4", ".m4v", ".mov", ".webm", ".flv", ".mpd"]
+            .contains { lower.contains($0) }
+    }
+
+    /// 图片和视频共用：绝对地址原样返回，`//` 补协议，相对地址按页面地址补全。
+    private static func resolveMediaURL(_ raw: String, baseUrl: String?) -> String {
+        if raw.hasPrefix("http://") || raw.hasPrefix("https://") { return raw }
+        if raw.hasPrefix("//") { return "https:" + raw }
+        guard let base = baseUrl, let baseObj = URL(string: base) else { return raw }
+        if raw.hasPrefix("/") {
+            return "\(baseObj.scheme ?? "https")://\(baseObj.host ?? "")" + raw
+        }
+        return baseObj.deletingLastPathComponent().appendingPathComponent(raw).absoluteString
     }
 
     private static func isPlaceholderImage(_ src: String) -> Bool {
@@ -1689,6 +1744,19 @@ public struct SubscribeArticle: Identifiable, Equatable {
     }
 }
 
+/// 订阅正文抓取结果：正文 + 基准地址 + 取图片/视频要带的请求头。
+public struct SubscribeFetchedContent {
+    public var text: String
+    public var baseURL: String
+    public var headers: [String: String]
+
+    public init(text: String, baseURL: String, headers: [String: String]) {
+        self.text = text
+        self.baseURL = baseURL
+        self.headers = headers
+    }
+}
+
 public enum SubscribeSourceService {
     /// 抓订阅源的文章列表。没写 ruleArticles 就当普通 RSS/Atom 处理。
     public static func fetchArticles(source: SubscribeSource, pageUrl: String? = nil) async throws -> [SubscribeArticle] {
@@ -1721,6 +1789,11 @@ public enum SubscribeSourceService {
         if let payload = NetworkClient.dataURLPayload(target) {
             body = payload
             base = target
+        } else if target.lowercased().hasPrefix("data:") {
+            // 解不出载荷的 `data:;base64,<占位>,<扩展>` 是源作者拿 baseUrl 传参的写法，
+            // 不能真发请求；正文留空，规则脚本按 baseUrl 分支走。
+            body = ""
+            base = target
         } else {
             guard let parsed = NetworkClient.parseLegadoUrl(target, defaultHeader: requestHeader, baseUrl: source.sourceUrl) else {
                 return ([], nil)
@@ -1743,6 +1816,7 @@ public enum SubscribeSourceService {
 
         let context = source.ruleContext(jsLib: jsLib)
         let jsEngine = JSEngine(bookSource: context, baseUrl: base)
+        jsEngine.setSourceValue("sortUrl", source.sortUrl ?? "")
         let analyzer = RuleAnalyzer(content: body, baseUrl: base, bookSource: context, jsEngine: jsEngine)
         let elements = analyzer.getElements(listRule)
         LegadoLog.log("[订阅源] \(source.sourceName) 规则 \(listRule) 命中=\(elements.count)")
@@ -1751,11 +1825,13 @@ public enum SubscribeSourceService {
         for element in elements {
             let itemAnalyzer = RuleAnalyzer(content: element, baseUrl: base, bookSource: context, jsEngine: jsEngine)
             let title = itemAnalyzer.getString(source.ruleTitle)
-            let link = itemAnalyzer.getString(source.ruleLink, isUrl: true)
+            let link = itemAnalyzer.resolveLazyJavaScript(
+                itemAnalyzer.getString(source.ruleLink), isUrl: true)
             guard !title.isEmpty || !link.isEmpty else { continue }
             let date = itemAnalyzer.getString(source.rulePubDate)
             let summary = itemAnalyzer.getString(source.ruleDescription)
-            let image = itemAnalyzer.getString(source.ruleImage, isUrl: true)
+            let image = itemAnalyzer.resolveLazyJavaScript(
+                itemAnalyzer.getString(source.ruleImage), isUrl: true)
             articles.append(
                 SubscribeArticle(
                     title: title.isEmpty ? link : title,
@@ -1768,10 +1844,42 @@ public enum SubscribeSourceService {
         }
         var nextPage: String? = nil
         if let nextRule = source.ruleNextPage, !nextRule.isEmpty {
-            let value = analyzer.getString(nextRule, isUrl: true)
-            if !value.isEmpty { nextPage = value }
+            let rawValue = analyzer.getString(nextRule)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            if !rawValue.isEmpty {
+                if rawValue.allSatisfy({ $0.isASCII && $0.isNumber }) {
+                    // 规则只回页码（源仓的 `page` 字段）时把当前地址的页码 +1，
+                    // 直接当网址会把 "1" 拼成 `…/1` 这种假地址。
+                    nextPage = bumpPage(in: target, from: Int(rawValue) ?? 1)
+                } else {
+                    nextPage = analyzer.getString(nextRule, isUrl: true)
+                }
+            }
         }
         return (articles, nextPage)
+    }
+
+    /// 规则只回了页码时，把当前地址里的页码改成下一页。
+    static func bumpPage(in target: String, from page: Int) -> String? {
+        let next = String(page + 1)
+        if target.contains("{{page}}") {
+            return target.replacingOccurrences(of: "{{page}}", with: next)
+        }
+        let patterns = [
+            "(?i)([?&](?:page|p|pageNum|pageNo)=)(\\d+)",
+            "(?i)(/page/)(\\d+)"
+        ]
+        let source = target as NSString
+        for pattern in patterns {
+            guard let regex = try? NSRegularExpression(pattern: pattern),
+                  let match = regex.firstMatch(
+                      in: target,
+                      range: NSRange(location: 0, length: source.length)
+                  ),
+                  match.numberOfRanges > 2 else { continue }
+            return source.replacingCharacters(in: match.range(at: 2), with: next)
+        }
+        return nil
     }
 
     /// 解析 Legado 订阅源的 sortUrl。支持普通多行 `名称::地址` 和 `<js>/@js:`。
@@ -1814,16 +1922,64 @@ public enum SubscribeSourceService {
 
     /// 抓正文：有 ruleContent 就按规则取，取不到就把整页按纯文本给出去
     public static func fetchContent(article: SubscribeArticle, source: SubscribeSource) async throws -> String {
+        try await fetchContentDetail(article: article, source: source).text
+    }
+
+    /// 抓正文，连同基准地址和请求头一起带出去。
+    /// 正文里的图片、视频要按同一套 header 去取，站点的反盗链才过得去。
+    public static func fetchContentDetail(
+        article: SubscribeArticle,
+        source: SubscribeSource
+    ) async throws -> SubscribeFetchedContent {
         let jsLib = await resolvedJsLib(source.jsLib)
         let requestHeader = await resolvedHeader(source: source, jsLib: jsLib)
-        guard !article.link.isEmpty,
-              let parsed = NetworkClient.parseLegadoUrl(article.link, defaultHeader: requestHeader, baseUrl: source.sourceUrl) else {
-            return ""
+        let mediaHeaders = mediaRequestHeaders(source: source, header: requestHeader, referer: article.link)
+        var link = article.link.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !link.isEmpty else { return SubscribeFetchedContent(text: "", baseURL: article.link, headers: mediaHeaders) }
+
+        // 行值里残留的 `@js:` / `<js>` 链接（洛娅橙用它拼 data: 地址）先求值一次。
+        if link.hasPrefix("@js:") || (link.contains("<js>") && link.contains("</js>")) {
+            let script: String
+            if link.hasPrefix("@js:") {
+                script = String(link.dropFirst(4))
+            } else {
+                let open = link.range(of: "<js>")
+                let close = link.range(of: "</js>")
+                script = open.flatMap { o in
+                    String(link[o.upperBound..<(close?.lowerBound ?? link.endIndex)])
+                } ?? ""
+            }
+            let context = source.ruleContext(jsLib: jsLib)
+            let engine = JSEngine(bookSource: context, baseUrl: source.sourceUrl)
+            if !script.isEmpty,
+               let value = engine.eval(script: script, result: link) as? String,
+               !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                link = value
+            }
         }
-        let response = try await NetworkClient.shared.request(parsed: parsed)
-        guard response.statusCode >= 200 && response.statusCode < 400 else { return "" }
-        let body = response.bodyString
-        let base = parsed.url.absoluteString
+
+        let body: String
+        let base: String
+        if let packed = NetworkClient.dataURLPayload(link) {
+            body = packed
+            base = link
+        } else if link.lowercased().hasPrefix("data:") {
+            // 与列表抓取一致：解不出载荷的 data: 地址是拿 baseUrl 传参的写法，不发请求。
+            body = ""
+            base = link
+        } else {
+            guard let parsed = NetworkClient.parseLegadoUrl(
+                link, defaultHeader: requestHeader, baseUrl: source.sourceUrl
+            ) else {
+                return SubscribeFetchedContent(text: "", baseURL: link, headers: mediaHeaders)
+            }
+            let response = try await NetworkClient.shared.request(parsed: parsed)
+            guard response.statusCode >= 200 && response.statusCode < 400 else {
+                return SubscribeFetchedContent(text: "", baseURL: parsed.url.absoluteString, headers: mediaHeaders)
+            }
+            body = response.bodyString
+            base = parsed.url.absoluteString
+        }
 
         if let contentRule = source.ruleContent, !contentRule.isEmpty {
             let context = source.ruleContext(jsLib: jsLib)
@@ -1832,10 +1988,54 @@ public enum SubscribeSourceService {
             let raw = analyzer.getString(contentRule)
             let text = BookContentService.cleanHtml(raw, baseUrl: base)
             if !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                return text
+                return SubscribeFetchedContent(text: text, baseURL: base, headers: mediaHeaders)
             }
         }
-        return BookContentService.cleanHtml(body, baseUrl: base)
+        let fallback = BookContentService.cleanHtml(body, baseUrl: base)
+        return SubscribeFetchedContent(text: fallback, baseURL: base, headers: mediaHeaders)
+    }
+
+    /// 图片/视频请求复用的头：来源 header + Referer + 默认 UA。
+    /// 反盗链站点主要看 Referer，缺了它图全是 403。
+    public static func mediaRequestHeaders(
+        source: SubscribeSource,
+        header: String?,
+        referer: String?
+    ) -> [String: String] {
+        var result = headerFields(from: header)
+        if result.isEmpty { result = source.staticRequestHeaders }
+        let hasReferer = result.keys.contains { $0.lowercased() == "referer" }
+        if !hasReferer, let referer, !referer.isEmpty {
+            result["Referer"] = referer
+        }
+        if result.keys.allSatisfy({ $0.lowercased() != "user-agent" }) {
+            result["User-Agent"] = NetworkClient.defaultUserAgent
+        }
+        return result
+    }
+
+    /// header 既可能是 JSON 对象，也可能是每行 `Name: value`。
+    static func headerFields(from raw: String?) -> [String: String] {
+        guard let raw = raw?.trimmingCharacters(in: .whitespacesAndNewlines), !raw.isEmpty else {
+            return [:]
+        }
+        if raw.hasPrefix("{"),
+           let data = raw.data(using: .utf8),
+           let dict = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+            return dict.reduce(into: [:]) { result, item in
+                result[item.key] = String(describing: item.value)
+            }
+        }
+        var result: [String: String] = [:]
+        for line in raw.components(separatedBy: .newlines) {
+            let parts = line.split(separator: ":", maxSplits: 1).map {
+                $0.trimmingCharacters(in: .whitespaces)
+            }
+            if parts.count == 2, !parts[0].isEmpty {
+                result[parts[0]] = parts[1]
+            }
+        }
+        return result
     }
 
     /// 远程 jsLib 在 Legado 里是「名称 -> URL」的 JSON。下载后拼成一份脚本注入。

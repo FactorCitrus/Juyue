@@ -23,6 +23,7 @@ import CommonCrypto
     func getString(_ path: String) -> String
     func jsonPath(_ json: String, _ path: String) -> JSValue
     func getElements(_ html: JSValue, _ rule: JSValue) -> JSValue
+    func getElement(_ rule: String) -> JSValue
     func toast(_ message: String)
     func longToast(_ message: String)
     func log(_ message: JSValue)
@@ -718,6 +719,30 @@ public final class ScriptBrowser {
         return JsoupShim.wrapper(elements, in: ctx)
     }
 
+    /// 单参数 `java.getElement(rule)`：规则作用在当前脚本的 `result` 上。
+    /// 洛娅橙这类订阅源用它把 JSON 结果转成条目集合，没有这个方法脚本直接报错。
+    public func getElement(_ rule: String) -> JSValue {
+        let ctx: JSContext = jsContext ?? JSContext()
+        let trimmed = rule.trimmingCharacters(in: .whitespacesAndNewlines)
+        let text = currentResultText()
+
+        if trimmed.hasPrefix("$") {
+            guard let data = text.data(using: .utf8),
+                  let object = try? JSONSerialization.jsonObject(with: data),
+                  let hit = JSONPath.evaluate(path: trimmed, json: object) else {
+                return JSValue(newArrayIn: ctx)
+            }
+            return JSValue(object: hit, in: ctx) ?? JSValue(newArrayIn: ctx)
+        }
+
+        let analyzer = RuleAnalyzer(content: text, baseUrl: baseUrl, bookSource: bookSource)
+        let elements = Elements()
+        for item in analyzer.getElements(trimmed) {
+            if let element = item as? Element { elements.add(element) }
+        }
+        return JsoupShim.wrapper(elements, in: ctx)
+    }
+
     /// 单参数 `java.getElements(rule)` 的输入：当前脚本里的 `result`。
     private func currentResultText() -> String {
         guard let ctx = jsContext,
@@ -785,6 +810,13 @@ public class JSEngine {
     public var onLoginInfoUpdated: ((String) -> Void)?
     /// 最近一次脚本异常，供调用方拿到原始错误信息。
     public private(set) var lastError: String?
+
+    /// 订阅源规则脚本要读 `source.sortUrl`（洛娅橙的 jsLib 会拿它取版本号），
+    /// BookSource 模型里没有这个字段，由调用方在创建引擎后补进去。
+    func setSourceValue(_ key: String, _ value: String) {
+        guard let source = context.objectForKeyedSubscript("source" as NSString) else { return }
+        source.setObject(value, forKeyedSubscript: key as NSString)
+    }
 
     public init(bookSource: BookSource? = nil, baseUrl: String? = nil, book: Book? = nil) {
         self.context = JSContext()
