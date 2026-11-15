@@ -2212,8 +2212,10 @@ public enum SubscribeSourceService {
     }
 
     /// 分类行/链接尾部残留的 `,{"webView": true}` 选项不是地址的一部分。
+    /// data: 地址尾部的 `,{…}` 是聚合源打包的载荷，要保留。
     private static func stripLineOptions(_ value: String) -> String {
-        guard let range = value.range(of: #",\s*\{.*\}\s*$"#, options: .regularExpression) else {
+        guard !value.lowercased().hasPrefix("data:"),
+              let range = value.range(of: #",\s*\{.*\}\s*$"#, options: .regularExpression) else {
             return value
         }
         return String(value[..<range.lowerBound])
