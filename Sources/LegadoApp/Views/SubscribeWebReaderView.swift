@@ -1,3 +1,4 @@
+#if canImport(UIKit)
 import SwiftUI
 import UIKit
 import WebKit
@@ -406,3 +407,4 @@ private enum JavaBridgeShim {
     })();
     """
 }
+#endif
