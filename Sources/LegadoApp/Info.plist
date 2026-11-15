@@ -13,6 +13,21 @@
 	<string>用于连接你本机或局域网内的离线语音服务、OPDS / Calibre 书库。</string>
 	<key>NSPhotoLibraryAddUsageDescription</key>
 	<string>用于把阅读时看到的插图保存到相册。</string>
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleURLName</key>
+			<string>com.factorcitrus.legado.import</string>
+			<key>CFBundleTypeRole</key>
+			<string>Viewer</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>juyue</string>
+				<string>legado</string>
+				<string>yuedu</string>
+			</array>
+		</dict>
+	</array>
 	<key>CFBundleIcons</key>
 	<dict>
 		<key>CFBundleAlternateIcons</key>

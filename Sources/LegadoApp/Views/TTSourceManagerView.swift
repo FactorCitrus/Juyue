@@ -168,7 +168,7 @@ public struct TTSourceManagerView: View {
                     Label("从剪贴板导入", systemImage: "doc.on.clipboard")
                 }
             } footer: {
-                Text("需要 Key 的服务：选发音人、填 access_token。列表外的服务走 httpTTS.json，兼容 Legado 格式。")
+                Text("需要 Key 的服务：选发音人、填 access_token。列表外的服务走 httpTTS.json，兼容阅读格式。")
             }
             .appThemedRows()
 
@@ -749,9 +749,6 @@ struct TTSOnlinePresetSheet: View {
                         switch field.kind {
                         case .text:
                             TextField(field.placeholder, text: binding(for: field.key))
-                                // textInputAutocapitalization 只在 iOS 的 SwiftUI 里有，
-                                // macOS 侧（swift build / swift test）没有这个类型，报出来的
-                                // 还是 ForEach 泛型推不出来的错，找不到根。
                                 #if os(iOS)
                                 .textInputAutocapitalization(.never)
                                 #endif

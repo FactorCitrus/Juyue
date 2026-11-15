@@ -13,8 +13,32 @@ import ObjectiveC
 ///
 /// 引擎那次取包名会缓存，所以只要第一次调用落在窗口里，后面就一直对。
 enum BaiduBundleShim {
-    /// 百度控制台里登记的包名。改这里等于改授权对象，别随手动。
-    static let pinned = "com.factorcitrus.juyue"
+    /// 百度控制台里默认登记的包名。改这里等于改授权对象，别随手动。
+    static let defaultPinned = "com.factorcitrus.juyue"
+
+    private static let pinnedKey = "baidu_pinned_bundle"
+
+    /// 当前生效的包名。设置页改过就用改的；引擎取包名后会缓存，改完要重启 App。
+    static var pinned: String {
+        let stored = (UserDefaults.standard.string(forKey: pinnedKey) ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return stored.isEmpty ? defaultPinned : stored
+    }
+
+    static var hasCustomPinned: Bool {
+        !(UserDefaults.standard.string(forKey: pinnedKey) ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    /// 传空或默认值就清掉覆盖，回到包内默认。
+    static func setPinned(_ value: String?) {
+        let trimmed = (value ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty || trimmed == defaultPinned {
+            UserDefaults.standard.removeObject(forKey: pinnedKey)
+        } else {
+            UserDefaults.standard.set(trimmed, forKey: pinnedKey)
+        }
+    }
 
     private static let lock = NSLock()
     private static var overrideDepth = 0
@@ -35,7 +59,7 @@ enum BaiduBundleShim {
 
         let cls: AnyClass = Bundle.self
         guard let original = class_getInstanceMethod(cls, #selector(getter: Bundle.bundleIdentifier)),
-              let replacement = class_getInstanceMethod(cls, #selector(Bundle.juyue_shim_bundleIdentifier))
+              let replacement = class_getInstanceMethod(cls, #selector(Bundle.legado_shim_bundleIdentifier))
         else {
             NSLog("[BaiduShim] 交换失败：找不到 bundleIdentifier 方法")
             return
@@ -62,8 +86,8 @@ enum BaiduBundleShim {
 
 extension Bundle {
     /// 交换之后，这个选择子指向系统原实现——所以第一行是「调原函数」，不是递归。
-    @objc func juyue_shim_bundleIdentifier() -> String? {
-        let real = juyue_shim_bundleIdentifier()
+    @objc func legado_shim_bundleIdentifier() -> String? {
+        let real = legado_shim_bundleIdentifier()
         guard BaiduBundleShim.isActive else { return real }
         // 只骗主包；框架、扩展、资源包照旧
         guard bundlePath == Bundle.main.bundlePath else { return real }

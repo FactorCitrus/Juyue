@@ -2,47 +2,14 @@ import Foundation
 import Combine
 import SwiftSoup
 
+// MARK: - 正文与目录
+
 public class BookContentService {
     public static let shared = BookContentService()
 
     public init() {}
 
-    /// Fetches detailed book information (author, intro, tags, word count) and TOC chapters in a unified request
     public func fetchBookDetail(
-        book: Book,
-        source: BookSource,
-        onProgress: ((Int, Int) -> Void)? = nil,
-        diagnostics: ((SourceRequestDiagnostic) -> Void)? = nil,
-        includeChapters: Bool = true
-    ) async throws -> (book: Book, chapters: [BookChapter]) {
-        // 目录地址属于旧源或已失效时，退回书页地址重抓一次：否则目录和正文会一直来自旧站。
-        let staleTOC = !book.tocUrl.isEmpty && book.tocUrl != book.bookUrl
-        do {
-            let result = try await fetchBookDetailPage(
-                book: book, source: source, onProgress: onProgress,
-                diagnostics: diagnostics, includeChapters: includeChapters
-            )
-            if includeChapters, result.chapters.isEmpty, staleTOC {
-                var fallback = book
-                fallback.tocUrl = ""
-                return try await fetchBookDetailPage(
-                    book: fallback, source: source, onProgress: onProgress,
-                    diagnostics: diagnostics, includeChapters: true
-                )
-            }
-            return result
-        } catch {
-            guard staleTOC else { throw error }
-            var fallback = book
-            fallback.tocUrl = ""
-            return try await fetchBookDetailPage(
-                book: fallback, source: source, onProgress: onProgress,
-                diagnostics: diagnostics, includeChapters: includeChapters
-            )
-        }
-    }
-
-    private func fetchBookDetailPage(
         book: Book,
         source: BookSource,
         onProgress: ((Int, Int) -> Void)? = nil,
@@ -54,304 +21,115 @@ public class BookContentService {
         }
         try await SourceLoginService.shared.requireLoginIfNeeded(source: source)
 
-        let targetUrl = !book.tocUrl.isEmpty ? book.tocUrl : book.bookUrl
-        var headerToUse = source.loginHeader ?? source.header
-        if let h = headerToUse, (h.contains("<js>") || h.hasPrefix("@js:")) {
-            let js = JSEngine(bookSource: source, baseUrl: source.bookSourceUrl)
-            let script = h.contains("<js>") ? String(h[h.range(of: "<js>")!.upperBound..<h.range(of: "</js>")!.lowerBound]) : String(h.dropFirst(4))
-            if let evaluated = js.context.evaluateScript(script)?.toString(), !evaluated.isEmpty && evaluated != "undefined" {
-                headerToUse = evaluated
+        let target = book.tocUrl.isEmpty ? book.bookUrl : book.tocUrl
+        let header = ScriptSnippet.resolveHeader(source.loginHeader ?? source.header, source: source)
+
+        LegadoLog.log("[BookDetail] [\(source.bookSourceName)] 抓详情与目录 host=\(URL(string: target)?.host ?? "-")")
+
+        let page: DetailPage.Payload
+        do {
+            page = try await DetailPage.make(
+                target: target,
+                book: book,
+                source: source,
+                header: header,
+                diagnostics: diagnostics
+            )
+        } catch ContentError.invalidURL {
+            return (book, [])
+        } catch {
+            // 目录地址可能属于旧源或已失效：退回书页地址再抓一次。
+            if !book.tocUrl.isEmpty, book.tocUrl != book.bookUrl {
+                var fallback = book
+                fallback.tocUrl = ""
+                return try await fetchBookDetail(
+                    book: fallback,
+                    source: source,
+                    onProgress: onProgress,
+                    diagnostics: diagnostics,
+                    includeChapters: includeChapters
+                )
             }
+            throw error
         }
 
-        // 脱敏：URL 只记域名，path 与 query 常含私有参数
-        LegadoLog.log("[BookDetail] [\(source.bookSourceName)] 抓详情与目录 host=\(URL(string: targetUrl)?.host ?? "-")")
-
-        let bodyString: String
-        let pageBaseUrl: String
-        let jsEngine: JSEngine
-        /// 目录脚本吃的内容：普通站是详情页本身，data: 包里是那份载荷
-        let tocContent: Any
-
-        if let payload = NetworkClient.dataURLPayload(targetUrl) {
-            // data: 协议：聚合源把请求参数打包在 bookUrl 里，这个网址不用请求。
-            // ruleBookInfo.init 拿到载荷自己发请求，把响应体作为返回值交回来。
-            let js = JSEngine(bookSource: source, baseUrl: targetUrl, book: book)
-            jsEngine = js
-            pageBaseUrl = targetUrl
-            tocContent = payload
-            var detail = ""
-            if let initRule = source.ruleBookInfo?.initRule, !initRule.isEmpty {
-                if let out = js.eval(script: JSEngine.unwrapJsScript(initRule), result: payload) {
-                    detail = out as? String ?? "\(out)"
-                }
-                if let err = js.lastError {
-                    LegadoLog.log("[BookDetail] ⚠️ [\(source.bookSourceName)] 详情 init 脚本报错：\(err)")
-                }
-            }
-            bodyString = detail
-            DiagnosticHub.emit(SourceRequestDiagnostic(
-                step: "详情",
-                sourceName: source.bookSourceName,
-                url: targetUrl,
-                responseBytes: detail.utf8.count,
-                responsePreview: DiagnosticPreview.make(detail),
-                note: "data: 载荷，由 init 脚本取回"
-            ), to: diagnostics)
-        } else {
-            if let scheme = NetworkClient.unsupportedScheme(in: targetUrl) {
-                let error = UnsupportedBookSourceSchemeError(
-                    scheme: scheme,
-                    sourceName: source.bookSourceName
-                )
-                LegadoLog.log("[BookDetail] ❌ [\(source.bookSourceName)] 自定义协议 \(scheme) 不支持")
-                DiagnosticHub.emit(SourceRequestDiagnostic(
-                    step: "详情",
-                    sourceName: source.bookSourceName,
-                    url: targetUrl,
-                    failureKind: DiagnosticFailure.classify(error),
-                    note: error.localizedDescription
-                ), to: diagnostics)
-                throw error
-            }
-            guard let parsedReq = NetworkClient.parseLegadoUrl(targetUrl, defaultHeader: headerToUse, baseUrl: source.bookSourceUrl) else {
-                LegadoLog.log("[BookDetail] ❌ [\(source.bookSourceName)] 详情 URL 解析失败 host=\(URL(string: targetUrl)?.host ?? "-")")
-                return (book, [])
-            }
-            let started = Date()
-            let response: NetworkResponse
-            do {
-                response = try await NetworkClient.shared.request(
-                    parsed: parsedReq,
-                    timeout: nil,
-                    rateKey: source.bookSourceUrl,
-                    rateLimit: source.rateLimit
-                )
-            } catch {
-                DiagnosticHub.emit(SourceRequestDiagnostic(
-                    step: "详情",
-                    sourceName: source.bookSourceName,
-                    url: parsedReq.url.absoluteString,
-                    elapsedMs: Int64(Date().timeIntervalSince(started) * 1000),
-                    headersSummary: DiagnosticFailure.summarize(parsedReq.headers),
-                    failureKind: DiagnosticFailure.classify(error),
-                    note: "请求失败：\(error.localizedDescription)"
-                ), to: diagnostics)
-                throw error
-            }
-            let elapsed = Int64(Date().timeIntervalSince(started) * 1000)
-            DiagnosticHub.emit(SourceRequestDiagnostic(
-                step: "详情",
-                sourceName: source.bookSourceName,
-                url: parsedReq.url.absoluteString,
-                statusCode: response.statusCode,
-                elapsedMs: elapsed,
-                responseBytes: response.data.count,
-                responsePreview: DiagnosticPreview.make(response.bodyString),
-                headersSummary: DiagnosticFailure.summarize(parsedReq.headers)
-            ), to: diagnostics)
-            bodyString = response.bodyString
-            pageBaseUrl = parsedReq.url.absoluteString
-            jsEngine = JSEngine(bookSource: source, baseUrl: pageBaseUrl, book: book)
-            tocContent = response.bodyString
-        }
-
-        let analyzer = RuleAnalyzer(
-            content: bodyString,
-            baseUrl: pageBaseUrl,
+        let documentAnalyzer = RuleAnalyzer(
+            content: page.body,
+            baseUrl: page.baseURL,
             bookSource: source,
-            jsEngine: jsEngine
+            jsEngine: page.engine
         )
         let tocAnalyzer = RuleAnalyzer(
-            content: tocContent,
-            baseUrl: pageBaseUrl,
+            content: page.tocContent,
+            baseUrl: page.baseURL,
             bookSource: source,
-            jsEngine: jsEngine
+            jsEngine: page.engine
         )
 
         var chapters: [BookChapter] = []
         if includeChapters {
-            // 1. Parse Chapters
-            let chapterElements = tocAnalyzer.getElements(tocRule.chapterList)
-
-            for (_, item) in chapterElements.enumerated() {
-                let itemAnalyzer = RuleAnalyzer(
-                    content: item,
-                    baseUrl: pageBaseUrl,
-                    bookSource: source,
-                    jsEngine: jsEngine
-                )
-
-                let title = itemAnalyzer.getString(tocRule.chapterName)
-                let url = itemAnalyzer.getString(tocRule.chapterUrl, isUrl: true)
-
-                guard !title.isEmpty, !url.isEmpty else { continue }
-
-                let chapter = BookChapter(
-                    bookUrl: book.bookUrl,
-                    url: url,
-                    title: title,
-                    index: chapters.count
-                )
-                chapters.append(chapter)
-            }
-
-            // 目录分页：有的站点一页只给 40 章，靠 nextTocUrl 把后面的翻出来。
-            // 各页之间没有依赖（每页的页码表都列全），所以并发抓，不能一页一页等。
-            if let nextRule = tocRule.nextTocUrl?.trimmingCharacters(in: .whitespacesAndNewlines), !nextRule.isEmpty,
-               // data: 包没有「下一页网址」这回事，别拿载荷当网址去翻页
-               NetworkClient.dataURLPayload(targetUrl) == nil {
-                let pageLimit = 60
-                let pageTimeout: TimeInterval = 20
-
-                var chapterURLs = Set(chapters.map(\.url))
-                var discovered: Set<String> = [pageBaseUrl]
-                var frontier = BookContentService.extractURLs(from: analyzer, rule: nextRule, baseUrl: pageBaseUrl)
-                var round = 0
-
-                while !frontier.isEmpty, discovered.count < pageLimit, round < 4 {
-                    round += 1
-                    let urls = Array(frontier
-                        .filter { !discovered.contains($0) }
-                        .prefix(pageLimit - discovered.count))
-                    if urls.isEmpty { break }
-                    urls.forEach { discovered.insert($0) }
-
-                    let bodies = await BookContentService.fetchBodies(
-                        urls: urls,
-                        header: headerToUse,
-                        baseUrl: source.bookSourceUrl,
-                        concurrency: 5,
-                        timeout: pageTimeout,
-                        rateKey: source.bookSourceUrl,
-                        rateLimit: source.rateLimit
-                    )
-
-                    var nextURLs: [String] = []
-                    for (pageURL, body) in bodies {
-                        let pageAnalyzer = RuleAnalyzer(
-                            content: body,
-                            baseUrl: pageURL,
-                            bookSource: source,
-                            jsEngine: jsEngine
-                        )
-                        for item in pageAnalyzer.getElements(tocRule.chapterList) {
-                            let itemAnalyzer = RuleAnalyzer(
-                                content: item,
-                                baseUrl: pageURL,
-                                bookSource: source,
-                                jsEngine: jsEngine
-                            )
-                            let title = itemAnalyzer.getString(tocRule.chapterName)
-                            let url = itemAnalyzer.getString(tocRule.chapterUrl, isUrl: true)
-                            guard !title.isEmpty, !url.isEmpty else { continue }
-                            guard chapterURLs.insert(url).inserted else { continue }
-                            chapters.append(BookChapter(bookUrl: book.bookUrl, url: url, title: title, index: chapters.count))
-                        }
-                        nextURLs.append(contentsOf: BookContentService.extractURLs(
-                            from: pageAnalyzer,
-                            rule: nextRule,
-                            baseUrl: pageURL
-                        ))
-                    }
-                    frontier = nextURLs
-                    onProgress?(discovered.count, pageLimit)
-                }
-                LegadoLog.log("[BookDetail] [\(source.bookSourceName)] 目录抓完 \(chapters.count) 章 / \(discovered.count) 页 / \(round) 轮")
-            }
+            chapters = await ChapterCollector(
+                book: book,
+                source: source,
+                rule: tocRule,
+                engine: page.engine,
+                header: header
+            ).collect(
+                firstPage: tocAnalyzer,
+                firstPageURL: page.baseURL,
+                nextRuleSeed: documentAnalyzer,
+                targetUsesDataURL: NetworkClient.dataURLPayload(target) != nil,
+                onProgress: onProgress
+            )
         }
 
-        // 2. Parse Book Metadata (Author, Intro, Kind, WordCount)
-        var updatedBook = book
+        var updated = book
         if includeChapters {
-            updatedBook.totalChapterNum = chapters.count
+            updated.totalChapterNum = chapters.count
         }
+
+        // 目录页抓得到但一条章节都没有，同样按「旧目录地址失效」处理。
+        if includeChapters, chapters.isEmpty, !book.tocUrl.isEmpty, book.tocUrl != book.bookUrl {
+            var fallback = book
+            fallback.tocUrl = ""
+            if let retried = try? await fetchBookDetail(
+                book: fallback,
+                source: source,
+                onProgress: onProgress,
+                diagnostics: diagnostics,
+                includeChapters: true
+            ), !retried.chapters.isEmpty {
+                return retried
+            }
+        }
+
         DiagnosticHub.emit(SourceRequestDiagnostic(
             step: "目录",
             sourceName: source.bookSourceName,
-            url: pageBaseUrl,
+            url: page.baseURL,
             ruleHits: chapters.count,
             note: "目录 \(chapters.count) 章"
         ), to: diagnostics)
-        if includeChapters, let lastCh = chapters.last, updatedBook.latestChapterTitle == nil || updatedBook.latestChapterTitle?.isEmpty == true {
-            updatedBook.latestChapterTitle = lastCh.title
+
+        if includeChapters,
+           updated.latestChapterTitle == nil || updated.latestChapterTitle?.isEmpty == true,
+           let last = chapters.last {
+            updated.latestChapterTitle = last.title
         }
 
-        // Apply ruleBookInfo if configured
-        if let infoRule = source.ruleBookInfo {
-            let authorVal = analyzer.getString(infoRule.author)
-            if !authorVal.isEmpty { updatedBook.author = authorVal }
+        updated = MetadataApplier.apply(
+            to: updated,
+            body: page.body,
+            baseURL: page.baseURL,
+            source: source,
+            analyzer: documentAnalyzer
+        )
 
-            let introVal = analyzer.getString(infoRule.intro)
-            if !introVal.isEmpty { updatedBook.intro = BookContentService.cleanHtml(introVal) }
-
-            let kindVal = analyzer.getString(infoRule.kind)
-            if !kindVal.isEmpty { updatedBook.kind = kindVal }
-
-            let wordCountVal = analyzer.getString(infoRule.wordCount)
-            if !wordCountVal.isEmpty { updatedBook.wordCount = wordCountVal }
-
-            let rawCover = analyzer.getString(infoRule.coverUrl, isUrl: true)
-            let coverVal = rawCover.isEmpty
-                ? ""
-                : CoverURLResolver.resolve(rawCover, source: source, baseUrl: pageBaseUrl)
-            if !coverVal.isEmpty { updatedBook.coverUrl = coverVal }
-        }
-
-        // Apply intelligent JSON metadata extraction (e.g. for Novelia and generic novel REST APIs)
-        if let data = bodyString.data(using: .utf8),
-           let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
-
-            // Author extraction from JSON
-            if updatedBook.author.isEmpty || updatedBook.author == "未知作者" {
-                if let authorsArr = json["authors"] as? [[String: Any]] {
-                    let names = authorsArr.compactMap { $0["name"] as? String }.filter { !$0.isEmpty }
-                    if !names.isEmpty {
-                        updatedBook.author = names.joined(separator: ", ")
-                    }
-                } else if let authorStr = json["author"] as? String, !authorStr.isEmpty {
-                    updatedBook.author = authorStr
-                }
-            }
-
-            // Real Introduction extraction from JSON
-            // 各站对简介的叫法不一样，按优先级取第一个非空的
-            let introKeys = ["introductionZh", "introductionJp", "description", "intro"]
-            let intro = introKeys
-                .compactMap { json[$0] as? String }
-                .first { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
-            if let intro { updatedBook.intro = intro }
-
-            // Word Count
-            if updatedBook.wordCount == nil || updatedBook.wordCount?.isEmpty == true {
-                if let totalChars = json["totalCharacters"] as? Int {
-                    if totalChars > 10000 {
-                        updatedBook.wordCount = String(format: "%.1f万字", Double(totalChars) / 10000.0)
-                    } else {
-                        updatedBook.wordCount = "\(totalChars)字"
-                    }
-                }
-            }
-
-            // Kind / Tags
-            if updatedBook.kind == nil || updatedBook.kind?.isEmpty == true {
-                var tags: [String] = []
-                if let t = json["type"] as? String, !t.isEmpty { tags.append(t) }
-                if let kws = json["keywords"] as? [String] { tags.append(contentsOf: kws) }
-                if !tags.isEmpty {
-                    updatedBook.kind = tags.joined(separator: ",")
-                }
-            }
-        }
-
-        // 脱敏：书名与作者不记原文，只记一个稳定指纹和长度
-        let nameTag = String(CryptoUtils.md5(updatedBook.name).prefix(8))
-        LegadoLog.log("[BookDetail] ✅ [\(source.bookSourceName)] 解析完成 book#\(nameTag) 书名/作者长度=\(updatedBook.name.count)/\(updatedBook.author.count) 简介=\(updatedBook.intro?.count ?? 0) 章数=\(chapters.count)")
-        return (updatedBook, chapters)
+        let fingerprint = String(CryptoUtils.md5(updated.name).prefix(8))
+        LegadoLog.log("[BookDetail] ✅ [\(source.bookSourceName)] 解析完成 book#\(fingerprint) 书名/作者长度=\(updated.name.count)/\(updated.author.count) 简介=\(updated.intro?.count ?? 0) 章数=\(chapters.count)")
+        return (updated, chapters)
     }
 
-    /// 列表里的封面有时是过期签名地址（CDN 回 403），详情接口才会给新的。
-    /// 这里只走详情请求、不解析目录，给列表补封面用；失败就返回 nil 保持原样。
     public func fetchBookCover(book: Book, source: BookSource) async -> String? {
         var probe = book
         probe.coverUrl = nil
@@ -362,18 +140,21 @@ public class BookContentService {
         return cover
     }
 
-    /// Fetches and parses the chapter list (Table of Contents)
     public func fetchChapterList(
         book: Book,
         source: BookSource,
         onProgress: ((Int, Int) -> Void)? = nil,
         diagnostics: ((SourceRequestDiagnostic) -> Void)? = nil
     ) async throws -> [BookChapter] {
-        let result = try await fetchBookDetail(book: book, source: source, onProgress: onProgress, diagnostics: diagnostics)
+        let result = try await fetchBookDetail(
+            book: book,
+            source: source,
+            onProgress: onProgress,
+            diagnostics: diagnostics
+        )
         return result.chapters
     }
 
-    /// 并发抓一批页面，返回顺序与入参一致；抓失败的页直接跳过。
     public static func fetchBodies(
         urls: [String],
         header: String?,
@@ -383,380 +164,193 @@ public class BookContentService {
         rateKey: String? = nil,
         rateLimit: SourceRateLimit? = nil
     ) async -> [(String, String)] {
-        var results: [(String, String)] = []
-        var index = 0
-        let batchSize = max(1, concurrency)
+        guard !urls.isEmpty else { return [] }
+        let width = max(1, concurrency)
+        var output: [(String, String)] = []
 
-        while index < urls.count {
-            let slice = Array(urls[index..<min(index + batchSize, urls.count)])
-            index += slice.count
+        for start in stride(from: 0, to: urls.count, by: width) {
+            let end = min(start + width, urls.count)
+            let slice = Array(urls[start..<end])
 
             let batch = await withTaskGroup(of: (Int, String, String?).self) { group -> [(String, String)] in
-                for (offset, url) in slice.enumerated() {
+                for (offset, address) in slice.enumerated() {
                     group.addTask {
-                        guard let parsed = NetworkClient.parseLegadoUrl(
-                            url,
+                        guard let request = NetworkClient.parseJuyueUrl(
+                            address,
                             defaultHeader: header,
                             baseUrl: baseUrl
                         ) else {
-                            return (offset, url, nil)
+                            return (offset, address, nil)
                         }
-                        let response = try? await NetworkClient.shared.request(
-                            parsed: parsed,
+                        let reply = try? await NetworkClient.shared.request(
+                            parsed: request,
                             timeout: timeout,
                             rateKey: rateKey,
                             rateLimit: rateLimit
                         )
-                        return (offset, url, response?.bodyString)
+                        return (offset, address, reply?.bodyString)
                     }
                 }
-                var collected: [(Int, String, String?)] = []
+
+                var gathered: [(Int, String, String?)] = []
                 for await item in group {
-                    collected.append(item)
+                    gathered.append(item)
                 }
-                return collected
+                return gathered
                     .sorted { $0.0 < $1.0 }
                     .compactMap { item in
                         guard let body = item.2, !body.isEmpty else { return nil }
                         return (item.1, body)
                     }
             }
-            results.append(contentsOf: batch)
+            output.append(contentsOf: batch)
         }
-        return results
+        return output
     }
 
-    /// 从规则里取出下一页目录地址，href、value、纯文本三种写法都收。
     public static func extractURLs(from analyzer: RuleAnalyzer, rule: String, baseUrl: String) -> [String] {
-        func resolve(_ raw: String) -> String? {
+        var collected: [String] = []
+
+        func add(_ address: String?) {
+            guard let address, !collected.contains(address) else { return }
+            collected.append(address)
+        }
+
+        func absolute(_ raw: String) -> String? {
             let value = raw.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !value.isEmpty else { return nil }
             if value.hasPrefix("http") { return value }
             return URL(string: value, relativeTo: URL(string: baseUrl))?.absoluteString
         }
 
-        var results: [String] = []
-        for element in analyzer.getElements(rule) {
-            if let el = element as? Element {
+        for candidate in analyzer.getElements(rule) {
+            if let element = candidate as? Element {
                 var resolved: String?
-                for key in ["href", "value", "data-url"] {
-                    if let raw = try? el.attr(key), !raw.isEmpty, let url = resolve(raw) {
-                        resolved = url
+                for attribute in ["href", "value", "data-url"] {
+                    if let raw = try? element.attr(attribute),
+                       !raw.isEmpty,
+                       let address = absolute(raw) {
+                        resolved = address
                         break
                     }
                 }
-                if resolved == nil, let text = try? el.text(), let url = resolve(text) {
-                    resolved = url
+                if resolved == nil, let text = try? element.text(), let address = absolute(text) {
+                    resolved = address
                 }
-                if let resolved, !results.contains(resolved) {
-                    results.append(resolved)
-                }
-            } else if let text = element as? String, let url = resolve(text), !results.contains(url) {
-                results.append(url)
+                add(resolved)
+            } else if let text = candidate as? String {
+                add(absolute(text))
             }
         }
 
-        if results.isEmpty {
-            let single = analyzer.getString(rule)
-            if let url = resolve(single), !results.contains(url) {
-                results.append(url)
-            }
+        if collected.isEmpty {
+            add(absolute(analyzer.getString(rule)))
         }
-        return results
+        return collected
     }
 
-    /// Fetches and cleans chapter text content
     public func fetchChapterContent(
         chapter: BookChapter,
         source: BookSource? = nil,
         book: Book? = nil,
         diagnostics: ((SourceRequestDiagnostic) -> Void)? = nil
     ) async throws -> String {
-        // 漫画 / PDF：章节就是一张本地图片，直接交给阅读器的图片链路
         if chapter.url.hasPrefix("imgpage://") {
             return "[image:" + String(chapter.url.dropFirst("imgpage://".count)) + "]"
         }
-        // If chapter points to a local file, extract directly from disk
-        if chapter.url.hasPrefix("file://") || chapter.url.hasPrefix("epub://") || chapter.url.hasPrefix("txt://") || chapter.bookUrl.hasPrefix("file://") || chapter.bookUrl.hasPrefix("txt://") || chapter.url.contains(".xhtml") || chapter.url.contains(".html") || chapter.url.contains(".txt") {
-            if chapter.url.contains(".txt") {
-                var localPath = ""
-                if let u = URL(string: chapter.url), u.isFileURL {
-                    localPath = u.path
-                } else {
-                    localPath = chapter.url.replacingOccurrences(of: "file://", with: "")
-                }
-                var targetFile = URL(fileURLWithPath: localPath)
-                if !FileManager.default.fileExists(atPath: targetFile.path) {
-                    let fileName = targetFile.lastPathComponent
-                    let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
-                    targetFile = docs.appendingPathComponent("Books/TXT/\(CryptoUtils.md5(chapter.bookUrl))/\(fileName)")
-                }
-                if let text = try? String(contentsOf: targetFile, encoding: .utf8) {
-                    return text
-                }
-            }
 
-            let text = EpubParser.extractChapterContent(fromUrlString: chapter.url, bookUrl: chapter.bookUrl)
-            if !text.isEmpty {
-                return text
-            }
+        if let local = LocalChapterLoader.read(chapter: chapter) {
+            return local
         }
 
-        // Check local chapter cache first
         if let cached = getCachedChapterContent(bookUrl: chapter.bookUrl, chapterIndex: chapter.index), !cached.isEmpty {
             return cached
         }
 
-        guard let source = source, let contentRule = source.ruleContent else {
+        guard let source, let contentRule = source.ruleContent else {
             return ""
         }
         try await SourceLoginService.shared.requireLoginIfNeeded(source: source)
 
-        var chapterUrl = chapter.url
-        if chapterUrl.contains("/chapter/"), !chapterUrl.contains("/api/novel/"), chapter.bookUrl.contains("/api/novel/") {
-            // 接口书给的是 /api/novel/...，正文页在 /chapter/<id>，取出 id 重新拼
-            let tail = chapterUrl.components(separatedBy: "/chapter/").last ?? ""
-            let chapterId = tail.components(separatedBy: ",").first?
-                .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-            if !chapterId.isEmpty {
-                let stem = chapter.bookUrl.hasSuffix("/") ? String(chapter.bookUrl.dropLast()) : chapter.bookUrl
-                chapterUrl = "\(stem)/chapter/\(chapterId)"
-            }
-        }
+        let target = resolvedChapterURL(chapter: chapter)
+        let header = ScriptSnippet.resolveHeader(source.loginHeader ?? source.header, source: source)
 
-        var headerToUse = source.loginHeader ?? source.header
-        if let h = headerToUse, (h.contains("<js>") || h.hasPrefix("@js:")) {
-            let js = JSEngine(bookSource: source, baseUrl: source.bookSourceUrl)
-            let script = h.contains("<js>") ? String(h[h.range(of: "<js>")!.upperBound..<h.range(of: "</js>")!.lowerBound]) : String(h.dropFirst(4))
-            if let evaluated = js.context.evaluateScript(script)?.toString(), !evaluated.isEmpty && evaluated != "undefined" {
-                headerToUse = evaluated
-            }
-        }
+        LegadoLog.log("[Content] [\(source.bookSourceName)] 抓正文 第 \(chapter.index + 1) 章 host=\(URL(string: target)?.host ?? "-")")
 
-        // 脱敏：不记章节标题与 URL 路径
-        LegadoLog.log("[Content] [\(source.bookSourceName)] 抓正文 第 \(chapter.index + 1) 章 host=\(URL(string: chapterUrl)?.host ?? "-")")
-
-        var bodyString: String
-        var pageBaseUrl: String
-        var jsEngine: JSEngine
-        var extractedText: String?
-
-        if let payload = NetworkClient.dataURLPayload(chapterUrl) {
-            // data: 协议：章节网址也是打包的，正文规则（ruleContent.content 那段 JS）
-            // 拿着载荷自己发请求，把正文取回来。
-            jsEngine = JSEngine(bookSource: source, baseUrl: chapterUrl, book: book)
-            pageBaseUrl = chapterUrl
-            bodyString = payload
-        } else {
-            if let scheme = NetworkClient.unsupportedScheme(in: chapterUrl) {
-                let error = UnsupportedBookSourceSchemeError(
-                    scheme: scheme,
-                    sourceName: source.bookSourceName
-                )
-                LegadoLog.log("[Content] ❌ [\(source.bookSourceName)] 自定义协议 \(scheme) 不支持 第 \(chapter.index + 1) 章")
-                DiagnosticHub.emit(SourceRequestDiagnostic(
-                    step: "正文",
-                    sourceName: source.bookSourceName,
-                    url: chapterUrl,
-                    failureKind: DiagnosticFailure.classify(error),
-                    note: error.localizedDescription
-                ), to: diagnostics)
-                throw error
-            }
-            guard let parsedReq = NetworkClient.parseLegadoUrl(chapterUrl, defaultHeader: headerToUse, baseUrl: source.bookSourceUrl) else {
-                LegadoLog.log("[Content] ❌ [\(source.bookSourceName)] 正文 URL 解析失败 第 \(chapter.index + 1) 章 host=\(URL(string: chapterUrl)?.host ?? "-")")
-                return ""
-            }
-            if let page = await ContentWebJs.payload(
-                request: parsedReq,
-                rule: contentRule,
-                timeout: ContentWebJs.defaultTimeout,
+        let page: ContentPage.Payload
+        do {
+            page = try await ContentPage.make(
+                target: target,
+                chapterIndex: chapter.index,
+                book: book,
                 source: source,
-                book: book
-            ) {
-                jsEngine = page.engine
-                pageBaseUrl = page.baseURL
-                bodyString = page.body
-                extractedText = page.extractedText
-            } else {
-                let started = Date()
-                let response: NetworkResponse
-                do {
-                    response = try await NetworkClient.shared.request(
-                        parsed: parsedReq,
-                        timeout: nil,
-                        rateKey: source.bookSourceUrl,
-                        rateLimit: source.rateLimit
-                    )
-                } catch {
-                    DiagnosticHub.emit(SourceRequestDiagnostic(
-                        step: "正文",
-                        sourceName: source.bookSourceName,
-                        url: parsedReq.url.absoluteString,
-                        elapsedMs: Int64(Date().timeIntervalSince(started) * 1000),
-                        headersSummary: DiagnosticFailure.summarize(parsedReq.headers),
-                        failureKind: DiagnosticFailure.classify(error),
-                        note: "请求失败：\(error.localizedDescription)"
-                    ), to: diagnostics)
-                    throw error
-                }
-                let elapsed = Int64(Date().timeIntervalSince(started) * 1000)
-                DiagnosticHub.emit(SourceRequestDiagnostic(
-                    step: "正文",
-                    sourceName: source.bookSourceName,
-                    url: parsedReq.url.absoluteString,
-                    statusCode: response.statusCode,
-                    elapsedMs: elapsed,
-                    responseBytes: response.data.count,
-                    responsePreview: DiagnosticPreview.make(response.bodyString),
-                    headersSummary: DiagnosticFailure.summarize(parsedReq.headers)
-                ), to: diagnostics)
-                jsEngine = JSEngine(bookSource: source, baseUrl: parsedReq.url.absoluteString, book: book)
-                pageBaseUrl = parsedReq.url.absoluteString
-                bodyString = response.bodyString
-            }
+                contentRule: contentRule,
+                header: header,
+                diagnostics: diagnostics
+            )
+        } catch ContentError.invalidURL {
+            return ""
         }
 
-        // 脚本里会读 `chapter.index`（番茄聚合源判断是否当前章），安卓宿主有这层全局。
-        jsEngine.context.setObject(
-            ["index": chapter.index, "title": chapter.title, "url": chapterUrl],
+        page.engine.context.setObject(
+            ["index": chapter.index, "title": chapter.title, "url": target],
             forKeyedSubscript: "chapter" as NSString
         )
 
         let analyzer = RuleAnalyzer(
-            content: bodyString,
-            baseUrl: pageBaseUrl,
+            content: page.body,
+            baseUrl: page.baseURL,
             bookSource: source,
-            jsEngine: jsEngine
+            jsEngine: page.engine
         )
 
         let nextRule = contentRule.nextContentUrl?
             .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
 
-        let contentText: String
+        let text: String
         if nextRule.isEmpty {
-            contentText = assembleSinglePage(
+            text = assembleSinglePage(
                 analyzer: analyzer,
                 contentRule: contentRule,
-                baseURL: pageBaseUrl,
-                extractedText: extractedText,
+                baseURL: page.baseURL,
+                extractedText: page.extractedText,
                 book: book
             )
         } else {
-            contentText = await assemblePaginatedContent(
+            text = await assemblePaginatedContent(
                 firstAnalyzer: analyzer,
-                firstBaseURL: pageBaseUrl,
-                firstExtractedText: extractedText,
-                initialURL: chapterUrl,
+                firstBaseURL: page.baseURL,
+                firstExtractedText: page.extractedText,
+                initialURL: target,
                 chapter: chapter,
                 contentRule: contentRule,
                 nextRule: nextRule,
                 source: source,
-                header: headerToUse,
+                header: header,
                 book: book,
                 diagnostics: diagnostics
             )
         }
 
-        if !contentText.isEmpty {
-            saveCachedChapterContent(bookUrl: chapter.bookUrl, chapterIndex: chapter.index, content: contentText)
+        if !text.isEmpty {
+            saveCachedChapterContent(bookUrl: chapter.bookUrl, chapterIndex: chapter.index, content: text)
         }
+
         DiagnosticHub.emit(SourceRequestDiagnostic(
             step: "正文",
             sourceName: source.bookSourceName,
-            url: pageBaseUrl,
+            url: page.baseURL,
             statusCode: 0,
             elapsedMs: 0,
-            responseBytes: contentText.utf8.count,
-            ruleHits: contentText.isEmpty ? 0 : 1,
-            note: "规则命中 \(contentText.count) 字"
+            responseBytes: text.utf8.count,
+            ruleHits: text.isEmpty ? 0 : 1,
+            note: "规则命中 \(text.count) 字"
         ), to: diagnostics)
 
-        return contentText
+        return text
     }
 
-    // MARK: - 正文拼页
-
-    /// `ContentRule.webJs`：用无声网页打开正文页，在 `didFinish` 后执行脚本。
-    ///
-    /// 脚本返回非空文本时优先采用；返回空则保留渲染后的 HTML，交给原 `content` 规则。
-    /// 抓取器未安装、加载失败或超时都返回 nil，由调用方回退普通请求，不让整章失败。
-    private enum ContentWebJs {
-        static let defaultTimeout: TimeInterval = 20
-
-        struct Page {
-            let body: String
-            let baseURL: String
-            let engine: JSEngine
-            let extractedText: String?
-        }
-
-        static func payload(
-            request: NetworkClient.ParsedRequest,
-            rule: ContentRule,
-            timeout: TimeInterval,
-            source: BookSource,
-            book: Book?
-        ) async -> Page? {
-            let script = rule.webJs?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-            let sourceRegex = rule.sourceRegex?
-                .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-            let shouldSniff = !sourceRegex.isEmpty
-            // `sourceRegex` 只在 WebView 加载正文页时才有意义；没有 webJs 时，
-            // 只有 URL 明确要求走 WebView 才进来，避免把普通请求也拉去渲染。
-            guard !script.isEmpty || (shouldSniff && request.usesWebView) else {
-                return nil
-            }
-            guard HeadlessWebView.shared.loader != nil else {
-                LegadoLog.log("[Content] [\(source.bookSourceName)] webJs 需要无声网页，当前未安装，改用普通抓取")
-                return nil
-            }
-
-            await SourceRateLimiter.shared.acquire(key: source.bookSourceUrl, limit: source.rateLimit)
-            let js = script.isEmpty ? nil : JSEngine.unwrapJsScript(script)
-            do {
-                let result = try await NetworkClient.shared.headlessFetch(
-                    parsed: request,
-                    javaScript: js,
-                    timeout: timeout,
-                    capturesResourceURLs: shouldSniff
-                )
-                let baseURL = result.finalURL.absoluteString
-                if shouldSniff,
-                   let matched = SourceURLSniffer.firstMatch(in: result.resourceURLs, pattern: sourceRegex) {
-                    LegadoLog.log("[Content] [\(source.bookSourceName)] sourceRegex 命中资源 URL")
-                    return Page(
-                        body: matched,
-                        baseURL: baseURL,
-                        engine: JSEngine(bookSource: source, baseUrl: baseURL, book: book),
-                        extractedText: nil
-                    )
-                }
-                if shouldSniff {
-                    LegadoLog.log("[Content] [\(source.bookSourceName)] sourceRegex 未命中，按页面 HTML 处理")
-                }
-                let extracted = WebJsContent.text(from: result.javaScriptResult)
-                if extracted == nil,
-                   result.html.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                    LegadoLog.log("[Content] [\(source.bookSourceName)] webJs 结果与页面 HTML 都为空，改用普通抓取")
-                    return nil
-                }
-                LegadoLog.log(
-                    "[Content] [\(source.bookSourceName)] webJs 命中 "
-                        + (extracted == nil ? "空结果，用页面 HTML" : "\(extracted?.count ?? 0) 字")
-                )
-                return Page(
-                    body: result.html,
-                    baseURL: baseURL,
-                    engine: JSEngine(bookSource: source, baseUrl: baseURL, book: book),
-                    extractedText: extracted
-                )
-            } catch {
-                LegadoLog.log("[Content] [\(source.bookSourceName)] webJs 失败，回退普通抓取：\(error.localizedDescription)")
-                return nil
-            }
-        }
-    }
+    // MARK: 正文拼页
 
     // 测试需要直接验证 payAction / callBackJs / imageStyle 不进入正文变换链，
     // 所以保持 internal 而不是 private。
@@ -769,8 +363,13 @@ public class BookContentService {
     ) -> String {
         var text = extractedText ?? ContentRuleExtractor.text(from: analyzer, rule: contentRule)
         text = Self.preserveReviewMarkers(text)
-        text = Self.applyReplaceRegex(contentRule.replaceRegex, to: text)
-        text = BookContentService.cleanHtml(text, baseUrl: baseURL)
+
+        if let replaceRegex = contentRule.replaceRegex, !replaceRegex.isEmpty {
+            text = RegexReplacement.apply(replaceRegex, to: text)
+        }
+
+        text = Self.cleanHtml(text, baseUrl: baseURL)
+
         if book?.useReplaceRule != false {
             text = TextPurifier.shared.apply(text)
         }
@@ -781,7 +380,7 @@ public class BookContentService {
     ///
     /// 页数上限、URL 去重和整体 deadline 都在这里兜住：中途失败、超时或被取消时
     /// 返回已经拿到的页，而不是让整章失败。替换净化等全部拼完再跑一次，避免每页
-    /// 重复套规则。
+    /// 重复套规则（水印类规则重复执行会把正文一起吃掉）。
     private func assemblePaginatedContent(
         firstAnalyzer: RuleAnalyzer,
         firstBaseURL: String,
@@ -900,21 +499,20 @@ public class BookContentService {
         let engine: JSEngine
         var extractedText: String?
 
-        if let payload = NetworkClient.dataURLPayload(url) {
-            body = payload
+        if let packed = NetworkClient.dataURLPayload(url) {
+            body = packed
             baseURL = url
             engine = JSEngine(bookSource: source, baseUrl: url, book: book)
         } else {
-            guard let parsed = NetworkClient.parseLegadoUrl(
+            guard let request = NetworkClient.parseJuyueUrl(
                 url,
                 defaultHeader: header,
                 baseUrl: source.bookSourceUrl
             ) else {
                 return nil
             }
-
             if let page = await ContentWebJs.payload(
-                request: parsed,
+                request: request,
                 rule: contentRule,
                 timeout: min(timeout, ContentWebJs.defaultTimeout),
                 source: source,
@@ -925,41 +523,17 @@ public class BookContentService {
                 engine = page.engine
                 extractedText = page.extractedText
             } else {
-                let started = Date()
-                let response: NetworkResponse
-                do {
-                    response = try await NetworkClient.shared.request(
-                        parsed: parsed,
-                        timeout: timeout,
-                        rateKey: source.bookSourceUrl,
-                        rateLimit: source.rateLimit
-                    )
-                } catch {
-                    DiagnosticHub.emit(SourceRequestDiagnostic(
-                        step: "正文分页",
-                        sourceName: source.bookSourceName,
-                        url: parsed.url.absoluteString,
-                        elapsedMs: Int64(Date().timeIntervalSince(started) * 1000),
-                        headersSummary: DiagnosticFailure.summarize(parsed.headers),
-                        failureKind: DiagnosticFailure.classify(error),
-                        note: "请求失败：\(error.localizedDescription)"
-                    ), to: diagnostics)
+                guard let reply = try? await ContentRequest.perform(
+                    request,
+                    source: source,
+                    step: "正文分页",
+                    diagnostics: diagnostics,
+                    timeout: timeout
+                ) else {
                     return nil
                 }
-
-                DiagnosticHub.emit(SourceRequestDiagnostic(
-                    step: "正文分页",
-                    sourceName: source.bookSourceName,
-                    url: parsed.url.absoluteString,
-                    statusCode: response.statusCode,
-                    elapsedMs: Int64(Date().timeIntervalSince(started) * 1000),
-                    responseBytes: response.data.count,
-                    responsePreview: DiagnosticPreview.make(response.bodyString),
-                    headersSummary: DiagnosticFailure.summarize(parsed.headers)
-                ), to: diagnostics)
-
-                body = response.bodyString
-                baseURL = parsed.url.absoluteString
+                body = reply.bodyString
+                baseURL = request.url.absoluteString
                 engine = JSEngine(bookSource: source, baseUrl: baseURL, book: book)
             }
         }
@@ -989,216 +563,79 @@ public class BookContentService {
     ) -> String {
         var text = extractedText ?? ContentRuleExtractor.text(from: analyzer, rule: rule)
         text = Self.preserveReviewMarkers(text)
-        text = Self.applyReplaceRegex(rule.replaceRegex, to: text)
-        return BookContentService.cleanHtml(text, baseUrl: baseURL)
-    }
 
-    private static func applyReplaceRegex(_ spec: String?, to text: String) -> String {
-        guard let spec, !spec.isEmpty else { return text }
-        let fields = spec.components(separatedBy: "##")
-        guard fields.count >= 2,
-              let regex = try? NSRegularExpression(pattern: fields[0]) else {
-            return text
+        if let replaceRegex = rule.replaceRegex, !replaceRegex.isEmpty {
+            text = RegexReplacement.apply(replaceRegex, to: text)
         }
-        let range = NSRange(location: 0, length: (text as NSString).length)
-        return regex.stringByReplacingMatches(in: text, options: [], range: range, withTemplate: fields[1])
+
+        return Self.cleanHtml(text, baseUrl: baseURL)
     }
 
-    private static let reviewCommentMarkerStart = "\u{E000}C\u{1F}"
-    private static let reviewChapterMarkerStart = "\u{E000}H\u{1F}"
-    private static let reviewGodMarkerStart = "\u{E000}G\u{1F}"
-    private static let reviewMarkerEnd = "\u{E001}"
+    private func resolvedChapterURL(chapter: BookChapter) -> String {
+        var target = chapter.url
+        guard target.contains("/chapter/"),
+              !target.contains("/api/novel/"),
+              chapter.bookUrl.contains("/api/novel/") else {
+            return target
+        }
 
-    /// `<comment count=… onPress=…>` → 段评哨兵；本章说卡片 → 本章说哨兵。
+        let tail = target.components(separatedBy: "/chapter/").last ?? ""
+        let identifier = tail.components(separatedBy: ",").first?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard !identifier.isEmpty else { return target }
+
+        let stem = chapter.bookUrl.hasSuffix("/") ? String(chapter.bookUrl.dropLast()) : chapter.bookUrl
+        target = "\(stem)/chapter/\(identifier)"
+        return target
+    }
+
+    // MARK: 评论哨兵
+
     static func preserveReviewMarkers(_ html: String) -> String {
-        var text = html
-        let nsText = text as NSString
-
-        if let tagRegex = try? NSRegularExpression(pattern: "(?is)<comment\\b[^>]*>") {
-            let matches = tagRegex.matches(in: text, range: NSRange(location: 0, length: nsText.length))
-            for match in matches.reversed() {
-                let tag = nsText.substring(with: match.range)
-                guard let count = firstCapture(in: tag, pattern: "(?i)count\\s*=\\s*\"(\\d+)\""),
-                      let url = firstCapture(in: tag, pattern: "(?i)showReadingBrowser\\(\\s*'([^']+)'") else { continue }
-                let marker = reviewCommentMarkerStart + count + "\u{1F}" + url + reviewMarkerEnd
-                text = (text as NSString).replacingCharacters(in: match.range, with: marker)
-            }
-        }
-
-        if let imgRegex = try? NSRegularExpression(pattern: "(?is)<img\\b[^>]*>") {
-            let nsText2 = text as NSString
-            let matches = imgRegex.matches(in: text, range: NSRange(location: 0, length: nsText2.length))
-            for match in matches.reversed() {
-                let tag = nsText2.substring(with: match.range)
-                let marker: String
-                if tag.contains("showFanqieComment("),
-                   let url = firstCapture(in: tag, pattern: "showFanqieComment\\(\\\\?\"([^\"\\\\]+)") {
-                    marker = reviewChapterMarkerStart + url + reviewMarkerEnd
-                } else if tag.contains("showCmt("),
-                          let url = firstCapture(in: tag, pattern: "showCmt\\(\\s*'([^']+)'"),
-                          let payload = godReviewPayload(from: tag) {
-                    let encodedText = Data(payload.text.utf8).base64EncodedString()
-                    let encodedImage = Data((payload.imageURL ?? "").utf8).base64EncodedString()
-                    marker = reviewGodMarkerStart + encodedText + "\u{1F}" + url
-                        + "\u{1F}" + encodedImage + reviewMarkerEnd
-                } else if tag.range(of: "data:image/svg+xml", options: .caseInsensitive) != nil,
-                          let payload = godReviewPayload(from: tag),
-                          !payload.text.isEmpty {
-                    // 后端有时把 showCmt 元数据截断/转义坏，标签里没有点击脚本，
-                    // 但 SVG 里仍有「神评论」正文。直接还原成原生卡片，
-                    // 不要再交给 UIImage 解 SVG。
-                    let url = firstCapture(in: tag, pattern: "showCmt\\(\\s*'([^']+)'") ?? ""
-                    let encodedText = Data(payload.text.utf8).base64EncodedString()
-                    let encodedImage = Data((payload.imageURL ?? "").utf8).base64EncodedString()
-                    marker = reviewGodMarkerStart + encodedText + "\u{1F}" + url
-                        + "\u{1F}" + encodedImage + reviewMarkerEnd
-                } else {
-                    continue
-                }
-                text = (text as NSString).replacingCharacters(in: match.range, with: marker)
-            }
-        }
-        return text
+        ReviewMarkerCodec.encode(html)
     }
 
-    private struct GodReviewPayload {
-        let text: String
-        let imageURL: String?
-    }
-
-    /// 大灰狼的热评有两种：内嵌 SVG 卡片，和远端热评图片。
-    /// 两种都解成「文字 + 可选插图」，阅读页再画原生卡片。
-    private static func godReviewPayload(from imgTag: String) -> GodReviewPayload? {
-        guard let src = firstCapture(in: imgTag, pattern: "(?i)src\\s*=\\s*[\"']([^\"']+)[\"']") else {
-            return nil
-        }
-        let imageSource = ImageSourceNormalizer.normalize(src)
-        guard !imageSource.isEmpty else { return nil }
-
-        if imageSource.hasPrefix("data:image/svg+xml") {
-            guard let encoded = ImageSourceNormalizer.dataURIPayload(imageSource),
-                  let data = Data(base64Encoded: encoded, options: [.ignoreUnknownCharacters]),
-                  let svg = String(data: data, encoding: .utf8) else { return nil }
-            let text = svgText(in: svg)
-            let image = svgImageURL(in: svg)
-            guard !text.isEmpty || image != nil else { return nil }
-            return GodReviewPayload(text: text, imageURL: image)
-        }
-
-        if imageSource.lowercased().hasPrefix("data:") {
-            return GodReviewPayload(text: "", imageURL: imageSource)
-        }
-
-        let text = remoteCardText(imageSource)
-        let lower = imageSource.lowercased()
-        let isSVGCard = lower.contains("_svg") || lower.hasSuffix(".svg")
-        return GodReviewPayload(text: text, imageURL: isSVGCard ? nil : imageSource)
-    }
-
-    private static func svgText(in svg: String) -> String {
-        guard let regex = try? NSRegularExpression(pattern: "(?is)<text\\b[^>]*>(.*?)</text>") else {
-            return ""
-        }
-        let nsSvg = svg as NSString
-        for match in regex.matches(in: svg, range: NSRange(location: 0, length: nsSvg.length)) {
-            let value = decodeHTMLEntities(nsSvg.substring(with: match.range(at: 1)))
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-            if !value.isEmpty && value != "神评论" {
-                return value
-            }
-        }
-        return ""
-    }
-
-    private static func svgImageURL(in svg: String) -> String? {
-        firstCapture(
-            in: svg,
-            pattern: "(?is)<image\\b[^>]*(?:href|xlink:href)\\s*=\\s*[\"']([^\"']+)[\"']"
-        )
-    }
-
-    /// 书旗等远端热评卡片把正文放在 `text` 查询参数里；SVG 本身不能直接交给 UIImage。
-    private static func remoteCardText(_ raw: String) -> String {
-        guard let components = URLComponents(string: raw),
-              let value = components.queryItems?.first(where: { $0.name == "text" })?.value else {
-            return ""
-        }
-        return decodeHTMLEntities(value).trimmingCharacters(in: .whitespacesAndNewlines)
-    }
-
-    private static func decodeHTMLEntities(_ value: String) -> String {
-        var text = value
-        for (entity, replacement) in [("&amp;", "&"), ("&lt;", "<"), ("&gt;", ">"),
-                                      ("&quot;", "\""), ("&apos;", "'"), ("&#39;", "'")] {
-            text = text.replacingOccurrences(of: entity, with: replacement)
-        }
-        return text
-    }
-
-    private static func firstCapture(in text: String, pattern: String) -> String? {
-        guard let regex = try? NSRegularExpression(pattern: pattern) else { return nil }
-        let nsText = text as NSString
-        guard let match = regex.firstMatch(in: text, range: NSRange(location: 0, length: nsText.length)),
-              match.numberOfRanges > 1 else { return nil }
-        return nsText.substring(with: match.range(at: 1))
-    }
-
-    // MARK: - Chapter Content Cache
-    /// 正文清洗规则变了就换命名空间：老版本缓存下来的脏正文否则会一直被读出来。
-    private static let chapterCacheNamespace = "v2"
-
-    private static var chapterCacheRoot: URL {
-        FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("ChapterCache", isDirectory: true)
-    }
-
-    private static var chapterCacheVersionedRoot: URL {
-        chapterCacheRoot.appendingPathComponent(chapterCacheNamespace, isDirectory: true)
-    }
+    // MARK: 缓存
 
     private func chapterCacheDirectory(bookUrl: String) -> URL {
-        let folder = Self.chapterCacheVersionedRoot
-            .appendingPathComponent(CryptoUtils.md5(bookUrl), isDirectory: true)
-        if !FileManager.default.fileExists(atPath: folder.path) {
-            try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
-        }
-        return folder
+        ChapterCache.directory(for: bookUrl)
     }
 
     private func chapterCacheFile(bookUrl: String, chapterIndex: Int) -> URL {
-        return chapterCacheDirectory(bookUrl: bookUrl).appendingPathComponent("\(chapterIndex).txt")
+        ChapterCache.file(bookUrl: bookUrl, index: chapterIndex)
     }
 
     public func getCachedChapterContent(bookUrl: String, chapterIndex: Int) -> String? {
-        let file = chapterCacheFile(bookUrl: bookUrl, chapterIndex: chapterIndex)
-        return try? String(contentsOf: file, encoding: .utf8)
+        try? String(contentsOf: chapterCacheFile(bookUrl: bookUrl, chapterIndex: chapterIndex), encoding: .utf8)
     }
 
     public func saveCachedChapterContent(bookUrl: String, chapterIndex: Int, content: String) {
         guard !content.isEmpty else { return }
-        let file = chapterCacheFile(bookUrl: bookUrl, chapterIndex: chapterIndex)
-        try? content.write(to: file, atomically: true, encoding: .utf8)
+        try? content.write(
+            to: chapterCacheFile(bookUrl: bookUrl, chapterIndex: chapterIndex),
+            atomically: true,
+            encoding: .utf8
+        )
     }
 
     public func clearCache(for bookUrl: String) {
-        let dir = chapterCacheDirectory(bookUrl: bookUrl)
-        try? FileManager.default.removeItem(at: dir)
+        try? FileManager.default.removeItem(at: chapterCacheDirectory(bookUrl: bookUrl))
     }
 
-    /// 清掉所有书的章节缓存。设置里「清理阅读缓存」走这里。
     public func clearAllChapterCaches() {
-        try? FileManager.default.removeItem(at: Self.chapterCacheRoot)
+        try? FileManager.default.removeItem(at: ChapterCache.allRoot)
     }
 
     public func hasCachedChapter(bookUrl: String, chapterIndex: Int) -> Bool {
-        let file = chapterCacheFile(bookUrl: bookUrl, chapterIndex: chapterIndex)
-        return FileManager.default.fileExists(atPath: file.path)
+        FileManager.default.fileExists(
+            atPath: chapterCacheFile(bookUrl: bookUrl, chapterIndex: chapterIndex).path
+        )
     }
 
     /// 只扫本地缓存统计字数，不发网络请求；没缓存的章节不返回。
     /// 不建目录、不碰章节模型，适合丢到后台队列跑。
     public static func cachedChapterWordCounts(bookUrl: String, indices: [Int]) -> [Int: Int] {
-        let folder = chapterCacheVersionedRoot
+        let folder = ChapterCache.root
             .appendingPathComponent(CryptoUtils.md5(bookUrl), isDirectory: true)
         var counts: [Int: Int] = [:]
         for index in indices {
@@ -1209,299 +646,632 @@ public class BookContentService {
         return counts
     }
 
-    private var preDownloadTask: Task<Void, Never>? = nil
+    private var preDownloadTask: Task<Void, Never>?
 
-    /// 仿照 Android Legado preDownload()：在后台自动预缓存当前章节前后各 10 章
-    public func preDownloadChapters(around currentIndex: Int, chapters: [BookChapter], source: BookSource?, count: Int = 10) {
+    public func preDownloadChapters(
+        around currentIndex: Int,
+        chapters: [BookChapter],
+        source: BookSource?,
+        count: Int = 10
+    ) {
         preDownloadTask?.cancel()
         guard !chapters.isEmpty else { return }
 
         preDownloadTask = Task.detached(priority: .utility) { [weak self] in
-            guard let self = self else { return }
+            guard let self else { return }
 
-            // 1. 优先预下载后续章节 (currentIndex + 1 到 currentIndex + count)
-            let maxIndex = min(currentIndex + count, chapters.count - 1)
-            if currentIndex + 1 <= maxIndex {
-                for i in (currentIndex + 1)...maxIndex {
+            let nextStart = currentIndex + 1
+            let nextEnd = min(currentIndex + count, chapters.count - 1)
+            if nextStart <= nextEnd {
+                for index in nextStart...nextEnd {
                     if Task.isCancelled { return }
-                    let ch = chapters[i]
-                    if self.hasCachedChapter(bookUrl: ch.bookUrl, chapterIndex: ch.index) {
-                        continue
-                    }
-                    _ = try? await self.fetchChapterContent(chapter: ch, source: source)
-                    try? await Task.sleep(nanoseconds: 80_000_000) // 80ms 节奏间隔，避免被防爬虫限流
+                    await self.prefetch(chapters[index], source: source)
                 }
             }
 
-            // 2. 预下载前面的章节 (currentIndex - 1 倒序到 currentIndex - count)
-            let minIndex = max(0, currentIndex - count)
-            if currentIndex - 1 >= minIndex {
-                for i in stride(from: currentIndex - 1, through: minIndex, by: -1) {
+            let previousEnd = max(0, currentIndex - count)
+            if currentIndex - 1 >= previousEnd {
+                for index in stride(from: currentIndex - 1, through: previousEnd, by: -1) {
                     if Task.isCancelled { return }
-                    let ch = chapters[i]
-                    if self.hasCachedChapter(bookUrl: ch.bookUrl, chapterIndex: ch.index) {
-                        continue
-                    }
-                    _ = try? await self.fetchChapterContent(chapter: ch, source: source)
-                    try? await Task.sleep(nanoseconds: 80_000_000)
+                    await self.prefetch(chapters[index], source: source)
                 }
             }
         }
+    }
+
+    private func prefetch(_ chapter: BookChapter, source: BookSource?) async {
+        guard !hasCachedChapter(bookUrl: chapter.bookUrl, chapterIndex: chapter.index) else { return }
+        _ = try? await fetchChapterContent(chapter: chapter, source: source)
+        try? await Task.sleep(nanoseconds: 80_000_000)
     }
 
     public func getCacheCount(for bookUrl: String) -> Int {
-        let dir = chapterCacheDirectory(bookUrl: bookUrl)
-        guard let files = try? FileManager.default.contentsOfDirectory(atPath: dir.path) else { return 0 }
-        return files.filter { $0.hasSuffix(".txt") }.count
+        ChapterCache.count(in: chapterCacheDirectory(bookUrl: bookUrl))
     }
 
-    /// 所有书的缓存章节总数，清理前给用户一个确认数字。
     public func getTotalCacheCount() -> Int {
-        guard let dirs = try? FileManager.default.contentsOfDirectory(at: Self.chapterCacheVersionedRoot, includingPropertiesForKeys: nil) else { return 0 }
-        var total = 0
-        for dir in dirs {
-            let files = (try? FileManager.default.contentsOfDirectory(atPath: dir.path)) ?? []
-            total += files.filter { $0.hasSuffix(".txt") }.count
+        guard let folders = try? FileManager.default.contentsOfDirectory(
+            at: ChapterCache.root,
+            includingPropertiesForKeys: nil
+        ) else {
+            return 0
         }
-        return total
+        return folders.reduce(0) { total, folder in
+            total + ChapterCache.count(in: folder)
+        }
     }
 
-    /// Sanitizes HTML text, converting <img> to [image:url], <p> and <br> to paragraphs, and stripping other tags
+    // MARK: HTML 清洗
+
     public static func cleanHtml(_ raw: String, baseUrl: String? = nil) -> String {
-        // 这个函数是多轮正则，开销不小；而列表里每一行的简介每次重绘都会调它一遍，
-        // 长列表滚动时会反复做同样的事。结果按「baseUrl + 原文」缓存。
-        let cacheKey = (baseUrl ?? "") + "\u{1}" + raw
-        cleanCacheLock.lock()
-        let cached = cleanCache[cacheKey]
-        cleanCacheLock.unlock()
-        if let cached { return cached }
+        HTMLCleaner.shared.clean(raw, baseUrl: baseUrl)
+    }
+}
 
-        let result = cleanHtmlUncached(raw, baseUrl: baseUrl)
-        cleanCacheLock.lock()
-        if cleanCache.count > 128 { cleanCache.removeAll() }
-        cleanCache[cacheKey] = result
-        cleanCacheLock.unlock()
-        return result
+// MARK: - 详情页准备
+
+private enum DetailPage {
+    struct Payload {
+        let body: String
+        let baseURL: String
+        let engine: JSEngine
+        let tocContent: Any
     }
 
-    private static let cleanCacheLock = NSLock()
-    private static var cleanCache: [String: String] = [:]
+    static func make(
+        target: String,
+        book: Book,
+        source: BookSource,
+        header: String?,
+        diagnostics: ((SourceRequestDiagnostic) -> Void)?
+    ) async throws -> Payload {
+        if let packed = NetworkClient.dataURLPayload(target) {
+            let engine = JSEngine(bookSource: source, baseUrl: target, book: book)
+            var detail = ""
 
-    private static func cleanHtmlUncached(_ raw: String, baseUrl: String? = nil) -> String {
-        var text = raw
-
-        // 视频标签在纯文本里没法显示，换成 [video:url] 标记，由订阅正文那层换成播放器
-        if let videoRegex = try? NSRegularExpression(pattern: "(?is)<video\\b[^>]*>.*?</video\\s*>") {
-            let nsText = text as NSString
-            for match in videoRegex.matches(in: text, range: NSRange(location: 0, length: nsText.length)).reversed() {
-                let tag = nsText.substring(with: match.range)
-                let src = extractVideoSrc(from: tag, baseUrl: baseUrl)
-                let replacement = src.map { "\n\n[video:\($0)]\n\n" } ?? "\n\n"
-                text = (text as NSString).replacingCharacters(in: match.range, with: replacement)
+            if let initRule = source.ruleBookInfo?.initRule, !initRule.isEmpty,
+               let result = engine.eval(script: JSEngine.unwrapJsScript(initRule), result: packed) {
+                detail = result as? String ?? "\(result)"
             }
-        }
-        // <video> 里没写 src、只写了 <source>，或者散落在外面的 <source>：按扩展名认视频
-        if let sourceRegex = try? NSRegularExpression(pattern: "(?i)<source\\b[^>]*>") {
-            let nsText = text as NSString
-            for match in sourceRegex.matches(in: text, range: NSRange(location: 0, length: nsText.length)).reversed() {
-                let tag = nsText.substring(with: match.range)
-                guard let src = extractVideoSrc(from: tag, baseUrl: baseUrl),
-                      tag.lowercased().contains("video/") || looksLikeVideo(src) else { continue }
-                text = (text as NSString).replacingCharacters(in: match.range, with: "\n\n[video:\(src)]\n\n")
+            if let error = engine.lastError {
+                LegadoLog.log("[BookDetail] ⚠️ [\(source.bookSourceName)] 详情 init 脚本报错：\(error)")
             }
+
+            DiagnosticHub.emit(SourceRequestDiagnostic(
+                step: "详情",
+                sourceName: source.bookSourceName,
+                url: target,
+                responseBytes: detail.utf8.count,
+                responsePreview: DiagnosticPreview.make(detail),
+                note: "data: 载荷，由 init 脚本取回"
+            ), to: diagnostics)
+
+            return Payload(body: detail, baseURL: target, engine: engine, tocContent: packed)
         }
 
-        // Convert <img> tags to \n\n[image:url]\n\n before stripping HTML tags
-        let imgPattern = "(?i)<img\\s+[^>]*?>"
-        if let imgRegex = try? NSRegularExpression(pattern: imgPattern) {
-            let nsText = text as NSString
-            let matches = imgRegex.matches(in: text, range: NSRange(location: 0, length: nsText.length))
-            for match in matches.reversed() {
-                let imgTag = nsText.substring(with: match.range)
-                if let src = extractImageSrc(from: imgTag, baseUrl: baseUrl), !src.isEmpty {
-                    text = (text as NSString).replacingCharacters(in: match.range, with: "\n\n[image:\(src)]\n\n")
-                }
-            }
+        if let scheme = NetworkClient.unsupportedScheme(in: target) {
+            let error = UnsupportedBookSourceSchemeError(
+                scheme: scheme,
+                sourceName: source.bookSourceName
+            )
+            LegadoLog.log("[BookDetail] ❌ [\(source.bookSourceName)] 自定义协议 \(scheme) 不支持")
+            DiagnosticHub.emit(SourceRequestDiagnostic(
+                step: "详情",
+                sourceName: source.bookSourceName,
+                url: target,
+                failureKind: DiagnosticFailure.classify(error),
+                note: error.localizedDescription
+            ), to: diagnostics)
+            throw error
         }
 
-        // 成对标签里的脚本/样式不能只删标签：`@html` 类正文规则会把整段 JS 留在正文里。
-        text = text.replacingOccurrences(
-            of: "(?is)<script\\b[^>]*>.*?</script\\s*>", with: "", options: .regularExpression
-        )
-        text = text.replacingOccurrences(
-            of: "(?is)<style\\b[^>]*>.*?</style\\s*>", with: "", options: .regularExpression
-        )
-        text = text.replacingOccurrences(
-            of: "(?is)<noscript\\b[^>]*>.*?</noscript\\s*>", with: "", options: .regularExpression
-        )
-        text = text.replacingOccurrences(
-            of: "(?s)<!--.*?-->", with: "", options: .regularExpression
-        )
-
-        // Convert <br> and <br/> to newlines
-        text = text.replacingOccurrences(of: "(?i)<br\\s*/?>", with: "\n", options: .regularExpression)
-        // Convert </p> to double newlines
-        text = text.replacingOccurrences(of: "(?i)</p>", with: "\n\n", options: .regularExpression)
-        // Strip <p ...> tags
-        text = text.replacingOccurrences(of: "(?i)<p[^>]*>", with: "", options: .regularExpression)
-        // Strip all other HTML tags
-        text = text.replacingOccurrences(of: "<[^>]+>", with: "", options: .regularExpression)
-        // Decode common HTML entities
-        // 这几个实体在正文里出现频率最高，手动解比走 NSAttributedString 快；
-        // 顺序不能换：&amp; 放最后，免得把刚解出来的 & 又当成实体开头
-        let entityTable: [(String, String)] = [
-            ("&nbsp;", " "), ("&lrm;", ""), ("&rlm;", ""), ("&quot;", "\""),
-            ("&amp;", "&"), ("&lt;", "<"), ("&gt;", ">"),
-        ]
-        for (entity, plain) in entityTable {
-            text = text.replacingOccurrences(of: entity, with: plain)
+        guard let request = NetworkClient.parseJuyueUrl(
+            target,
+            defaultHeader: header,
+            baseUrl: source.bookSourceUrl
+        ) else {
+            LegadoLog.log("[BookDetail] ❌ [\(source.bookSourceName)] 详情 URL 解析失败 host=\(URL(string: target)?.host ?? "-")")
+            throw ContentError.invalidURL
         }
-        // Collapse 3+ consecutive newlines to 2
-        text = text.replacingOccurrences(of: "\n{3,}", with: "\n\n", options: .regularExpression)
-        return text.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        let reply = try await ContentRequest.perform(
+            request,
+            source: source,
+            step: "详情",
+            diagnostics: diagnostics
+        )
+        let engine = JSEngine(bookSource: source, baseUrl: request.url.absoluteString, book: book)
+        return Payload(
+            body: reply.bodyString,
+            baseURL: request.url.absoluteString,
+            engine: engine,
+            tocContent: reply.bodyString
+        )
+    }
+}
+
+private enum ContentPage {
+    struct Payload {
+        let body: String
+        let baseURL: String
+        let engine: JSEngine
+        /// `webJs` 返回的非空结果；为空时正文仍走页面 HTML 上的原规则。
+        let extractedText: String?
+
+        init(body: String, baseURL: String, engine: JSEngine, extractedText: String? = nil) {
+            self.body = body
+            self.baseURL = baseURL
+            self.engine = engine
+            self.extractedText = extractedText
+        }
     }
 
-    private static func extractImageSrc(from imgTag: String, baseUrl: String?) -> String? {
-        let patterns = [
-            "(?i)data-original\\s*=\\s*[\"']([^\"']+)[\"']",
-            "(?i)data-original-src\\s*=\\s*[\"']([^\"']+)[\"']",
-            "(?i)data-src\\s*=\\s*[\"']([^\"']+)[\"']",
-            "(?i)data-lazy-src\\s*=\\s*[\"']([^\"']+)[\"']",
-            "(?i)data-echo\\s*=\\s*[\"']([^\"']+)[\"']",
-            "(?i)data-url\\s*=\\s*[\"']([^\"']+)[\"']",
-            "(?i)src\\s*=\\s*[\"']([^\"']+)[\"']"
-        ]
-
-        var rawSrc: String? = nil
-        for pattern in patterns {
-            guard let found = firstCapture(in: imgTag, pattern: pattern) else { continue }
-            let cleaned = ImageSourceNormalizer.normalize(found)
-            if !cleaned.isEmpty && !isPlaceholderImage(cleaned) {
-                rawSrc = cleaned
-                break
-            }
+    static func make(
+        target: String,
+        chapterIndex: Int,
+        book: Book?,
+        source: BookSource,
+        contentRule: ContentRule,
+        header: String?,
+        diagnostics: ((SourceRequestDiagnostic) -> Void)?
+    ) async throws -> Payload {
+        if let packed = NetworkClient.dataURLPayload(target) {
+            return Payload(
+                body: packed,
+                baseURL: target,
+                engine: JSEngine(bookSource: source, baseUrl: target, book: book)
+            )
         }
 
-        if rawSrc == nil {
-            for pattern in ["(?i)data-srcset\\s*=\\s*[\"']([^\"']+)[\"']",
-                            "(?i)srcset\\s*=\\s*[\"']([^\"']+)[\"']"] {
-                guard let srcset = firstCapture(in: imgTag, pattern: pattern),
-                      let first = firstURL(from: srcset) else { continue }
-                rawSrc = ImageSourceNormalizer.normalize(first)
-                break
-            }
+        if let scheme = NetworkClient.unsupportedScheme(in: target) {
+            let error = UnsupportedBookSourceSchemeError(
+                scheme: scheme,
+                sourceName: source.bookSourceName
+            )
+            LegadoLog.log("[Content] ❌ [\(source.bookSourceName)] 自定义协议 \(scheme) 不支持 第 \(chapterIndex + 1) 章")
+            DiagnosticHub.emit(SourceRequestDiagnostic(
+                step: "正文",
+                sourceName: source.bookSourceName,
+                url: target,
+                failureKind: DiagnosticFailure.classify(error),
+                note: error.localizedDescription
+            ), to: diagnostics)
+            throw error
         }
 
-        guard let src = rawSrc else { return nil }
-
-        if src.hasPrefix("data:") {
-            return isUsableDataImage(src) ? src : nil
+        guard let request = NetworkClient.parseJuyueUrl(
+            target,
+            defaultHeader: header,
+            baseUrl: source.bookSourceUrl
+        ) else {
+            LegadoLog.log("[Content] ❌ [\(source.bookSourceName)] 正文 URL 解析失败 第 \(chapterIndex + 1) 章 host=\(URL(string: target)?.host ?? "-")")
+            throw ContentError.invalidURL
         }
 
-        // Filter out decorative avatars/logos
-        if src.contains("discord_logo") || src.contains("nophoto.png") {
+        if let page = await ContentWebJs.payload(
+            request: request,
+            rule: contentRule,
+            timeout: ContentWebJs.defaultTimeout,
+            source: source,
+            book: book
+        ) {
+            return page
+        }
+
+        let reply = try await ContentRequest.perform(
+            request,
+            source: source,
+            step: "正文",
+            diagnostics: diagnostics
+        )
+        return Payload(
+            body: reply.bodyString,
+            baseURL: request.url.absoluteString,
+            engine: JSEngine(bookSource: source, baseUrl: request.url.absoluteString, book: book)
+        )
+    }
+}
+
+/// `ContentRule.webJs`：用无声网页打开正文页，在 `didFinish` 后执行脚本。
+///
+/// 脚本返回非空文本时优先采用；返回空则保留渲染后的 HTML，交给原 `content` 规则。
+/// 抓取器未安装、加载失败或超时都返回 nil，由调用方回退普通请求，不让整章失败。
+private enum ContentWebJs {
+    static let defaultTimeout: TimeInterval = 20
+
+    static func payload(
+        request: NetworkClient.ParsedRequest,
+        rule: ContentRule,
+        timeout: TimeInterval,
+        source: BookSource,
+        book: Book?
+    ) async -> ContentPage.Payload? {
+        guard let script = rule.webJs?.trimmingCharacters(in: .whitespacesAndNewlines) else {
+            return nil
+        }
+        let sourceRegex = rule.sourceRegex?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let shouldSniff = !sourceRegex.isEmpty
+        // `sourceRegex` 只在 WebView 加载正文页时才有意义；没有 webJs 时，
+        // 只有 URL 明确要求走 WebView 才进来，避免把普通请求也拉去渲染。
+        guard !script.isEmpty || (shouldSniff && request.usesWebView) else {
+            return nil
+        }
+        guard HeadlessWebView.shared.loader != nil else {
+            LegadoLog.log("[Content] [\(source.bookSourceName)] webJs 需要无声网页，当前未安装，改用普通抓取")
             return nil
         }
 
-        // Resolve relative URL
-        return resolveMediaURL(src, baseUrl: baseUrl)
+        await SourceRateLimiter.shared.acquire(key: source.bookSourceUrl, limit: source.rateLimit)
+        let js = script.isEmpty ? nil : JSEngine.unwrapJsScript(script)
+        do {
+            let result = try await NetworkClient.shared.headlessFetch(
+                parsed: request,
+                javaScript: js,
+                timeout: timeout,
+                capturesResourceURLs: shouldSniff
+            )
+            let baseURL = result.finalURL.absoluteString
+            if shouldSniff,
+               let matched = SourceURLSniffer.firstMatch(in: result.resourceURLs, pattern: sourceRegex) {
+                LegadoLog.log("[Content] [\(source.bookSourceName)] sourceRegex 命中资源 URL")
+                return ContentPage.Payload(
+                    body: matched,
+                    baseURL: baseURL,
+                    engine: JSEngine(bookSource: source, baseUrl: baseURL, book: book),
+                    extractedText: nil
+                )
+            }
+            if shouldSniff {
+                LegadoLog.log("[Content] [\(source.bookSourceName)] sourceRegex 未命中，按页面 HTML 处理")
+            }
+            let extracted = WebJsContent.text(from: result.javaScriptResult)
+            if extracted == nil,
+               result.html.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                LegadoLog.log("[Content] [\(source.bookSourceName)] webJs 结果与页面 HTML 都为空，改用普通抓取")
+                return nil
+            }
+            LegadoLog.log(
+                "[Content] [\(source.bookSourceName)] webJs 命中 "
+                    + (extracted == nil ? "空结果，用页面 HTML" : "\(extracted?.count ?? 0) 字")
+            )
+            return ContentPage.Payload(
+                body: result.html,
+                baseURL: baseURL,
+                engine: JSEngine(bookSource: source, baseUrl: baseURL, book: book),
+                extractedText: extracted
+            )
+        } catch {
+            LegadoLog.log("[Content] [\(source.bookSourceName)] webJs 失败，回退普通抓取：\(error.localizedDescription)")
+            return nil
+        }
+    }
+}
+
+private enum ContentError: Error, LocalizedError {
+    case invalidURL
+
+    var errorDescription: String? {
+        "书源返回的请求地址无法解析"
+    }
+}
+
+private enum ContentRequest {
+    static func perform(
+        _ request: NetworkClient.ParsedRequest,
+        source: BookSource,
+        step: String,
+        diagnostics: ((SourceRequestDiagnostic) -> Void)?,
+        timeout: TimeInterval? = nil
+    ) async throws -> NetworkResponse {
+        let started = Date()
+        let reply: NetworkResponse
+        do {
+            reply = try await NetworkClient.shared.request(
+                parsed: request,
+                timeout: timeout,
+                rateKey: source.bookSourceUrl,
+                rateLimit: source.rateLimit
+            )
+        } catch {
+            DiagnosticHub.emit(SourceRequestDiagnostic(
+                step: step,
+                sourceName: source.bookSourceName,
+                url: request.url.absoluteString,
+                elapsedMs: Int64(Date().timeIntervalSince(started) * 1000),
+                headersSummary: DiagnosticFailure.summarize(request.headers),
+                failureKind: DiagnosticFailure.classify(error),
+                note: "请求失败：\(error.localizedDescription)"
+            ), to: diagnostics)
+            throw error
+        }
+
+        DiagnosticHub.emit(SourceRequestDiagnostic(
+            step: step,
+            sourceName: source.bookSourceName,
+            url: request.url.absoluteString,
+            statusCode: reply.statusCode,
+            elapsedMs: Int64(Date().timeIntervalSince(started) * 1000),
+            responseBytes: reply.data.count,
+            responsePreview: DiagnosticPreview.make(reply.bodyString),
+            headersSummary: DiagnosticFailure.summarize(request.headers)
+        ), to: diagnostics)
+        return reply
+    }
+}
+
+// MARK: - 目录收集
+
+private final class ChapterCollector {
+    private let book: Book
+    private let source: BookSource
+    private let rule: TocRule
+    private let engine: JSEngine
+    private let header: String?
+
+    private let pageLimit = 60
+    private let pageTimeout: TimeInterval = 20
+    private var chapters: [BookChapter] = []
+    private var chapterURLs: Set<String> = []
+    private var visitedPages: Set<String> = []
+
+    init(book: Book, source: BookSource, rule: TocRule, engine: JSEngine, header: String?) {
+        self.book = book
+        self.source = source
+        self.rule = rule
+        self.engine = engine
+        self.header = header
     }
 
-    private static func extractVideoSrc(from tag: String, baseUrl: String?) -> String? {
-        for pattern in ["(?i)src\\s*=\\s*[\"']([^\"']+)[\"']",
-                        "(?i)data-src\\s*=\\s*[\"']([^\"']+)[\"']"] {
-            guard let found = firstCapture(in: tag, pattern: pattern) else { continue }
-            let cleaned = found.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !cleaned.isEmpty, !cleaned.hasPrefix("data:") else { continue }
-            return resolveMediaURL(cleaned, baseUrl: baseUrl)
+    func collect(
+        firstPage: RuleAnalyzer,
+        firstPageURL: String,
+        nextRuleSeed: RuleAnalyzer,
+        targetUsesDataURL: Bool,
+        onProgress: ((Int, Int) -> Void)?
+    ) async -> [BookChapter] {
+        parse(from: firstPage, pageURL: firstPageURL)
+        visitedPages.insert(firstPageURL)
+
+        guard let nextRule = rule.nextTocUrl?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !nextRule.isEmpty,
+              !targetUsesDataURL else {
+            return chapters
+        }
+
+        var frontier = BookContentService.extractURLs(
+            from: nextRuleSeed,
+            rule: nextRule,
+            baseUrl: firstPageURL
+        )
+        var round = 0
+
+        while !frontier.isEmpty, visitedPages.count < pageLimit, round < 4 {
+            round += 1
+            let pending = Array(
+                frontier.filter { !visitedPages.contains($0) }
+                    .prefix(pageLimit - visitedPages.count)
+            )
+            guard !pending.isEmpty else { break }
+            pending.forEach { visitedPages.insert($0) }
+
+            let pages = await BookContentService.fetchBodies(
+                urls: pending,
+                header: header,
+                baseUrl: source.bookSourceUrl,
+                concurrency: 5,
+                timeout: pageTimeout,
+                rateKey: source.bookSourceUrl,
+                rateLimit: source.rateLimit
+            )
+
+            var discovered: [String] = []
+            for (pageURL, body) in pages {
+                let analyzer = RuleAnalyzer(
+                    content: body,
+                    baseUrl: pageURL,
+                    bookSource: source,
+                    jsEngine: engine
+                )
+                parse(from: analyzer, pageURL: pageURL)
+                discovered.append(contentsOf: BookContentService.extractURLs(
+                    from: analyzer,
+                    rule: nextRule,
+                    baseUrl: pageURL
+                ))
+            }
+            frontier = discovered
+            onProgress?(visitedPages.count, pageLimit)
+        }
+
+        LegadoLog.log("[BookDetail] [\(source.bookSourceName)] 目录抓完 \(chapters.count) 章 / \(visitedPages.count) 页 / \(round) 轮")
+        return chapters
+    }
+
+    private func parse(from analyzer: RuleAnalyzer, pageURL: String) {
+        for candidate in analyzer.getElements(rule.chapterList) {
+            let row = RuleAnalyzer(
+                content: candidate,
+                baseUrl: pageURL,
+                bookSource: source,
+                jsEngine: engine
+            )
+            let title = row.getString(rule.chapterName)
+            let address = row.getString(rule.chapterUrl, isUrl: true)
+            guard !title.isEmpty, !address.isEmpty else { continue }
+            guard chapterURLs.insert(address).inserted else { continue }
+            chapters.append(BookChapter(
+                bookUrl: book.bookUrl,
+                url: address,
+                title: title,
+                index: chapters.count
+            ))
+        }
+    }
+}
+
+// MARK: - 书籍元数据
+
+private enum MetadataApplier {
+    static func apply(
+        to input: Book,
+        body: String,
+        baseURL: String,
+        source: BookSource,
+        analyzer: RuleAnalyzer
+    ) -> Book {
+        var book = input
+
+        if let infoRule = source.ruleBookInfo {
+            applyRule(infoRule, to: &book, analyzer: analyzer, source: source, baseURL: baseURL)
+        }
+        applyJSON(body, to: &book)
+        return book
+    }
+
+    private static func applyRule(
+        _ rule: BookInfoRule,
+        to book: inout Book,
+        analyzer: RuleAnalyzer,
+        source: BookSource,
+        baseURL: String
+    ) {
+        let author = analyzer.getString(rule.author)
+        if !author.isEmpty { book.author = author }
+
+        let intro = analyzer.getString(rule.intro)
+        if !intro.isEmpty { book.intro = BookContentService.cleanHtml(intro) }
+
+        let kind = analyzer.getString(rule.kind)
+        if !kind.isEmpty { book.kind = kind }
+
+        let words = analyzer.getString(rule.wordCount)
+        if !words.isEmpty { book.wordCount = words }
+
+        let rawCover = analyzer.getString(rule.coverUrl, isUrl: true)
+        guard !rawCover.isEmpty else { return }
+        let cover = CoverURLResolver.resolve(rawCover, source: source, baseUrl: baseURL)
+        if !cover.isEmpty { book.coverUrl = cover }
+    }
+
+    private static func applyJSON(_ body: String, to book: inout Book) {
+        guard let data = body.data(using: .utf8),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return
+        }
+
+        if book.author.isEmpty || book.author == "未知作者" {
+            if let authors = json["authors"] as? [[String: Any]] {
+                let names = authors.compactMap { $0["name"] as? String }.filter { !$0.isEmpty }
+                if !names.isEmpty {
+                    book.author = names.joined(separator: ", ")
+                }
+            } else if let author = json["author"] as? String, !author.isEmpty {
+                book.author = author
+            }
+        }
+
+        let introKeys = ["introductionZh", "introductionJp", "description", "intro"]
+        if let intro = introKeys
+            .compactMap({ json[$0] as? String })
+            .first(where: { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }) {
+            book.intro = intro
+        }
+
+        if book.wordCount == nil || book.wordCount?.isEmpty == true,
+           let total = json["totalCharacters"] as? Int {
+            book.wordCount = total > 10000
+                ? String(format: "%.1f万字", Double(total) / 10000.0)
+                : "\(total)字"
+        }
+
+        if book.kind == nil || book.kind?.isEmpty == true {
+            var tags: [String] = []
+            if let type = json["type"] as? String, !type.isEmpty { tags.append(type) }
+            if let keywords = json["keywords"] as? [String] { tags.append(contentsOf: keywords) }
+            if !tags.isEmpty { book.kind = tags.joined(separator: ",") }
+        }
+    }
+}
+
+// MARK: - 脚本片段
+
+private enum ScriptSnippet {
+    static func body(in text: String) -> String? {
+        if let open = text.range(of: "<js>") {
+            let close = text.range(of: "</js>")?.lowerBound ?? text.endIndex
+            return String(text[open.upperBound..<close])
+        }
+        if text.hasPrefix("@js:") {
+            return String(text.dropFirst(4))
         }
         return nil
     }
 
-    private static func looksLikeVideo(_ url: String) -> Bool {
-        let lower = url.lowercased()
-        return [".m3u8", ".mp4", ".m4v", ".mov", ".webm", ".flv", ".mpd"]
-            .contains { lower.contains($0) }
-    }
-
-    /// 图片和视频共用：绝对地址原样返回，`//` 补协议，相对地址按页面地址补全。
-    private static func resolveMediaURL(_ raw: String, baseUrl: String?) -> String {
-        if raw.hasPrefix("http://") || raw.hasPrefix("https://") { return raw }
-        if raw.hasPrefix("//") { return "https:" + raw }
-        guard let base = baseUrl, let baseObj = URL(string: base) else { return raw }
-        if raw.hasPrefix("/") {
-            return "\(baseObj.scheme ?? "https")://\(baseObj.host ?? "")" + raw
+    static func resolveHeader(_ raw: String?, source: BookSource) -> String? {
+        guard let raw, let script = body(in: raw) else { return raw }
+        let engine = JSEngine(bookSource: source, baseUrl: source.bookSourceUrl)
+        guard let value = engine.context.evaluateScript(script)?.toString(),
+              !value.isEmpty,
+              value != "undefined" else {
+            return raw
         }
-        return baseObj.deletingLastPathComponent().appendingPathComponent(raw).absoluteString
-    }
-
-    private static func isPlaceholderImage(_ src: String) -> Bool {
-        let lower = src.lowercased()
-        if lower.hasPrefix("data:image") {
-            return !isUsableDataImage(src)
-        }
-        return lower == "about:blank" || lower.isEmpty
-    }
-
-    /// 1x1 透明占位图常用于懒加载；真正的大图 data URI 仍保留。
-    private static func isUsableDataImage(_ src: String) -> Bool {
-        let lower = src.lowercased()
-        if lower.contains("r0lgodlh") { return false }
-        return src.count > 512
-    }
-
-    private static func firstURL(from srcset: String) -> String? {
-        let firstEntry = srcset.split(separator: ",").first.map(String.init) ?? srcset
-        let token = firstEntry.split(whereSeparator: { $0 == " " || $0 == "\t" || $0 == "\n" })
-            .first.map(String.init) ?? firstEntry
-        return token.isEmpty ? nil : token
+        return value
     }
 }
 
-// MARK: - 替换净化
-/// 一条替换规则：普通文本替换，或者正则替换（去广告、去水印、去站点名）
-public struct ReplacementRule: Codable, Identifiable, Equatable {
-    public var id: UUID
-    public var name: String
-    public var pattern: String
-    public var replacement: String
-    public var isRegex: Bool
-    public var enabled: Bool
-
-    public init(name: String = "", pattern: String, replacement: String = "", isRegex: Bool = true, enabled: Bool = true) {
-        self.id = UUID()
-        self.name = name
-        self.pattern = pattern
-        self.replacement = replacement
-        self.isRegex = isRegex
-        self.enabled = enabled
-    }
-}
-
-/// 正文替换净化：规则存 UserDefaults，抓完正文依次过一遍
-/// 阅读页里选一段做「替换」时记下来的规则，按书存、按书生效。
-public struct TextReplaceRule: Codable, Equatable, Identifiable {
-    public var id: UUID
-    public var from: String
-    public var to: String
-
-    public init(from: String, to: String) {
-        self.id = UUID()
-        self.from = from
-        self.to = to
-    }
-}
-
-public enum TextReplaceRules {
-    /// 依次套用，长串优先 —— 否则短串先替换会把长串切碎。
-    public static func apply(_ text: String, rules: [TextReplaceRule]) -> String {
-        guard !text.isEmpty, !rules.isEmpty else { return text }
-        var result = text
-        for rule in rules.sorted(by: { $0.from.count > $1.from.count }) {
-            guard !rule.from.isEmpty else { continue }
-            result = result.replacingOccurrences(of: rule.from, with: rule.to)
+private enum RegexReplacement {
+    static func apply(_ spec: String, to text: String) -> String {
+        let fields = spec.components(separatedBy: "##")
+        guard fields.count >= 2,
+              let regex = try? NSRegularExpression(pattern: fields[0]) else {
+            return text
         }
-        return result
+        let range = NSRange(location: 0, length: (text as NSString).length)
+        return regex.stringByReplacingMatches(in: text, options: [], range: range, withTemplate: fields[1])
+    }
+}
+
+// MARK: - 本地章节
+
+private enum LocalChapterLoader {
+    static func read(chapter: BookChapter) -> String? {
+        let address = chapter.url
+        let book = chapter.bookUrl
+        let looksLocal = address.hasPrefix("file://")
+            || address.hasPrefix("epub://")
+            || address.hasPrefix("txt://")
+            || book.hasPrefix("file://")
+            || book.hasPrefix("txt://")
+            || address.contains(".xhtml")
+            || address.contains(".html")
+            || address.contains(".txt")
+        guard looksLocal else { return nil }
+
+        if address.contains(".txt"), let text = readPlainText(chapter: chapter) {
+            return text
+        }
+
+        let epubText = EpubParser.extractChapterContent(fromUrlString: address, bookUrl: book)
+        return epubText.isEmpty ? nil : epubText
+    }
+
+    private static func readPlainText(chapter: BookChapter) -> String? {
+        var path = ""
+        if let url = URL(string: chapter.url), url.isFileURL {
+            path = url.path
+        } else {
+            path = chapter.url.replacingOccurrences(of: "file://", with: "")
+        }
+
+        var file = URL(fileURLWithPath: path)
+        if !FileManager.default.fileExists(atPath: file.path) {
+            let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+            file = documents
+                .appendingPathComponent("Books/TXT/\(CryptoUtils.md5(chapter.bookUrl))")
+                .appendingPathComponent(file.lastPathComponent)
+        }
+        return try? String(contentsOf: file, encoding: .utf8)
     }
 }
 
@@ -1547,6 +1317,469 @@ enum ContentPagination {
     }
 }
 
+// MARK: - 章节缓存
+
+private enum ChapterCache {
+    /// 正文清洗规则变了就换命名空间：老版本缓存下来的脏正文否则会一直被读出来。
+    static let namespace = "v2"
+
+    static var allRoot: URL {
+        FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("ChapterCache", isDirectory: true)
+    }
+
+    static var root: URL {
+        allRoot.appendingPathComponent(namespace, isDirectory: true)
+    }
+
+    static func directory(for bookUrl: String) -> URL {
+        let folder = root
+            .appendingPathComponent(CryptoUtils.md5(bookUrl), isDirectory: true)
+        if !FileManager.default.fileExists(atPath: folder.path) {
+            try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        }
+        return folder
+    }
+
+    static func file(bookUrl: String, index: Int) -> URL {
+        directory(for: bookUrl).appendingPathComponent("\(index).txt")
+    }
+
+    static func count(in folder: URL) -> Int {
+        guard let files = try? FileManager.default.contentsOfDirectory(atPath: folder.path) else {
+            return 0
+        }
+        return files.filter { $0.hasSuffix(".txt") }.count
+    }
+}
+
+// MARK: - 评论标记编解码
+
+private enum ReviewMarkerCodec {
+    static let commentStart = "\u{E000}C\u{1F}"
+    static let chapterStart = "\u{E000}H\u{1F}"
+    static let godStart = "\u{E000}G\u{1F}"
+    static let end = "\u{E001}"
+
+    struct GodCard {
+        let text: String
+        let imageURL: String?
+    }
+
+    static func encode(_ html: String) -> String {
+        var text = encodeComments(html)
+        text = encodeImages(text)
+        return text
+    }
+
+    private static func encodeComments(_ html: String) -> String {
+        guard let regex = try? NSRegularExpression(pattern: "(?is)<comment\\b[^>]*>") else {
+            return html
+        }
+        let source = html as NSString
+        var output = html
+
+        for match in regex.matches(in: html, range: NSRange(location: 0, length: source.length)).reversed() {
+            let tag = source.substring(with: match.range)
+            guard let count = firstCapture(in: tag, pattern: "(?i)count\\s*=\\s*\"(\\d+)\""),
+                  let url = firstCapture(in: tag, pattern: "(?i)showReadingBrowser\\(\\s*'([^']+)'") else {
+                continue
+            }
+            let marker = commentStart + count + "\u{1F}" + url + end
+            output = (output as NSString).replacingCharacters(in: match.range, with: marker)
+        }
+        return output
+    }
+
+    private static func encodeImages(_ html: String) -> String {
+        guard let regex = try? NSRegularExpression(pattern: "(?is)<img\\b[^>]*>") else {
+            return html
+        }
+        let source = html as NSString
+        var output = html
+
+        for match in regex.matches(in: html, range: NSRange(location: 0, length: source.length)).reversed() {
+            let tag = source.substring(with: match.range)
+            guard let marker = marker(for: tag) else { continue }
+            output = (output as NSString).replacingCharacters(in: match.range, with: marker)
+        }
+        return output
+    }
+
+    private static func marker(for tag: String) -> String? {
+        if tag.contains("showFanqieComment("),
+           let url = firstCapture(in: tag, pattern: "showFanqieComment\\(\\\\?\"([^\"\\\\]+)") {
+            return chapterStart + url + end
+        }
+
+        if tag.contains("showCmt("),
+           let url = firstCapture(in: tag, pattern: "showCmt\\(\\s*'([^']+)'"),
+           let card = godCard(from: tag) {
+            return godMarker(card, url: url)
+        }
+
+        if tag.range(of: "data:image/svg+xml", options: .caseInsensitive) != nil,
+           let card = godCard(from: tag),
+           !card.text.isEmpty {
+            let url = firstCapture(in: tag, pattern: "showCmt\\(\\s*'([^']+)'") ?? ""
+            return godMarker(card, url: url)
+        }
+
+        return nil
+    }
+
+    private static func godMarker(_ card: GodCard, url: String) -> String {
+        let body = Data(card.text.utf8).base64EncodedString()
+        let image = Data((card.imageURL ?? "").utf8).base64EncodedString()
+        return godStart + body + "\u{1F}" + url + "\u{1F}" + image + end
+    }
+
+    static func godCard(from imageTag: String) -> GodCard? {
+        guard let raw = firstCapture(in: imageTag, pattern: "(?i)src\\s*=\\s*[\"']([^\"']+)[\"']") else {
+            return nil
+        }
+        let source = ImageSourceNormalizer.normalize(raw)
+        guard !source.isEmpty else { return nil }
+
+        if source.hasPrefix("data:image/svg+xml") {
+            guard let payload = ImageSourceNormalizer.dataURIPayload(source),
+                  let data = Data(base64Encoded: payload, options: [.ignoreUnknownCharacters]),
+                  let svg = String(data: data, encoding: .utf8) else {
+                return nil
+            }
+            let text = svgText(in: svg)
+            let image = svgImageURL(in: svg)
+            guard !text.isEmpty || image != nil else { return nil }
+            return GodCard(text: text, imageURL: image)
+        }
+
+        if source.lowercased().hasPrefix("data:") {
+            return GodCard(text: "", imageURL: source)
+        }
+
+        let text = remoteCardText(source)
+        let lower = source.lowercased()
+        let svgCard = lower.contains("_svg") || lower.hasSuffix(".svg")
+        return GodCard(text: text, imageURL: svgCard ? nil : source)
+    }
+
+    private static func svgText(in svg: String) -> String {
+        guard let regex = try? NSRegularExpression(pattern: "(?is)<text\\b[^>]*>(.*?)</text>") else {
+            return ""
+        }
+        let source = svg as NSString
+        for match in regex.matches(in: svg, range: NSRange(location: 0, length: source.length)) {
+            let value = decodeEntities(source.substring(with: match.range(at: 1)))
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            if !value.isEmpty, value != "神评论" {
+                return value
+            }
+        }
+        return ""
+    }
+
+    private static func svgImageURL(in svg: String) -> String? {
+        firstCapture(
+            in: svg,
+            pattern: "(?is)<image\\b[^>]*(?:href|xlink:href)\\s*=\\s*[\"']([^\"']+)[\"']"
+        )
+    }
+
+    private static func remoteCardText(_ source: String) -> String {
+        guard let components = URLComponents(string: source),
+              let value = components.queryItems?.first(where: { $0.name == "text" })?.value else {
+            return ""
+        }
+        return decodeEntities(value).trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private static func decodeEntities(_ value: String) -> String {
+        let table = [
+            ("&amp;", "&"), ("&lt;", "<"), ("&gt;", ">"),
+            ("&quot;", "\""), ("&apos;", "'"), ("&#39;", "'")
+        ]
+        return table.reduce(value) { text, pair in
+            text.replacingOccurrences(of: pair.0, with: pair.1)
+        }
+    }
+
+    private static func firstCapture(in text: String, pattern: String) -> String? {
+        guard let regex = try? NSRegularExpression(pattern: pattern) else { return nil }
+        let source = text as NSString
+        guard let match = regex.firstMatch(in: text, range: NSRange(location: 0, length: source.length)),
+              match.numberOfRanges > 1 else {
+            return nil
+        }
+        return source.substring(with: match.range(at: 1))
+    }
+}
+
+// MARK: - HTML 清洗
+
+private final class HTMLCleaner {
+    static let shared = HTMLCleaner()
+
+    private let lock = NSLock()
+    private var cache: [String: String] = [:]
+
+    func clean(_ raw: String, baseUrl: String?) -> String {
+        let key = (baseUrl ?? "") + "\u{1}" + raw
+        lock.lock()
+        let hit = cache[key]
+        lock.unlock()
+        if let hit { return hit }
+
+        let value = performClean(raw, baseUrl: baseUrl)
+
+        lock.lock()
+        if cache.count > 128 { cache.removeAll() }
+        cache[key] = value
+        lock.unlock()
+        return value
+    }
+
+    private func performClean(_ raw: String, baseUrl: String?) -> String {
+        // 视频标签在纯文本里没法显示，换成 [video:url] 标记，由订阅正文那层换成播放器
+        var text = replaceVideos(in: raw, baseUrl: baseUrl)
+        text = replaceImages(in: text, baseUrl: baseUrl)
+        text = replaceImportAnchors(in: text)
+        // 成对标签里的脚本/样式不能只删标签：`@html` 类正文规则会把整段 JS 留在正文里。
+        text = text.replacingOccurrences(
+            of: "(?is)<script\\b[^>]*>.*?</script\\s*>", with: "", options: .regularExpression
+        )
+        text = text.replacingOccurrences(
+            of: "(?is)<style\\b[^>]*>.*?</style\\s*>", with: "", options: .regularExpression
+        )
+        text = text.replacingOccurrences(
+            of: "(?is)<noscript\\b[^>]*>.*?</noscript\\s*>", with: "", options: .regularExpression
+        )
+        text = text.replacingOccurrences(
+            of: "(?s)<!--.*?-->", with: "", options: .regularExpression
+        )
+        text = text.replacingOccurrences(of: "(?i)<br\\s*/?>", with: "\n", options: .regularExpression)
+        text = text.replacingOccurrences(of: "(?i)</p>", with: "\n\n", options: .regularExpression)
+        text = text.replacingOccurrences(of: "(?i)<p[^>]*>", with: "", options: .regularExpression)
+        text = text.replacingOccurrences(of: "<[^>]+>", with: "", options: .regularExpression)
+
+        let entities: [(String, String)] = [
+            ("&nbsp;", " "), ("&lrm;", ""), ("&rlm;", ""), ("&quot;", "\""),
+            ("&amp;", "&"), ("&lt;", "<"), ("&gt;", ">")
+        ]
+        for pair in entities {
+            text = text.replacingOccurrences(of: pair.0, with: pair.1)
+        }
+
+        text = text.replacingOccurrences(of: "\n{3,}", with: "\n\n", options: .regularExpression)
+        return text.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private func replaceImages(in raw: String, baseUrl: String?) -> String {
+        guard let regex = try? NSRegularExpression(pattern: "(?i)<img\\s+[^>]*?>") else {
+            return raw
+        }
+        let source = raw as NSString
+        var text = raw
+
+        for match in regex.matches(in: raw, range: NSRange(location: 0, length: source.length)).reversed() {
+            let tag = source.substring(with: match.range)
+            guard let image = imageSource(from: tag, baseUrl: baseUrl), !image.isEmpty else { continue }
+            text = (text as NSString).replacingCharacters(in: match.range, with: "\n\n[image:\(image)]\n\n")
+        }
+        return text
+    }
+
+    /// 导入类深链只写在 `href` 里（`legado://import/httpTTS?src=…`），剥标签后会整个丢失，
+    /// 正文里只剩不可点的「一键导入」。转成 `[文字](地址)`，由正文视图还原成可点按钮。
+    private func replaceImportAnchors(in raw: String) -> String {
+        guard let regex = try? NSRegularExpression(
+            pattern: "(?is)<a\\b[^>]*href\\s*=\\s*[\"']([^\"']+)[\"'][^>]*>(.*?)</a\\s*>"
+        ) else {
+            return raw
+        }
+        let source = raw as NSString
+        var text = raw
+        for match in regex.matches(in: raw, range: NSRange(location: 0, length: source.length)).reversed() {
+            let href = source.substring(with: match.range(at: 1))
+            let lower = href.lowercased()
+            guard lower.hasPrefix("legado://") || lower.hasPrefix("yuedu://") || lower.hasPrefix("juyue://") else {
+                continue
+            }
+            let label = source.substring(with: match.range(at: 2))
+                .replacingOccurrences(of: "<[^>]+>", with: "", options: .regularExpression)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !label.isEmpty else { continue }
+            text = (text as NSString).replacingCharacters(in: match.range, with: "[\(label)](\(href))")
+        }
+        return text
+    }
+
+    private func imageSource(from tag: String, baseUrl: String?) -> String? {
+        let directAttributes = [
+            "data-original", "data-original-src", "data-src", "data-lazy-src",
+            "data-echo", "data-url", "src"
+        ]
+        for attribute in directAttributes {
+            guard let raw = capture(in: tag, attribute: attribute) else { continue }
+            let normalized = ImageSourceNormalizer.normalize(raw)
+            if !normalized.isEmpty, !isPlaceholder(normalized) {
+                return resolve(normalized, baseUrl: baseUrl)
+            }
+        }
+
+        for attribute in ["data-srcset", "srcset"] {
+            guard let raw = capture(in: tag, attribute: attribute),
+                  let first = firstURLValue(in: raw) else { continue }
+            let normalized = ImageSourceNormalizer.normalize(first)
+            return resolve(normalized, baseUrl: baseUrl)
+        }
+        return nil
+    }
+
+    private func capture(in tag: String, attribute: String) -> String? {
+        let pattern = "(?i)\(attribute)\\s*=\\s*[\"']([^\"']+)[\"']"
+        guard let regex = try? NSRegularExpression(pattern: pattern) else { return nil }
+        let source = tag as NSString
+        guard let match = regex.firstMatch(in: tag, range: NSRange(location: 0, length: source.length)),
+              match.numberOfRanges > 1 else {
+            return nil
+        }
+        return source.substring(with: match.range(at: 1))
+    }
+
+    private func firstURLValue(in srcset: String) -> String? {
+        let firstEntry = srcset.split(separator: ",").first.map(String.init) ?? srcset
+        let token = firstEntry
+            .split(whereSeparator: { $0 == " " || $0 == "\t" || $0 == "\n" })
+            .first.map(String.init) ?? firstEntry
+        return token.isEmpty ? nil : token
+    }
+
+    private func replaceVideos(in raw: String, baseUrl: String?) -> String {
+        var text = raw
+        if let videoRegex = try? NSRegularExpression(pattern: "(?is)<video\\b[^>]*>.*?</video\\s*>") {
+            let nsText = text as NSString
+            for match in videoRegex.matches(in: text, range: NSRange(location: 0, length: nsText.length)).reversed() {
+                let tag = nsText.substring(with: match.range)
+                let src = extractVideoSrc(from: tag, baseUrl: baseUrl)
+                let replacement = src.map { "\n\n[video:\($0)]\n\n" } ?? "\n\n"
+                text = (text as NSString).replacingCharacters(in: match.range, with: replacement)
+            }
+        }
+        // <video> 里没写 src、只写了 <source>，或者散落在外面的 <source>：按扩展名认视频
+        if let sourceRegex = try? NSRegularExpression(pattern: "(?i)<source\\b[^>]*>") {
+            let nsText = text as NSString
+            for match in sourceRegex.matches(in: text, range: NSRange(location: 0, length: nsText.length)).reversed() {
+                let tag = nsText.substring(with: match.range)
+                guard let src = extractVideoSrc(from: tag, baseUrl: baseUrl),
+                      tag.lowercased().contains("video/") || looksLikeVideo(src) else { continue }
+                text = (text as NSString).replacingCharacters(in: match.range, with: "\n\n[video:\(src)]\n\n")
+            }
+        }
+        return text
+    }
+
+    private func extractVideoSrc(from tag: String, baseUrl: String?) -> String? {
+        for attribute in ["src", "data-src"] {
+            guard let found = capture(in: tag, attribute: attribute) else { continue }
+            let cleaned = found.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !cleaned.isEmpty, !cleaned.hasPrefix("data:") else { continue }
+            return resolveMediaURL(cleaned, baseUrl: baseUrl)
+        }
+        return nil
+    }
+
+    private func looksLikeVideo(_ url: String) -> Bool {
+        let lower = url.lowercased()
+        return [".m3u8", ".mp4", ".m4v", ".mov", ".webm", ".flv", ".mpd"]
+            .contains { lower.contains($0) }
+    }
+
+    /// 图片和视频共用：绝对地址原样返回，`//` 补协议，相对地址按页面地址补全。
+    private func resolveMediaURL(_ raw: String, baseUrl: String?) -> String {
+        if raw.hasPrefix("http://") || raw.hasPrefix("https://") { return raw }
+        if raw.hasPrefix("//") { return "https:" + raw }
+        guard let base = baseUrl, let baseObj = URL(string: base) else { return raw }
+        if raw.hasPrefix("/") {
+            return "\(baseObj.scheme ?? "https")://\(baseObj.host ?? "")" + raw
+        }
+        return baseObj.deletingLastPathComponent().appendingPathComponent(raw).absoluteString
+    }
+
+    private func isPlaceholder(_ source: String) -> Bool {
+        let lower = source.lowercased()
+        if lower.hasPrefix("data:image") {
+            return !isUsableDataImage(source)
+        }
+        return lower == "about:blank" || lower.isEmpty
+    }
+
+    private func isUsableDataImage(_ source: String) -> Bool {
+        let lower = source.lowercased()
+        if lower.contains("r0lgodlh") { return false }
+        return source.count > 512
+    }
+
+    private func resolve(_ source: String, baseUrl: String?) -> String? {
+        if source.hasPrefix("data:") {
+            return isUsableDataImage(source) ? source : nil
+        }
+        if source.contains("discord_logo") || source.contains("nophoto.png") {
+            return nil
+        }
+        if source.hasPrefix("http://") || source.hasPrefix("https://") { return source }
+        if source.hasPrefix("//") { return "https:" + source }
+
+        guard let baseUrl, let base = URL(string: baseUrl) else { return source }
+        if source.hasPrefix("/") {
+            return "\(base.scheme ?? "https")://\(base.host ?? "")" + source
+        }
+        return base.deletingLastPathComponent().appendingPathComponent(source).absoluteString
+    }
+}
+
+// MARK: - 替换净化
+
+public struct ReplacementRule: Codable, Identifiable, Equatable {
+    public var id: UUID
+    public var name: String
+    public var pattern: String
+    public var replacement: String
+    public var isRegex: Bool
+    public var enabled: Bool
+
+    public init(name: String = "", pattern: String, replacement: String = "", isRegex: Bool = true, enabled: Bool = true) {
+        self.id = UUID()
+        self.name = name
+        self.pattern = pattern
+        self.replacement = replacement
+        self.isRegex = isRegex
+        self.enabled = enabled
+    }
+}
+
+public struct TextReplaceRule: Codable, Equatable, Identifiable {
+    public var id: UUID
+    public var from: String
+    public var to: String
+
+    public init(from: String, to: String) {
+        self.id = UUID()
+        self.from = from
+        self.to = to
+    }
+}
+
+public enum TextReplaceRules {
+    public static func apply(_ text: String, rules: [TextReplaceRule]) -> String {
+        guard !text.isEmpty, !rules.isEmpty else { return text }
+        let ordered = rules.sorted { $0.from.count > $1.from.count }
+        return ordered.reduce(text) { result, rule in
+            guard !rule.from.isEmpty else { return result }
+            return result.replacingOccurrences(of: rule.from, with: rule.to)
+        }
+    }
+}
+
 public final class TextPurifier: ObservableObject {
     public static let shared = TextPurifier()
 
@@ -1557,37 +1790,49 @@ public final class TextPurifier: ObservableObject {
     }
 
     public init() {
-        if let data = UserDefaults.standard.data(forKey: key),
-           let decoded = try? JSONDecoder().decode([ReplacementRule].self, from: data) {
-            rules = decoded
+        guard let data = UserDefaults.standard.data(forKey: key),
+              let decoded = try? JSONDecoder().decode([ReplacementRule].self, from: data) else {
+            return
         }
+        rules = decoded
     }
 
     private func save() {
-        if let data = try? JSONEncoder().encode(rules) {
-            UserDefaults.standard.set(data, forKey: key)
-        }
+        guard let data = try? JSONEncoder().encode(rules) else { return }
+        UserDefaults.standard.set(data, forKey: key)
     }
 
     public func apply(_ text: String) -> String {
-        guard !rules.isEmpty, !text.isEmpty else { return text }
-        var result = text
-        for rule in rules where rule.enabled && !rule.pattern.isEmpty {
-            if rule.isRegex {
-                guard let regex = try? NSRegularExpression(pattern: rule.pattern, options: [.dotMatchesLineSeparators]) else { continue }
-                let range = NSRange(location: 0, length: (result as NSString).length)
-                result = regex.stringByReplacingMatches(in: result, options: [], range: range, withTemplate: rule.replacement)
-            } else {
-                result = result.replacingOccurrences(of: rule.pattern, with: rule.replacement)
-            }
+        guard !text.isEmpty, !rules.isEmpty else { return text }
+        return rules.reduce(text) { result, rule in
+            guard rule.enabled, !rule.pattern.isEmpty else { return result }
+            return apply(rule, to: result)
         }
-        return result
+    }
+
+    private func apply(_ rule: ReplacementRule, to text: String) -> String {
+        guard !rule.replacement.trimmingCharacters(in: .whitespacesAndNewlines).hasPrefix("@js:") else { return text }
+        guard rule.isRegex else {
+            return text.replacingOccurrences(of: rule.pattern, with: rule.replacement)
+        }
+        guard let regex = try? NSRegularExpression(
+            pattern: rule.pattern,
+            options: [.dotMatchesLineSeparators]
+        ) else {
+            return text
+        }
+        let range = NSRange(location: 0, length: (text as NSString).length)
+        return regex.stringByReplacingMatches(
+            in: text,
+            options: [],
+            range: range,
+            withTemplate: rule.replacement
+        )
     }
 }
 
-// MARK: - 阅读订阅源（Legado RssSource）
+// MARK: - 阅读订阅源
 
-/// 订阅源，字段名与安卓版 Legado 的 RssSource 对齐，JSON 可以直接互相导入
 public struct SubscribeSource: Codable, Identifiable, Equatable {
     public var id: String { sourceUrl }
 
@@ -1606,7 +1851,6 @@ public struct SubscribeSource: Codable, Identifiable, Equatable {
     public var enabledCookieJar: Bool?
     public var shouldOverrideUrlLoading: String?
     public var showWebLog: Bool?
-    /// 单 URL 源：直接抓 sourceUrl；否则抓 sortUrl 分类页
     public var singleUrl: Bool?
     public var sortUrl: String?
     public var articleStyle: Int?
@@ -1625,6 +1869,8 @@ public struct SubscribeSource: Codable, Identifiable, Equatable {
     public var cacheFirst: Bool?
     public var enableJs: Bool?
     public var loadWithBaseUrl: Bool?
+    /// 证书链不完整的站点（ExHentai 等）显式要求放宽 TLS 校验。
+    public var allowInsecureTLS: Bool?
     public var searchUrl: String?
 
     public init(
@@ -1649,8 +1895,6 @@ public struct SubscribeSource: Codable, Identifiable, Equatable {
         self.ruleContent = ruleContent
     }
 
-    /// 规则引擎要一个 BookSource 当上下文（拿 header、jsLib、baseUrl），
-    /// 订阅源没这层，就现场拼一个同地址的壳。
     func ruleContext(jsLib: String? = nil) -> BookSource {
         var shim = BookSource(bookSourceUrl: sourceUrl, bookSourceName: sourceName)
         shim.header = header
@@ -1661,7 +1905,6 @@ public struct SubscribeSource: Codable, Identifiable, Equatable {
         return shim
     }
 
-    /// 抓列表的入口页
     public var listUrl: String {
         if singleUrl == false, let sortUrl, !sortUrl.isEmpty {
             return sortUrl
@@ -1669,30 +1912,33 @@ public struct SubscribeSource: Codable, Identifiable, Equatable {
         return sourceUrl
     }
 
-    /// `singleUrl` 且没有列表规则时，Legado 会直接打开网页，而不是按 RSS 解析。
+    private var hasArticleRules: Bool {
+        !(ruleArticles ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
     public var usesDirectWebPage: Bool {
-        guard singleUrl == true else { return false }
-        guard (ruleArticles ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return false }
+        guard singleUrl == true, !hasArticleRules else { return false }
         guard let url = URL(string: sourceUrl),
               let scheme = url.scheme?.lowercased(),
               scheme == "http" || scheme == "https",
-              url.host != nil else { return false }
+              url.host != nil else {
+            return false
+        }
         return true
     }
 
-    /// 抖音等深链源：singleUrl + 非 http(s) scheme，交给系统 App 打开。
     public var isExternalDeepLink: Bool {
-        guard singleUrl == true else { return false }
-        guard (ruleArticles ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return false }
+        guard singleUrl == true, !hasArticleRules else { return false }
         guard let url = URL(string: sourceUrl),
               let scheme = url.scheme?.lowercased(),
               !scheme.isEmpty,
               scheme != "http",
-              scheme != "https" else { return false }
+              scheme != "https" else {
+            return false
+        }
         return true
     }
 
-    /// WebView 首屏请求能直接使用的静态头。`<js>` 动态头要用户上下文，交给网页自己处理。
     public var staticRequestHeaders: [String: String] {
         guard let header = header?.trimmingCharacters(in: .whitespacesAndNewlines),
               !header.isEmpty,
@@ -1700,26 +1946,26 @@ public struct SubscribeSource: Codable, Identifiable, Equatable {
               !header.hasPrefix("@js:") else {
             return [:]
         }
+
         if let data = header.data(using: .utf8),
-           let dict = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
-            return dict.reduce(into: [:]) { result, item in
-                result[item.key] = String(describing: item.value)
+           let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+            return object.reduce(into: [:]) { fields, pair in
+                fields[pair.key] = String(describing: pair.value)
             }
         }
-        var result: [String: String] = [:]
+
+        var fields: [String: String] = [:]
         for line in header.components(separatedBy: .newlines) {
             let parts = line.split(separator: ":", maxSplits: 1).map {
                 $0.trimmingCharacters(in: .whitespaces)
             }
-            if parts.count == 2, !parts[0].isEmpty {
-                result[parts[0]] = parts[1]
-            }
+            guard parts.count == 2, !parts[0].isEmpty else { continue }
+            fields[parts[0]] = parts[1]
         }
-        return result
+        return fields
     }
 }
 
-/// 订阅源里的一篇文章
 public struct SubscribeArticle: Identifiable, Equatable {
     public var id: String { link.isEmpty ? title : link }
     public var title: String
@@ -1727,20 +1973,23 @@ public struct SubscribeArticle: Identifiable, Equatable {
     public var date: String?
     public var summary: String?
     public var imageUrl: String?
+    /// 安卓 `RssArticle.type`：0 普通、2 视频。原样带出来给阅读页判断。
+    public var type: Int?
 
-    /// 跨模块构造需要显式的 public init；成员逐一初始化，顺序与声明一致。
     public init(
         title: String,
         link: String,
         date: String? = nil,
         summary: String? = nil,
-        imageUrl: String? = nil
+        imageUrl: String? = nil,
+        type: Int? = nil
     ) {
         self.title = title
         self.link = link
         self.date = date
         self.summary = summary
         self.imageUrl = imageUrl
+        self.type = type
     }
 }
 
@@ -1749,175 +1998,245 @@ public struct SubscribeFetchedContent {
     public var text: String
     public var baseURL: String
     public var headers: [String: String]
+    /// 规则产物是可直接渲染的网页（播放器、交互页）时留一份原始 HTML，
+    /// 阅读页拿它进 WKWebView；纯文本源为 nil，继续走原生排版。
+    public var html: String?
 
-    public init(text: String, baseURL: String, headers: [String: String]) {
+    public init(text: String, baseURL: String, headers: [String: String], html: String? = nil) {
         self.text = text
         self.baseURL = baseURL
         self.headers = headers
+        self.html = html
     }
 }
 
 public enum SubscribeSourceService {
-    /// 抓订阅源的文章列表。没写 ruleArticles 就当普通 RSS/Atom 处理。
     public static func fetchArticles(source: SubscribeSource, pageUrl: String? = nil) async throws -> [SubscribeArticle] {
         try await fetchPage(source: source, pageUrl: pageUrl).articles
     }
 
-    /// 带翻页的抓取：返回当前页条目和 ruleNextPage 解析出的下一页地址。
     public static func fetchPage(
         source: SubscribeSource,
         pageUrl: String? = nil
     ) async throws -> (articles: [SubscribeArticle], nextPage: String?) {
-        var target: String
-        if let pageUrl, !pageUrl.isEmpty {
-            target = pageUrl
-        } else if source.singleUrl == false {
-            let categories = await fetchSortUrls(source: source)
-            target = categories.first?.url ?? source.listUrl
-        } else {
-            target = source.listUrl
-        }
-        target = target
-            .replacingOccurrences(of: "{{page}}", with: "1")
-            .replacingOccurrences(of: "{{searchPage}}", with: "1")
-            .replacingOccurrences(of: "{{key}}", with: "")
-            .replacingOccurrences(of: "{{searchKey}}", with: "")
+        let target = await resolveTarget(source: source, pageUrl: pageUrl)
         let jsLib = await resolvedJsLib(source.jsLib)
-        let requestHeader = await resolvedHeader(source: source, jsLib: jsLib)
-        let body: String
-        let base: String
-        if let payload = NetworkClient.dataURLPayload(target) {
-            body = payload
-            base = target
-        } else if target.lowercased().hasPrefix("data:") {
-            // 解不出载荷的 `data:;base64,<占位>,<扩展>` 是源作者拿 baseUrl 传参的写法，
-            // 不能真发请求；正文留空，规则脚本按 baseUrl 分支走。
-            body = ""
-            base = target
-        } else {
-            guard let parsed = NetworkClient.parseLegadoUrl(target, defaultHeader: requestHeader, baseUrl: source.sourceUrl) else {
-                return ([], nil)
-            }
-            let response = try await NetworkClient.shared.request(parsed: parsed)
-            guard response.statusCode >= 200 && response.statusCode < 400 else { return ([], nil) }
-            body = response.bodyString
-            base = parsed.url.absoluteString
-        }
-        LegadoLog.log("[订阅源] \(source.sourceName) 抓取 host=\(URL(string: target)?.host ?? "-") 字节=\(body.count)")
+        let header = await resolvedHeader(source: source, jsLib: jsLib)
 
-        guard let listRule = source.ruleArticles, !listRule.isEmpty else {
-            // 没配列表规则：按标准 RSS/Atom 解析
+        let fetched: FetchedDocument
+        do {
+            fetched = try await fetchDocument(
+                target: target,
+                source: source,
+                header: header
+            )
+        } catch SubscribeError.invalidURL {
+            throw SubscribeFetchFailure(message: "订阅源地址无法解析：\(target)")
+        } catch SubscribeError.badStatus {
+            throw SubscribeFetchFailure(message: "请求被站点拒绝（非 2xx/3xx）：\(target)")
+        }
+        LegadoLog.log("[订阅源] \(source.sourceName) 抓取 host=\(URL(string: target)?.host ?? "-") 字节=\(fetched.body.count)")
+        if fetched.body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+           !target.lowercased().hasPrefix("data:") {
+            // 安卓 RssParserByRule 遇到空 body 同样直接报错，只是它显示的是通用文案。
+            throw SubscribeFetchFailure(
+                message: "\(source.sourceName) 的上游返回空内容（0 字节），接口可能已失效或被区域限制：\(target)"
+            )
+        }
+
+        var listRule = source.ruleArticles?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        // 安卓 RssParserByRule：规则以 `-` 开头表示整表倒序。
+        var reverseList = false
+        if listRule.hasPrefix("-") {
+            reverseList = true
+            listRule = String(listRule.dropFirst())
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        guard !listRule.isEmpty else {
             let items = try await RSSService.shared.fetchFeed(url: target, sourceName: source.sourceName)
             let articles = items.map {
-                SubscribeArticle(title: $0.title, link: $0.link, date: $0.date, summary: $0.summary, imageUrl: nil)
+                SubscribeArticle(
+                    title: $0.title,
+                    link: $0.link,
+                    date: $0.date,
+                    summary: $0.summary,
+                    imageUrl: nil
+                )
             }
             return (articles, nil)
         }
 
         let context = source.ruleContext(jsLib: jsLib)
-        let jsEngine = JSEngine(bookSource: context, baseUrl: base)
-        jsEngine.setSourceValue("sortUrl", source.sortUrl ?? "")
-        let analyzer = RuleAnalyzer(content: body, baseUrl: base, bookSource: context, jsEngine: jsEngine)
-        let elements = analyzer.getElements(listRule)
+        var pageBody = fetched.body
+        var pageBase = fetched.baseURL
+        var engine = JSEngine(bookSource: context, baseUrl: pageBase)
+        engine.setSourceValue("sortUrl", source.sortUrl ?? "")
+        var analyzer = RuleAnalyzer(
+            content: pageBody,
+            baseUrl: pageBase,
+            bookSource: context,
+            jsEngine: engine
+        )
+        var elements = analyzer.getElements(listRule)
+
+        // 静态抓取命中 0 时交给无声网页再试一次（原版 webView:true 的源全靠这一步）。
+        if elements.isEmpty,
+           let rendered = try? await headlessDocument(target: target, source: source, header: header) {
+            LegadoLog.log("[订阅源] \(source.sourceName) 规则命中 0，改用无声网页重抓")
+            pageBody = rendered.body
+            pageBase = rendered.baseURL
+            engine = JSEngine(bookSource: context, baseUrl: pageBase)
+            engine.setSourceValue("sortUrl", source.sortUrl ?? "")
+            analyzer = RuleAnalyzer(
+                content: pageBody,
+                baseUrl: pageBase,
+                bookSource: context,
+                jsEngine: engine
+            )
+            elements = analyzer.getElements(listRule)
+        }
         LegadoLog.log("[订阅源] \(source.sourceName) 规则 \(listRule) 命中=\(elements.count)")
 
-        var articles: [SubscribeArticle] = []
-        for element in elements {
-            let itemAnalyzer = RuleAnalyzer(content: element, baseUrl: base, bookSource: context, jsEngine: jsEngine)
-            let title = itemAnalyzer.getString(source.ruleTitle)
-            let link = itemAnalyzer.resolveLazyJavaScript(
-                itemAnalyzer.getString(source.ruleLink), isUrl: true)
-            guard !title.isEmpty || !link.isEmpty else { continue }
-            let date = itemAnalyzer.getString(source.rulePubDate)
-            let summary = itemAnalyzer.getString(source.ruleDescription)
-            let image = itemAnalyzer.resolveLazyJavaScript(
-                itemAnalyzer.getString(source.ruleImage), isUrl: true)
-            articles.append(
-                SubscribeArticle(
-                    title: title.isEmpty ? link : title,
-                    link: link,
-                    date: date.isEmpty ? nil : date,
-                    summary: summary.isEmpty ? nil : BookContentService.cleanHtml(summary),
-                    imageUrl: image.isEmpty ? nil : image
-                )
+        let articles = elements.compactMap { element -> SubscribeArticle? in
+            let row = RuleAnalyzer(
+                content: element,
+                baseUrl: pageBase,
+                bookSource: context,
+                jsEngine: engine
+            )
+            let title = row.getString(source.ruleTitle)
+            let link = stripLineOptions(
+                row.resolveLazyJavaScript(row.getString(source.ruleLink), isUrl: true)
+            )
+            guard !title.isEmpty || !link.isEmpty else { return nil }
+
+            let date = row.getString(source.rulePubDate)
+            var summary = row.getString(source.ruleDescription)
+            if summary.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+               let html = element as? String {
+                // 没配描述规则时安卓留空、阅读时再抓正文；列表里先拿条目自身的文字顶上，
+                // 比空白行更有信息量，也不额外发请求。
+                summary = String(BookContentService.cleanHtml(html).prefix(120))
+            }
+            let image = row.resolveLazyJavaScript(row.getString(source.ruleImage), isUrl: true)
+            return SubscribeArticle(
+                title: title.isEmpty ? link : title,
+                link: link,
+                date: date.isEmpty ? nil : date,
+                summary: summary.isEmpty ? nil : BookContentService.cleanHtml(summary),
+                imageUrl: image.isEmpty ? nil : image,
+                type: source.type
             )
         }
-        var nextPage: String? = nil
-        if let nextRule = source.ruleNextPage, !nextRule.isEmpty {
-            let rawValue = analyzer.getString(nextRule)
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-            if !rawValue.isEmpty {
-                if rawValue.allSatisfy({ $0.isASCII && $0.isNumber }) {
-                    // 规则只回页码（源仓的 `page` 字段）时把当前地址的页码 +1，
-                    // 直接当网址会把 "1" 拼成 `…/1` 这种假地址。
-                    nextPage = bumpPage(in: target, from: Int(rawValue) ?? 1)
-                } else {
-                    nextPage = analyzer.getString(nextRule, isUrl: true)
+
+        var nextPage: String?
+        if let nextRule = source.ruleNextPage?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !nextRule.isEmpty {
+            if nextRule.uppercased() == "PAGE" {
+                // 安卓：`PAGE` 不是规则，直接用当前页地址再翻一次。
+                nextPage = target
+            } else {
+                let rawValue = analyzer.getString(nextRule)
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                if !rawValue.isEmpty {
+                    if rawValue.allSatisfy({ $0.isASCII && $0.isNumber }) {
+                        // 规则只回页码（源仓的 `page` 字段）时把当前地址的页码 +1，
+                        // 直接当网址会把 "1" 拼成 `…/1` 这种假地址。
+                        nextPage = bumpPage(in: target, from: Int(rawValue) ?? 1)
+                    } else {
+                        nextPage = analyzer.getString(nextRule, isUrl: true)
+                    }
                 }
             }
         }
-        return (articles, nextPage)
+        return (reverseList ? Array(articles.reversed()) : articles, nextPage)
     }
 
-    /// 规则只回了页码时，把当前地址里的页码改成下一页。
-    static func bumpPage(in target: String, from page: Int) -> String? {
-        let next = String(page + 1)
-        if target.contains("{{page}}") {
-            return target.replacingOccurrences(of: "{{page}}", with: next)
-        }
-        let patterns = [
-            "(?i)([?&](?:page|p|pageNum|pageNo)=)(\\d+)",
-            "(?i)(/page/)(\\d+)"
-        ]
-        let source = target as NSString
-        for pattern in patterns {
-            guard let regex = try? NSRegularExpression(pattern: pattern),
-                  let match = regex.firstMatch(
-                      in: target,
-                      range: NSRange(location: 0, length: source.length)
-                  ),
-                  match.numberOfRanges > 2 else { continue }
-            return source.replacingCharacters(in: match.range(at: 2), with: next)
-        }
-        return nil
-    }
-
-    /// 解析 Legado 订阅源的 sortUrl。支持普通多行 `名称::地址` 和 `<js>/@js:`。
     public static func fetchSortUrls(source: SubscribeSource) async -> [(name: String, url: String)] {
-        guard let sortUrl = source.sortUrl?.trimmingCharacters(in: .whitespacesAndNewlines),
-              !sortUrl.isEmpty else {
+        await sortEntries(source: source).map { (name: $0.name, url: $0.url) }
+    }
+
+    /// 分类行语法：`名称::地址`，地址尾部可带 `,{"webView": true}` 这类选项。
+    static func sortEntries(source: SubscribeSource) async -> [(name: String, url: String, webView: Bool)] {
+        guard let raw = source.sortUrl?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !raw.isEmpty else {
             return []
         }
-        let raw: String
-        if sortUrl.contains("<js>") || sortUrl.hasPrefix("@js:") {
-            let script: String
-            if let start = sortUrl.range(of: "<js>")?.upperBound,
-               let end = sortUrl.range(of: "</js>", options: [], range: start..<sortUrl.endIndex)?.lowerBound {
-                script = String(sortUrl[start..<end])
-            } else {
-                script = String(sortUrl.dropFirst(4))
-            }
+
+        let text: String
+        if let script = ScriptSnippet.body(in: raw) {
             let jsLib = await resolvedJsLib(source.jsLib)
             let context = source.ruleContext(jsLib: jsLib)
             let engine = JSEngine(bookSource: context, baseUrl: source.sourceUrl)
-            raw = (engine.eval(script: script) as? String) ?? ""
+            text = (engine.eval(script: script) as? String) ?? ""
         } else {
-            raw = sortUrl
+            text = raw
         }
-        var result: [(String, String)] = []
-        for line in raw.components(separatedBy: .newlines) {
-            let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        let jsLib = await resolvedJsLib(source.jsLib)
+        let context = source.ruleContext(jsLib: jsLib)
+        let engine = JSEngine(bookSource: context, baseUrl: source.sourceUrl)
+        let analyzer = RuleAnalyzer(
+            content: "",
+            baseUrl: source.sourceUrl,
+            bookSource: context,
+            jsEngine: engine
+        )
+
+        var rows: [(String, String, Bool)] = []
+        for line in text.components(separatedBy: .newlines) {
+            var trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !trimmed.isEmpty else { continue }
-            let parts = trimmed.components(separatedBy: "::")
-            let name = parts.count > 1 ? parts[0] : trimmed
-            var url = parts.count > 1 ? parts[1] : trimmed
-            if url.hasPrefix("/"), let base = URL(string: source.sourceUrl),
-               let resolved = URL(string: url, relativeTo: base) {
-                url = resolved.absoluteString
+
+            var webView = false
+            if let optionRange = trimmed.range(of: #",\s*\{.*\}\s*$"#, options: .regularExpression),
+               let data = trimmed[optionRange].dropFirst().data(using: .utf8),
+               let options = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+                webView = (options["webView"] as? Bool) ?? false
+                trimmed.removeSubrange(optionRange)
             }
-            if !url.isEmpty { result.append((name, url)) }
+
+            let fields = trimmed.components(separatedBy: "::")
+            let name = fields.count > 1 ? fields[0] : trimmed
+            var address = fields.count > 1 ? fields[1] : trimmed
+            address = expandFunctionTemplates(address, analyzer: analyzer)
+
+            if address.hasPrefix("/"), let base = URL(string: source.sourceUrl),
+               let resolved = URL(string: address, relativeTo: base) {
+                address = resolved.absoluteString
+            }
+            guard !address.isEmpty else { continue }
+            rows.append((name, address, webView))
         }
-        return result
+        return rows
+    }
+
+    /// 分类行/链接尾部残留的 `,{"webView": true}` 选项不是地址的一部分。
+    private static func stripLineOptions(_ value: String) -> String {
+        guard let range = value.range(of: #",\s*\{.*\}\s*$"#, options: .regularExpression) else {
+            return value
+        }
+        return String(value[..<range.lowerBound])
+    }
+
+    /// 只展开 `{{bhost()}}` 这类函数模板，`{{page}}` 留给翻页逻辑。
+    private static func expandFunctionTemplates(_ template: String, analyzer: RuleAnalyzer) -> String {
+        guard let pattern = try? NSRegularExpression(
+            pattern: #"\{\{([^{}]*\([^{}]*\)[^{}]*)\}\}"#
+        ) else {
+            return template
+        }
+        let source = template as NSString
+        let matches = pattern.matches(in: template, range: NSRange(location: 0, length: source.length))
+        guard !matches.isEmpty else { return template }
+
+        var output = template
+        for match in matches.reversed() {
+            let expression = source.substring(with: match.range(at: 1))
+            let value = analyzer.evaluateTemplate("{{\(expression)}}")
+            output = (output as NSString).replacingCharacters(in: match.range, with: value)
+        }
+        return output
     }
 
     /// 抓正文：有 ruleContent 就按规则取，取不到就把整页按纯文本给出去
@@ -1932,27 +2251,18 @@ public enum SubscribeSourceService {
         source: SubscribeSource
     ) async throws -> SubscribeFetchedContent {
         let jsLib = await resolvedJsLib(source.jsLib)
-        let requestHeader = await resolvedHeader(source: source, jsLib: jsLib)
-        let mediaHeaders = mediaRequestHeaders(source: source, header: requestHeader, referer: article.link)
-        var link = article.link.trimmingCharacters(in: .whitespacesAndNewlines)
+        let header = await resolvedHeader(source: source, jsLib: jsLib)
+        let mediaHeaders = mediaRequestHeaders(source: source, header: header, referer: article.link)
+        var link = stripLineOptions(
+            article.link.trimmingCharacters(in: .whitespacesAndNewlines)
+        )
         guard !link.isEmpty else { return SubscribeFetchedContent(text: "", baseURL: article.link, headers: mediaHeaders) }
 
         // 行值里残留的 `@js:` / `<js>` 链接（洛娅橙用它拼 data: 地址）先求值一次。
-        if link.hasPrefix("@js:") || (link.contains("<js>") && link.contains("</js>")) {
-            let script: String
-            if link.hasPrefix("@js:") {
-                script = String(link.dropFirst(4))
-            } else {
-                let open = link.range(of: "<js>")
-                let close = link.range(of: "</js>")
-                script = open.flatMap { o in
-                    String(link[o.upperBound..<(close?.lowerBound ?? link.endIndex)])
-                } ?? ""
-            }
+        if let script = ScriptSnippet.body(in: link) {
             let context = source.ruleContext(jsLib: jsLib)
             let engine = JSEngine(bookSource: context, baseUrl: source.sourceUrl)
-            if !script.isEmpty,
-               let value = engine.eval(script: script, result: link) as? String,
+            if let value = engine.eval(script: script, result: link) as? String,
                !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 link = value
             }
@@ -1968,31 +2278,141 @@ public enum SubscribeSourceService {
             body = ""
             base = link
         } else {
-            guard let parsed = NetworkClient.parseLegadoUrl(
-                link, defaultHeader: requestHeader, baseUrl: source.sourceUrl
+            guard let request = NetworkClient.parseJuyueUrl(
+                link,
+                defaultHeader: header,
+                baseUrl: source.sourceUrl,
+                insecureTLS: source.allowInsecureTLS ?? false
             ) else {
                 return SubscribeFetchedContent(text: "", baseURL: link, headers: mediaHeaders)
             }
-            let response = try await NetworkClient.shared.request(parsed: parsed)
-            guard response.statusCode >= 200 && response.statusCode < 400 else {
-                return SubscribeFetchedContent(text: "", baseURL: parsed.url.absoluteString, headers: mediaHeaders)
+            let reply = try await NetworkClient.shared.request(parsed: request)
+            guard (200..<400).contains(reply.statusCode) else {
+                return SubscribeFetchedContent(text: "", baseURL: request.url.absoluteString, headers: mediaHeaders)
             }
-            body = response.bodyString
-            base = parsed.url.absoluteString
+            body = reply.bodyString
+            base = request.url.absoluteString
         }
 
-        if let contentRule = source.ruleContent, !contentRule.isEmpty {
-            let context = source.ruleContext(jsLib: jsLib)
-            let analyzer = RuleAnalyzer(content: body, baseUrl: base, bookSource: context,
-                                        jsEngine: JSEngine(bookSource: context, baseUrl: base))
-            let raw = analyzer.getString(contentRule)
-            let text = BookContentService.cleanHtml(raw, baseUrl: base)
-            if !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                return SubscribeFetchedContent(text: text, baseURL: base, headers: mediaHeaders)
+        var bestText = ""
+        var ruleOutput = ""
+        if let rule = source.ruleContent, !rule.isEmpty {
+            let analyzer = subscribeAnalyzer(
+                article: article,
+                source: source,
+                jsLib: jsLib,
+                content: body,
+                base: base
+            )
+            ruleOutput = analyzer.getString(rule)
+            bestText = BookContentService.cleanHtml(ruleOutput, baseUrl: base)
+        }
+        var bestBase = base
+        if bestText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            ruleOutput = body
+            bestText = BookContentService.cleanHtml(body, baseUrl: base)
+        }
+
+        // 正文由页面脚本渲染时（源仓、洛娅橙这类），静态抓取只剩标题，
+        // 交给无声网页渲染后再跑一次规则，取更长的那份。
+        if bestText.trimmingCharacters(in: .whitespacesAndNewlines).count < 80,
+           let rendered = try? await headlessDocument(target: link, source: source, header: header) {
+            let renderAnalyzer = subscribeAnalyzer(
+                article: article,
+                source: source,
+                jsLib: jsLib,
+                content: rendered.body,
+                base: rendered.baseURL
+            )
+            var renderedText = ""
+            var renderedRaw = ""
+            if let rule = source.ruleContent, !rule.isEmpty {
+                renderedRaw = renderAnalyzer.getString(rule)
+                renderedText = BookContentService.cleanHtml(
+                    renderedRaw,
+                    baseUrl: rendered.baseURL
+                )
+            }
+            if renderedText.trimmingCharacters(in: .whitespacesAndNewlines).count < bestText.count {
+                renderedRaw = rendered.body
+                renderedText = BookContentService.cleanHtml(rendered.body, baseUrl: rendered.baseURL)
+            }
+            if renderedText.count > bestText.count {
+                LegadoLog.log("[订阅源] \(source.sourceName) 正文改用无声网页渲染 长度=\(renderedText.count)")
+                bestText = renderedText
+                ruleOutput = renderedRaw
+                bestBase = rendered.baseURL
             }
         }
-        let fallback = BookContentService.cleanHtml(body, baseUrl: base)
-        return SubscribeFetchedContent(text: fallback, baseURL: base, headers: mediaHeaders)
+        let html = looksLikeInteractiveHTML(ruleOutput) ? ruleOutput : nil
+        return SubscribeFetchedContent(
+            text: bestText,
+            baseURL: bestBase,
+            headers: mediaHeaders,
+            html: html
+        )
+    }
+
+    /// 交互式网页（视频播放器、需要页面脚本出内容）才交给 WKWebView；
+    /// 普通正文片段继续走原生排版，免得把纯文本源也变成网页。
+    static func looksLikeInteractiveHTML(_ text: String) -> Bool {
+        let lower = text.lowercased()
+        guard lower.contains("<") else { return false }
+        if lower.contains("<!doctype") || lower.contains("<html") { return true }
+        return lower.contains("<video") || lower.contains("<iframe") || lower.contains("<canvas")
+    }
+
+    private static func subscribeAnalyzer(
+        article: SubscribeArticle,
+        source: SubscribeSource,
+        jsLib: String?,
+        content: String,
+        base: String
+    ) -> RuleAnalyzer {
+        let context = source.ruleContext(jsLib: jsLib)
+        let engine = JSEngine(bookSource: context, baseUrl: base)
+        engine.setRssArticle([
+            "title": article.title,
+            "link": article.link,
+            "date": article.date ?? "",
+            // 安卓 RssArticle 的原名是 pubDate；date 留着兼容既有脚本。
+            "pubDate": article.date ?? "",
+            "description": article.summary ?? "",
+            "image": article.imageUrl ?? "",
+            "sort": source.sourceName,
+            "origin": source.sourceName,
+            "group": source.sourceGroup ?? "",
+            "type": "\(source.type ?? 0)",
+            "order": "0",
+            "read": "false",
+            "variable": ""
+        ])
+        return RuleAnalyzer(
+            content: content,
+            baseUrl: base,
+            bookSource: context,
+            jsEngine: engine
+        )
+    }
+
+    /// 用无声网页渲染页面；没有实现时返回 nil，调用方保持原结果。
+    private static func headlessDocument(
+        target: String,
+        source: SubscribeSource,
+        header: String?
+    ) async throws -> FetchedDocument? {
+        guard HeadlessWebView.shared.loader != nil,
+              !target.lowercased().hasPrefix("data:"),
+              let request = NetworkClient.parseJuyueUrl(
+                  target,
+                  defaultHeader: header,
+                  baseUrl: source.sourceUrl,
+                  insecureTLS: source.allowInsecureTLS ?? false
+              ) else {
+            return nil
+        }
+        let result = try await NetworkClient.shared.headlessFetch(parsed: request)
+        return FetchedDocument(body: result.html, baseURL: result.finalURL.absoluteString)
     }
 
     /// 图片/视频请求复用的头：来源 header + Referer + 默认 UA。
@@ -2038,22 +2458,115 @@ public enum SubscribeSourceService {
         return result
     }
 
-    /// 远程 jsLib 在 Legado 里是「名称 -> URL」的 JSON。下载后拼成一份脚本注入。
+    public static func decodeSources(from json: String) throws -> [SubscribeSource] {
+        let data = Data(json.utf8)
+        let decoder = JSONDecoder()
+
+        if let list = try? decoder.decode([SubscribeSource].self, from: data) {
+            return list.filter { !$0.sourceUrl.isEmpty }
+        }
+        let single = try decoder.decode(SubscribeSource.self, from: data)
+        return single.sourceUrl.isEmpty ? [] : [single]
+    }
+
+    // MARK: 内部
+
+    private struct FetchedDocument {
+        let body: String
+        let baseURL: String
+    }
+
+    private static func resolveTarget(source: SubscribeSource, pageUrl: String?) async -> String {
+        var target: String
+        if let pageUrl, !pageUrl.isEmpty {
+            target = pageUrl
+        } else if source.singleUrl == false {
+            let categories = await fetchSortUrls(source: source)
+            target = categories.first?.url ?? source.listUrl
+        } else {
+            target = source.listUrl
+        }
+
+        return target
+            .replacingOccurrences(of: "{{page}}", with: "1")
+            .replacingOccurrences(of: "{{searchPage}}", with: "1")
+            .replacingOccurrences(of: "{{key}}", with: "")
+            .replacingOccurrences(of: "{{searchKey}}", with: "")
+    }
+
+    /// 规则只回了页码时，把当前地址里的页码改成下一页。
+    static func bumpPage(in target: String, from page: Int) -> String? {
+        let next = String(page + 1)
+        if target.contains("{{page}}") {
+            return target.replacingOccurrences(of: "{{page}}", with: next)
+        }
+        if let range = target.range(of: "%7B%7Bpage%7D%7D", options: .caseInsensitive) {
+            return target.replacingCharacters(in: range, with: next)
+        }
+        let patterns = [
+            "(?i)([?&](?:page|p|pageNum|pageNo)=)(\\d+)",
+            "(?i)(/page/)(\\d+)"
+        ]
+        let source = target as NSString
+        for pattern in patterns {
+            guard let regex = try? NSRegularExpression(pattern: pattern),
+                  let match = regex.firstMatch(
+                      in: target,
+                      range: NSRange(location: 0, length: source.length)
+                  ),
+                  match.numberOfRanges > 2 else { continue }
+            return source.replacingCharacters(in: match.range(at: 2), with: next)
+        }
+        return nil
+    }
+
+    private static func fetchDocument(
+        target: String,
+        source: SubscribeSource,
+        header: String?
+    ) async throws -> FetchedDocument {
+        if let packed = NetworkClient.dataURLPayload(target) {
+            return FetchedDocument(body: packed, baseURL: target)
+        }
+        if target.lowercased().hasPrefix("data:") {
+            // 解不出载荷的 `data:;base64,<占位>,<扩展>` 是源作者拿 baseUrl 传参的写法，
+            // 不能真发请求；正文留空，规则脚本按 baseUrl 分支走。
+            return FetchedDocument(body: "", baseURL: target)
+        }
+
+        guard let request = NetworkClient.parseJuyueUrl(
+            target,
+            defaultHeader: header,
+            baseUrl: source.sourceUrl,
+            insecureTLS: source.allowInsecureTLS ?? false
+        ) else {
+            throw SubscribeError.invalidURL
+        }
+
+        let reply = try await NetworkClient.shared.request(parsed: request)
+        guard (200..<400).contains(reply.statusCode) else {
+            throw SubscribeError.badStatus
+        }
+        return FetchedDocument(body: reply.bodyString, baseURL: request.url.absoluteString)
+    }
+
     private static func resolvedJsLib(_ raw: String?) async -> String? {
-        guard let raw = raw?.trimmingCharacters(in: .whitespacesAndNewlines), !raw.isEmpty else {
+        guard let library = raw?.trimmingCharacters(in: .whitespacesAndNewlines), !library.isEmpty else {
             return nil
         }
-        guard let data = raw.data(using: .utf8),
+        guard let data = library.data(using: .utf8),
               let mapping = try? JSONSerialization.jsonObject(with: data) as? [String: String] else {
-            return raw
+            return library
         }
+
         var scripts: [String] = []
-        for url in mapping.values {
-            guard let target = URL(string: url) else { continue }
-            if let (data, _) = try? await URLSession.shared.data(from: target),
-               let text = String(data: data, encoding: .utf8) {
-                scripts.append(text)
+        for address in mapping.values {
+            guard let url = URL(string: address),
+                  let (data, _) = try? await URLSession.shared.data(from: url),
+                  let text = String(data: data, encoding: .utf8) else {
+                continue
             }
+            scripts.append(text)
         }
         return scripts.isEmpty ? nil : scripts.joined(separator: "\n")
     }
@@ -2063,40 +2576,38 @@ public enum SubscribeSourceService {
               !header.isEmpty else {
             return nil
         }
-        guard header.contains("<js>") || header.hasPrefix("@js:") else {
+        guard let script = ScriptSnippet.body(in: header) else {
             return header
         }
-        let script: String
-        if let start = header.range(of: "<js>")?.upperBound,
-           let end = header.range(of: "</js>", options: [], range: start..<header.endIndex)?.lowerBound {
-            script = String(header[start..<end])
-        } else if header.hasPrefix("@js:") {
-            script = String(header.dropFirst(4))
-        } else {
-            return nil
-        }
+
         let context = source.ruleContext(jsLib: jsLib)
         let engine = JSEngine(bookSource: context, baseUrl: source.sourceUrl)
-        if let value = engine.eval(script: script) as? String,
-           !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            return value
+        guard let value = engine.eval(script: script) as? String,
+              !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return nil
         }
-        return nil
+        return value
     }
 
-    /// 导入：吃 Legado 的 rssSources.json（数组），也吃单个对象
-    public static func decodeSources(from json: String) throws -> [SubscribeSource] {
-        let data = Data(json.utf8)
-        let decoder = JSONDecoder()
-        if let list = try? decoder.decode([SubscribeSource].self, from: data) {
-            return list.filter { !$0.sourceUrl.isEmpty }
-        }
-        let single = try decoder.decode(SubscribeSource.self, from: data)
-        return single.sourceUrl.isEmpty ? [] : [single]
+    private enum SubscribeError: Error {
+        case invalidURL
+        case badStatus
     }
 }
 
-// MARK: - RSS / Atom 订阅
+/// 抓取失败时带一句能直接展示给用户的话，界面不再笼统报「没抓到条目」。
+public struct SubscribeFetchFailure: LocalizedError {
+    public let message: String
+
+    public init(message: String) {
+        self.message = message
+    }
+
+    public var errorDescription: String? { message }
+}
+
+// MARK: - RSS / Atom
+
 public struct RSSSource: Codable, Identifiable, Equatable {
     public var id: UUID
     public var name: String
@@ -2118,58 +2629,56 @@ public struct RSSItem: Identifiable, Equatable {
     public var sourceName: String
 }
 
-/// 拉取 RSS / Atom 并解析出条目（XMLParser，不依赖第三方库）
 public final class RSSService {
     public static let shared = RSSService()
 
     public init() {}
 
     public func fetchFeed(url: String, sourceName: String = "") async throws -> [RSSItem] {
-        guard let parsed = NetworkClient.parseLegadoUrl(url) else { return [] }
-        let response = try await NetworkClient.shared.request(parsed: parsed)
-        let parser = RSSXMLParser(sourceName: sourceName)
-        let delegate = RSSParserDelegate(handler: parser)
-        let xmlParser = XMLParser(data: Data(response.bodyString.utf8))
-        xmlParser.delegate = delegate
-        xmlParser.parse()
+        guard let request = NetworkClient.parseJuyueUrl(url) else { return [] }
+        let reply = try await NetworkClient.shared.request(parsed: request)
+
+        let delegate = RSSParserDelegate(sourceName: sourceName)
+        let parser = XMLParser(data: Data(reply.bodyString.utf8))
+        parser.delegate = delegate
+        parser.parse()
         return delegate.items
     }
 }
 
-private final class RSSXMLParser {
-    let sourceName: String
-    init(sourceName: String) { self.sourceName = sourceName }
-    func makeItem(title: String, link: String, summary: String, date: String) -> RSSItem {
-        RSSItem(title: title.trimmingCharacters(in: .whitespacesAndNewlines),
-                link: link.trimmingCharacters(in: .whitespacesAndNewlines),
-                summary: BookContentService.cleanHtml(summary),
-                date: date.trimmingCharacters(in: .whitespacesAndNewlines),
-                sourceName: sourceName)
-    }
-}
-
 private final class RSSParserDelegate: NSObject, XMLParserDelegate {
-    private let handler: RSSXMLParser
+    private let sourceName: String
     private(set) var items: [RSSItem] = []
 
-    private var inItem = false
-    private var currentElement = ""
+    private var insideItem = false
+    private var current = ""
+    private var buffer = ""
     private var title = ""
     private var link = ""
     private var summary = ""
     private var date = ""
-    private var buffer = ""
 
-    init(handler: RSSXMLParser) { self.handler = handler }
+    init(sourceName: String) {
+        self.sourceName = sourceName
+    }
 
-    func parser(_ parser: XMLParser, didStartElement elementName: String, namespaceURI: String?, qualifiedName qName: String?, attributes attributeDict: [String: String] = [:]) {
-        currentElement = elementName.lowercased()
+    func parser(
+        _ parser: XMLParser,
+        didStartElement elementName: String,
+        namespaceURI: String?,
+        qualifiedName qName: String?,
+        attributes attributeDict: [String: String] = [:]
+    ) {
+        current = elementName.lowercased()
         buffer = ""
-        if currentElement == "item" || currentElement == "entry" {
-            inItem = true
-            title = ""; link = ""; summary = ""; date = ""
+        if current == "item" || current == "entry" {
+            insideItem = true
+            title = ""
+            link = ""
+            summary = ""
+            date = ""
         }
-        if inItem, currentElement == "link", let href = attributeDict["href"], link.isEmpty {
+        if insideItem, current == "link", link.isEmpty, let href = attributeDict["href"] {
             link = href
         }
     }
@@ -2178,27 +2687,43 @@ private final class RSSParserDelegate: NSObject, XMLParserDelegate {
         buffer += string
     }
 
-    func parser(_ parser: XMLParser, didEndElement elementName: String, namespaceURI: String?, qualifiedName qName: String?) {
+    func parser(
+        _ parser: XMLParser,
+        didEndElement elementName: String,
+        namespaceURI: String?,
+        qualifiedName qName: String?
+    ) {
         let name = elementName.lowercased()
         let value = buffer.trimmingCharacters(in: .whitespacesAndNewlines)
-        if inItem {
+
+        if insideItem {
             switch name {
-            case "title": if title.isEmpty { title = value }
-            case "link": if link.isEmpty { link = value }
-            case "description", "summary", "content", "content:encoded": if summary.isEmpty { summary = value }
-            case "pubdate", "published", "updated", "dc:date": if date.isEmpty { date = value }
+            case "title":
+                if title.isEmpty { title = value }
+            case "link":
+                if link.isEmpty { link = value }
+            case "description", "summary", "content", "content:encoded":
+                if summary.isEmpty { summary = value }
+            case "pubdate", "published", "updated", "dc:date":
+                if date.isEmpty { date = value }
             case "item", "entry":
-                inItem = false
-                let item = handler.makeItem(title: title, link: link, summary: summary, date: date)
+                insideItem = false
+                let item = RSSItem(
+                    title: title.trimmingCharacters(in: .whitespacesAndNewlines),
+                    link: link.trimmingCharacters(in: .whitespacesAndNewlines),
+                    summary: BookContentService.cleanHtml(summary),
+                    date: date.trimmingCharacters(in: .whitespacesAndNewlines),
+                    sourceName: sourceName
+                )
                 if !item.title.isEmpty { items.append(item) }
-            default: break
+            default:
+                break
             }
         }
         buffer = ""
     }
 }
 
-// MARK: - 订阅源存储
 public final class RSSStore: ObservableObject {
     public static let shared = RSSStore()
 
@@ -2207,23 +2732,23 @@ public final class RSSStore: ObservableObject {
     private let key = "rss_sources_v1"
 
     public init() {
-        if let data = UserDefaults.standard.data(forKey: key),
-           let decoded = try? JSONDecoder().decode([RSSSource].self, from: data) {
-            sources = decoded
+        guard let data = UserDefaults.standard.data(forKey: key),
+              let decoded = try? JSONDecoder().decode([RSSSource].self, from: data) else {
+            return
         }
+        sources = decoded
     }
 
     private func save() {
-        if let data = try? JSONEncoder().encode(sources) {
-            UserDefaults.standard.set(data, forKey: key)
-        }
+        guard let data = try? JSONEncoder().encode(sources) else { return }
+        UserDefaults.standard.set(data, forKey: key)
     }
 
     public func add(name: String, url: String) {
-        let trimmedURL = url.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmedURL.isEmpty else { return }
-        let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
-        sources.append(RSSSource(name: trimmedName, url: trimmedURL))
+        let address = url.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !address.isEmpty else { return }
+        let label = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        sources.append(RSSSource(name: label, url: address))
         save()
         LegadoLog.log("[RSS] 新增订阅 \(sources.count) 个")
     }
@@ -2235,7 +2760,8 @@ public final class RSSStore: ObservableObject {
     }
 }
 
-// MARK: - OPDS / Calibre 书库
+// MARK: - OPDS
+
 public struct OPDSCatalog: Codable, Identifiable, Equatable {
     public var id: UUID
     public var name: String
@@ -2261,55 +2787,77 @@ public struct OPDSEntry: Identifiable, Equatable {
     public var isNavigation: Bool
     public var acquisitions: [(mime: String, href: String)]
 
-    public static func == (lhs: OPDSEntry, rhs: OPDSEntry) -> Bool { lhs.id == rhs.id }
+    public static func == (lhs: OPDSEntry, rhs: OPDSEntry) -> Bool {
+        lhs.id == rhs.id
+    }
 }
 
-/// 拉 OPDS 目录（Calibre / Calibre-Web / 自建 OPDS 都能吃）
 public final class OPDSService {
     public static let shared = OPDSService()
 
     public init() {}
 
-    public func fetch(_ urlString: String, username: String = "", password: String = "") async throws -> (title: String, entries: [OPDSEntry]) {
-        var parsed = NetworkClient.parseLegadoUrl(urlString)
-        if parsed == nil, let encoded = urlString.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed), let u = URL(string: encoded) {
-            parsed = NetworkClient.ParsedRequest(url: u, method: "GET", headers: [:], body: nil)
+    public func fetch(
+        _ urlString: String,
+        username: String = "",
+        password: String = ""
+    ) async throws -> (title: String, entries: [OPDSEntry]) {
+        guard let request = authorizedRequest(urlString, username: username, password: password) else {
+            return ("", [])
         }
-        guard let request = parsed else { return ("", []) }
 
-        var headers = request.headers
-        if !username.isEmpty {
-            let token = CryptoUtils.base64Encode("\(username):\(password)")
-            headers["Authorization"] = "Basic \(token)"
-        }
-        let authorized = NetworkClient.ParsedRequest(url: request.url, method: request.method, headers: headers, body: request.body)
-        let response = try await NetworkClient.shared.request(parsed: authorized)
-
+        let reply = try await NetworkClient.shared.request(parsed: request)
         let delegate = OPDSXMLDelegate(baseURL: request.url)
-        let parser = XMLParser(data: Data(response.bodyString.utf8))
+        let parser = XMLParser(data: Data(reply.bodyString.utf8))
         parser.delegate = delegate
         parser.parse()
         return (delegate.feedTitle, delegate.entries)
     }
 
-    /// 下载一本（返回本地临时文件路径）
     public func download(_ href: String, username: String = "", password: String = "") async throws -> URL {
-        var parsed = NetworkClient.parseLegadoUrl(href)
-        if parsed == nil, let u = URL(string: href) {
-            parsed = NetworkClient.ParsedRequest(url: u, method: "GET", headers: [:], body: nil)
+        guard var request = authorizedRequest(href, username: username, password: password) else {
+            throw URLError(.badURL)
         }
-        guard let request = parsed else { throw URLError(.badURL) }
-        var headers = request.headers
-        if !username.isEmpty {
-            headers["Authorization"] = "Basic " + CryptoUtils.base64Encode("\(username):\(password)")
-        }
-        let authorized = NetworkClient.ParsedRequest(url: request.url, method: "GET", headers: headers, body: nil)
-        let response = try await NetworkClient.shared.request(parsed: authorized)
+        request = NetworkClient.ParsedRequest(
+            url: request.url,
+            method: "GET",
+            headers: request.headers,
+            body: nil
+        )
 
+        let reply = try await NetworkClient.shared.request(parsed: request)
         let name = request.url.lastPathComponent.isEmpty ? "opds-book.epub" : request.url.lastPathComponent
-        let dest = FileManager.default.temporaryDirectory.appendingPathComponent(name)
-        try response.data.write(to: dest)
-        return dest
+        let destination = FileManager.default.temporaryDirectory.appendingPathComponent(name)
+        try reply.data.write(to: destination)
+        return destination
+    }
+
+    private func authorizedRequest(
+        _ raw: String,
+        username: String,
+        password: String
+    ) -> NetworkClient.ParsedRequest? {
+        var request = NetworkClient.parseJuyueUrl(raw)
+        if request == nil, let url = URL(string: raw) {
+            request = NetworkClient.ParsedRequest(url: url, method: "GET", headers: [:], body: nil)
+        }
+        if request == nil,
+           let encoded = raw.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed),
+           let url = URL(string: encoded) {
+            request = NetworkClient.ParsedRequest(url: url, method: "GET", headers: [:], body: nil)
+        }
+        guard let request else { return nil }
+        guard !username.isEmpty else { return request }
+
+        var headers = request.headers
+        headers["Authorization"] = "Basic " + CryptoUtils.base64Encode("\(username):\(password)")
+        return NetworkClient.ParsedRequest(
+            url: request.url,
+            method: request.method,
+            headers: headers,
+            body: request.body,
+            usesWebView: request.usesWebView
+        )
     }
 }
 
@@ -2318,72 +2866,112 @@ private final class OPDSXMLDelegate: NSObject, XMLParserDelegate {
     private(set) var feedTitle = ""
     private(set) var entries: [OPDSEntry] = []
 
-    private var inEntry = false
-    private var inFeedTitle = false
+    private var insideEntry = false
+    private var collectingFeedTitle = false
     private var current = ""
     private var title = ""
     private var summary = ""
     private var author = ""
     private var href = ""
-    private var isNavigation = false
+    private var navigation = false
     private var acquisitions: [(mime: String, href: String)] = []
 
-    init(baseURL: URL) { self.baseURL = baseURL }
-
-    private func absolute(_ link: String) -> String {
-        guard !link.isEmpty else { return "" }
-        if link.hasPrefix("http") { return link }
-        return URL(string: link, relativeTo: baseURL)?.absoluteString ?? link
+    init(baseURL: URL) {
+        self.baseURL = baseURL
     }
 
-    func parser(_ parser: XMLParser, didStartElement elementName: String, namespaceURI: String?, qualifiedName qName: String?, attributes attributeDict: [String: String] = [:]) {
+    func parser(
+        _ parser: XMLParser,
+        didStartElement elementName: String,
+        namespaceURI: String?,
+        qualifiedName qName: String?,
+        attributes attributeDict: [String: String] = [:]
+    ) {
         let name = elementName.lowercased()
         current = ""
+
         switch name {
         case "entry":
-            inEntry = true
-            title = ""; summary = ""; author = ""; href = ""; isNavigation = false; acquisitions = []
+            insideEntry = true
+            title = ""
+            summary = ""
+            author = ""
+            href = ""
+            navigation = false
+            acquisitions = []
         case "title":
-            if !inEntry { inFeedTitle = true }
+            if !insideEntry { collectingFeedTitle = true }
         case "link":
-            let rel = attributeDict["rel"] ?? ""
-            let type = attributeDict["type"] ?? ""
-            guard let raw = attributeDict["href"] else { break }
-            let link = absolute(raw)
-            if rel.contains("acquisition") {
-                acquisitions.append((type, link))
-            } else if rel.contains("subsection") || type.contains("atom") || rel.isEmpty {
-                if href.isEmpty || rel.contains("subsection") {
-                    href = link
-                    if rel.contains("subsection") { isNavigation = true }
-                }
-            }
+            handleLink(attributes: attributeDict)
         default:
             break
         }
     }
 
-    func parser(_ parser: XMLParser, foundCharacters string: String) { current += string }
+    func parser(_ parser: XMLParser, foundCharacters string: String) {
+        current += string
+    }
 
-    func parser(_ parser: XMLParser, didEndElement elementName: String, namespaceURI: String?, qualifiedName qName: String?) {
+    func parser(
+        _ parser: XMLParser,
+        didEndElement elementName: String,
+        namespaceURI: String?,
+        qualifiedName qName: String?
+    ) {
         let name = elementName.lowercased()
         let value = current.trimmingCharacters(in: .whitespacesAndNewlines)
-        if inEntry {
+
+        if insideEntry {
             switch name {
-            case "title": if title.isEmpty { title = value }
-            case "summary", "content": if summary.isEmpty { summary = value }
-            case "name": if author.isEmpty { author = value }
+            case "title":
+                if title.isEmpty { title = value }
+            case "summary", "content":
+                if summary.isEmpty { summary = value }
+            case "name":
+                if author.isEmpty { author = value }
             case "entry":
-                inEntry = false
+                insideEntry = false
                 if !title.isEmpty {
-                    entries.append(OPDSEntry(title: title, href: href, summary: BookContentService.cleanHtml(summary), author: author, isNavigation: isNavigation && acquisitions.isEmpty, acquisitions: acquisitions))
+                    entries.append(OPDSEntry(
+                        title: title,
+                        href: href,
+                        summary: BookContentService.cleanHtml(summary),
+                        author: author,
+                        isNavigation: navigation && acquisitions.isEmpty,
+                        acquisitions: acquisitions
+                    ))
                 }
-            default: break
+            default:
+                break
             }
-        } else if name == "title", inFeedTitle {
+        } else if name == "title", collectingFeedTitle {
             feedTitle = value
-            inFeedTitle = false
+            collectingFeedTitle = false
         }
         current = ""
+    }
+
+    private func handleLink(attributes: [String: String]) {
+        guard let raw = attributes["href"] else { return }
+        let rel = attributes["rel"] ?? ""
+        let type = attributes["type"] ?? ""
+        let link = absolute(raw)
+
+        if rel.contains("acquisition") {
+            acquisitions.append((type, link))
+            return
+        }
+        guard rel.contains("subsection") || type.contains("atom") || rel.isEmpty else { return }
+
+        if href.isEmpty || rel.contains("subsection") {
+            href = link
+            if rel.contains("subsection") { navigation = true }
+        }
+    }
+
+    private func absolute(_ link: String) -> String {
+        guard !link.isEmpty else { return "" }
+        if link.hasPrefix("http") { return link }
+        return URL(string: link, relativeTo: baseURL)?.absoluteString ?? link
     }
 }

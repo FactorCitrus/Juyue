@@ -219,7 +219,7 @@ final class WebViewCompatibilityTests: XCTestCase {
     // MARK: 辅助
 
     private func parse(_ raw: String) -> NetworkClient.ParsedRequest {
-        guard let request = NetworkClient.parseLegadoUrl(raw) else {
+        guard let request = NetworkClient.parseJuyueUrl(raw) else {
             XCTFail("URL 解析失败：\(raw)")
             return request(usesWebView: false)
         }

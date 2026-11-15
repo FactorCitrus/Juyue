@@ -27,7 +27,7 @@ public final class CookieJar {
     private convenience init() {
         self.init(
             defaults: .standard,
-            storageKey: "juyue.cookiejar.v2",
+            storageKey: "legado.cookiejar.v2",
             legacyKey: "legado.cookiejar"
         )
     }

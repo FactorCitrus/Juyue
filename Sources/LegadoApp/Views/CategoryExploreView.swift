@@ -10,186 +10,149 @@ import AppKit
 #endif
 
 public struct CategoryExploreView: View {
-    @ObservedObject var bookStore = BookStore.shared
+    @ObservedObject var catalog = BookStore.shared
     @Environment(\.appTheme) private var theme
-    /// 书源脚本改完设置会调 `java.refreshExplore()`（安卓语义：刷新分类页），这里跟着重拉
-    @ObservedObject private var exploreRefresh = ExploreRefreshCenter.shared
+    @ObservedObject private var refreshCenter = ExploreRefreshCenter.shared
 
-    @State private var selectedSourceUrl: String = ""
-    @State private var categories: [ExploreCategory] = []
-    @State private var selectedCategory: ExploreCategory? = nil
+    @StateObject private var engine = CategoryExploreEngine()
 
-    @State private var books: [SearchBook] = []
-    @State private var currentPage: Int = 1
-    @State private var isLoading: Bool = false
-    @State private var isLoadingMore: Bool = false
-    @State private var hasMore: Bool = true
-    @State private var errorMessage: String? = nil
-
-    @State private var showAllCategoriesSheet: Bool = false
-    @State private var showAllSourcesSheet: Bool = false
-    @State private var showLoginSheet: Bool = false
-    @State private var exploreFilters: [ExploreFilter] = []
-    @State private var filterValues: [String: String] = [:]
-    @State private var showFilterSheet: Bool = false
-    @State private var sourceFilterText: String = ""
-    @State private var selectedBookForDetail: SearchBook? = nil
-    /// 已经试过从详情补封面的书。签名过期的封面会在加载失败时触发一次补抓，失败不重试。
-    @State private var coverRepairAttempts: Set<String> = []
-
-    /// 这个页签是不是当前选中的。TabView 会把三个页签都建出来，
-    /// 分类页一被建出来就联网拉书，会造成启动卡顿，
-    /// 所以初始化要等它真的被选中。
-    var isActive: Bool = true
+    /// TabView 会预先创建所有页签；未选中时不要发起网络请求。
+    private let isActive: Bool
 
     public init(isActive: Bool = true) {
         self.isActive = isActive
     }
 
-    /// 可用书源，只在书源列表变化时刷新一次。
-    /// 每次 body 求值都过滤一遍全部书源（含 trim）的开销按帧计算。
-    @State private var cachedSources: [BookSource] = []
-
-    private var availableSources: [BookSource] { cachedSources }
-
-    private func refreshCachedSources(_ sources: [BookSource]) {
-        cachedSources = sources.filter { source in
-            guard source.enabled ?? true, let url = source.exploreUrl else { return false }
-            // 用 allSatisfy 判断空白，避免 trim 里再分配一个 String
-            return !url.isEmpty && !url.allSatisfy { $0.isWhitespace }
-        }
-    }
-
-    private var currentSource: BookSource? {
-        availableSources.first(where: { $0.bookSourceUrl == selectedSourceUrl }) ?? availableSources.first
-    }
-
-    /// Actionable categories (excluding section headers)
-    private var actionableCategories: [ExploreCategory] {
-        categories.filter { !$0.isHeader && $0.url != nil && !$0.url!.isEmpty }
-    }
-
+    @ViewBuilder
     public var body: some View {
-        NavigationView {
-            VStack(spacing: 0) {
-                if availableSources.isEmpty {
-                    emptySourcesView
-                } else {
-                    exploreHeader
-
-                    // Level 1: Book Source Switcher (Fast Pill Selector)
-                    if availableSources.count > 1 {
-                        barLabel("SOURCE / 书源", trailing: "\(availableSources.count)")
-                        sourceSwitcherBar
-                    }
-
-                    // Level 2: Preset Category Quick Bar
-                    if !actionableCategories.isEmpty {
-                        barLabel("CATEGORY / 分类", trailing: "\(actionableCategories.count)")
-                        categoryQuickBar
-                    }
-
-                    if !exploreFilters.isEmpty {
-                        filterBar
-                    }
-
-                    Divider()
-
-                    // Level 3: Category Book Content Stream
-                    mainContentView
-                }
-            }
-            .background {
-                if theme.backdropStyle == .plain {
-                    theme.palette.background
-                } else {
-                    AppThemeBackdrop()
-                }
-            }
-            .navigationTitle("分类")
-            #if os(iOS)
-            .navigationBarTitleDisplayMode(.inline)
-            .navigationBarHidden(true)
-            #endif
-            .toolbar {
-                ToolbarItem(placement: .primaryAction) {
-                    if currentSource != nil && selectedCategory != nil {
-                        // 分类页里刷新用处不大，换成搜索（直接搜书）
-                        NavigationLink {
-                            SearchBookView()
-                        } label: {
-                            Image(systemName: "magnifyingglass")
-                        }
-                    }
-                }
-            }
-            .sheet(isPresented: $showAllCategoriesSheet) {
-                allCategoriesSheet
-            }
-            .sheet(isPresented: $showAllSourcesSheet) {
-                allSourcesSheet
-            }
-            .sheet(isPresented: $showLoginSheet) {
-                if let src = currentSource {
-                    SourceLoginSheet(source: src)
-                }
-            }
-            .sheet(isPresented: $showFilterSheet) {
-                ExploreFilterSheet(filters: exploreFilters, values: $filterValues) {
-                    if let cat = selectedCategory {
-                        loadBooks(for: cat, page: 1)
-                    }
-                }
-            }
-            .onChange(of: showLoginSheet) { showing in
-                // 登录面板关掉就重试一次：登录成功的话这一栏就能看了
-                guard !showing, let cat = selectedCategory else { return }
-                loadBooks(for: cat, page: 1)
-            }
-            .background(
-                NavigationLink(
-                    isActive: Binding(
-                        get: { selectedBookForDetail != nil },
-                        set: { if !$0 { selectedBookForDetail = nil } }
-                    ),
-                    destination: {
-                        if let b = selectedBookForDetail {
-                            BookDetailView(searchBook: b, source: currentSource)
-                        } else {
-                            EmptyView()
-                        }
-                    },
-                    label: { EmptyView() }
-                )
-                .hidden()
-            )
-            .onAppear {
-                refreshCachedSources(bookStore.sources)
-                if isActive { initializeIfNeeded() }
-            }
-            .onChange(of: isActive) { active in
-                if active { initializeIfNeeded() }
-            }
-            .onChange(of: exploreRefresh.tick) { _ in
-                // 源变量变了解析缓存本来就会失效，这里负责让界面重新走一遍
-                if let src = currentSource { loadCategories(for: src) }
-            }
-            .onReceive(bookStore.$sources) { sources in
-                refreshCachedSources(sources)
-            }
-        }
+        NavigationView { screenContent }
             .stackNavigationStyle()
     }
 
-    // MARK: - Level 1: Source Switcher Bar
-    private var exploreHeader: some View {
+    private var screenContent: some View {
+        VStack(spacing: 0.0) {
+            if engine.sources.isEmpty {
+                EmptyExploreSources()
+            } else {
+                ExploreMasthead(sourceCount: engine.sources.count)
+
+                if engine.sources.count > 1 {
+                    SectionCaption(title: "SOURCE / 书源", trailing: "\(engine.sources.count)")
+                    SourcePillBar(engine: engine)
+                }
+
+                if !engine.actionableCategories.isEmpty {
+                    SectionCaption(title: "CATEGORY / 分类", trailing: "\(engine.actionableCategories.count)")
+                    CategoryChipBar(engine: engine)
+                }
+
+                if !engine.filters.isEmpty {
+                    FilterStrip(engine: engine)
+                }
+
+                Divider()
+                ExploreContent(engine: engine)
+            }
+        }
+        .background {
+            if theme.backdropStyle == .plain {
+                theme.palette.background
+            } else {
+                AppThemeBackdrop()
+            }
+        }
+        .navigationTitle(Text("分类"))
+        #if os(iOS)
+        .navigationBarTitleDisplayMode(.inline)
+        .navigationBarHidden(true)
+        #endif
+        .toolbar(content: { primaryToolbar })
+        .sheet(isPresented: $engine.showingAllCategories) {
+            AllCategoriesSheet(engine: engine)
+        }
+        .sheet(isPresented: $engine.showingAllSources) {
+            AllSourcesSheet(engine: engine)
+        }
+        .sheet(isPresented: $engine.showingLogin) {
+            if let source = engine.currentSource {
+                SourceLoginSheet(source: source)
+            }
+        }
+        .sheet(isPresented: $engine.showingFilters) {
+            ExploreFilterSheet(filters: engine.filters, values: $engine.filterValues) {
+                if let category = engine.activeCategory {
+                    engine.fetchFirstPage(category)
+                }
+            }
+        }
+        .onChange(of: engine.showingLogin) { presented in
+            guard !presented, let category = engine.activeCategory else { return }
+            engine.fetchFirstPage(category)
+        }
+        .background(bookDestination)
+        .onAppear(perform: bootstrap)
+        .onChange(of: isActive) { active in
+            if active { engine.activate() }
+        }
+        .onChange(of: refreshCenter.tick) { _ in
+            engine.reloadCurrentCategories()
+        }
+        .onReceive(catalog.$sources) { sources in
+            engine.updateSources(sources)
+        }
+    }
+
+    @ToolbarContentBuilder
+    private var primaryToolbar: some ToolbarContent {
+        ToolbarItem(placement: ToolbarItemPlacement.primaryAction) {
+            if engine.currentSource != nil && engine.activeCategory != nil {
+                NavigationLink {
+                    SearchBookView()
+                } label: {
+                    Image(systemName: "magnifyingglass")
+                }
+            }
+        }
+    }
+
+    private func bootstrap() {
+        engine.updateSources(catalog.sources)
+        if isActive { engine.activate() }
+    }
+
+    private var bookDestination: some View {
+        NavigationLink(
+            isActive: Binding(
+                get: { engine.selectedBook != nil },
+                set: { if !$0 { engine.selectedBook = nil } }
+            ),
+            destination: {
+                if let book = engine.selectedBook {
+                    BookDetailView(searchBook: book, source: engine.currentSource)
+                } else { // 未选中书籍
+                    EmptyView()
+                }
+            },
+            label: { EmptyView() }
+        )
+        .hidden()
+    }
+}
+
+// MARK: - 页头与切换条
+
+private struct ExploreMasthead: View {
+    let sourceCount: Int
+    @Environment(\.appTheme) private var theme
+
+    var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack {
                 Text("EXPLORE / SOURCES")
                     .font(theme.typography.label)
                     .foregroundColor(theme.palette.secondaryInk)
                 Spacer()
-                Text("\(availableSources.count) SOURCES")
+                Text("\(sourceCount) SOURCES")
                     .font(theme.typography.mono)
                     .foregroundColor(theme.palette.secondaryInk)
             }
@@ -225,8 +188,14 @@ public struct CategoryExploreView: View {
         .padding(.top, 8)
         .padding(.bottom, 4)
     }
+}
 
-    private func barLabel(_ title: String, trailing: String) -> some View {
+private struct SectionCaption: View {
+    let title: String
+    let trailing: String
+    @Environment(\.appTheme) private var theme
+
+    var body: some View {
         HStack {
             Text(title)
                 .font(theme.typography.label)
@@ -239,100 +208,82 @@ public struct CategoryExploreView: View {
         .padding(.horizontal, 16)
         .padding(.top, 6)
     }
+}
 
-    /// 内联只画当前源 + 前面几个：可用书源有上千个，全塞进 HStack
-    /// 一帧里建完按钮，点进分类就会卡一下
-    private var inlineSources: [BookSource] {
-        let limit = 10
-        var list = Array(availableSources.prefix(limit))
-        if let cur = currentSource, !list.contains(where: { $0.bookSourceUrl == cur.bookSourceUrl }) {
-            list.insert(cur, at: 0)
-            if list.count > limit { list.removeLast() }
-        }
-        return list
-    }
+private struct SourcePillBar: View {
+    @ObservedObject var engine: CategoryExploreEngine
+    @Environment(\.appTheme) private var theme
 
-    private var filteredSources: [BookSource] {
-        let key = sourceFilterText.trimmingCharacters(in: .whitespaces)
-        guard !key.isEmpty else { return availableSources }
-        return availableSources.filter { $0.bookSourceName.localizedCaseInsensitiveContains(key) }
-    }
-
-    private var sourceSwitcherBar: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            // 用 HStack：LazyHStack 在横向 ScrollView 里只按提议宽度排版，
-            // 后面的书源药丸会被裁掉、整条也会歪
-            HStack(spacing: 8) {
-                ForEach(inlineSources) { src in
-                    let isSelected = src.bookSourceUrl == currentSource?.bookSourceUrl
-                    Button {
-                        if src.bookSourceUrl != currentSource?.bookSourceUrl {
-                            switchSource(to: src)
+    var body: some View {
+        HorizontalScroller {
+            HStack(alignment: .center, spacing: 8) {
+                ForEach(engine.inlineSources) { source in
+                    let selected = source.bookSourceUrl == engine.currentSource?.bookSourceUrl
+                    Button(action: {
+                        guard !selected else { return }
+                        engine.switchSource(source)
+                    }) {
+                        HStack(alignment: .center, spacing: 5) {
+                            Image(systemName: selected ? "checkmark.circle.fill" : "globe")
+                                .font(.system(size: 11, weight: .regular))
+                            Text(source.bookSourceName)
+                                .font(.system(size: 13, weight: selected ? .bold : .medium))
                         }
-                    } label: {
-                        HStack(spacing: 5) {
-                            Image(systemName: isSelected ? "checkmark.circle.fill" : "globe")
-                                .font(.system(size: 11))
-                            Text(src.bookSourceName)
-                                .font(.system(size: 13, weight: isSelected ? .bold : .medium))
-                        }
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 6)
-                        .background(isSelected ? theme.palette.accent : theme.palette.elevated)
-                        .foregroundColor(isSelected ? theme.palette.onAccent : theme.palette.ink)
+                        .padding(EdgeInsets(top: 6, leading: 12, bottom: 6, trailing: 12))
+                        .background(selected ? theme.palette.accent : theme.palette.elevated)
+                        .foregroundStyle(selected ? theme.palette.onAccent : theme.palette.ink)
                         .cornerRadius(theme.metrics.cornerRadius + 6)
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(PlainButtonStyle())
                 }
 
-                if availableSources.count > inlineSources.count {
-                    Button {
-                        showAllSourcesSheet = true
-                    } label: {
-                        HStack(spacing: 5) {
+                if engine.sources.count > engine.inlineSources.count {
+                    Button(action: { engine.showingAllSources = true }) {
+                        HStack(alignment: .center, spacing: 5) {
                             Image(systemName: "list.bullet")
-                                .font(.system(size: 11))
-                            Text("全部书源 (\(availableSources.count))")
+                                .font(.system(size: 11, weight: .regular))
+                            Text("全部书源 (\(engine.sources.count))")
                                 .font(.system(size: 13, weight: .medium))
                         }
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 6)
+                        .padding(EdgeInsets(top: 6, leading: 12, bottom: 6, trailing: 12))
                         .background(theme.palette.elevated)
-                        .foregroundColor(theme.palette.ink)
+                        .foregroundStyle(theme.palette.ink)
                         .cornerRadius(theme.metrics.cornerRadius + 6)
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(PlainButtonStyle())
                 }
             }
-            .padding(.horizontal, 16)
-            .padding(.vertical, 8)
+            .padding(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
         }
-        .background(switcherBackgroundColor)
+        .background(theme.palette.surface)
     }
+}
 
-    /// 全部书源：用 List（懒加载）挑，几千个也不卡
-    private var allSourcesSheet: some View {
+private struct AllSourcesSheet: View {
+    @ObservedObject var engine: CategoryExploreEngine
+
+    var body: some View {
         NavigationView {
             List {
-                ForEach(filteredSources) { src in
+                ForEach(engine.filteredSources) { source in
                     Button {
-                        if src.bookSourceUrl != currentSource?.bookSourceUrl {
-                            switchSource(to: src)
+                        if source.bookSourceUrl != engine.currentSource?.bookSourceUrl {
+                            engine.switchSource(source)
                         }
-                        showAllSourcesSheet = false
+                        engine.showingAllSources = false
                     } label: {
                         HStack(alignment: .center, spacing: 10) {
                             VStack(alignment: .leading, spacing: 2) {
-                                Text(src.bookSourceName)
+                                Text(source.bookSourceName)
                                     .font(.system(size: 15))
                                     .foregroundColor(.primary)
-                                Text(src.bookSourceUrl)
+                                Text(source.bookSourceUrl)
                                     .font(.system(size: 11))
-                                    .foregroundColor(.secondary)
+                                    .foregroundStyle(Color.secondary)
                                     .lineLimit(1)
                             }
                             Spacer()
-                            if src.bookSourceUrl == currentSource?.bookSourceUrl {
+                            if source.bookSourceUrl == engine.currentSource?.bookSourceUrl {
                                 Image(systemName: "checkmark")
                                     .foregroundColor(.accentColor)
                             }
@@ -341,111 +292,104 @@ public struct CategoryExploreView: View {
                 }
             }
             .appThemedList()
-            .searchable(text: $sourceFilterText, prompt: "搜书源名")
-            .navigationTitle("全部书源 (\(availableSources.count))")
+            .searchable(text: $engine.sourceQuery, prompt: "搜书源名")
+            .navigationTitle("全部书源 (\(engine.sources.count))")
             #if os(iOS)
-            .navigationBarTitleDisplayMode(.inline)
+            .navigationBarTitleDisplayMode(NavigationBarItem.TitleDisplayMode.inline)
             #endif
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("关闭") { showAllSourcesSheet = false }
-                }
-            }
+            .toolbar(content: { sourcesToolbar })
         }
             .stackNavigationStyle()
     }
 
-    private var switcherBackgroundColor: Color {
-        theme.palette.surface
+    @ToolbarContentBuilder
+    private var sourcesToolbar: some ToolbarContent {
+        ToolbarItem(placement: ToolbarItemPlacement.cancellationAction) {
+            Button("关闭") { engine.showingAllSources = false }
+        }
     }
+}
 
-    // MARK: - Level 2: Category Quick Bar
-    private var categoryQuickBar: some View {
-        HStack(spacing: 0) {
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 8) {
-                    // 分类条目多的书源能有几十个，内联只画前 12 个，其余进「全部」
-                    ForEach(Array(actionableCategories.prefix(12))) { cat in
-                        let isSelected = cat.id == selectedCategory?.id
-                        Button {
-                            if cat.id != selectedCategory?.id {
-                                selectCategory(cat)
-                            }
-                        } label: {
-                            Text(cat.title)
-                                .font(.system(size: 13, weight: isSelected ? .bold : .regular))
-                                .padding(.horizontal, 10)
-                                .padding(.vertical, 5)
-                                .background(isSelected ? theme.palette.accent.opacity(0.15) : Color.clear)
-                                .foregroundColor(isSelected ? theme.palette.accent : theme.palette.secondaryInk)
+private struct CategoryChipBar: View {
+    @ObservedObject var engine: CategoryExploreEngine
+    @Environment(\.appTheme) private var theme
+
+    var body: some View {
+        HStack(alignment: .center, spacing: 0) {
+            HorizontalScroller {
+                HStack(alignment: .center, spacing: 8) {
+                    ForEach(Array(engine.actionableCategories.prefix(12))) { category in
+                        let selected = category.id == engine.activeCategory?.id
+                        Button(action: {
+                            guard !selected else { return }
+                            engine.select(category)
+                        }) {
+                            Text(category.title)
+                                .font(.system(size: 13, weight: selected ? .bold : .regular))
+                                .padding(EdgeInsets(top: 5, leading: 10, bottom: 5, trailing: 10))
+                                .background(selected ? theme.palette.accent.opacity(0.15) : Color.clear)
+                                .foregroundStyle(selected ? theme.palette.accent : theme.palette.secondaryInk)
                                 .cornerRadius(theme.metrics.cornerRadius)
                         }
-                        .buttonStyle(.plain)
+                        .buttonStyle(PlainButtonStyle())
                     }
                 }
-                .padding(.horizontal, 16)
-                .padding(.vertical, 6)
+                .padding(EdgeInsets(top: 6, leading: 16, bottom: 6, trailing: 16))
             }
 
-            // Button to open full category matrix/modal
-            Button {
-                showAllCategoriesSheet = true
-            } label: {
+            Button(action: { engine.showingAllCategories = true }) {
                 Image(systemName: "square.grid.2x2")
                     .font(.system(size: 14, weight: .medium))
-                    .foregroundColor(.secondary)
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 8)
+                    .foregroundStyle(Color.secondary)
+                    .padding(EdgeInsets(top: 8, leading: 12, bottom: 8, trailing: 12))
             }
-            .buttonStyle(.plain)
+            .buttonStyle(PlainButtonStyle())
         }
-        .background(barBackgroundColor)
+        .background(theme.palette.surface)
+    }
+}
+
+private struct FilterStrip: View {
+    @ObservedObject var engine: CategoryExploreEngine
+    @Environment(\.appTheme) private var theme
+
+    private var activeCount: Int {
+        engine.filterValues.values.filter { !$0.isEmpty }.count
     }
 
-    private var barBackgroundColor: Color {
-        theme.palette.surface
-    }
-
-    // MARK: - 发现筛选（exploreScreen）
-
-    /// 选中的筛选项作为查询参数追加到分类 URL。点开面板才修改，应用后重拉第一页。
-    private var filterBar: some View {
-        HStack(spacing: 8) {
+    var body: some View {
+        HStack(alignment: .center, spacing: 8) {
             Button {
-                showFilterSheet = true
+                engine.showingFilters = true
             } label: {
-                HStack(spacing: 5) {
+                HStack(alignment: .center, spacing: 5) {
                     Image(systemName: "line.3.horizontal.decrease.circle")
                     Text("筛选")
-                    let active = filterValues.values.filter { !$0.isEmpty }.count
-                    if active > 0 {
-                        Text("\(active)")
+                    if activeCount > 0 {
+                        Text("\(activeCount)")
                             .font(.system(size: 10, weight: .bold))
-                            .padding(.horizontal, 5)
-                            .padding(.vertical, 1)
+                            .padding(EdgeInsets(top: 1, leading: 5, bottom: 1, trailing: 5))
                             .background(theme.palette.accent)
-                            .foregroundColor(theme.palette.onAccent)
+                            .foregroundStyle(theme.palette.onAccent)
                             .clipShape(Capsule())
                     }
                 }
                 .font(.system(size: 12, weight: .medium))
-                .foregroundColor(theme.palette.accent)
-                .padding(.horizontal, 10)
-                .padding(.vertical, 5)
+                .foregroundStyle(theme.palette.accent)
+                .padding(EdgeInsets(top: 5, leading: 10, bottom: 5, trailing: 10))
                 .background(theme.palette.accent.opacity(0.12))
                 .cornerRadius(theme.metrics.cornerRadius)
             }
-            .buttonStyle(.plain)
+            .buttonStyle(PlainButtonStyle())
 
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 6) {
-                    ForEach(exploreFilters) { filter in
-                        if let value = filterValues[filter.name], !value.isEmpty {
+            HorizontalScroller {
+                HStack(alignment: .center, spacing: 6) {
+                    ForEach(engine.filters) { filter in
+                        if let value = engine.filterValues[filter.name], !value.isEmpty {
                             Text("\(filter.name)：\(value)")
-                                .font(.system(size: 11))
-                                .foregroundColor(theme.palette.secondaryInk)
-                                .padding(.horizontal, 8)
-                                .padding(.vertical, 3)
+                                .font(.system(size: 11, weight: .regular))
+                                .foregroundStyle(theme.palette.secondaryInk)
+                                .padding(EdgeInsets(top: 3, leading: 8, bottom: 3, trailing: 8))
                                 .background(theme.palette.elevated)
                                 .cornerRadius(theme.metrics.cornerRadius + 2)
                         }
@@ -453,172 +397,188 @@ public struct CategoryExploreView: View {
                 }
             }
         }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 6)
-        .background(barBackgroundColor)
+        .padding(EdgeInsets(top: 6, leading: 16, bottom: 6, trailing: 16))
+        .background(theme.palette.surface)
+    }
+}
+
+// MARK: - 内容区
+
+private struct ExploreContent: View {
+    @ObservedObject var engine: CategoryExploreEngine
+    @Environment(\.appTheme) private var theme
+
+    private enum Phase {
+        case loading
+        case failed(String)
+        case empty
+        case ready
     }
 
-    // MARK: - Level 3: Main Book Content Stream
-    @ViewBuilder
-    private var mainContentView: some View {
-        if isLoading && books.isEmpty {
-            VStack(spacing: 12) {
-                ProgressView()
-                Text("正在加载「\(selectedCategory?.title ?? "")」内容...")
-                    .font(.subheadline)
-                    .foregroundColor(.secondary)
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-        } else if let error = errorMessage, books.isEmpty {
-            VStack(spacing: 12) {
-                Image(systemName: "exclamationmark.triangle")
-                    .font(.largeTitle)
-                    .foregroundColor(.orange)
-                Text("加载失败")
-                    .font(.headline)
-                Text(error)
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-                    .multilineTextAlignment(.center)
-                    .padding(.horizontal)
-                // 401/403 一般是这个分类要登录，附带一个不用登录也能看的分类
-                if isAuthError(error), let publicCategory {
-                    Text("该分类需要登录此来源后可见。")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                        .multilineTextAlignment(.center)
-                        .padding(.horizontal)
-                    if currentSource?.loginUrl?.isEmpty == false || currentSource?.loginUi?.isEmpty == false {
-                        Button("登录「\(currentSource?.bookSourceName ?? "")」") {
-                            showLoginSheet = true
-                        }
-                        .buttonStyle(.borderedProminent)
-                        Button("先看「\(publicCategory.title)」") {
-                            selectCategory(publicCategory)
-                        }
-                        .buttonStyle(.bordered)
-                    } else {
-                        Button("切到「\(publicCategory.title)」") {
-                            selectCategory(publicCategory)
-                        }
-                        .buttonStyle(.borderedProminent)
-                    }
-                    Button("重试") {
-                        if let cat = selectedCategory {
-                            loadBooks(for: cat, page: 1)
-                        }
-                    }
-                    .buttonStyle(.bordered)
-                } else {
-                    Button("重试") {
-                        if let cat = selectedCategory {
-                            loadBooks(for: cat, page: 1)
-                        }
-                    }
-                    .buttonStyle(.borderedProminent)
-                }
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-        } else if books.isEmpty {
-            VStack(spacing: 8) {
-                Image(systemName: "books.vertical")
-                    .font(.largeTitle)
-                    .foregroundColor(.secondary.opacity(0.6))
-                Text("这个分类还没有书")
-                    .font(.headline)
-                    .foregroundColor(.secondary)
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-        } else {
-            List {
-                ForEach(Array(books.enumerated()), id: \.element.id) { index, book in
-                    categoryRow(book, index: index)
-                        .hideListRowSeparatorCompat()
-                        .listRowBackground(theme.palette.surface)
-                        .contentShape(Rectangle())
-                        .onTapGesture {
-                            selectedBookForDetail = book
-                        }
-                        .onAppear {
-                            if book.id == books.last?.id && hasMore && !isLoadingMore {
-                                loadMore()
-                            }
-                        }
-                }
+    private var phase: Phase {
+        if engine.loading && engine.items.isEmpty { return .loading }
+        if let error = engine.error, engine.items.isEmpty { return .failed(error) }
+        if engine.items.isEmpty { return .empty }
+        return .ready
+    }
 
-                if hasMore {
-                    HStack {
-                        Spacer()
-                        if isLoadingMore {
-                            ProgressView()
-                                .padding(.trailing, 6)
-                            Text("正在加载下一页...")
-                                .font(.caption)
-                                .foregroundColor(.secondary)
-                        } else {
-                            Button("点击加载更多") {
-                                loadMore()
-                            }
-                            .font(.caption)
-                            .foregroundColor(.blue)
-                        }
-                        Spacer()
-                    }
-                    .padding(.vertical, 8)
-                }
-            }
-            .appThemedList()
-            #if os(iOS)
-            .listStyle(.plain)
-            #endif
-            .frame(maxWidth: 900)
-            .frame(maxWidth: .infinity)
-            .refreshable {
-                await refresh()
-            }
+    var body: some View {
+        switch phase {
+        case .loading:
+            loadingState
+        case .failed(let message):
+            failureState(message)
+        case .empty:
+            emptyState
+        case .ready:
+            bookList
         }
     }
 
-    private func categoryRow(_ book: SearchBook, index: Int) -> some View {
+    private var loadingState: some View {
+        VStack(alignment: .center, spacing: 12) {
+            ProgressView()
+            Text("正在加载「\(engine.activeCategory?.title ?? "")」内容...")
+                .font(.subheadline)
+                .foregroundStyle(Color.secondary)
+        }
+        .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity)
+    }
+
+    private func failureState(_ message: String) -> some View {
+        VStack(alignment: .center, spacing: 12) {
+            Image(systemName: "exclamationmark.triangle")
+                .font(.largeTitle)
+                .foregroundStyle(Color.orange)
+            Text("加载失败")
+                .font(.system(.headline))
+            Text(message)
+                .font(.system(.caption))
+                .foregroundStyle(Color.secondary)
+                .multilineTextAlignment(TextAlignment.center)
+                .padding(.horizontal, 16)
+
+            if engine.isAuthFailure(message), let fallback = engine.publicCategory {
+                Text("该分类需要登录此来源后可见。")
+                    .font(.system(.caption))
+                    .foregroundStyle(Color.secondary)
+                    .multilineTextAlignment(TextAlignment.center)
+                    .padding(.horizontal, 16)
+
+                if engine.currentSource?.loginUrl?.isEmpty == false || engine.currentSource?.loginUi?.isEmpty == false {
+                    Button("登录「\(engine.currentSource?.bookSourceName ?? "")」") {
+                        engine.showingLogin = true
+                    }
+                    .buttonStyle(.borderedProminent)
+                    Button("先看「\(fallback.title)」") {
+                        engine.select(fallback)
+                    }
+                    .buttonStyle(.bordered)
+                } else {
+                    Button("切到「\(fallback.title)」") {
+                        engine.select(fallback)
+                    }
+                    .buttonStyle(.borderedProminent)
+                }
+                Button("重试") { engine.retrySelectedCategory() }
+                    .buttonStyle(.bordered)
+            } else {
+                Button("重试") { engine.retrySelectedCategory() }
+                    .buttonStyle(.borderedProminent)
+            }
+        }
+        .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity)
+    }
+
+    private var emptyState: some View {
+        VStack(alignment: .center, spacing: 8) {
+            Image(systemName: "books.vertical")
+                .font(.largeTitle)
+                .foregroundStyle(Color.secondary.opacity(0.6))
+            Text("这个分类还没有书")
+                .font(.system(.headline))
+                .foregroundStyle(Color.secondary)
+        }
+        .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity)
+    }
+
+    private var bookList: some View {
+        List {
+            ForEach(Array(engine.items.enumerated()), id: \.element.id) { offset, book in
+                ExploreBookRow(engine: engine, book: book, index: offset)
+                    .hideListRowSeparatorCompat()
+                    .listRowBackground(theme.palette.surface)
+                    .contentShape(Rectangle())
+                    .onTapGesture { engine.selectedBook = book }
+                    .onAppear {
+                        guard book.id == engine.items.last?.id else { return }
+                        engine.loadMoreIfNeeded()
+                    }
+            }
+
+            if engine.canLoadMore {
+                HStack(alignment: .center) {
+                    Spacer()
+                    if engine.loadingMore {
+                        ProgressView()
+                            .padding(.trailing, 6)
+                        Text("正在加载下一页...")
+                            .font(.system(.caption))
+                            .foregroundStyle(Color.secondary)
+                    }
+                    if !engine.loadingMore {
+                        Button("点击加载更多") { engine.loadMoreIfNeeded() }
+                            .font(.system(.caption))
+                            .foregroundStyle(Color.blue)
+                    }
+                    Spacer()
+                }
+                .padding(.vertical, 8.0)
+            }
+        }
+        .appThemedList()
+        #if os(iOS)
+        .listStyle(.plain)
+        #endif
+        .frame(maxWidth: 900)
+        .frame(maxWidth: .infinity)
+        .refreshable { await engine.refresh() }
+    }
+}
+
+private struct ExploreBookRow: View {
+    @ObservedObject var engine: CategoryExploreEngine
+    let book: SearchBook
+    let index: Int
+    @Environment(\.appTheme) private var theme
+
+    var body: some View {
         HStack(alignment: .top, spacing: 12) {
             Text(String(format: "%02d", index + 1))
                 .font(theme.typography.mono)
                 .foregroundColor(theme.palette.secondaryInk)
                 .padding(.top, 4)
 
-            Group {
-                if let cover = book.coverUrl, !cover.isEmpty {
-                    BookCoverImage(
-                        urlString: cover,
-                        placeholderOverride: AnyView(categoryCoverPlaceholder),
-                        onFailure: { requestCoverRepair(for: book) }
-                    )
-                } else {
-                    categoryCoverPlaceholder
-                        .onAppear { requestCoverRepair(for: book) }
-                }
-            }
-            .frame(width: 46, height: 62)
-            .clipped()
-            .clipShape(RoundedRectangle(cornerRadius: max(4, theme.metrics.cornerRadius - 3), style: .continuous))
-            .overlay(
-                RoundedRectangle(cornerRadius: max(4, theme.metrics.cornerRadius - 3), style: .continuous)
-                    .stroke(theme.palette.divider.opacity(0.5), lineWidth: theme.metrics.borderWidth)
-            )
+            cover
+                .frame(width: 46, height: 62)
+                .clipped()
+                .clipShape(RoundedRectangle(cornerRadius: max(4, theme.metrics.cornerRadius - 3), style: .continuous))
+                .overlay(
+                    RoundedRectangle(cornerRadius: max(4, theme.metrics.cornerRadius - 3), style: .continuous)
+                        .stroke(theme.palette.divider.opacity(0.5), lineWidth: theme.metrics.borderWidth)
+                )
 
             VStack(alignment: .leading, spacing: 4) {
                 Text(book.name)
                     .font(.system(size: 15, weight: .semibold))
                     .foregroundColor(theme.palette.ink)
                     .lineLimit(2)
-
                 if !book.author.isEmpty {
                     Text(book.author)
                         .font(theme.typography.mono)
                         .foregroundColor(theme.palette.secondaryInk)
                         .lineLimit(1)
                 }
-
                 if let intro = book.intro, !intro.isEmpty {
                     Text(intro)
                         .font(.caption2)
@@ -634,7 +594,7 @@ public struct CategoryExploreView: View {
                 .foregroundColor(theme.palette.secondaryInk.opacity(0.6))
                 .padding(.top, 6)
         }
-        .padding(.vertical, 8)
+        .padding(.vertical, 8.0)
         .padding(.horizontal, 16)
         .overlay(alignment: .bottom) {
             Rectangle()
@@ -644,36 +604,25 @@ public struct CategoryExploreView: View {
         }
     }
 
-    /// 分类列表的封面来自书源列表接口；有些源给的是带签名的地址，
-    /// 过期后图片 403，但详情接口会返回新签名。这里补抓一次并回填当前行。
-    private func requestCoverRepair(for book: SearchBook) {
-        guard let source = currentSource else { return }
-        guard !book.bookUrl.isEmpty else { return }
-        guard !coverRepairAttempts.contains(book.id) else { return }
-        coverRepairAttempts.insert(book.id)
-
-        let model = Book(
-            bookUrl: book.bookUrl,
-            name: book.name,
-            author: book.author,
-            kind: book.kind,
-            coverUrl: book.coverUrl,
-            intro: book.intro,
-            origin: book.origin,
-            originName: book.originName,
-            latestChapterTitle: book.latestChapterTitle
-        )
-        Task {
-            let cover = await CoverRepairService.shared.cover(for: model, source: source)
-            guard let cover, !cover.isEmpty else { return }
-            await MainActor.run {
-                guard let idx = books.firstIndex(where: { $0.bookUrl == book.bookUrl }) else { return }
-                books[idx].coverUrl = cover
-            }
+    @ViewBuilder
+    private var cover: some View {
+        if let url = book.coverUrl, !url.isEmpty {
+            BookCoverImage(
+                urlString: url,
+                placeholderOverride: AnyView(CoverPlaceholder()),
+                onFailure: { engine.repairCover(for: book) }
+            )
+        } else {
+            CoverPlaceholder()
+                .onAppear { engine.repairCover(for: book) }
         }
     }
+}
 
-    private var categoryCoverPlaceholder: some View {
+private struct CoverPlaceholder: View {
+    @Environment(\.appTheme) private var theme
+
+    var body: some View {
         ZStack {
             theme.palette.elevated
             Image(systemName: "book.closed")
@@ -681,9 +630,13 @@ public struct CategoryExploreView: View {
                 .foregroundColor(theme.palette.secondaryInk)
         }
     }
+}
 
-    private var emptySourcesView: some View {
-        VStack(spacing: 12) {
+private struct EmptyExploreSources: View {
+    @Environment(\.appTheme) private var theme
+
+    var body: some View {
+        VStack(alignment: .center, spacing: 12) {
             if theme.isClassTrial {
                 Image(systemName: "square.grid.2x2")
                     .font(.system(size: 34, weight: .bold))
@@ -703,14 +656,14 @@ public struct CategoryExploreView: View {
             }
             Text("暂无可用分类书源")
                 .font(theme.isClassTrial ? .system(size: 20, weight: .black) : .headline)
-                .foregroundColor(theme.isClassTrial ? theme.palette.ink : .secondary)
+                .foregroundStyle(theme.isClassTrial ? theme.palette.ink : .secondary)
             Text("请在「设置 - 书源管理」中导入并启用支持预设分类的书籍来源。")
                 .font(theme.isClassTrial ? .system(size: 12, weight: .medium) : .caption)
-                .foregroundColor(theme.isClassTrial ? theme.palette.secondaryInk : .secondary)
-                .multilineTextAlignment(.center)
-                .padding(.horizontal, 32)
+                .foregroundStyle(theme.isClassTrial ? theme.palette.secondaryInk : .secondary)
+                .multilineTextAlignment(TextAlignment.center)
+                .padding(EdgeInsets(top: 0, leading: 32, bottom: 0, trailing: 32))
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity)
         .background {
             if theme.backdropStyle == .plain {
                 theme.palette.background
@@ -719,273 +672,386 @@ public struct CategoryExploreView: View {
             }
         }
     }
+}
 
-    // MARK: - All Categories Sheet (Grouped by Header)
-    private var allCategoriesSheet: some View {
-        NavigationView {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 16) {
-                    let groups = groupCategories(categories)
-                    ForEach(groups, id: \.header) { group in
-                        VStack(alignment: .leading, spacing: 8) {
-                            if !group.header.isEmpty {
-                                Text(group.header)
-                                    .font(.subheadline.bold())
-                                    .foregroundColor(.secondary)
-                            }
+// MARK: - 全部分类面板
 
-                            LazyVGrid(columns: [GridItem(.adaptive(minimum: 85), spacing: 8)], spacing: 8) {
-                                ForEach(group.items) { item in
-                                    let isSelected = item.id == selectedCategory?.id
-                                    Button {
-                                        showAllCategoriesSheet = false
-                                        selectCategory(item)
-                                    } label: {
-                                        Text(item.title)
-                                            .font(.system(size: 13, weight: isSelected ? .bold : .medium))
-                                            .lineLimit(1)
-                                            .frame(maxWidth: .infinity)
-                                            .padding(.vertical, 8)
-                                            .padding(.horizontal, 6)
-                                            .background(isSelected ? theme.palette.accent : theme.palette.elevated)
-                                            .foregroundColor(isSelected ? theme.palette.onAccent : theme.palette.ink)
-                                            .cornerRadius(theme.metrics.cornerRadius)
-                                    }
-                                    .buttonStyle(.plain)
-                                }
-                            }
-                        }
-                    }
-                }
-                .padding()
-            }
-            .navigationTitle("全部预设分类")
-            #if os(iOS)
-            .navigationBarTitleDisplayMode(.inline)
-            #endif
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("关闭") { showAllCategoriesSheet = false }
-                }
-            }
-        }
+private struct AllCategoriesSheet: View {
+    @ObservedObject var engine: CategoryExploreEngine
+    @Environment(\.appTheme) private var theme
+
+    private let categoryColumns = [GridItem(.adaptive(minimum: 85, maximum: .infinity), spacing: 8)]
+
+    var body: some View {
+        NavigationView { categoryPanels }
             .stackNavigationStyle()
     }
 
-    // MARK: - Logic & Actions
-    /// 脚本调 `java.refreshExplore()` 的中转：只负责让分类页重拉一遍。
-    /// 分类解析本身按「exploreUrl + 源变量」做签名缓存，变量一改下次解析就是新的。
-    final class ExploreRefreshCenter: ObservableObject {
-        static let shared = ExploreRefreshCenter()
-        @Published private(set) var tick = 0
+    private var categoryPanels: some View {
+        ScrollView(.vertical, showsIndicators: true) {
+            VStack(alignment: .leading, spacing: 16.0) {
+                ForEach(CategoryGrouping.groups(from: engine.categories), id: \.caption) { group in
+                    VStack(alignment: .leading, spacing: 8.0) {
+                        if group.caption.isEmpty == false {
+                            Text(verbatim: group.caption)
+                                .font(.subheadline.weight(.bold))
+                                .foregroundStyle(Color.secondary)
+                        }
 
-        private init() {
-            JSEngine.exploreRefreshSink = { [weak self] in
-                DispatchQueue.main.async { self?.tick += 1 }
-            }
-        }
-    }
-
-    private func initializeIfNeeded() {
-        if currentSource == nil && !availableSources.isEmpty {
-            selectedSourceUrl = availableSources[0].bookSourceUrl
-        }
-        if let src = currentSource, categories.isEmpty {
-            loadCategories(for: src)
-        }
-    }
-
-    private func switchSource(to source: BookSource) {
-        selectedSourceUrl = source.bookSourceUrl
-        books = []
-        selectedCategory = nil
-        exploreFilters = []
-        filterValues = [:]
-        loadCategories(for: source)
-    }
-
-    private func loadCategories(for source: BookSource) {
-        // 解析要跑书源 JS，手机上几秒，放后台线程；BookExploreService 里有缓存
-        Task.detached(priority: .userInitiated) {
-            let cats = BookExploreService.shared.parseExploreCategories(source: source)
-            let filters = BookExploreService.shared.parseExploreFilters(source: source)
-            await MainActor.run {
-                self.categories = cats
-                self.exploreFilters = filters
-                var defaults: [String: String] = [:]
-                for filter in filters {
-                    if !filter.defaultValue.isEmpty {
-                        defaults[filter.name] = filter.defaultValue
-                    }
-                }
-                self.filterValues = defaults
-
-                // Prefer selecting "全部" as initial category so public books load immediately; presets like 阅读历史 remain available in the top bar
-                if let allCategory = cats.first(where: { $0.title == "全部" && !($0.url ?? "").isEmpty }) {
-                    selectCategory(allCategory)
-                } else if let firstActionable = cats.first(where: { !$0.isHeader && !($0.url ?? "").isEmpty && !$0.isAction }) {
-                    selectCategory(firstActionable)
-                } else {
-                    selectedCategory = nil
-                    books = []
-                }
-            }
-        }
-    }
-
-    private func selectCategory(_ category: ExploreCategory) {
-        // 动作类分类没有书可抓，直接执行脚本，不切页面：切了过去先看到「暂无书籍」，
-        // 登录页再叠在上面，退出来要退两次。
-        if category.isAction {
-            runActionCategory(category)
-            return
-        }
-        selectedCategory = category
-        books = []
-        currentPage = 1
-        hasMore = true
-        loadBooks(for: category, page: 1)
-    }
-
-    private func runActionCategory(_ category: ExploreCategory) {
-        guard let src = currentSource, let rawUrl = category.url else { return }
-        Task { await BookExploreService.shared.runActionCategory(source: src, categoryUrl: rawUrl) }
-    }
-
-    /// 401/403 视为未登录
-    private func isAuthError(_ message: String) -> Bool {
-        message.contains("401") || message.contains("403")
-    }
-
-    /// 不用登录也能看的那一栏（优先「全部」）
-    private var publicCategory: ExploreCategory? {
-        let usable = categories.filter { !$0.isHeader && $0.url?.isEmpty == false }
-        return usable.first(where: { $0.title == "全部" })
-            ?? usable.first(where: { !$0.title.contains("历史") && !$0.title.contains("收藏") })
-    }
-
-    private func loadBooks(for category: ExploreCategory, page: Int) {
-        guard let src = currentSource, let rawUrl = category.url, !rawUrl.isEmpty else { return }
-        isLoading = true
-        errorMessage = nil
-
-        Task {
-            do {
-                let fetched = try await BookExploreService.shared.fetchExploreBooks(
-                    source: src,
-                    categoryUrl: rawUrl,
-                    page: page,
-                    filters: filterValues
-                )
-                await MainActor.run {
-                    self.currentPage = page
-                    self.books = fetched
-                    self.isLoading = false
-                    self.hasMore = !fetched.isEmpty
-                }
-            } catch {
-                await MainActor.run {
-                    if error.localizedDescription.contains("403") {
-                        self.errorMessage = "「\(category.title)」要登录才能看，先去书源里登录。"
-                    } else {
-                        self.errorMessage = error.localizedDescription
-                    }
-                    self.isLoading = false
-                }
-            }
-        }
-    }
-
-    private func loadMore() {
-        guard !isLoadingMore, hasMore, let src = currentSource, let cat = selectedCategory, let rawUrl = cat.url, !rawUrl.isEmpty else { return }
-        isLoadingMore = true
-        let nextPage = currentPage + 1
-
-        Task {
-            do {
-                let fetched = try await BookExploreService.shared.fetchExploreBooks(
-                    source: src,
-                    categoryUrl: rawUrl,
-                    page: nextPage,
-                    filters: filterValues
-                )
-                await MainActor.run {
-                    self.currentPage = nextPage
-                    if fetched.isEmpty {
-                        self.hasMore = false
-                    } else {
-                        let existingUrls = Set(self.books.map { $0.bookUrl })
-                        let newItems = fetched.filter { !existingUrls.contains($0.bookUrl) }
-                        if newItems.isEmpty {
-                            self.hasMore = false
-                        } else {
-                            self.books.append(contentsOf: newItems)
+                        LazyVGrid(columns: categoryColumns, spacing: 8.0) {
+                            ForEach(group.entries) { category in
+                                let selected = category.id == engine.activeCategory?.id
+                                Button(action: {
+                                    engine.showingAllCategories = false
+                                    engine.select(category)
+                                }) {
+                                    Text(category.title)
+                                        .font(.system(size: 13, weight: selected ? .bold : .medium))
+                                        .lineLimit(1)
+                                        .frame(maxWidth: .infinity, alignment: .center)
+                                        .padding(EdgeInsets(top: 8, leading: 6, bottom: 8, trailing: 6))
+                                        .background(selected ? theme.palette.accent : theme.palette.elevated)
+                                        .foregroundStyle(selected ? theme.palette.onAccent : theme.palette.ink)
+                                        .cornerRadius(theme.metrics.cornerRadius)
+                                }
+                                .buttonStyle(PlainButtonStyle())
+                            }
                         }
                     }
-                    self.isLoadingMore = false
-                }
-            } catch {
-                await MainActor.run {
-                    self.isLoadingMore = false
                 }
             }
+            .padding(16)
         }
+        .navigationTitle(Text("全部预设分类"))
+        #if os(iOS)
+        .navigationBarTitleDisplayMode(.inline)
+        #endif
+        .toolbar(content: { sheetToolbar })
     }
 
-    private func refresh() async {
-        guard let src = currentSource, let cat = selectedCategory, let rawUrl = cat.url, !rawUrl.isEmpty else { return }
-        do {
-            let fetched = try await BookExploreService.shared.fetchExploreBooks(
-                source: src,
-                categoryUrl: rawUrl,
-                page: 1,
-                filters: filterValues
-            )
-            await MainActor.run {
-                self.currentPage = 1
-                self.books = fetched
-                self.hasMore = !fetched.isEmpty
-            }
-        } catch {
-            await MainActor.run {
-                self.errorMessage = error.localizedDescription
-            }
+    @ToolbarContentBuilder
+    private var sheetToolbar: some ToolbarContent {
+        ToolbarItem(placement: ToolbarItemPlacement.cancellationAction) {
+            Button("关闭") { engine.showingAllCategories = false }
         }
-    }
-
-    // MARK: - Category Grouping Helper
-    private struct CategoryGroup {
-        let header: String
-        let items: [ExploreCategory]
-    }
-
-    private func groupCategories(_ list: [ExploreCategory]) -> [CategoryGroup] {
-        var groups: [CategoryGroup] = []
-        var currentHeader: String = ""
-        var currentItems: [ExploreCategory] = []
-
-        for cat in list {
-            if cat.isHeader {
-                if !currentItems.isEmpty {
-                    groups.append(CategoryGroup(header: currentHeader, items: currentItems))
-                    currentItems = []
-                }
-                currentHeader = cat.title
-            } else {
-                currentItems.append(cat)
-            }
-        }
-
-        if !currentItems.isEmpty {
-            groups.append(CategoryGroup(header: currentHeader, items: currentItems))
-        }
-
-        return groups
     }
 }
 
-/// 分类列表补封面：同一本书可能同时有多行触发，合并成一次详情请求；结果和失败都记着，
-/// 免得滚动时反复打源站。
+// MARK: - 状态机
+
+final class CategoryExploreEngine: ObservableObject {
+    @Published private(set) var sources: [BookSource] = []
+    @Published var selectedSourceURL = ""
+    @Published private(set) var categories: [ExploreCategory] = []
+    @Published var activeCategory: ExploreCategory?
+    @Published private(set) var items: [SearchBook] = []
+    @Published private(set) var page = 1
+    @Published private(set) var loading = false
+    @Published private(set) var loadingMore = false
+    @Published private(set) var canLoadMore = true
+    @Published private(set) var error: String?
+    @Published private(set) var filters: [ExploreFilter] = []
+    @Published var filterValues: [String: String] = [:]
+    @Published var selectedBook: SearchBook?
+    @Published var showingAllCategories = false
+    @Published var showingAllSources = false
+    @Published var showingLogin = false
+    @Published var showingFilters = false
+    @Published var sourceQuery = ""
+
+    private var attemptedCoverRepairs: Set<String> = []
+
+    var currentSource: BookSource? {
+        sources.first { $0.bookSourceUrl == selectedSourceURL } ?? sources.first
+    }
+
+    var actionableCategories: [ExploreCategory] {
+        categories.filter { !$0.isHeader && ($0.url ?? "").isEmpty == false }
+    }
+
+    var inlineSources: [BookSource] {
+        let limit = 10
+        var shown = Array(sources.prefix(limit))
+        guard let current = currentSource,
+              !shown.contains(where: { $0.bookSourceUrl == current.bookSourceUrl }) else {
+            return shown
+        }
+        shown.insert(current, at: 0)
+        if shown.count > limit { shown.removeLast() }
+        return shown
+    }
+
+    var filteredSources: [BookSource] {
+        let query = sourceQuery.trimmingCharacters(in: .whitespaces)
+        guard !query.isEmpty else { return sources }
+        return sources.filter { $0.bookSourceName.localizedCaseInsensitiveContains(query) }
+    }
+
+    var publicCategory: ExploreCategory? {
+        let usable = categories.filter { !$0.isHeader && ($0.url ?? "").isEmpty == false }
+        return usable.first { $0.title == "全部" }
+            ?? usable.first { !$0.title.contains("历史") && !$0.title.contains("收藏") }
+    }
+
+    func isAuthFailure(_ message: String) -> Bool {
+        message.contains("401") || message.contains("403")
+    }
+
+    func updateSources(_ all: [BookSource]) {
+        sources = all.filter { source in
+            guard source.enabled ?? true, let explore = source.exploreUrl else { return false }
+            return !explore.isEmpty && !explore.allSatisfy { $0.isWhitespace }
+        }
+        if currentSource == nil {
+            selectedSourceURL = sources.first?.bookSourceUrl ?? ""
+        }
+    }
+
+    func activate() {
+        if selectedSourceURL.isEmpty {
+            selectedSourceURL = sources.first?.bookSourceUrl ?? ""
+        }
+        guard let source = currentSource, categories.isEmpty else { return }
+        reloadCategories(for: source)
+    }
+
+    func switchSource(_ source: BookSource) {
+        selectedSourceURL = source.bookSourceUrl
+        items = []
+        activeCategory = nil
+        filters = []
+        filterValues = [:]
+        reloadCategories(for: source)
+    }
+
+    func reloadCurrentCategories() {
+        guard let source = currentSource else { return }
+        reloadCategories(for: source)
+    }
+
+    func reloadCategories(for source: BookSource) {
+        Task.detached(priority: .userInitiated) {
+            let parsedCategories = BookExploreService.shared.parseExploreCategories(source: source)
+            let parsedFilters = BookExploreService.shared.parseExploreFilters(source: source)
+            await self.applyOnMain {
+                guard self.currentSource?.bookSourceUrl == source.bookSourceUrl else { return }
+                self.categories = parsedCategories
+                self.filters = parsedFilters
+                self.filterValues = parsedFilters.reduce(into: [String: String]()) { result, filter in
+                    guard !filter.defaultValue.isEmpty else { return }
+                    result[filter.name] = filter.defaultValue
+                }
+                self.chooseInitialCategory(from: parsedCategories)
+            }
+        }
+    }
+
+    private func chooseInitialCategory(from list: [ExploreCategory]) {
+        if let all = list.first(where: { $0.title == "全部" && ($0.url ?? "").isEmpty == false }) {
+            select(all)
+        } else if let first = list.first(where: { !$0.isHeader && ($0.url ?? "").isEmpty == false && !$0.isAction }) {
+            select(first)
+        } else {
+            activeCategory = nil
+            items = []
+        }
+    }
+
+    func select(_ category: ExploreCategory) {
+        guard !category.isAction else {
+            runAction(category)
+            return
+        }
+        activeCategory = category
+        items = []
+        page = 1
+        canLoadMore = true
+        fetchFirstPage(category)
+    }
+
+    func retrySelectedCategory() {
+        guard let category = activeCategory else { return }
+        fetchFirstPage(category)
+    }
+
+    private func runAction(_ category: ExploreCategory) {
+        guard let source = currentSource, let url = category.url else { return }
+        Task(priority: .userInitiated) {
+            await BookExploreService.shared.runActionCategory(source: source, categoryUrl: url)
+        }
+    }
+
+    func fetchFirstPage(_ category: ExploreCategory) {
+        guard let source = currentSource, let url = category.url, !url.isEmpty else { return }
+        loading = true
+        error = nil
+        Task(priority: .userInitiated) {
+            do /* 首屏请求 */ {
+                let result = try await BookExploreService.shared.fetchExploreBooks(
+                    source: source,
+                    categoryUrl: url,
+                    page: 1,
+                    filters: filterValues
+                )
+                await self.applyOnMain {
+                    self.page = 1
+                    self.items = result
+                    self.canLoadMore = !result.isEmpty
+                    self.loading = false
+                }
+            } catch let failure {
+                await self.applyOnMain {
+                    self.error = failure.localizedDescription.contains("403")
+                        ? "「\(category.title)」要登录才能看，先去书源里登录。"
+                        : failure.localizedDescription
+                    self.loading = false
+                }
+            }
+        }
+    }
+
+    func loadMoreIfNeeded() {
+        guard !loadingMore, canLoadMore,
+              let source = currentSource,
+              let category = activeCategory,
+              let url = category.url, !url.isEmpty else { return }
+
+        loadingMore = true
+        let nextPage = page + 1
+        Task(priority: .userInitiated) {
+            do /* 下一页请求 */ {
+                let result = try await BookExploreService.shared.fetchExploreBooks(
+                    source: source,
+                    categoryUrl: url,
+                    page: nextPage,
+                    filters: filterValues
+                )
+                await self.applyOnMain {
+                    self.page = nextPage
+                    self.appendUnique(result)
+                    self.loadingMore = false
+                }
+            } catch _ {
+                await self.applyOnMain { self.loadingMore = false }
+            }
+        }
+    }
+
+    private func appendUnique(_ incoming: [SearchBook]) {
+        guard !incoming.isEmpty else {
+            canLoadMore = false
+            return
+        }
+        let existing = Set(items.map(\.bookUrl))
+        let fresh = incoming.filter { !existing.contains($0.bookUrl) }
+        guard !fresh.isEmpty else {
+            canLoadMore = false
+            return
+        }
+        items.append(contentsOf: fresh)
+    }
+
+    func refresh() async {
+        guard let source = currentSource,
+              let category = activeCategory,
+              let url = category.url, !url.isEmpty else { return }
+        do /* 下拉刷新 */ {
+            let result = try await BookExploreService.shared.fetchExploreBooks(
+                source: source,
+                categoryUrl: url,
+                page: 1,
+                filters: filterValues
+            )
+            await self.applyOnMain {
+                self.page = 1
+                self.items = result
+                self.canLoadMore = !result.isEmpty
+            }
+        } catch let failure {
+            await self.applyOnMain { self.error = failure.localizedDescription }
+        }
+    }
+
+    private func applyOnMain(_ block: @escaping () -> Void) async {
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            DispatchQueue.main.async {
+                block()
+                continuation.resume()
+            }
+        }
+    }
+
+    func repairCover(for searchBook: SearchBook) {
+        guard let source = currentSource, !searchBook.bookUrl.isEmpty else { return }
+        guard attemptedCoverRepairs.insert(searchBook.id).inserted else { return }
+
+        let model = Book(
+            bookUrl: searchBook.bookUrl,
+            name: searchBook.name,
+            author: searchBook.author,
+            kind: searchBook.kind,
+            coverUrl: searchBook.coverUrl,
+            intro: searchBook.intro,
+            origin: searchBook.origin,
+            originName: searchBook.originName,
+            latestChapterTitle: searchBook.latestChapterTitle
+        )
+        Task(priority: .userInitiated) {
+            guard let cover = await CoverRepairService.shared.cover(for: model, source: source),
+                  !cover.isEmpty else { return }
+            await self.applyOnMain {
+                guard let index = self.items.firstIndex(where: { $0.bookUrl == searchBook.bookUrl }) else { return }
+                var updated = self.items
+                updated[index].coverUrl = cover
+                self.items = updated
+            }
+        }
+    }
+}
+
+enum CategoryGrouping {
+    struct Bucket {
+        let caption: String
+        let entries: [ExploreCategory]
+    }
+
+    static func groups(from categories: [ExploreCategory]) -> [Bucket] {
+        var result: [Bucket] = []
+        var header = ""
+        var bucket: [ExploreCategory] = []
+
+        for category in categories {
+            guard category.isHeader else {
+                bucket.append(category)
+                continue
+            }
+            if !bucket.isEmpty {
+                result.append(Bucket(caption: header, entries: bucket))
+                bucket = []
+            }
+            header = category.title
+        }
+
+        if !bucket.isEmpty {
+            result.append(Bucket(caption: header, entries: bucket))
+        }
+        return result
+    }
+}
+
+/// 脚本调 `java.refreshExplore()` 的中转：只负责让分类页重拉一遍。
+final class ExploreRefreshCenter: ObservableObject {
+    static let shared = ExploreRefreshCenter()
+    @Published private(set) var tick = 0
+
+    private init() {
+        JSEngine.exploreRefreshSink = { [weak self] in
+            DispatchQueue.main.async { self?.tick += 1 }
+        }
+    }
+}
+
+/// 分类列表补封面：同一本书可能同时有多行触发，合并成一次详情请求。
 final class CoverRepairService {
     static let shared = CoverRepairService()
 
@@ -1028,9 +1094,19 @@ final class CoverRepairService {
     }
 }
 
+private struct HorizontalScroller<Content: View>: View {
+    private let content: Content
+
+    init(@ViewBuilder content: () -> Content) {
+        self.content = content()
+    }
+
+    var body: some View {
+        ScrollView(.horizontal, showsIndicators: false) { content }
+    }
+}
+
 private extension View {
-    /// `listRowSeparator` 在 macOS 上是 13.0 才有的 API，工程最低支持 macOS 12，
-    /// 这里包一层可用性判断，两端都能编过。
     @ViewBuilder
     func hideListRowSeparatorCompat() -> some View {
         if #available(iOS 15.0, macOS 13.0, *) {

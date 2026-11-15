@@ -16,7 +16,7 @@ struct AppSettingsBackupView: View {
 
     @State private var showExporter = false
     @State private var exportDocument: ExportedFile?
-    @State private var exportName = "legado-settings.json"
+    @State private var exportName = "juyue-settings.json"
     @State private var pendingPayload: AppSettingsPayload?
     @State private var showImportPreview = false
     @State private var restoreMode: AppSettingsRestoreMode = .merge
@@ -163,7 +163,7 @@ struct AppSettingsBackupView: View {
         }
         let formatter = DateFormatter()
         formatter.dateFormat = "yyyyMMdd-HHmm"
-        exportName = "legado-settings-\(formatter.string(from: Date())).json"
+        exportName = "juyue-settings-\(formatter.string(from: Date())).json"
         exportDocument = ExportedFile(data: data)
         showExporter = true
     }

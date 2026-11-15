@@ -53,23 +53,24 @@ final class SourceCompatibilityNetworkTests: XCTestCase {
         let base = "https://example.com/book/index.html"
 
         XCTAssertEqual(
-            NetworkClient.parseLegadoUrl("/chapter/1", baseUrl: base)?.url.absoluteString,
+            NetworkClient.parseJuyueUrl("/chapter/1", baseUrl: base)?.url.absoluteString,
             "https://example.com/chapter/1"
         )
         XCTAssertEqual(
-            NetworkClient.parseLegadoUrl("chapter/1", baseUrl: base)?.url.absoluteString,
+            NetworkClient.parseJuyueUrl("chapter/1", baseUrl: base)?.url.absoluteString,
             "https://example.com/book/chapter/1"
         )
         XCTAssertEqual(
-            NetworkClient.parseLegadoUrl("https://other.example/a#part", baseUrl: base)?.url.absoluteString,
+            NetworkClient.parseJuyueUrl("https://other.example/a#part", baseUrl: base)?.url.absoluteString,
             "https://other.example/a"
         )
 
+        // base 不是合法网址：绝对地址照用，相对地址直接判失败，不拼半截地址。
         XCTAssertEqual(
-            NetworkClient.parseLegadoUrl("https://ok.example/a", baseUrl: "不是网址")?.url.absoluteString,
+            NetworkClient.parseJuyueUrl("https://ok.example/a", baseUrl: "不是网址")?.url.absoluteString,
             "https://ok.example/a"
         )
-        XCTAssertNil(NetworkClient.parseLegadoUrl("chapter/1", baseUrl: "不是网址"))
+        XCTAssertNil(NetworkClient.parseJuyueUrl("chapter/1", baseUrl: "不是网址"))
     }
 
     /// 书源站还大量用 GBK/GB2312：响应头优先，没有头就嗅 HTML meta。
@@ -84,11 +85,12 @@ final class SourceCompatibilityNetworkTests: XCTestCase {
             httpVersion: "HTTP/1.1",
             headerFields: ["Content-Type": "text/html; charset=GBK"]
         ))
-        XCTAssertEqual(NetworkClient.package(bytes: bytes, response: response).bodyString, "中文测试")
+        XCTAssertEqual(ReplyPackager.package(bytes: bytes, reply: response).bodyString, "中文测试")
 
+        // 没有响应头时看前 2KB 的 <meta charset=...>。
         let html = #"<html><head><meta charset="gb2312"><title>中文测试</title></head></html>"#
         let htmlBytes = try XCTUnwrap(html.data(using: encoding))
-        XCTAssertTrue(NetworkClient.package(bytes: htmlBytes, response: nil).bodyString.contains("中文测试"))
+        XCTAssertTrue(ReplyPackager.package(bytes: htmlBytes, reply: nil).bodyString.contains("中文测试"))
     }
 
     /// 非 base64 的 data: 文本也要能解出来。
@@ -103,13 +105,13 @@ final class SourceCompatibilityNetworkTests: XCTestCase {
 final class SearchTemplateRenderTests: XCTestCase {
 
     /// JS 只拼出带 {{key}}/{{page}} 的地址时，要再用模板渲染一次；
-    /// 但 <js> 块不能重复执行。
+    /// 但 <js> 块不能重复执行（重复执行会让脚本副作用跑两遍）。
     func testSearchURLJSResultRendersPlaceholdersAgain() {
         let source = BookSource(bookSourceUrl: "https://example.com", bookSourceName: "js源")
         let engine = JSEngine(bookSource: source, baseUrl: source.bookSourceUrl)
 
         let template = #"<js>var hits = (typeof hits === "undefined" ? 0 : hits) + 1; "https://m.example.com/search?q={{key}}&p={{page}}&hits=" + hits</js>"#
-        let rendered = BookSearchService.renderSearchURL(template, key: "斗破苍穹", page: 2, engine: engine)
+        let rendered = SearchTemplate.renderURL(template, key: "斗破苍穹", page: 2, engine: engine)
 
         XCTAssertEqual(rendered, "https://m.example.com/search?q=斗破苍穹&p=2&hits=1")
     }

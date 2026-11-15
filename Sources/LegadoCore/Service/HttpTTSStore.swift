@@ -18,7 +18,14 @@ public final class HttpTTSStore {
     private static func defaultDirectory() -> URL {
         let base = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
             ?? URL(fileURLWithPath: NSTemporaryDirectory())
-        return base.appendingPathComponent("Legado", isDirectory: true)
+        let directory = base.appendingPathComponent("Legado", isDirectory: true)
+        let legacy = base.appendingPathComponent("Legado", isDirectory: true)
+        let fileManager = FileManager.default
+        if !fileManager.fileExists(atPath: directory.path),
+           fileManager.fileExists(atPath: legacy.path) {
+            try? fileManager.moveItem(at: legacy, to: directory)
+        }
+        return directory
     }
 
     public func load() throws {

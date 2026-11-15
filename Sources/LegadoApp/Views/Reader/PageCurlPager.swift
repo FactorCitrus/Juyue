@@ -260,7 +260,6 @@ public struct PageCurlPager: UIViewControllerRepresentable {
         controller.isDoubleSided = true
         controller.view.backgroundColor = UIColor(backgroundColor)
         context.coordinator.installSwipeHooks(on: controller)
-        AppLog.write("[PageCurl] make start=\(startIndex) pages=\(pages.count) ch=\(loadedChapterIndex)")
         // 正面 + 背面；实际投递几张由 apply 按当前书脊裁
         apply(
             context.coordinator.pagePair(at: clampedIndex),
@@ -299,18 +298,13 @@ public struct PageCurlPager: UIViewControllerRepresentable {
             wanted = Array(target.prefix(1))
         }
         controller.isDoubleSided = true
-        AppLog.write("[PageCurl] apply \(animate ? "anim" : "hard") \(direction == .forward ? "F" : "R") tags=\(wanted.map(\.view.tag)) before=\(visibleTags(controller))")
         controller.setViewControllers(wanted, direction: direction, animated: animate)
-        AppLog.write("[PageCurl] applied -> now=\(visibleTags(controller))")
-    }
-
-    private func visibleTags(_ controller: UIPageViewController) -> [Int] {
-        (controller.viewControllers ?? []).map(\.view.tag)
     }
 
     public func updateUIViewController(_ controller: UIPageViewController, context: Context) {
         context.coordinator.parent = self
         context.coordinator.installSwipeHooks(on: controller)
+        context.coordinator.setPagerGesturesEnabled(charSelection == nil)
         controller.view.backgroundColor = UIColor(backgroundColor)
         guard !pages.isEmpty else { return }
 
@@ -385,6 +379,10 @@ public struct PageCurlPager: UIViewControllerRepresentable {
             on: controller,
             forward: clampedIndex > current
         )
+    }
+
+    private func visibleTags(_ controller: UIPageViewController) -> [Int] {
+        (controller.viewControllers ?? []).map(\.view.tag)
     }
 
     private var clampedIndex: Int {
@@ -516,8 +514,7 @@ public struct PageCurlPager: UIViewControllerRepresentable {
             let host = UIHostingController(rootView: PageCurlContent(
                 blocks: page,
                 onLongPressLine: { [parent] line, charOffset in
-                    // 图文混排的页：行号按纯文字块计，选区只在文字段里走
-                    parent.onSelectParagraph?(page.filter { !$0.isImage }, line, charOffset)
+                    parent.onSelectParagraph?(page, line, charOffset)
                 },
                 selectedRange: parent.selectedRange,
                 charSelection: parent.charSelection,
@@ -663,6 +660,9 @@ public struct PageCurlPager: UIViewControllerRepresentable {
         }
 
         private var swipeHooked = false
+        /// 挂钩进来的 pager 翻页手势：选字时要整组停用，否则拖选字手柄的横拖会被当成翻页
+        private var hookedPans: [UIPanGestureRecognizer] = []
+        private var hookedSwipes: [UISwipeGestureRecognizer] = []
         /// 一次滑动里只在位移阈值处通知一次
         private var boundaryForward = false
         private var boundaryBackward = false
@@ -678,12 +678,14 @@ public struct PageCurlPager: UIViewControllerRepresentable {
         /// 盯住 UIPageViewController 自己的滑动手势：本章最后一页还往前划，
         /// 或者第一页还往后划，就通知外层换章（原来只有点边缘才会换）
         func installSwipeHooks(on pager: UIPageViewController) {
-            guard !swipeHooked else { return }
+            // pager 的内部分页 pan 要等页面投递之后才建出来，每次更新都补收一遍
             let pans = Coordinator.collectPans(in: pager.view)
             let direct = pager.gestureRecognizers.compactMap { $0 as? UIPanGestureRecognizer }
-            for pan in Set(pans + direct) {
+            for pan in Set(pans + direct) where !hookedPans.contains(pan) {
                 pan.addTarget(self, action: #selector(handlePanEnd(_:)))
+                hookedPans.append(pan)
             }
+            guard !swipeHooked else { return }
             // 边界那一下（本章最后一页再往前、第一页再往后）UIKit 没有下一页可给，
             // pan 手势可能不被识别，另挂两个 swipe 识别器兜底
             for direction: UISwipeGestureRecognizer.Direction in [.left, .right] {
@@ -691,11 +693,20 @@ public struct PageCurlPager: UIViewControllerRepresentable {
                 swipe.direction = direction
                 swipe.cancelsTouchesInView = false
                 pager.view.addGestureRecognizer(swipe)
+                hookedSwipes.append(swipe)
             }
             swipeHooked = true
         }
 
+        /// 选字（拖手柄、扩选）期间停掉 pager 自己的翻页手势，
+        /// 否则 UIPageViewController 会把横向拖拽当成翻页；选字结束再恢复。
+        func setPagerGesturesEnabled(_ enabled: Bool) {
+            for pan in hookedPans where pan.isEnabled != enabled { pan.isEnabled = enabled }
+            for swipe in hookedSwipes where swipe.isEnabled != enabled { swipe.isEnabled = enabled }
+        }
+
         @objc private func handleSwipe(_ gesture: UISwipeGestureRecognizer) {
+            guard parent.charSelection == nil else { return }
             NSLog("[PageCurl] swipe dir=\(gesture.direction.rawValue) index=\(index) pages=\(parent.pages.count)")
             Coordinator.swipeHits += 1
             guard !isTurning else { return }
@@ -728,6 +739,12 @@ public struct PageCurlPager: UIViewControllerRepresentable {
         }
 
         @objc private func handlePanEnd(_ pan: UIPanGestureRecognizer) {
+            // 选字期间的横向拖拽是拖手柄，不是翻页
+            guard parent.charSelection == nil else {
+                boundaryForward = false
+                boundaryBackward = false
+                return
+            }
             let view = pan.view ?? pan.view?.window
             NSLog("[PageCurl] pan state=\(pan.state.rawValue) tx=\(pan.translation(in: view).x) index=\(index) pages=\(parent.pages.count)")
             guard !isTurning else {
@@ -816,7 +833,6 @@ public struct PageCurlPager: UIViewControllerRepresentable {
 
         private func step(forward: Bool) {
             guard !isTurning else { return }
-            AppLog.write("[PageCurl] step \(forward ? "F" : "R") idx=\(index) pages=\(parent.pages.count)")
             if forward {
                 if index + 1 < parent.pages.count {
                     parent.onIndexChange(index + 1)
@@ -1057,7 +1073,7 @@ struct PageCurlContent: View {
     }
 
     @ViewBuilder
-    private func barSlot(_ slot: ReaderBarContent, alignment: Alignment) -> some View {
+    private func barSlot(_ slot: ReaderBarContent, alignment: Alignment, fills: Bool) -> some View {
         switch slot {
         case .bookPercentBar, .batteryBar:
             GeometryReader { geo in
@@ -1071,20 +1087,27 @@ struct PageCurlContent: View {
                 }
             }
             .frame(height: 3)
-            .frame(maxWidth: .infinity, alignment: alignment)
+            // 同一栏里还有别的组件时给条固定宽度，否则它会独占整栏把文字挤到边上
+            .frame(width: fills ? nil : 44)
+            .frame(maxWidth: fills ? .infinity : nil, alignment: alignment)
         case .batteryIcon, .batteryGlyphWithPercent:
             HStack(spacing: 3) {
-                Image(systemName: batterySymbolName)
-                if slot == .batteryGlyphWithPercent, let level = ReaderBarBattery.level() {
-                    Text("\(Int((level * 100).rounded()))%")
+                ReaderBatteryGlyph(
+                    level: ReaderBarBattery.level(),
+                    charging: ReaderBarBattery.isCharging,
+                    tint: textColor,
+                    style: ReaderConfig.shared.batteryIconStyleValue
+                )
+                if slot == .batteryGlyphWithPercent {
+                    Text(ReaderBarBattery.percentText)
                 }
             }
-            .frame(maxWidth: .infinity, alignment: alignment)
+            .frame(maxWidth: fills ? .infinity : nil, alignment: alignment)
         default:
             Text(barText(slot, pageIndex: pageIndex, pageCount: pageCount))
                 .lineLimit(1)
                 .truncationMode(.tail)
-                .frame(maxWidth: .infinity, alignment: alignment)
+                .frame(maxWidth: fills ? .infinity : nil, alignment: alignment)
         }
     }
 
@@ -1093,17 +1116,6 @@ struct PageCurlContent: View {
         let chapterPart = Double(chapterIndex) / Double(chapterCount)
         let inChapter = pageCount > 0 ? Double(pageIndex) / Double(pageCount) / Double(chapterCount) : 0
         return min(1, chapterPart + inChapter)
-    }
-
-    private var batterySymbolName: String {
-        guard let level = ReaderBarBattery.level() else { return "battery.0" }
-        switch level {
-        case ..<0.13: return "battery.0"
-        case ..<0.38: return "battery.25"
-        case ..<0.63: return "battery.50"
-        case ..<0.88: return "battery.75"
-        default: return "battery.100"
-        }
     }
 
     @ViewBuilder
@@ -1155,11 +1167,11 @@ struct PageCurlContent: View {
     private func barSlotGroup(_ contents: [ReaderBarContent], alignment: Alignment) -> some View {
         let items = contents.filter { $0 != .none }
         if items.count == 1, let only = items.first {
-            barSlot(only, alignment: alignment)
+            barSlot(only, alignment: alignment, fills: true)
         } else {
             HStack(spacing: 6) {
                 ForEach(Array(items.enumerated()), id: \.offset) { _, item in
-                    barSlot(item, alignment: alignment)
+                    barSlot(item, alignment: alignment, fills: false)
                 }
             }
             .frame(maxWidth: .infinity, alignment: alignment)
@@ -1253,8 +1265,15 @@ struct PageCurlContent: View {
                         }
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
-                } else if blocks.contains(where: { $0.isImage }) {
-                    segmentedContent(usableWidth: usableWidth, bodyHeight: bodyHeight)
+                } else if blocks.first?.isImage == true, let urlStr = blocks.first?.imageUrl {
+                    ChapterImageView(
+                        urlString: urlStr,
+                        referer: source?.bookSourceUrl,
+                        imageStyle: imageStyle,
+                        imageDecode: imageDecode,
+                        source: source,
+                        baseUrl: nil
+                    )
                 } else {
                     let lines = blocks.map { $0.text }
                     let isParagraphEnd = blocks.map { $0.imageUrl == "p_end" }
@@ -1321,123 +1340,6 @@ struct PageCurlContent: View {
             .padding(.trailing, paddingRight)
             .padding(.top, paddingTop)
             .padding(.bottom, paddingBottom)
-    }
-
-    /// 图文同页：文字段 / 插图 / 文字段竖着排，高度口径跟分页器一致。
-    @ViewBuilder
-    private func segmentedContent(usableWidth: CGFloat, bodyHeight: CGFloat) -> some View {
-        let segments = ReaderPageSegment.split(blocks)
-        let effectiveLineHeight = fontSize * 1.25 + lineSpacing
-        let barsReserved = (showHeader ? 19 + max(0, headerOffset) : 0)
-            + (showFooter ? 19 + max(0, footerOffset) : 0)
-        let pageHeight = max(120, bodyHeight - barsReserved - paddingTop - paddingBottom)
-        let config = ReaderConfig.shared
-        let textOffsets = textLineOffsets(segments)
-
-        VStack(alignment: .leading, spacing: 0) {
-            ForEach(segments) { segment in
-                switch segment.kind {
-                case .image:
-                    if let block = segment.blocks.first, let urlStr = block.imageUrl {
-                        let size = ReaderPaginator.imageDisplaySize(
-                            for: block,
-                            usableWidth: usableWidth,
-                            maxImageHeight: pageHeight,
-                            displayMode: config.imageDisplayMode,
-                            maxWidthPercent: config.imageMaxWidthPercent,
-                            styleFullWidth: imageStyle == .full || imageStyle == .single,
-                            styleSmall: imageStyle == .text
-                        )
-                        ChapterImageView(
-                            urlString: urlStr,
-                            referer: source?.bookSourceUrl,
-                            imageStyle: imageStyle,
-                            imageDecode: imageDecode,
-                            source: source,
-                            baseUrl: nil,
-                            forcedSize: size
-                        )
-                    }
-                case .review:
-                    if let block = segment.blocks.first {
-                        GodReviewCardView(
-                            text: block.text,
-                            imageURL: block.imageUrl,
-                            referer: source?.bookSourceUrl,
-                            accent: accentColor,
-                            textColor: textColor,
-                            onAccentColor: onAccentColor,
-                            alignment: reviewStyle.alignment
-                        ) {
-                            if let url = block.commentURL {
-                                onCommentTap?(url)
-                            }
-                        }
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                    }
-                case .text:
-                    let offset = textOffsets[segment.id] ?? 0
-                    let segmentHeight = ReaderPageSegment.textHeight(
-                        segment.blocks,
-                        lineHeight: effectiveLineHeight,
-                        paragraphSpacing: paragraphSpacing
-                    )
-                    CoreTextPageView(
-                        lines: segment.blocks.map { $0.text },
-                        isParagraphEnd: segment.blocks.map { $0.imageUrl == "p_end" },
-                        fontSize: fontSize,
-                        lineSpacing: lineSpacing,
-                        textColor: textColor,
-                        width: usableWidth,
-                        height: segmentHeight,
-                        letterSpacing: letterSpacing,
-                        paragraphSpacing: paragraphSpacing,
-                        firstLineIndent: firstLineIndent,
-                        weightLevel: weightLevel,
-                        chineseConversion: chineseConversion,
-                        fontPostScriptName: fontPostScriptName,
-                        boldPostScriptName: boldPostScriptName,
-                        textAlignment: textAlignment,
-                        underlineEnabled: underlineEnabled,
-                        underlineColor: underlineColor,
-                        paragraphSeparatorLines: paragraphSeparatorLines,
-                        paragraphSeparatorColor: paragraphSeparatorColor,
-                        lineBlockIds: segment.blocks.map(\.id),
-                        lineParagraphIds: segment.blocks.map(\.paragraphId),
-                        lineCharStarts: segment.blocks.map(\.charStart),
-                        selectedRange: selectedRange,
-                        charSelection: charSelection,
-                        charAnnotations: charAnnotations,
-                        annotationRanges: annotationRanges,
-                        onLongPressLine: { line, charOffset in
-                            onLongPressLine?(offset + line, charOffset)
-                        },
-                        readingBlockId: readingBlockId,
-                        readingTintColor: readingTintColor,
-                        commentMap: commentMap,
-                        pageBackgroundColor: backgroundColor,
-                        reviewAccentColor: accentColor,
-                        reviewStyle: reviewStyle,
-                        reviewURLs: reviewURLs,
-                        onCommentTap: onCommentTap
-                    )
-                    .frame(width: usableWidth, height: segmentHeight, alignment: .topLeading)
-                }
-            }
-            Spacer(minLength: 0)
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-    }
-
-    /// 每段文字在「整页纯文字块数组」里的起始行号；长按回调要用它换成整页行号
-    private func textLineOffsets(_ segments: [ReaderPageSegment]) -> [Int: Int] {
-        var offsets: [Int: Int] = [:]
-        var running = 0
-        for segment in segments where segment.kind == .text {
-            offsets[segment.id] = running
-            running += segment.blocks.count
-        }
-        return offsets
     }
 
     /// 首页标题占的高度：跟左右翻页用同一套估算

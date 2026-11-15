@@ -81,7 +81,7 @@ final class AppIconManager: ObservableObject {
     @Published private(set) var isSwitching = false
     @Published var errorMessage: String?
 
-    private let defaultsKey = "juyue_app_icon_choice"
+    private let defaultsKey = "legado_app_icon_choice"
 
     private init() {
         let stored = UserDefaults.standard.string(forKey: defaultsKey)
@@ -125,7 +125,7 @@ final class AppIconManager: ObservableObject {
                     AppLog.write("[图标] 切换成功 \(newChoice.rawValue)")
                     self?.choice = newChoice
                     self?.isSwitching = false
-                    UserDefaults.standard.set(newChoice.rawValue, forKey: self?.defaultsKey ?? "juyue_app_icon_choice")
+                    UserDefaults.standard.set(newChoice.rawValue, forKey: self?.defaultsKey ?? "legado_app_icon_choice")
                     return
                 }
                 if let error, retries > 0 {
@@ -149,6 +149,70 @@ final class AppIconManager: ObservableObject {
     #endif
 }
 
+private struct SettingsAlerts {
+    var restorePresented = false
+    var clearCachePresented = false
+}
+
+private struct AppearanceModePicker: View {
+    @Binding var selection: String
+
+    private static let modes: [(id: String, title: String)] = [
+        ("system", "跟随系统"),
+        ("light", "浅色模式"),
+        ("dark", "深色模式")
+    ]
+
+    var body: some View {
+        Picker(selection: $selection) {
+            ForEach(Self.modes, id: \.id) { mode in
+                Text(mode.title).tag(mode.id)
+            }
+        } label: {
+            Text("外观模式")
+        }
+        .pickerStyle(SegmentedPickerStyle())
+    }
+}
+
+private struct SettingsTrailingRow<Leading: View, Trailing: View>: View {
+    let leading: Leading
+    let trailing: Trailing
+
+    init(@ViewBuilder leading: () -> Leading, @ViewBuilder trailing: () -> Trailing) {
+        self.leading = leading()
+        self.trailing = trailing()
+    }
+
+    var body: some View {
+        leading
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .overlay(alignment: .trailing) { trailing }
+    }
+}
+
+private struct ImportFileSummary: View {
+    let fileName: String
+    let sourceName: String
+    let fileExtension: String
+    @Environment(\.appTheme) private var theme
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(fileName)
+                .font(theme.typography.body.weight(.semibold))
+                .foregroundColor(theme.palette.ink)
+            Text(sourceName)
+                .font(.caption2)
+                .foregroundColor(theme.palette.secondaryInk)
+            Text(fileExtension.isEmpty ? "未知格式" : fileExtension)
+                .font(theme.typography.mono)
+                .foregroundColor(theme.palette.accent)
+        }
+        .padding(.vertical, 4)
+    }
+}
+
 public struct SettingsView: View {
     @ObservedObject var bookStore = BookStore.shared
     @ObservedObject var readerConfig = ReaderConfig.shared
@@ -163,13 +227,10 @@ public struct SettingsView: View {
     /// 缓存章节时顺手抓书评（段评 / 本章说）首页
     @AppStorage("reader_cache_reviews") private var cacheReviews: Bool = false
 
-    @State private var showRestoreAlert: Bool = false
-    @State private var restoreSuccessMessage: String? = nil
-    @State private var showClearCacheAlert: Bool = false
+    @State private var alerts = SettingsAlerts()
     /// WebDAV 那行的小字：填了地址就算「已配置」，同步过才是「已同步」。
     /// 之前只看 lastSyncTime，所以填完地址回来还显示「未配置」。
     @State private var webDAVStatusText: String = "未配置"
-    @State private var clearCacheMessage: String? = nil
     @State private var showAppIconOptions: Bool = false
     @State private var logoPhotoItem: Any?
     @State private var iconGroupExpanded = false
@@ -249,17 +310,16 @@ public struct SettingsView: View {
             .onChange(of: appTheme) { newValue in
                 AppLog.write("[设置] 外观模式 → \(newValue)")
             }
-            .alert("重置书源", isPresented: $showRestoreAlert) {
+            .alert("重置书源", isPresented: $alerts.restorePresented) {
                 Button("取消", role: .cancel) {}
                 Button("确定重置", role: .destructive) {
                     AppLog.write("[设置] 重置书源")
                     bookStore.loadBundledSources(forceReset: true)
-                    restoreSuccessMessage = "书源已重置为预装状态"
                 }
             } message: {
                 Text("确定要把书源重置为预装默认状态吗？自己导入的书源会被覆盖，重新导入即可。")
             }
-            .alert("清理阅读缓存", isPresented: $showClearCacheAlert) {
+            .alert("清理阅读缓存", isPresented: $alerts.clearCachePresented) {
                 Button("取消", role: .cancel) {}
                 Button("确定清理", role: .destructive) {
                     AppLog.write("[设置] 清理阅读缓存")
@@ -267,7 +327,6 @@ public struct SettingsView: View {
                     BookContentService.shared.clearAllChapterCaches()
                     ReviewCache.clearAll()
                     URLCache.shared.removeAllCachedResponses()
-                    clearCacheMessage = count > 0 ? "已清理 \(count) 章缓存" : "没有需要清理的章节缓存"
                 }
             } message: {
                 Text("清理临时章节和图片缓存？书架和阅读进度会保留。")
@@ -971,14 +1030,6 @@ public struct SettingsView: View {
                 in: 4...24,
                 step: 1
             )
-            cardDivider
-            settingStepper(
-                "默认缓存章数",
-                icon: "tray.and.arrow.down",
-                value: "\(readerConfig.cachedChapterCount) 章",
-                $readerConfig.cachedChapterCount,
-                in: 1...200
-            )
         }
 
         sectionCard("背景", tag: "SURFACE") {
@@ -1071,12 +1122,7 @@ public struct SettingsView: View {
                         columns: 3
                     )
                 } else {
-                    Picker("外观模式", selection: $appTheme) {
-                        Text("跟随系统").tag("system")
-                        Text("浅色模式").tag("light")
-                        Text("深色模式").tag("dark")
-                    }
-                    .pickerStyle(.segmented)
+                    AppearanceModePicker(selection: $appTheme)
                 }
             }
         }
@@ -1392,6 +1438,15 @@ public struct SettingsView: View {
         }
     }
 
+    private func presentLogoPicker() {
+        SystemDocumentPicker.present(contentTypes: [.image]) { urls in
+            guard let url = urls.first else { return }
+            if let data = try? Data(contentsOf: url), shelfLogo.save(data) {
+                AppLog.write("[设置] 书架图标已更换（文件）")
+            }
+        }
+    }
+
     /// 书架标题实时预览：改字、字号、位置都按真实书架的比例立刻显示
     @ViewBuilder
     private var shelfTitlePreview: some View {
@@ -1552,15 +1607,6 @@ public struct SettingsView: View {
         return text.isEmpty ? "我的书架" : text
     }
 
-    private func presentLogoPicker() {
-        SystemDocumentPicker.present(contentTypes: [.image]) { urls in
-            guard let url = urls.first else { return }
-            if let data = try? Data(contentsOf: url), shelfLogo.save(data) {
-                AppLog.write("[设置] 书架图标已更换（文件）")
-            }
-        }
-    }
-
     private func shelfGroupLabel(_ title: String, icon: String, summary: String, expanded: Bool) -> some View {
         HStack(spacing: 12) {
             rowIcon(icon)
@@ -1593,7 +1639,7 @@ public struct SettingsView: View {
             }
             cardDivider
             Button {
-                showRestoreAlert = true
+                alerts.restorePresented = true
             } label: {
                 settingLabel("重置书源", icon: "arrow.clockwise", value: "恢复预装", detail: nil, chevron: false)
             }
@@ -1654,7 +1700,7 @@ public struct SettingsView: View {
         sectionCard("存储", tag: "LOCAL") {
             settingRow("书架藏书", icon: "books.vertical", value: "\(bookStore.bookshelf.count) 本")
             cardDivider
-            settingRow("缓存章数上限", icon: "internaldrive", value: "\(readerConfig.cachedChapterCount) 章")
+            cacheChapterControl
             cardDivider
             Toggle(isOn: $cacheReviews) {
                 HStack(spacing: 12) {
@@ -1678,7 +1724,7 @@ public struct SettingsView: View {
             }
             cardDivider
             Button {
-                showClearCacheAlert = true
+                alerts.clearCachePresented = true
             } label: {
                 HStack(spacing: 12) {
                     Image(systemName: "trash")
@@ -1712,8 +1758,91 @@ public struct SettingsView: View {
         }
     }
 
+    /// 缓存范围：章数可输入、可 ±10/±20 批量调；打开「下载全书」就不限章数。
+    private var cacheChapterControl: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 12) {
+                rowIcon("internaldrive")
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("缓存范围")
+                        .font(theme.typography.body)
+                        .foregroundColor(theme.palette.ink)
+                    Text(readerConfig.cachedAllChapters
+                         ? "按目录总章数一次下完"
+                         : "每次缓存 \(readerConfig.cachedChapterCount) 章")
+                        .font(.system(size: 11))
+                        .foregroundColor(theme.palette.secondaryInk)
+                }
+                Spacer(minLength: 0)
+            }
+            if !readerConfig.cachedAllChapters {
+                HStack(spacing: 8) {
+                    cacheStepButton("-20", delta: -20)
+                    cacheStepButton("-10", delta: -10)
+                    TextField("", value: Binding(
+                        get: { readerConfig.cachedChapterCount },
+                        set: { readerConfig.cachedChapterCount = min(max($0, 1), 200) }
+                    ), format: .number)
+                    #if os(iOS)
+                    .keyboardType(.numberPad)
+                    #endif
+                    .multilineTextAlignment(.center)
+                    .font(.system(size: 15, weight: .semibold, design: .monospaced))
+                    .foregroundColor(theme.palette.ink)
+                    .frame(width: 64, height: 32)
+                    .background(
+                        RoundedRectangle(cornerRadius: 8, style: .continuous)
+                            .fill(theme.palette.elevated)
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 8, style: .continuous)
+                            .stroke(theme.palette.divider, lineWidth: theme.metrics.borderWidth)
+                    )
+                    cacheStepButton("+10", delta: 10)
+                    cacheStepButton("+20", delta: 20)
+                    Spacer(minLength: 0)
+                }
+                Text("点数字可直接输入，范围 1–200 章。")
+                    .font(.system(size: 11))
+                    .foregroundColor(theme.palette.secondaryInk)
+            }
+            Toggle(isOn: $readerConfig.cachedAllChapters) {
+                HStack(spacing: 12) {
+                    rowIcon("books.vertical")
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("下载全书")
+                            .font(theme.typography.body)
+                            .foregroundColor(theme.palette.ink)
+                        Text("打开后下载缓存不再受章数上限限制，按目录总章数一次下完。")
+                            .font(.system(size: 11))
+                            .foregroundColor(theme.palette.secondaryInk)
+                    }
+                }
+            }
+            .toggleStyle(SwitchToggleStyle(tint: theme.palette.accent))
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 11)
+    }
+
+    private func cacheStepButton(_ title: String, delta: Int) -> some View {
+        Button {
+            readerConfig.cachedChapterCount = min(max(readerConfig.cachedChapterCount + delta, 1), 200)
+        } label: {
+            Text(title)
+                .font(.system(size: 13, weight: .semibold, design: .monospaced))
+                .foregroundColor(theme.palette.accent)
+                .frame(minWidth: 44, minHeight: 32)
+                .background(
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .fill(theme.palette.accent.opacity(0.1))
+                )
+        }
+        .buttonStyle(.plain)
+    }
+
     private var downloadStatusText: String {
-        let running = ChapterDownloadManager.shared.jobs.filter { $0.isRunning }.count
+        let running = ChapterDownloadManager.shared.jobs.filter { $0.isRunning && !$0.isPaused }.count
         return running > 0 ? "\(running) 个进行中" : "空闲"
     }
 
@@ -2081,7 +2210,7 @@ struct ReplacementRulesView: View {
         .sheet(isPresented: $showImport) { importSheet }
     }
 
-    /// 导入面板：贴 JSON，或者从文件选（对齐安卓 legado 导出的替换净化格式）
+    /// 导入面板：贴 JSON，或者从文件选（对齐安卓阅读导出的替换净化格式）
     private var importSheet: some View {
         NavigationView {
             VStack(alignment: .leading, spacing: 12) {
@@ -2130,7 +2259,10 @@ struct ReplacementRulesView: View {
 
     private func presentRulesFilePicker() {
         SystemDocumentPicker.present(contentTypes: [.json, .plainText, .item]) { urls in
-            guard let url = urls.first else { return }
+            guard let url = urls.first else {
+                importMessage = "选择文件失败"
+                return
+            }
             if let text = try? String(contentsOf: url, encoding: .utf8) {
                 importText = text
                 importRules(text)
@@ -2146,7 +2278,7 @@ struct ReplacementRulesView: View {
             return
         }
         var added = 0
-        for rule in parsed {
+        for rule in parsed.rules {
             let duplicate = store.rules.contains {
                 $0.pattern == rule.pattern && $0.replacement == rule.replacement && $0.isRegex == rule.isRegex
             }
@@ -2155,14 +2287,24 @@ struct ReplacementRulesView: View {
                 added += 1
             }
         }
-        importMessage = "导入 \(added) 条（跳过重复 \(parsed.count - added) 条）"
+        var message = "导入 \(added) 条（跳过重复 \(parsed.rules.count - added) 条）"
+        if parsed.skipped > 0 {
+            message += "，跳过不支持规则 \(parsed.skipped) 条"
+        }
+        importMessage = message
         if added > 0 {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.9) { showImport = false }
         }
     }
 
-    /// 认安卓 legado 的导出格式，也认本 App 自己存的键
-    static func parseRules(_ json: String) -> [ReplaceRule]? {
+    struct ParsedRules {
+        var rules: [ReplaceRule]
+        /// @js 脚本和只作用于标题的规则这里执行不了，导入时丢掉
+        var skipped: Int
+    }
+
+    /// 认安卓阅读的导出格式，也认本 App 自己存的键
+    static func parseRules(_ json: String) -> ParsedRules? {
         let trimmed = json.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty, let data = trimmed.data(using: .utf8),
               let object = try? JSONSerialization.jsonObject(with: data) else { return nil }
@@ -2175,6 +2317,7 @@ struct ReplacementRulesView: View {
         }
 
         var rules: [ReplaceRule] = []
+        var skipped = 0
         for item in items {
             guard let dict = item as? [String: Any] else { continue }
             var pattern = (dict["pattern"] as? String) ?? ""
@@ -2184,16 +2327,27 @@ struct ReplacementRulesView: View {
                 if let flag = rawRegex as? Bool { isRegex = flag }
             }
             guard !pattern.isEmpty else { continue }
+            let replacement = (dict["replacement"] as? String) ?? ""
+            // @js: 替换要由 JS 引擎逐匹配执行，当普通模板套用会把脚本源码灌进正文
+            if replacement.trimmingCharacters(in: .whitespacesAndNewlines).hasPrefix("@js:") {
+                skipped += 1
+                continue
+            }
+            // scopeContent=false 的规则只作用于章节标题，不该进正文
+            if let scopeContent = dict["scopeContent"] as? Bool, !scopeContent {
+                skipped += 1
+                continue
+            }
             rules.append(ReplaceRule(
                 name: (dict["name"] as? String) ?? "",
                 pattern: pattern,
-                replacement: (dict["replacement"] as? String) ?? "",
+                replacement: replacement,
                 isRegex: isRegex,
                 enabled: (dict["enabled"] as? Bool) ?? true,
                 bookUrl: nil
             ))
         }
-        return rules.isEmpty ? nil : rules
+        return rules.isEmpty && skipped == 0 ? nil : ParsedRules(rules: rules, skipped: skipped)
     }
 
     private func enabledBinding(_ rule: ReplaceRule) -> Binding<Bool> {
@@ -2730,7 +2884,7 @@ enum ImportDownloadError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .invalidResponse: return "服务器没有返回文件"
-        case .badStatus(let code): return "HTTP \(code)"
+        case .badStatus(let code): return "服务器返回 HTTP \(code)，链接可能已失效"
         case .notText: return "返回内容不是 UTF-8 文本"
         case .unsupportedLink: return "暂不支持这个链接"
         }
@@ -2743,10 +2897,11 @@ enum ImportDownloader {
         url: URL,
         referer: URL?,
         cookies: [HTTPCookie] = [],
-        displayName: String
+        displayName: String,
+        requestWithoutUA: Bool = false
     ) async throws -> DownloadedImportFile {
         let (data, response) = try await URLSession.shared.data(
-            for: makeRequest(url: url, referer: referer, cookies: cookies)
+            for: makeRequest(url: url, referer: referer, cookies: cookies, sendUserAgent: !requestWithoutUA)
         )
         try validate(response)
 
@@ -2769,9 +2924,9 @@ enum ImportDownloader {
         )
     }
 
-    static func loadText(from url: URL, referer: URL?) async throws -> String {
+    static func loadText(from url: URL, referer: URL?, requestWithoutUA: Bool = false) async throws -> String {
         let (data, response) = try await URLSession.shared.data(
-            for: makeRequest(url: url, referer: referer, cookies: [])
+            for: makeRequest(url: url, referer: referer, cookies: [], sendUserAgent: !requestWithoutUA)
         )
         try validate(response)
         guard let text = String(data: data, encoding: .utf8) else {
@@ -2780,10 +2935,18 @@ enum ImportDownloader {
         return text
     }
 
-    private static func makeRequest(url: URL, referer: URL?, cookies: [HTTPCookie]) -> URLRequest {
+    private static func makeRequest(
+        url: URL,
+        referer: URL?,
+        cookies: [HTTPCookie],
+        sendUserAgent: Bool
+    ) -> URLRequest {
         var request = URLRequest(url: url)
-        request.timeoutInterval = 60
-        request.setValue(NetworkClient.defaultUserAgent, forHTTPHeaderField: "User-Agent")
+        // 源站 404/522 或者连接挂起时，60 秒静默等待看起来就像点了没反应。
+        request.timeoutInterval = 20
+        if sendUserAgent {
+            request.setValue(NetworkClient.defaultUserAgent, forHTTPHeaderField: "User-Agent")
+        }
         if let referer {
             request.setValue(referer.absoluteString, forHTTPHeaderField: "Referer")
         }
@@ -2813,11 +2976,20 @@ enum ImportDownloader {
 /// 正文里的 legado:// / juyue://import/... 深链。
 enum RemoteSourceImporter {
     @MainActor
-    static func importSource(route: String, sourceURL: String, referer: URL?) async throws -> String {
+    static func importSource(
+        route: String,
+        sourceURL: String,
+        referer: URL?,
+        requestWithoutUA: Bool = false
+    ) async throws -> String {
         guard let url = URL(string: sourceURL) else {
             throw ImportDownloadError.unsupportedLink
         }
-        let text = try await ImportDownloader.loadText(from: url, referer: referer)
+        let text = try await ImportDownloader.loadText(
+            from: url,
+            referer: referer,
+            requestWithoutUA: requestWithoutUA
+        )
         switch route {
         case "rssSource":
             let sources = try SubscribeSourceService.decodeSources(from: text)
@@ -2830,6 +3002,13 @@ enum RemoteSourceImporter {
         case "bookSource":
             let count = try BookStore.shared.importSources(json: text)
             return "书源已导入：新增或更新 \(count) 个。"
+        case "httpTTS":
+            // 内存里可能是空的，先读盘再合并，否则会把已有朗读引擎整个盖掉。
+            let store = HttpTTSStore.shared
+            try? store.load()
+            let imported = try store.importJSON(text, replace: false)
+            let names = imported.map(\.name).joined(separator: "、")
+            return "朗读引擎已导入：\(names)"
         default:
             throw ImportDownloadError.unsupportedLink
         }
@@ -2868,18 +3047,11 @@ struct DownloadedImportSheet: View {
         NavigationView {
             List {
                 Section {
-                    VStack(alignment: .leading, spacing: 6) {
-                        Text(file.fileName)
-                            .font(theme.typography.body.weight(.semibold))
-                            .foregroundColor(theme.palette.ink)
-                        Text(sourceName)
-                            .font(.caption2)
-                            .foregroundColor(theme.palette.secondaryInk)
-                        Text(file.url.pathExtension.uppercased().isEmpty ? "未知格式" : file.url.pathExtension.uppercased())
-                            .font(theme.typography.mono)
-                            .foregroundColor(theme.palette.accent)
-                    }
-                    .padding(.vertical, 4)
+                    ImportFileSummary(
+                        fileName: file.fileName,
+                        sourceName: sourceName,
+                        fileExtension: file.url.pathExtension.uppercased()
+                    )
                 }
                 .appThemedRows()
 
@@ -3102,17 +3274,17 @@ struct DownloadedImportSheet: View {
 
     private func purifierRules(from asset: ImportAsset) throws -> [ReplaceRule] {
         if !asset.items.isEmpty,
-           let rules = ReplacementRulesView.parseRules(jsonArray(asset.items)),
-           !rules.isEmpty {
-            return rules
+           let parsed = ReplacementRulesView.parseRules(jsonArray(asset.items)),
+           !parsed.rules.isEmpty {
+            return parsed.rules
         }
         return try purifierRulesFromText()
     }
 
     private func purifierRulesFromText() throws -> [ReplaceRule] {
         let text = try textContent()
-        if let rules = ReplacementRulesView.parseRules(text), !rules.isEmpty {
-            return rules
+        if let parsed = ReplacementRulesView.parseRules(text), !parsed.rules.isEmpty {
+            return parsed.rules
         }
         var rules: [ReplaceRule] = []
         for rawLine in text.components(separatedBy: .newlines) {
@@ -3163,6 +3335,7 @@ struct ImportWebSheet: View {
     @State private var canGoBack = false
     @State private var canGoForward = false
     @State private var pendingImportFile: DownloadedImportFile?
+    @State private var pendingImportLink: URL?
     @State private var statusMessage: String?
 
     init(page: ImportWebPage, onFinish: @escaping (String) -> Void) {
@@ -3200,7 +3373,7 @@ struct ImportWebSheet: View {
                         currentURL = url
                         updateNavigationState()
                     },
-                    onLegadoURL: { _ in },
+                    onJuyueURL: { pendingImportLink = $0 },
                     onExternalURL: openExternal,
                     onDownloadedFile: { file in
                         isLoading = false
@@ -3281,6 +3454,52 @@ struct ImportWebSheet: View {
             } message: {
                 Text(statusMessage ?? "")
             }
+            .confirmationDialog(
+                pendingImportLink.flatMap(SourceDeepLinkParser.parse)?.title ?? "导入？",
+                isPresented: Binding(
+                    get: { pendingImportLink != nil },
+                    set: { if !$0 { pendingImportLink = nil } }
+                ),
+                titleVisibility: .visible
+            ) {
+                Button("导入") {
+                    if let url = pendingImportLink { confirmImport(url) }
+                    pendingImportLink = nil
+                }
+                Button("取消", role: .cancel) { pendingImportLink = nil }
+            } message: {
+                Text(pendingImportLink?.absoluteString ?? "")
+            }
+        }
+    }
+
+    private func confirmImport(_ url: URL) {
+        guard let link = SourceDeepLinkParser.parse(url) else {
+            statusMessage = "暂不支持这个导入链接：\(url.absoluteString)"
+            return
+        }
+        isLoading = true
+        Task { @MainActor in
+            do {
+                if let route = link.route {
+                    statusMessage = try await RemoteSourceImporter.importSource(
+                        route: route,
+                        sourceURL: link.sourceURL.absoluteString,
+                        referer: page.url,
+                        requestWithoutUA: link.requestWithoutUA
+                    )
+                } else {
+                    pendingImportFile = try await ImportDownloader.download(
+                        url: link.sourceURL,
+                        referer: page.url,
+                        displayName: page.title,
+                        requestWithoutUA: link.requestWithoutUA
+                    )
+                }
+            } catch {
+                statusMessage = "导入失败：\(error.localizedDescription)"
+            }
+            isLoading = false
         }
     }
 
@@ -3298,7 +3517,7 @@ struct ImportWebSheet: View {
     }
 }
 
-/// `singleUrl` 订阅源在 Legado 里是发布页，不是文章列表。直接用内嵌网页打开，
+/// `singleUrl` 订阅源在阅读里是发布页，不是文章列表。直接用内嵌网页打开，
 /// 同时接管网页里的 `legado://import/rssSource?src=...`，点一下就能更新源。
 struct SubscribeSourceWebView: View {
     let source: SubscribeSource
@@ -3315,6 +3534,7 @@ struct SubscribeSourceWebView: View {
     @State private var loadError: String?
     @State private var statusMessage: String?
     @State private var pendingImportFile: DownloadedImportFile?
+    @State private var pendingImportLink: URL?
 
     init(source: SubscribeSource) {
         self.source = source
@@ -3351,7 +3571,7 @@ struct SubscribeSourceWebView: View {
                         updateNavigationState()
                         mirrorCookies()
                     },
-                    onLegadoURL: handleLegadoURL,
+                    onJuyueURL: handleJuyueURL,
                     onExternalURL: openExternal,
                     onDownloadedFile: { file in
                         isLoading = false
@@ -3444,6 +3664,22 @@ struct SubscribeSourceWebView: View {
         } message: {
             Text(statusMessage ?? "")
         }
+        .confirmationDialog(
+            pendingImportLink.flatMap(SourceDeepLinkParser.parse)?.title ?? "导入？",
+            isPresented: Binding(
+                get: { pendingImportLink != nil },
+                set: { if !$0 { pendingImportLink = nil } }
+            ),
+            titleVisibility: .visible
+        ) {
+            Button("导入") {
+                if let url = pendingImportLink { confirmImport(url) }
+                pendingImportLink = nil
+            }
+            Button("取消", role: .cancel) { pendingImportLink = nil }
+        } message: {
+            Text(pendingImportLink?.absoluteString ?? "")
+        }
         .sheet(item: $pendingImportFile) { file in
             DownloadedImportSheet(sourceName: source.sourceName, file: file) { result in
                 statusMessage = result
@@ -3481,95 +3717,42 @@ struct SubscribeSourceWebView: View {
         }
     }
 
-    private func handleLegadoURL(_ url: URL) {
-        guard let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
-              let scheme = components.scheme?.lowercased(),
-              scheme == "juyue" || scheme == "legado" else {
-            return
-        }
-        let route = components.path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
-        guard components.host == "import",
-              let src = components.queryItems?.first(where: { $0.name == "src" })?.value,
-              !src.isEmpty else {
+    private func handleJuyueURL(_ url: URL) {
+        guard SourceDeepLinkParser.parse(url) != nil else {
             statusMessage = "暂不支持这个导入链接：\(url.absoluteString)"
             return
         }
-        switch route {
-        case "rssSource":
-            importRemoteSubscribeSource(src)
-        case "bookSource":
-            importRemoteBookSource(src)
-        default:
-            statusMessage = "暂不支持这个导入链接：\(url.absoluteString)"
+        pendingImportLink = url
+    }
+
+    private func confirmImport(_ url: URL) {
+        guard let link = SourceDeepLinkParser.parse(url) else { return }
+        let referer = URL(string: source.sourceUrl)
+        isLoading = true
+        Task { @MainActor in
+            do {
+                if let route = link.route {
+                    statusMessage = try await RemoteSourceImporter.importSource(
+                        route: route,
+                        sourceURL: link.sourceURL.absoluteString,
+                        referer: referer,
+                        requestWithoutUA: link.requestWithoutUA
+                    )
+                } else {
+                    pendingImportFile = try await ImportDownloader.download(
+                        url: link.sourceURL,
+                        referer: referer,
+                        displayName: source.sourceName,
+                        requestWithoutUA: link.requestWithoutUA
+                    )
+                }
+            } catch {
+                statusMessage = "导入失败：\(error.localizedDescription)"
+            }
+            isLoading = false
         }
     }
 
-    private func importRemoteSubscribeSource(_ rawURL: String) {
-        guard let url = URL(string: rawURL) else {
-            statusMessage = "导入地址不合法：\(rawURL)"
-            return
-        }
-        isLoading = true
-        Task {
-            do {
-                let (data, response) = try await URLSession.shared.data(from: url)
-                guard let http = response as? HTTPURLResponse, (200..<400).contains(http.statusCode) else {
-                    throw NSError(domain: "SubscribeSource", code: 1,
-                                  userInfo: [NSLocalizedDescriptionKey: "HTTP \(((response as? HTTPURLResponse)?.statusCode) ?? 0)"])
-                }
-                guard let text = String(data: data, encoding: .utf8) else {
-                    throw NSError(domain: "SubscribeSource", code: 2,
-                                  userInfo: [NSLocalizedDescriptionKey: "返回内容不是 UTF-8 文本"])
-                }
-                let sources = try SubscribeSourceService.decodeSources(from: text)
-                guard !sources.isEmpty else {
-                    throw NSError(domain: "SubscribeSource", code: 3,
-                                  userInfo: [NSLocalizedDescriptionKey: "没读到订阅源"])
-                }
-                let result = await MainActor.run { store.merge(sources) }
-                await MainActor.run {
-                    isLoading = false
-                    statusMessage = "订阅源已更新：新增 \(result.added) 个，更新 \(result.updated) 个。"
-                }
-            } catch {
-                await MainActor.run {
-                    isLoading = false
-                    statusMessage = "导入失败：\(error.localizedDescription)"
-                }
-            }
-        }
-    }
-
-    private func importRemoteBookSource(_ rawURL: String) {
-        guard let url = URL(string: rawURL) else {
-            statusMessage = "导入地址不合法：\(rawURL)"
-            return
-        }
-        isLoading = true
-        Task {
-            do {
-                let (data, response) = try await URLSession.shared.data(from: url)
-                guard let http = response as? HTTPURLResponse, (200..<400).contains(http.statusCode) else {
-                    throw NSError(domain: "BookSource", code: 1,
-                                  userInfo: [NSLocalizedDescriptionKey: "HTTP \(((response as? HTTPURLResponse)?.statusCode) ?? 0)"])
-                }
-                guard let text = String(data: data, encoding: .utf8) else {
-                    throw NSError(domain: "BookSource", code: 2,
-                                  userInfo: [NSLocalizedDescriptionKey: "返回内容不是 UTF-8 文本"])
-                }
-                let count = try await MainActor.run { try bookStore.importSources(json: text) }
-                await MainActor.run {
-                    isLoading = false
-                    statusMessage = "书源已导入：新增或更新 \(count) 个。"
-                }
-            } catch {
-                await MainActor.run {
-                    isLoading = false
-                    statusMessage = "导入失败：\(error.localizedDescription)"
-                }
-            }
-        }
-    }
 
     private func openExternal(_ url: URL) {
         #if os(iOS)
@@ -3587,7 +3770,7 @@ private struct SubscribeSourceWebViewBox: UIViewRepresentable {
     let onLoadingChanged: (Bool) -> Void
     let onTitleChanged: (String) -> Void
     let onURLChanged: (URL?) -> Void
-    let onLegadoURL: (URL) -> Void
+    let onJuyueURL: (URL) -> Void
     let onExternalURL: (URL) -> Void
     let onDownloadedFile: (DownloadedImportFile) -> Void
     let onDownloadFailed: (String) -> Void
@@ -3626,9 +3809,8 @@ private struct SubscribeSourceWebViewBox: UIViewRepresentable {
                 webView.load(URLRequest(url: target))
                 return nil
             }
-            let scheme = url.scheme?.lowercased() ?? ""
-            if scheme == "juyue" || scheme == "legado" {
-                parent.onLegadoURL(url)
+            if SourceDeepLinkParser.parse(url) != nil {
+                parent.onJuyueURL(url)
                 return nil
             }
             webView.load(navigationAction.request)
@@ -3648,8 +3830,8 @@ private struct SubscribeSourceWebViewBox: UIViewRepresentable {
                     return
                 }
                 let scheme = url.scheme?.lowercased() ?? ""
-                if scheme == "juyue" || scheme == "legado" {
-                    parent.onLegadoURL(url)
+                if SourceDeepLinkParser.parse(url) != nil {
+                    parent.onJuyueURL(url)
                     decisionHandler(.cancel, preferences)
                     return
                 }
@@ -3785,7 +3967,7 @@ private struct SubscribeSourceWebViewBox: NSViewRepresentable {
     let onLoadingChanged: (Bool) -> Void
     let onTitleChanged: (String) -> Void
     let onURLChanged: (URL?) -> Void
-    let onLegadoURL: (URL) -> Void
+    let onJuyueURL: (URL) -> Void
     let onExternalURL: (URL) -> Void
     let onDownloadedFile: (DownloadedImportFile) -> Void
     let onDownloadFailed: (String) -> Void
@@ -3824,9 +4006,8 @@ private struct SubscribeSourceWebViewBox: NSViewRepresentable {
                 webView.load(URLRequest(url: target))
                 return nil
             }
-            let scheme = url.scheme?.lowercased() ?? ""
-            if scheme == "juyue" || scheme == "legado" {
-                parent.onLegadoURL(url)
+            if SourceDeepLinkParser.parse(url) != nil {
+                parent.onJuyueURL(url)
                 return nil
             }
             webView.load(navigationAction.request)
@@ -3846,8 +4027,8 @@ private struct SubscribeSourceWebViewBox: NSViewRepresentable {
                     return
                 }
                 let scheme = url.scheme?.lowercased() ?? ""
-                if scheme == "juyue" || scheme == "legado" {
-                    parent.onLegadoURL(url)
+                if SourceDeepLinkParser.parse(url) != nil {
+                    parent.onJuyueURL(url)
                     decisionHandler(.cancel, preferences)
                     return
                 }
@@ -4081,7 +4262,7 @@ struct SubscribeSourcesView: View {
         List {
             if store.sources.isEmpty {
                 Section {
-                    Text("还没有订阅源。右上角可以粘贴 / 导入 Legado 的 rssSources.json。")
+                    Text("还没有订阅源。右上角可以粘贴 / 导入阅读的 rssSources.json。")
                         .font(.footnote)
                         .foregroundColor(theme.palette.secondaryInk)
                 }
@@ -4090,27 +4271,29 @@ struct SubscribeSourcesView: View {
 
             if !store.sources.isEmpty {
                 Section {
-                    HStack {
+                    SettingsTrailingRow {
                         Text("显示 \(filteredSources.count) / 共 \(store.sources.count)")
                             .font(.caption)
                             .foregroundColor(theme.palette.secondaryInk)
-                        Spacer()
-                        Menu {
-                            Button("全部分组") { selectedGroup = nil }
-                            ForEach(allGroups, id: \.self) { group in
-                                Button(group) { selectedGroup = group }
+                    } trailing: {
+                        HStack(spacing: 10) {
+                            Menu {
+                                Button("全部分组") { selectedGroup = nil }
+                                ForEach(allGroups, id: \.self) { group in
+                                    Button(group) { selectedGroup = group }
+                                }
+                            } label: {
+                                Label(selectedGroup ?? "全部分组", systemImage: "folder")
+                                    .font(.caption)
                             }
-                        } label: {
-                            Label(selectedGroup ?? "全部分组", systemImage: "folder")
-                                .font(.caption)
-                        }
-                        Menu {
-                            ForEach(SubscribeSortMode.allCases) { mode in
-                                Button(mode.rawValue) { sortMode = mode }
+                            Menu {
+                                ForEach(SubscribeSortMode.allCases) { mode in
+                                    Button(mode.rawValue) { sortMode = mode }
+                                }
+                            } label: {
+                                Label(sortMode.rawValue, systemImage: "arrow.up.arrow.down")
+                                    .font(.caption)
                             }
-                        } label: {
-                            Label(sortMode.rawValue, systemImage: "arrow.up.arrow.down")
-                                .font(.caption)
                         }
                     }
 
@@ -4128,9 +4311,9 @@ struct SubscribeSourcesView: View {
                     NavigationLink {
                         SubscribeFavoritesView()
                     } label: {
-                        HStack {
+                        SettingsTrailingRow {
                             Label("收藏文章", systemImage: "star")
-                            Spacer()
+                        } trailing: {
                             Text("\(articleState.favorites().count)")
                                 .foregroundColor(theme.palette.secondaryInk)
                         }
@@ -4353,7 +4536,10 @@ struct SubscribeSourcesView: View {
 
     private func presentSourceFilePicker() {
         SystemDocumentPicker.present(contentTypes: [.json, .plainText]) { urls in
-            guard let url = urls.first else { return }
+            guard let url = urls.first else {
+                message = "文件读不出来。"
+                return
+            }
             if let data = try? Data(contentsOf: url),
                let text = String(data: data, encoding: .utf8) {
                 preparePendingImport(text, label: url.lastPathComponent)
@@ -4621,9 +4807,9 @@ struct SubscribeImportSheet: View {
                     Button {
                         fetchRemote()
                     } label: {
-                        HStack {
+                        SettingsTrailingRow {
                             Label("下载并预览", systemImage: "arrow.down.circle")
-                            Spacer()
+                        } trailing: {
                             if isFetching { ProgressView() }
                         }
                     }
@@ -4653,7 +4839,7 @@ struct SubscribeImportSheet: View {
                         Label("从文件导入", systemImage: "folder")
                     }
                 } footer: {
-                    Text("兼容安卓版 Legado 订阅源文件，数组与单个对象两种结构均可。")
+                    Text("兼容安卓版阅读订阅源文件，数组与单个对象两种结构均可。")
                 }
                 .appThemedRows()
             }
@@ -4886,9 +5072,9 @@ struct SubscribeArticlesView: View {
                         Button {
                             if articleState.isRead(sourceUrl: source.sourceUrl, article: article) {
                                 articleState.markUnread(sourceUrl: source.sourceUrl, article: article)
-                            } else {
-                                articleState.markRead(sourceUrl: source.sourceUrl, article: article)
+                                return
                             }
+                            articleState.markRead(sourceUrl: source.sourceUrl, article: article)
                         } label: {
                             Label(
                                 articleState.isRead(sourceUrl: source.sourceUrl, article: article) ? "标未读" : "标已读",
@@ -4967,26 +5153,23 @@ struct SubscribeArticlesView: View {
 
     @ViewBuilder
     private func articleThumbnail(_ article: SubscribeArticle) -> some View {
-        Group {
-            if let url = URL(string: article.imageUrl ?? "") {
-                AsyncImage(url: url) { phase in
-                    switch phase {
-                    case .success(let image):
-                        image.resizable().scaledToFill()
-                    default:
-                        articleThumbnailPlaceholder
-                    }
+        // 源没配 ruleImage 时本来就取不到图，画个空占位框只会让人以为图片没加载。
+        if let url = URL(string: article.imageUrl ?? "") {
+            AsyncImage(url: url) { phase in
+                switch phase {
+                case .success(let image):
+                    image.resizable().scaledToFill()
+                default:
+                    articleThumbnailPlaceholder
                 }
-            } else {
-                articleThumbnailPlaceholder
             }
+            .frame(width: 58, height: 58)
+            .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    .stroke(theme.palette.divider, lineWidth: theme.metrics.borderWidth)
+            )
         }
-        .frame(width: 58, height: 58)
-        .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: 6, style: .continuous)
-                .stroke(theme.palette.divider, lineWidth: theme.metrics.borderWidth)
-        )
     }
 
     private var articleThumbnailPlaceholder: some View {
@@ -5048,12 +5231,16 @@ struct SubscribeArticleView: View {
     @ObservedObject private var articleState = SubscribeArticleStateStore.shared
     @State private var content = ""
     @State private var contentBaseURL = ""
+    @State private var detailHTML: String?
+    @State private var showWeb = true
     @State private var mediaHeaders: [String: String] = [:]
     @State private var isLoading = true
     @State private var isFromCache = false
     @State private var isDownloading = false
     @State private var pendingImportFile: DownloadedImportFile?
     @State private var pendingWebPage: ImportWebPage?
+    @State private var pendingImportLink: URL?
+    @State private var pendingExternalLink: URL?
     @State private var statusMessage: String?
 
     private var blocks: [SubscribeArticleBlock] {
@@ -5066,6 +5253,40 @@ struct SubscribeArticleView: View {
     }
 
     private func attributedText(_ text: String) -> AttributedString {
+        // 清理阶段把导入深链转成了 `[文字](地址)`；这里拆回可点文字，地址本身不上屏。
+        let pattern = #"\[([^\]]+)\]\(([a-zA-Z][a-zA-Z0-9+.\-]*://[^)\s]+)\)"#
+        guard let regex = try? NSRegularExpression(pattern: pattern) else {
+            return plainAttributedText(text)
+        }
+        let ns = text as NSString
+        let matches = regex.matches(in: text, range: NSRange(location: 0, length: ns.length))
+        guard !matches.isEmpty else { return plainAttributedText(text) }
+
+        var result = AttributedString()
+        var cursor = 0
+        for match in matches {
+            if match.range.location > cursor {
+                let gap = NSRange(location: cursor, length: match.range.location - cursor)
+                result += plainAttributedText(ns.substring(with: gap))
+            }
+            let label = ns.substring(with: match.range(at: 1))
+            let href = ns.substring(with: match.range(at: 2))
+            var piece = AttributedString(label)
+            if let url = URL(string: href) {
+                piece.link = url
+                piece.foregroundColor = theme.palette.accent
+                piece.underlineStyle = .single
+            }
+            result += piece
+            cursor = match.range.location + match.range.length
+        }
+        if cursor < ns.length {
+            result += plainAttributedText(ns.substring(from: cursor))
+        }
+        return result
+    }
+
+    private func plainAttributedText(_ text: String) -> AttributedString {
         var attributed = AttributedString(text)
         guard let base = linkBaseURL else { return attributed }
         for link in ArticleLinkExtractor.links(in: text, baseURL: base) {
@@ -5082,70 +5303,91 @@ struct SubscribeArticleView: View {
 
     var body: some View {
         NavigationView {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 12) {
-                    if let cover = article.imageUrl, !cover.isEmpty {
-                        SubscribeBodyImage(urlString: cover, headers: mediaHeaders)
-                            .frame(maxWidth: .infinity)
-                    }
-                    Text(article.title)
-                        .font(.title3.bold())
-                        .foregroundColor(theme.palette.ink)
-                    if let date = article.date, !date.isEmpty {
-                        Text(date).font(.caption).foregroundColor(theme.palette.secondaryInk)
-                    }
-                    if source.type == 2, let url = URL(string: article.link) {
-                        Link(destination: url) {
-                            Label("打开视频页面", systemImage: "play.rectangle")
-                                .font(.system(size: 14, weight: .semibold))
-                                .padding(.vertical, 6)
-                        }
-                    }
-                    if isFromCache {
-                        Text("离线缓存")
-                            .font(.caption2)
-                            .foregroundColor(theme.palette.accent)
-                    }
-                    if isDownloading {
-                        HStack(spacing: 6) {
-                            ProgressView().controlSize(.small)
-                            Text("正在下载…")
-                                .font(.caption2)
-                                .foregroundColor(theme.palette.secondaryInk)
-                        }
-                    }
-                    if isLoading {
-                        ProgressView().padding(.top, 20)
-                    } else if content.isEmpty {
-                        Text("没取到正文，点右上角去网页看。")
-                            .font(.system(size: 16))
-                            .lineSpacing(6)
-                            .foregroundColor(theme.palette.ink)
-                    } else {
-                        VStack(alignment: .leading, spacing: 14) {
-                            ForEach(blocks) { block in
-                                switch block.kind {
-                                case .text:
-                                    Text(attributedText(block.value))
-                                        .font(.system(size: 16))
-                                        .lineSpacing(6)
-                                        .foregroundColor(theme.palette.ink)
-                                        .frame(maxWidth: .infinity, alignment: .leading)
-                                        .environment(\.openURL, OpenURLAction { handleLink($0) })
-                                case .image:
-                                    SubscribeBodyImage(urlString: block.value, headers: mediaHeaders)
-                                case .video:
-                                    SubscribeBodyVideo(urlString: block.value, headers: mediaHeaders)
+            Group {
+                if showWeb, let html = detailHTML, !html.isEmpty {
+                    SubscribeWebReader(
+                        html: html,
+                        url: URL(string: contentBaseURL.isEmpty ? article.link : contentBaseURL),
+                        baseURL: source.loadWithBaseUrl == false
+                            ? nil
+                            : URL(string: contentBaseURL.isEmpty ? article.link : contentBaseURL),
+                        headers: mediaHeaders,
+                        enableJS: source.enableJs ?? true,
+                        cacheFirst: source.cacheFirst ?? false,
+                        allowInsecureTLS: source.allowInsecureTLS ?? false,
+                        preloadJS: nil,
+                        darkMode: theme.isDark,
+                        onImportLink: { pendingImportLink = $0 },
+                        onDownloadLink: { startDownload($0) },
+                        onExternalLink: { pendingExternalLink = $0 }
+                    )
+                } else {
+                    ScrollView {
+                        VStack(alignment: .leading, spacing: 12) {
+                            if let cover = article.imageUrl, !cover.isEmpty {
+                                SubscribeBodyImage(urlString: cover, headers: mediaHeaders)
+                                    .frame(maxWidth: .infinity)
+                            }
+                            Text(article.title)
+                                .font(.title3.bold())
+                                .foregroundColor(theme.palette.ink)
+                            if let date = article.date, !date.isEmpty {
+                                Text(date).font(.caption).foregroundColor(theme.palette.secondaryInk)
+                            }
+                            if source.type == 2, let url = URL(string: article.link) {
+                                Link(destination: url) {
+                                    Label("打开视频页面", systemImage: "play.rectangle")
+                                        .font(.system(size: 14, weight: .semibold))
+                                        .padding(.vertical, 6)
+                                }
+                            }
+                            if isFromCache {
+                                Text("离线缓存")
+                                    .font(.caption2)
+                                    .foregroundColor(theme.palette.accent)
+                            }
+                            if isDownloading {
+                                HStack(spacing: 6) {
+                                    ProgressView().controlSize(.small)
+                                    Text("正在下载…")
+                                        .font(.caption2)
+                                        .foregroundColor(theme.palette.secondaryInk)
+                                }
+                            }
+                            if isLoading {
+                                ProgressView().padding(.top, 20)
+                            } else if content.isEmpty {
+                                Text("没取到正文，点右上角去网页看。")
+                                    .font(.system(size: 16))
+                                    .lineSpacing(6)
+                                    .foregroundColor(theme.palette.ink)
+                            } else {
+                                VStack(alignment: .leading, spacing: 14) {
+                                    ForEach(blocks) { block in
+                                        switch block.kind {
+                                        case .text:
+                                            Text(attributedText(block.value))
+                                                .font(.system(size: 16))
+                                                .lineSpacing(6)
+                                                .foregroundColor(theme.palette.ink)
+                                                .frame(maxWidth: .infinity, alignment: .leading)
+                                                .environment(\.openURL, OpenURLAction { handleLink($0) })
+                                        case .image:
+                                            SubscribeBodyImage(urlString: block.value, headers: mediaHeaders)
+                                        case .video:
+                                            SubscribeBodyVideo(urlString: block.value, headers: mediaHeaders)
+                                        }
+                                    }
                                 }
                             }
                         }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(16)
                     }
+                    .background(AppThemeBackdrop())
+                    .appThemedPage()
                 }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(16)
             }
-            .background(AppThemeBackdrop())
-            .appThemedPage()
             .navigationTitle("正文")
             #if os(iOS)
             .navigationBarTitleDisplayMode(.inline)
@@ -5156,6 +5398,14 @@ struct SubscribeArticleView: View {
                 }
                 ToolbarItem(placement: .primaryAction) {
                     HStack(spacing: 14) {
+                        if detailHTML != nil {
+                            Button {
+                                showWeb.toggle()
+                            } label: {
+                                Image(systemName: showWeb ? "text.alignleft" : "safari")
+                            }
+                            .accessibilityLabel(showWeb ? "切换文字模式" : "切换网页模式")
+                        }
                         Button {
                             articleState.toggleFavorite(
                                 sourceUrl: source.sourceUrl,
@@ -5197,6 +5447,34 @@ struct SubscribeArticleView: View {
                     statusMessage = result
                 }
             }
+            .confirmationDialog(
+                importPrompt,
+                isPresented: Binding(
+                    get: { pendingImportLink != nil },
+                    set: { if !$0 { pendingImportLink = nil } }
+                ),
+                titleVisibility: .visible
+            ) {
+                Button("导入") {
+                    if let url = pendingImportLink { handleImportLink(url) }
+                    pendingImportLink = nil
+                }
+                Button("取消", role: .cancel) { pendingImportLink = nil }
+            } message: {
+                Text(pendingImportLink?.absoluteString ?? "")
+            }
+            .alert("打开外部 App？", isPresented: Binding(
+                get: { pendingExternalLink != nil },
+                set: { if !$0 { pendingExternalLink = nil } }
+            )) {
+                Button("打开") {
+                    if let url = pendingExternalLink { openExternalURL(url) }
+                    pendingExternalLink = nil
+                }
+                Button("取消", role: .cancel) { pendingExternalLink = nil }
+            } message: {
+                Text(pendingExternalLink?.absoluteString ?? "")
+            }
             .task {
                 articleState.markRead(sourceUrl: source.sourceUrl, article: article)
                 if let cached = articleState.cachedContent(sourceUrl: source.sourceUrl, article: article) {
@@ -5211,17 +5489,28 @@ struct SubscribeArticleView: View {
                 let detail = try? await SubscribeSourceService.fetchContentDetail(
                     article: article, source: source
                 )
-                if let detail, !detail.text.isEmpty {
-                    content = detail.text
-                    contentBaseURL = detail.baseURL.isEmpty ? article.link : detail.baseURL
-                    mediaHeaders = detail.headers
-                    isFromCache = false
-                    articleState.cacheContent(
-                        sourceUrl: source.sourceUrl,
-                        sourceName: source.sourceName,
-                        article: article,
-                        content: detail.text
-                    )
+                if let detail {
+                    if let html = detail.html, !html.isEmpty {
+                        detailHTML = html
+                        contentBaseURL = detail.baseURL.isEmpty ? article.link : detail.baseURL
+                        mediaHeaders = detail.headers
+                    }
+                    if !detail.text.isEmpty {
+                        content = detail.text
+                        contentBaseURL = detail.baseURL.isEmpty ? article.link : detail.baseURL
+                        mediaHeaders = detail.headers
+                        isFromCache = false
+                        articleState.cacheContent(
+                            sourceUrl: source.sourceUrl,
+                            sourceName: source.sourceName,
+                            article: article,
+                            content: detail.text
+                        )
+                    } else if mediaHeaders.isEmpty {
+                        mediaHeaders = SubscribeSourceService.mediaRequestHeaders(
+                            source: source, header: source.header, referer: article.link
+                        )
+                    }
                 } else if mediaHeaders.isEmpty {
                     mediaHeaders = SubscribeSourceService.mediaRequestHeaders(
                         source: source, header: source.header, referer: article.link
@@ -5233,6 +5522,11 @@ struct SubscribeArticleView: View {
             .stackNavigationStyle()
     }
 
+    private var importPrompt: String {
+        guard let url = pendingImportLink else { return "导入" }
+        return SourceDeepLinkParser.parse(url)?.title ?? "导入？"
+    }
+
     private func handleLink(_ url: URL) -> OpenURLAction.Result {
         // 订阅源正文里的 `yuedu://opapp/<下载地址>`：iOS 没有外部下载器，直接内置下载。
         if let target = DownloadLinkClassifier.opappTarget(url) {
@@ -5241,7 +5535,8 @@ struct SubscribeArticleView: View {
         }
         switch DownloadLinkClassifier.schemeKind(url) {
         case .importDeepLink:
-            handleImportLink(url)
+            guard SourceDeepLinkParser.parse(url) != nil else { return .systemAction }
+            pendingImportLink = url
             return .handled
         case .data, .blob:
             statusMessage = "这种链接由网页脚本生成，暂时下载不了。"
@@ -5250,7 +5545,7 @@ struct SubscribeArticleView: View {
             startDownload(url)
             return .handled
         case .web:
-            // 蓝奏云这类分享页得先跑页面脚本才给直链，放进内置网页里点下载
+            // 蓝奏云这类分享页得先跑脚本才给直链，放进内置网页里点下载
             if DownloadLinkClassifier.isLanzouCloud(url) {
                 pendingWebPage = ImportWebPage(url: url, title: "下载")
                 return .handled
@@ -5262,20 +5557,22 @@ struct SubscribeArticleView: View {
     }
 
     private func handleImportLink(_ url: URL) {
-        guard let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
-              components.host == "import",
-              let src = components.queryItems?.first(where: { $0.name == "src" })?.value,
-              !src.isEmpty else {
+        guard let link = SourceDeepLinkParser.parse(url) else {
             statusMessage = "暂不支持这个导入链接：\(url.absoluteString)"
             return
         }
-        let route = components.path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        guard let route = link.route else {
+            // 类型认不出来（replaceRule / theme 等或未知路径）：下载后按内容判定。
+            startDownload(link.sourceURL, requestWithoutUA: link.requestWithoutUA)
+            return
+        }
         Task { @MainActor in
             do {
                 statusMessage = try await RemoteSourceImporter.importSource(
                     route: route,
-                    sourceURL: src,
-                    referer: URL(string: article.link)
+                    sourceURL: link.sourceURL.absoluteString,
+                    referer: URL(string: article.link),
+                    requestWithoutUA: link.requestWithoutUA
                 )
             } catch {
                 statusMessage = "导入失败：\(error.localizedDescription)"
@@ -5283,8 +5580,19 @@ struct SubscribeArticleView: View {
         }
     }
 
-    private func startDownload(_ url: URL) {
-        guard !isDownloading else { return }
+    private func openExternalURL(_ url: URL) {
+        #if os(iOS)
+        UIApplication.shared.open(url)
+        #elseif os(macOS)
+        NSWorkspace.shared.open(url)
+        #endif
+    }
+
+    private func startDownload(_ url: URL, requestWithoutUA: Bool = false) {
+        guard !isDownloading else {
+            statusMessage = "正在下载，请稍候…"
+            return
+        }
         isDownloading = true
         let referer = URL(string: article.link) ?? URL(string: source.sourceUrl)
         Task { @MainActor in
@@ -5292,7 +5600,8 @@ struct SubscribeArticleView: View {
                 let file = try await ImportDownloader.download(
                     url: url,
                     referer: referer,
-                    displayName: source.sourceName
+                    displayName: source.sourceName,
+                    requestWithoutUA: requestWithoutUA
                 )
                 isDownloading = false
                 pendingImportFile = file
@@ -5691,26 +6000,22 @@ struct SubscribeFavoritesView: View {
 
     @ViewBuilder
     private func favoriteThumbnail(_ item: CachedSubscribeArticle) -> some View {
-        Group {
-            if let url = URL(string: item.imageUrl ?? "") {
-                AsyncImage(url: url) { phase in
-                    switch phase {
-                    case .success(let image):
-                        image.resizable().scaledToFill()
-                    default:
-                        favoritePlaceholder
-                    }
+        if let url = URL(string: item.imageUrl ?? "") {
+            AsyncImage(url: url) { phase in
+                switch phase {
+                case .success(let image):
+                    image.resizable().scaledToFill()
+                default:
+                    favoritePlaceholder
                 }
-            } else {
-                favoritePlaceholder
             }
+            .frame(width: 50, height: 50)
+            .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 6, style: .continuous)
+                    .stroke(theme.palette.divider, lineWidth: theme.metrics.borderWidth)
+            )
         }
-        .frame(width: 50, height: 50)
-        .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: 6, style: .continuous)
-                .stroke(theme.palette.divider, lineWidth: theme.metrics.borderWidth)
-        )
     }
 
     private var favoritePlaceholder: some View {
@@ -6026,7 +6331,7 @@ enum AppLog {
 
     // 写盘全在这个串行队列上做：调用者可能是任意线程的 async 任务，
     // 以前直接在调用线程开句柄，两章并发时行会交错。
-    private static let queue = DispatchQueue(label: "com.factorcitrus.juyue.applog", qos: .utility)
+    private static let queue = DispatchQueue(label: "com.factorcitrus.legado.applog", qos: .utility)
     private static let queueKey = DispatchSpecificKey<Void>()
     private static var pending: [String] = []
     private static var flushScheduled = false

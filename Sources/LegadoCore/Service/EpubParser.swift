@@ -20,36 +20,20 @@ public final class EpubParser {
 
     public init() {}
 
-    private struct ManifestEntry {
-        let href: String
-        let mediaType: String
-        let properties: String
-    }
-
-    private struct PackageDocument {
-        let opfURL: URL
-        let title: String
-        let author: String
-        let intro: String?
-        let manifest: [String: ManifestEntry]
-        let spine: [String]
-        let navHref: String?
-        let ncxHref: String?
-    }
-
-    // MARK: - 入口
-
     public func parse(epubUrl: URL, destinationDir: URL? = nil) throws -> ParsedEpub {
-        let directory = try prepare(epubUrl: epubUrl, destination: destinationDir)
-        let package = try loadPackage(in: directory, fallbackTitle: epubUrl.deletingPathExtension().lastPathComponent)
+        let directory = try EpubWorkspace.prepare(epubUrl: epubUrl, destination: destinationDir)
+        let package = try EpubPackageReader.read(
+            in: directory,
+            fallbackTitle: epubUrl.deletingPathExtension().lastPathComponent
+        )
 
-        var chapters = navigationChapters(package)
+        var chapters = EpubNavigation.catalog(package)
         if chapters.isEmpty {
-            chapters = spineChapters(package, epubUrl: epubUrl)
+            chapters = EpubNavigation.spine(package, epubUrl: epubUrl)
         } else {
-            for index in chapters.indices {
-                chapters[index].index = index
-                chapters[index].bookUrl = epubUrl.absoluteString
+            for position in chapters.indices {
+                chapters[position].index = position
+                chapters[position].bookUrl = epubUrl.absoluteString
             }
         }
 
@@ -68,19 +52,63 @@ public final class EpubParser {
         return ParsedEpub(book: book, chapters: chapters, extractedDirectory: directory)
     }
 
-    // MARK: - 解包与 OPF
+    public static func extractChapterContent(
+        fromUrlString urlString: String,
+        bookUrl: String? = nil
+    ) -> String {
+        let normalized = urlString.contains("%23") && !urlString.contains("#")
+            ? urlString.replacingOccurrences(of: "%23", with: "#")
+            : urlString
 
-    private func prepare(epubUrl: URL, destination: URL?) throws -> URL {
+        let parts = normalized.split(separator: "#", maxSplits: 1, omittingEmptySubsequences: false)
+        let pathPart = String(parts[0])
+        let anchor = parts.count > 1 && !parts[1].isEmpty ? String(parts[1]) : nil
+
+        var fileURL = EpubFileLocator.localURL(pathPart)
+        if !FileManager.default.fileExists(atPath: fileURL.path) {
+            fileURL = EpubFileLocator.relocated(named: fileURL.lastPathComponent, bookUrl: bookUrl) ?? fileURL
+        }
+        guard let data = try? Data(contentsOf: fileURL) else { return "" }
+        guard let html = EpubTextDecoder.decode(data) else { return "" }
+        guard let document = try? SwiftSoup.parse(html) else { return html }
+
+        let base = fileURL.deletingLastPathComponent()
+        if let anchor, let target = try? document.select("#\(anchor)").first() {
+            if let slice = EpubContentRenderer.anchored(target, anchor: anchor, base: base) {
+                return slice
+            }
+        }
+
+        if let body = document.body() {
+            let hasChapterHeadings = (try? body.select(".chaptertitle, [id^=chapter]"))?.isEmpty() == false
+            if hasChapterHeadings, let intro = EpubContentRenderer.volumeIntro(body: body, base: base) {
+                return intro
+            }
+            return EpubContentRenderer.plain(body, base: base)
+        }
+        return EpubContentRenderer.plain(document, base: base)
+    }
+
+    public static func extractChapterContent(from fileOrFragmentUrl: URL) -> String {
+        extractChapterContent(fromUrlString: fileOrFragmentUrl.absoluteString)
+    }
+}
+
+// MARK: - 解包与 OPF
+
+private enum EpubWorkspace {
+    static func prepare(epubUrl: URL, destination: URL?) throws -> URL {
         let manager = FileManager.default
         let target: URL
+
         if let destination {
             target = destination
         } else {
             let documents = manager.urls(for: .documentDirectory, in: .userDomainMask)[0]
-            let identifier = CryptoUtils.md5(epubUrl.absoluteString)
+            let fingerprint = CryptoUtils.md5(epubUrl.absoluteString)
             target = documents
                 .appendingPathComponent("Books/EPUB", isDirectory: true)
-                .appendingPathComponent(identifier, isDirectory: true)
+                .appendingPathComponent(fingerprint, isDirectory: true)
         }
 
         if !manager.fileExists(atPath: target.path) {
@@ -89,147 +117,144 @@ public final class EpubParser {
         }
         return target
     }
+}
 
-    private func loadPackage(in directory: URL, fallbackTitle: String) throws -> PackageDocument {
+private struct EpubManifestItem {
+    let href: String
+    let mediaType: String
+    let properties: String
+}
+
+private struct EpubPackageDocument {
+    let opfURL: URL
+    let title: String
+    let author: String
+    let intro: String?
+    let manifest: [String: EpubManifestItem]
+    let spine: [String]
+    let navHref: String?
+    let ncxHref: String?
+}
+
+private enum EpubPackageReader {
+    static func read(in directory: URL, fallbackTitle: String) throws -> EpubPackageDocument {
         let containerURL = directory.appendingPathComponent("META-INF/container.xml")
         guard FileManager.default.fileExists(atPath: containerURL.path) else {
-            throw epubError(code: 1, message: "Missing META-INF/container.xml")
+            throw error(code: 1, text: "Missing META-INF/container.xml")
         }
+
         let container = try SwiftSoup.parse(
-            text(at: containerURL), "", Parser.xmlParser()
+            try readText(at: containerURL),
+            "",
+            Parser.xmlParser()
         )
         guard let rootfile = try container.select("rootfile").first() else {
-            throw epubError(code: 2, message: "Failed to locate root OPF in container.xml")
-        }
-        let relativeOPF = try rootfile.attr("full-path")
-        guard !relativeOPF.isEmpty else {
-            throw epubError(code: 2, message: "Failed to locate root OPF in container.xml")
+            throw error(code: 2, text: "Failed to locate root OPF in container.xml")
         }
 
-        let opfURL = directory.appendingPathComponent(relativeOPF)
-        let opf = try SwiftSoup.parse(text(at: opfURL), "", Parser.xmlParser())
+        let opfPath = try rootfile.attr("full-path")
+        guard !opfPath.isEmpty else {
+            throw error(code: 2, text: "Failed to locate root OPF in container.xml")
+        }
 
-        let title = elementText(opf, "dc|title, title") ?? fallbackTitle
-        let author = elementText(opf, "dc|creator, creator") ?? "未知作者"
-        let intro = elementText(opf, "dc|description, description")
+        let opfURL = directory.appendingPathComponent(opfPath)
+        let opf = try SwiftSoup.parse(try readText(at: opfURL), "", Parser.xmlParser())
 
-        var manifest: [String: ManifestEntry] = [:]
-        var navHref: String?
-        var ncxHref: String?
+        let title = text(in: opf, selector: "dc|title, title") ?? fallbackTitle
+        let author = text(in: opf, selector: "dc|creator, creator") ?? "未知作者"
+        let intro = text(in: opf, selector: "dc|description, description")
+
+        var manifest: [String: EpubManifestItem] = [:]
+        var nav: String?
+        var ncx: String?
+
         if let items = try? opf.select("manifest > item") {
             for item in items {
-                let identifier = (try? item.attr("id")) ?? ""
-                guard !identifier.isEmpty else { continue }
+                let id = (try? item.attr("id")) ?? ""
+                guard !id.isEmpty else { continue }
                 let href = (try? item.attr("href")) ?? ""
                 let mediaType = (try? item.attr("media-type")) ?? ""
                 let properties = (try? item.attr("properties")) ?? ""
-                manifest[identifier] = ManifestEntry(
-                    href: href, mediaType: mediaType, properties: properties
-                )
+
+                manifest[id] = EpubManifestItem(href: href, mediaType: mediaType, properties: properties)
                 if properties.contains("nav") || href.hasSuffix("nav.xhtml") {
-                    navHref = href
+                    nav = href
                 }
                 if mediaType == "application/x-dtbncx+xml" || href.hasSuffix(".ncx") {
-                    ncxHref = href
+                    ncx = href
                 }
             }
         }
 
-        var spine: [String] = []
+        var readingOrder: [String] = []
         if let refs = try? opf.select("spine > itemref") {
             for ref in refs {
-                let identifier = (try? ref.attr("idref")) ?? ""
-                if let entry = manifest[identifier] {
-                    spine.append(entry.href)
+                let idref = (try? ref.attr("idref")) ?? ""
+                if let item = manifest[idref] {
+                    readingOrder.append(item.href)
                 }
             }
         }
 
-        return PackageDocument(
+        return EpubPackageDocument(
             opfURL: opfURL,
             title: title,
             author: author,
             intro: intro,
             manifest: manifest,
-            spine: spine,
-            navHref: navHref,
-            ncxHref: ncxHref
+            spine: readingOrder,
+            navHref: nav,
+            ncxHref: ncx
         )
     }
 
-    // MARK: - 目录
+    private static func text(in document: Document, selector: String) -> String? {
+        guard let node = try? document.select(selector).first() else { return nil }
+        return try? node.text()
+    }
 
-    private func navigationChapters(_ package: PackageDocument) -> [BookChapter] {
+    private static func readText(at url: URL) throws -> String {
+        let bytes = try Data(contentsOf: url)
+        return String(data: bytes, encoding: .utf8) ?? ""
+    }
+
+    private static func error(code: Int, text: String) -> NSError {
+        NSError(domain: "EpubParser", code: code, userInfo: [NSLocalizedDescriptionKey: text])
+    }
+}
+
+// MARK: - 目录
+
+private enum EpubNavigation {
+    static func catalog(_ package: EpubPackageDocument) -> [BookChapter] {
         let opfDirectory = package.opfURL.deletingLastPathComponent()
 
-        if let navHref = package.navHref {
-            let navURL = opfDirectory.appendingPathComponent(navHref)
-            if let html = try? text(at: navURL) {
-                let chapters = chaptersFromNav(html, baseDirectory: navURL.deletingLastPathComponent())
-                if !chapters.isEmpty { return chapters }
+        if let href = package.navHref {
+            let navURL = opfDirectory.appendingPathComponent(href)
+            if let html = try? readText(at: navURL) {
+                let items = fromNavigation(html, base: navURL.deletingLastPathComponent())
+                if !items.isEmpty { return items }
             }
         }
 
-        if let ncxHref = package.ncxHref {
-            let ncxURL = opfDirectory.appendingPathComponent(ncxHref)
-            if let xml = try? text(at: ncxURL) {
-                let chapters = chaptersFromNCX(xml, baseDirectory: ncxURL.deletingLastPathComponent())
-                if !chapters.isEmpty { return chapters }
+        if let href = package.ncxHref {
+            let ncxURL = opfDirectory.appendingPathComponent(href)
+            if let xml = try? readText(at: ncxURL) {
+                let items = fromNCX(xml, base: ncxURL.deletingLastPathComponent())
+                if !items.isEmpty { return items }
             }
         }
 
         return []
     }
 
-    private func chaptersFromNav(_ html: String, baseDirectory: URL) -> [BookChapter] {
-        guard let document = try? SwiftSoup.parse(html) else { return [] }
-        let navigation = (try? document.select("nav[epub|type=toc]").first())
-            ?? (try? document.select("nav").first())
-            ?? document
-        guard let links = try? navigation.select("a") else { return [] }
-
-        var chapters: [BookChapter] = []
-        for link in links {
-            let href = (try? link.attr("href")) ?? ""
-            let title = ((try? link.text()) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !href.isEmpty, !href.hasPrefix("#"), !title.isEmpty else { continue }
-            chapters.append(BookChapter(
-                bookUrl: "",
-                url: resolve(href: href, against: baseDirectory),
-                title: title,
-                index: chapters.count
-            ))
-        }
-        return chapters
-    }
-
-    private func chaptersFromNCX(_ xml: String, baseDirectory: URL) -> [BookChapter] {
-        guard let document = try? SwiftSoup.parse(xml, "", Parser.xmlParser()),
-              let points = try? document.select("navPoint") else { return [] }
-
-        var chapters: [BookChapter] = []
-        for point in points {
-            let source = (try? point.select("content").first()?.attr("src")) ?? ""
-            guard !source.isEmpty, !source.hasPrefix("#") else { continue }
-            let label = ((try? point.select("navLabel > text").first()?.text()) ?? "")
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-            chapters.append(BookChapter(
-                bookUrl: "",
-                url: resolve(href: source, against: baseDirectory),
-                title: label.isEmpty ? "第 \(chapters.count + 1) 章" : label,
-                index: chapters.count
-            ))
-        }
-        return chapters
-    }
-
-    private func spineChapters(_ package: PackageDocument, epubUrl: URL) -> [BookChapter] {
+    static func spine(_ package: EpubPackageDocument, epubUrl: URL) -> [BookChapter] {
         let base = package.opfURL.deletingLastPathComponent()
         return package.spine.enumerated().map { offset, href in
             let fileURL = base.appendingPathComponent(href)
-            var title = fileURL.lastPathComponent
-            for suffix in [".xhtml", ".html"] where title.hasSuffix(suffix) {
-                title.removeLast(suffix.count)
+            let rawTitle = fileURL.lastPathComponent
+            let title = [".xhtml", ".html"].reduce(rawTitle) { current, suffix in
+                current.hasSuffix(suffix) ? String(current.dropLast(suffix.count)) : current
             }
             return BookChapter(
                 bookUrl: epubUrl.absoluteString,
@@ -240,137 +265,126 @@ public final class EpubParser {
         }
     }
 
-    private func resolve(href: String, against directory: URL) -> String {
+    private static func fromNavigation(_ html: String, base: URL) -> [BookChapter] {
+        guard let document = try? SwiftSoup.parse(html) else { return [] }
+
+        let scope = (try? document.select("nav[epub|type=toc]").first())
+            ?? (try? document.select("nav").first())
+            ?? document
+        guard let links = try? scope.select("a") else { return [] }
+
+        var items: [BookChapter] = []
+        for link in links {
+            let href = (try? link.attr("href")) ?? ""
+            let label = ((try? link.text()) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !href.isEmpty, !href.hasPrefix("#"), !label.isEmpty else { continue }
+            items.append(BookChapter(
+                bookUrl: "",
+                url: join(href: href, base: base),
+                title: label,
+                index: items.count
+            ))
+        }
+        return items
+    }
+
+    private static func fromNCX(_ xml: String, base: URL) -> [BookChapter] {
+        guard let document = try? SwiftSoup.parse(xml, "", Parser.xmlParser()),
+              let points = try? document.select("navPoint") else {
+            return []
+        }
+
+        var items: [BookChapter] = []
+        for point in points {
+            let source = (try? point.select("content").first()?.attr("src")) ?? ""
+            guard !source.isEmpty, !source.hasPrefix("#") else { continue }
+
+            let rawLabel = ((try? point.select("navLabel > text").first()?.text()) ?? "")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            items.append(BookChapter(
+                bookUrl: "",
+                url: join(href: source, base: base),
+                title: rawLabel.isEmpty ? "第 \(items.count + 1) 章" : rawLabel,
+                index: items.count
+            ))
+        }
+        return items
+    }
+
+    private static func join(href: String, base: URL) -> String {
         let pieces = href.components(separatedBy: "#")
         let path = pieces.first ?? ""
         let anchor = pieces.count > 1 ? pieces[1] : ""
-        let fileURL = path.isEmpty
-            ? directory
-            : URL(fileURLWithPath: path, relativeTo: directory).standardizedFileURL
-        return anchor.isEmpty ? fileURL.absoluteString : "\(fileURL.absoluteString)#\(anchor)"
+        let file = path.isEmpty
+            ? base
+            : URL(fileURLWithPath: path, relativeTo: base).standardizedFileURL
+        return anchor.isEmpty ? file.absoluteString : "\(file.absoluteString)#\(anchor)"
     }
 
-    // MARK: - 正文
-
-    public static func extractChapterContent(fromUrlString urlString: String, bookUrl: String? = nil) -> String {
-        let normalized = urlString.contains("%23") && !urlString.contains("#")
-            ? urlString.replacingOccurrences(of: "%23", with: "#")
-            : urlString
-
-        let pieces = normalized.split(separator: "#", maxSplits: 1, omittingEmptySubsequences: false)
-        let pathPart = String(pieces[0])
-        let anchor = pieces.count > 1 && !pieces[1].isEmpty ? String(pieces[1]) : nil
-
-        var fileURL = localFileURL(pathPart)
-        if !FileManager.default.fileExists(atPath: fileURL.path) {
-            fileURL = relocatedFile(named: fileURL.lastPathComponent, bookUrl: bookUrl) ?? fileURL
-        }
-        guard let data = try? Data(contentsOf: fileURL) else { return "" }
-        guard let html = decode(data) else { return "" }
-        guard let document = try? SwiftSoup.parse(html) else { return html }
-
-        let baseDirectory = fileURL.deletingLastPathComponent()
-        if let anchor, let target = try? document.select("#\(anchor)").first() {
-            if let text = anchoredText(target, anchor: anchor, baseDirectory: baseDirectory) {
-                return text
-            }
-        }
-
-        if let body = document.body() {
-            if let headings = try? body.select(".chaptertitle, [id^=chapter]"), !headings.isEmpty() {
-                if let intro = volumeIntro(body: body, baseDirectory: baseDirectory) {
-                    return intro
-                }
-            }
-            return plainText(from: body, baseDirectory: baseDirectory)
-        }
-        return plainText(from: document, baseDirectory: baseDirectory)
+    private static func readText(at url: URL) throws -> String {
+        let bytes = try Data(contentsOf: url)
+        return String(data: bytes, encoding: .utf8) ?? ""
     }
+}
 
-    public static func extractChapterContent(from fileOrFragmentUrl: URL) -> String {
-        extractChapterContent(fromUrlString: fileOrFragmentUrl.absoluteString)
-    }
+// MARK: - 正文渲染
 
-    private static func anchoredText(_ target: Element, anchor: String, baseDirectory: URL) -> String? {
-        let direct = plainText(from: target, baseDirectory: baseDirectory)
-        let paragraphs = (try? target.select("p").count) ?? 0
-        if paragraphs > 3, direct.count > 500 { return direct }
+private enum EpubContentRenderer {
+    static func anchored(_ target: Element, anchor: String, base: URL) -> String? {
+        let direct = plain(target, base: base)
+        let paragraphCount = (try? target.select("p").count) ?? 0
+        if paragraphCount > 3, direct.count > 500 {
+            return direct
+        }
 
-        var container: Element = target
-        while let parent = container.parent(), parent.tagName() != "body", parent.tagName() != "html" {
+        var container = target
+        while let parent = container.parent(),
+              parent.tagName() != "body",
+              parent.tagName() != "html" {
             container = parent
         }
 
-        var html = ""
+        var markup = ""
         var cursor: Element? = container
-        while let element = cursor {
-            html += (try? element.outerHtml()) ?? ""
-            cursor = try? element.nextElementSibling()
+        while let node = cursor {
+            markup += (try? node.outerHtml()) ?? ""
+            cursor = try? node.nextElementSibling()
             if let next = cursor {
-                let nextChapter = (try? next.select("[id^=chapter]").first()) != nil
-                if nextChapter || next.hasClass("chaptertitle") || next.hasClass("volumetitle") {
+                let nextIsChapter = (try? next.select("[id^=chapter]").first()) != nil
+                if nextIsChapter || next.hasClass("chaptertitle") || next.hasClass("volumetitle") {
                     break
                 }
             }
         }
 
-        if !html.isEmpty, let section = try? SwiftSoup.parse(html) {
-            let text = plainText(from: section, baseDirectory: baseDirectory)
+        if !markup.isEmpty, let fragment = try? SwiftSoup.parse(markup) {
+            let text = plain(fragment, base: base)
             if !text.isEmpty { return text }
         }
         return direct.isEmpty ? nil : direct
     }
 
-    private static func volumeIntro(body: Element, baseDirectory: URL) -> String? {
-        var html = ""
+    static func volumeIntro(body: Element, base: URL) -> String? {
+        var markup = ""
         var cursor: Element? = body.children().first()
-        while let element = cursor {
-            if element.hasClass("chaptertitle")
-                || (try? element.select("[id^=chapter]").first()) != nil {
-                break
-            }
-            html += (try? element.outerHtml()) ?? ""
-            cursor = try? element.nextElementSibling()
+        while let node = cursor {
+            let startsChapter = node.hasClass("chaptertitle")
+                || (try? node.select("[id^=chapter]").first()) != nil
+            if startsChapter { break }
+            markup += (try? node.outerHtml()) ?? ""
+            cursor = try? node.nextElementSibling()
         }
-        guard !html.isEmpty, let intro = try? SwiftSoup.parse(html) else { return nil }
-        let text = plainText(from: intro, baseDirectory: baseDirectory)
+
+        guard !markup.isEmpty, let fragment = try? SwiftSoup.parse(markup) else { return nil }
+        let text = plain(fragment, base: base)
         guard !text.isEmpty else { return nil }
         return text + "\n\n（本节为分卷导读，请点击“下一章”或通过目录阅读正文）"
     }
 
-    private static func plainText(from element: Element, baseDirectory: URL) -> String {
-        if let images = try? element.select("img, image") {
-            for image in images {
-                var source = (try? image.attr("src")) ?? ""
-                if source.isEmpty { source = (try? image.attr("xlink:href")) ?? "" }
-                if source.isEmpty { source = (try? image.attr("href")) ?? "" }
-                guard !source.isEmpty else { continue }
-                let resolved = isRemoteOrFile(source)
-                    ? source
-                    : URL(string: source, relativeTo: baseDirectory)?.standardizedFileURL.absoluteString ?? source
-                _ = try? image.before("__IMG_BLOCK__\(resolved)__IMG_BLOCK__")
-                if let figure = image.parents().first(where: { $0.tagName() == "figure" }),
-                   let caption = try? figure.select("figcaption").first(),
-                   let rawCaption = try? caption.text() {
-                    let cleaned = rawCaption.trimmingCharacters(in: .whitespacesAndNewlines)
-                    if !cleaned.isEmpty {
-                        _ = try? image.after("__CAPTION_BLOCK__\(cleaned)__CAPTION_BLOCK__")
-                        try? caption.remove()
-                    }
-                }
-            }
-        }
-        if let breaks = try? element.select("br") {
-            for lineBreak in breaks {
-                _ = try? lineBreak.before("__BR_NEWLINE__")
-            }
-        }
-        if let blocks = try? element.select("p, h1, h2, h3, h4, h5, h6") {
-            for block in blocks {
-                _ = try? block.before("__P_BREAK__")
-                _ = try? block.after("__P_BREAK__")
-            }
-        }
+    static func plain(_ element: Element, base: URL) -> String {
+        injectImageMarkers(in: element, base: base)
+        injectLineBreaks(in: element)
+        injectParagraphBreaks(in: element)
 
         var text = (try? element.text()) ?? ""
         text = text.replacingOccurrences(of: "__BR_NEWLINE__", with: "\n")
@@ -383,53 +397,99 @@ public final class EpubParser {
                 withTemplate: "\n\n[image:$1]\n\n"
             )
         }
-        if let captionMarker = try? NSRegularExpression(pattern: "__CAPTION_BLOCK__(.*?)__CAPTION_BLOCK__") {
-            text = captionMarker.stringByReplacingMatches(
+
+        // 图注单独打标记，正文里按小一号居中画；没有 figcaption 的书不受影响
+        if let marker = try? NSRegularExpression(pattern: "__CAPTION_BLOCK__(.*?)__CAPTION_BLOCK__") {
+            text = marker.stringByReplacingMatches(
                 in: text,
                 range: NSRange(location: 0, length: (text as NSString).length),
                 withTemplate: "\n[caption:$1]\n"
             )
         }
+
         while text.contains("\n\n\n") {
             text = text.replacingOccurrences(of: "\n\n\n", with: "\n\n")
         }
         return text.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
-    // MARK: - 路径与解码
+    private static func injectImageMarkers(in element: Element, base: URL) {
+        guard let images = try? element.select("img, image") else { return }
+        for image in images {
+            var source = (try? image.attr("src")) ?? ""
+            if source.isEmpty { source = (try? image.attr("xlink:href")) ?? "" }
+            if source.isEmpty { source = (try? image.attr("href")) ?? "" }
+            guard !source.isEmpty else { continue }
 
-    private static func localFileURL(_ pathPart: String) -> URL {
-        if let direct = URL(string: pathPart), direct.isFileURL {
-            return URL(fileURLWithPath: percentDecoded(direct.path))
+            let resolved = EpubFileLocator.isRemoteOrFile(source)
+                ? source
+                : URL(string: source, relativeTo: base)?.standardizedFileURL.absoluteString ?? source
+            _ = try? image.before("__IMG_BLOCK__\(resolved)__IMG_BLOCK__")
+
+            var container: Element? = image.parent()
+            while let current = container, current.tagName() != "figure" {
+                container = current.parent()
+            }
+            if let figure = container,
+               let caption = try? figure.select("figcaption").first(),
+               let captionText = try? caption.text(),
+               !captionText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                _ = try? image.after("__CAPTION_BLOCK__\(captionText)__CAPTION_BLOCK__")
+                try? caption.remove()
+            }
         }
+    }
+
+    private static func injectLineBreaks(in element: Element) {
+        guard let breaks = try? element.select("br") else { return }
+        for lineBreak in breaks {
+            _ = try? lineBreak.before("__BR_NEWLINE__")
+        }
+    }
+
+    private static func injectParagraphBreaks(in element: Element) {
+        guard let blocks = try? element.select("p, h1, h2, h3, h4, h5, h6") else { return }
+        for block in blocks {
+            _ = try? block.before("__P_BREAK__")
+            _ = try? block.after("__P_BREAK__")
+        }
+    }
+}
+
+// MARK: - 路径
+
+private enum EpubFileLocator {
+    static func localURL(_ pathPart: String) -> URL {
+        if let direct = URL(string: pathPart), direct.isFileURL {
+            return URL(fileURLWithPath: decode(direct.path))
+        }
+
         let escaped = pathPart.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? pathPart
         if let encoded = URL(string: escaped), encoded.isFileURL {
-            return URL(fileURLWithPath: percentDecoded(encoded.path))
+            return URL(fileURLWithPath: decode(encoded.path))
         }
+
         let stripped = pathPart.hasPrefix("file://")
             ? String(pathPart.dropFirst("file://".count))
             : pathPart
-        return URL(fileURLWithPath: percentDecoded(stripped))
+        return URL(fileURLWithPath: decode(stripped))
     }
 
-    private static func percentDecoded(_ path: String) -> String {
-        guard let decoded = path.removingPercentEncoding, !decoded.isEmpty else { return path }
-        return decoded
-    }
-
-    private static func relocatedFile(named name: String, bookUrl: String?) -> URL? {
+    static func relocated(named name: String, bookUrl: String?) -> URL? {
         let manager = FileManager.default
         let documents = manager.urls(for: .documentDirectory, in: .userDomainMask)[0]
         let root = documents.appendingPathComponent("Books/EPUB", isDirectory: true)
 
-        var candidates: [URL] = []
+        var roots: [URL] = []
         if let bookUrl, !bookUrl.isEmpty {
-            candidates.append(root.appendingPathComponent(CryptoUtils.md5(bookUrl), isDirectory: true))
+            roots.append(root.appendingPathComponent(CryptoUtils.md5(bookUrl), isDirectory: true))
         }
-        candidates.append(root)
+        roots.append(root)
 
-        for candidate in candidates where manager.fileExists(atPath: candidate.path) {
-            guard let walker = manager.enumerator(at: candidate, includingPropertiesForKeys: nil) else { continue }
+        for candidate in roots where manager.fileExists(atPath: candidate.path) {
+            guard let walker = manager.enumerator(at: candidate, includingPropertiesForKeys: nil) else {
+                continue
+            }
             for case let file as URL in walker where file.lastPathComponent == name {
                 return file
             }
@@ -437,30 +497,21 @@ public final class EpubParser {
         return nil
     }
 
-    private static func decode(_ data: Data) -> String? {
-        String(data: data, encoding: .utf8)
-            ?? String(data: data, encoding: .utf16)
-            ?? String(data: data, encoding: .ascii)
-    }
-
-    private static func isRemoteOrFile(_ source: String) -> Bool {
+    static func isRemoteOrFile(_ source: String) -> Bool {
         source.hasPrefix("http://") || source.hasPrefix("https://") || source.hasPrefix("file://")
     }
 
-    // MARK: - 小工具
-
-    private func text(at url: URL) throws -> String {
-        let data = try Data(contentsOf: url)
-        return String(data: data, encoding: .utf8) ?? ""
+    private static func decode(_ path: String) -> String {
+        guard let decoded = path.removingPercentEncoding, !decoded.isEmpty else { return path }
+        return decoded
     }
+}
 
-    private func elementText(_ document: Document, _ selector: String) -> String? {
-        guard let element = try? document.select(selector).first() else { return nil }
-        return try? element.text()
-    }
-
-    private func epubError(code: Int, message: String) -> NSError {
-        NSError(domain: "EpubParser", code: code, userInfo: [NSLocalizedDescriptionKey: message])
+private enum EpubTextDecoder {
+    static func decode(_ data: Data) -> String? {
+        String(data: data, encoding: .utf8)
+            ?? String(data: data, encoding: .utf16)
+            ?? String(data: data, encoding: .ascii)
     }
 }
 

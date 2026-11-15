@@ -127,7 +127,14 @@ public final class RuleAnalyzer {
             return "\(value)"
         }
 
-        return getString(expression)
+        let selected = getString(expression)
+        if !selected.isEmpty { return selected }
+        // 订阅源 sortUrl 会调 jsLib 里的函数（如 bhost()），选择器取不到值时按脚本求值。
+        if expression.contains("(") {
+            guard let value = jsEngine.evalRule(script: expression, result: content) else { return "" }
+            return "\(value)"
+        }
+        return selected
     }
 
     // MARK: - JS 规则拆解
@@ -159,6 +166,36 @@ public final class RuleAnalyzer {
     }
 
     // MARK: - 单值求值
+
+    /// 按顶层 `||` 拆备用规则；引号与括号里的 `||`（JSONPath 过滤器）不算分隔符。
+    private func alternatives(of rule: String) -> [String] {
+        var out: [String] = []
+        var start = rule.startIndex
+        var depth = 0
+        var quote: Character?
+        var index = start
+
+        while index < rule.endIndex {
+            let char = rule[index]
+            if let open = quote {
+                if char == open { quote = nil }
+            } else if char == "'" || char == "\"" {
+                quote = char
+            } else if char == "[" || char == "(" {
+                depth += 1
+            } else if char == "]" || char == ")" {
+                depth = max(0, depth - 1)
+            } else if depth == 0, rule[index...].hasPrefix("||") {
+                out.append(String(rule[start..<index]))
+                index = rule.index(index, offsetBy: 2)
+                start = index
+                continue
+            }
+            index = rule.index(after: index)
+        }
+        out.append(String(rule[start...]))
+        return out
+    }
 
     public func getString(_ rule: String?, isUrl: Bool = false) -> String {
         guard let raw = rule?.trimmingCharacters(in: .whitespacesAndNewlines), raw.isEmpty == false else {
@@ -198,7 +235,7 @@ public final class RuleAnalyzer {
         }
 
         if raw.contains("||") {
-            for option in raw.components(separatedBy: "||") {
+            for option in alternatives(of: raw) {
                 let candidate = getString(option.trimmingCharacters(in: .whitespacesAndNewlines), isUrl: isUrl)
                 if candidate.isEmpty == false { return candidate }
             }
@@ -389,6 +426,16 @@ public final class RuleAnalyzer {
             return elements(from: evaluated)
         }
 
+        if raw.contains("||") {
+            for option in alternatives(of: raw) {
+                let trimmed = option.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard trimmed.isEmpty == false else { continue }
+                let items = getElements(trimmed)
+                if items.isEmpty == false { return items }
+            }
+            return []
+        }
+
         if let json = jsonRoot {
             for candidate in [raw, "$." + raw] {
                 guard let hit = JSONPath.evaluate(path: candidate, json: json) else { continue }
@@ -434,7 +481,7 @@ public final class RuleAnalyzer {
 
     // MARK: - HTML 选择
 
-    /// 支持 Legado 的 `tag.index` 写法（`li.1`、`a.-1`），负数是倒数第几个。
+    /// 支持阅读的 `tag.index` 写法（`li.1`、`a.-1`），负数是倒数第几个。
     private func select(from element: Element, selector: String) -> [Element] {
         let query = selector.trimmingCharacters(in: .whitespacesAndNewlines)
 
@@ -489,6 +536,10 @@ public final class RuleAnalyzer {
             return (try? element.text()) ?? ""
         case "html":
             return (try? element.html()) ?? ""
+        case "outerhtml":
+            return (try? element.outerHtml()) ?? ""
+        case "owntext":
+            return (try? element.ownText()) ?? ""
         case "href", "src":
             return try? element.attr(attribute)
         default:

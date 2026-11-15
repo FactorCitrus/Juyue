@@ -14,112 +14,129 @@ public class BookStore: ObservableObject {
 
     @Published public var bookshelf: [Book] = []
     @Published public var sources: [BookSource] = []
+    @Published public var textReplaceRulesMap: [String: [TextReplaceRule]] = [:]
+    @Published public var bookmarks: [BookBookmark] = []
+    @Published public var groups: [BookGroup] = []
 
-    /// 落盘键名集中在这里：结构变了要新开键再写迁移，直接改字面量会丢用户的架子和书源。
-    private enum StoreKey {
-        static let bookshelf = "legado_bookshelf_v1"
+    private enum Keys {
+        static let books = "legado_bookshelf_v1"
         static let sources = "legado_sources_v1"
+        static let bookmarks = "legado_bookmarks_v1"
+        static let groups = "legado_book_groups_v1"
+        static let replaceRules = "legado_text_replace_v1"
     }
 
-    private var booksKey: String { StoreKey.bookshelf }
-    private var sourcesKey: String { StoreKey.sources }
-    private let bookmarksKey = "legado_bookmarks_v1"
-    private let groupsKey = "legado_book_groups_v1"
-    private let replaceRulesKey = "legado_text_replace_v1"
-    /// 按书的正文替换规则（阅读页里选的「把这段换成…」）
-    @Published public var textReplaceRulesMap: [String: [TextReplaceRule]] = [:]
-
-    /// 搜索实测的响应时间批量落盘，避免一搜 50 个源就写 50 次 UserDefaults。
-    private var respondTimeSaveWorkItem: DispatchWorkItem?
-
+    private var pendingRespondTimeWrite: DispatchWorkItem?
+    private var chapterMemory: [String: [BookChapter]] = [:]
     /// 阅读进度这种高频改动走防抖；结构变化（增删书、换源、导入）仍然立刻写。
     private let shelfWriter = DebouncedPersistenceWriter<[Book]>(
         queue: DispatchQueue(label: "legado.bookshelf.persist", qos: .utility),
         encode: { books in try? JSONEncoder().encode(books) },
-        sink: { data in UserDefaults.standard.set(data, forKey: StoreKey.bookshelf) }
+        sink: { data in UserDefaults.standard.set(data, forKey: Keys.books) }
     )
 
-    /// 书签 / 笔记：按书存，读取时按书过滤
-    @Published public var bookmarks: [BookBookmark] = []
-
     public init() {
-        loadData()
-        loadBookmarks()
-        loadGroups()
-        if let data = UserDefaults.standard.data(forKey: replaceRulesKey),
-           let decoded = try? JSONDecoder().decode([String: [TextReplaceRule]].self, from: data) {
-            textReplaceRulesMap = decoded
+        reloadPersistedState()
+        installJSEngineSinks()
+        installSearchTimingSink()
+    }
+
+    // MARK: - 启动
+
+    private func reloadPersistedState() {
+        if let stored = Persisted.read([BookSource].self, key: Keys.sources) {
+            sources = stored
         }
-        // 脚本用 source.setVariable 存的状态要落盘：聚合源的「切换服务器」与书源设置中心
-        // 结果都写在书源 variable 里，不写回去每次点击都从旧值重算（服务器永远停在同一台）。
-        JSEngine.variableSink = { url, variable in
-            guard !url.isEmpty else { return }
+        // 内置源每次都参与同步：本地为空整批灌入，非空只刷新规则，登录态由合并函数保住。
+        loadBundledSources()
+        if let stored = Persisted.read([Book].self, key: Keys.books) {
+            bookshelf = stored
+        }
+        if let stored = Persisted.read([BookBookmark].self, key: Keys.bookmarks) {
+            bookmarks = stored
+        }
+        if let stored = Persisted.read([BookGroup].self, key: Keys.groups) {
+            groups = stored
+        }
+        if let stored = Persisted.read([String: [TextReplaceRule]].self, key: Keys.replaceRules) {
+            textReplaceRulesMap = stored
+        }
+    }
+
+    private func installJSEngineSinks() {
+        // 脚本用 source.setVariable 存的状态要落盘，否则聚合源的「切换服务器」每轮都从头算。
+        JSEngine.variableSink = { sourceURL, variable in
+            guard !sourceURL.isEmpty else { return }
             DispatchQueue.main.async {
                 let store = BookStore.shared
-                guard let idx = store.sources.firstIndex(where: { $0.bookSourceUrl == url }) else { return }
-                // 脚本爱怎么刷怎么刷，值没变就不写盘
-                guard store.sources[idx].variable != variable else { return }
-                store.sources[idx].variable = variable
-                store.saveSources()
+                guard let index = store.sources.firstIndex(where: { $0.bookSourceUrl == sourceURL }) else { return }
+                guard store.sources[index].variable != variable else { return }
+                store.sources[index].variable = variable
+                store.persistSources()
             }
         }
-        // 脚本改写「当前这本书」（book.setVariable / book.setUseReplaceRule）也要落盘，
-        // 否则聚合源每次都会重新按「没记过」处理，替换净化开关永远回默认。
-        JSEngine.bookUpdateSink = { updated in
-            guard !updated.bookUrl.isEmpty else { return }
+
+        // 脚本改写当前这本书的 variable / 替换开关时，也要写回书架。
+        JSEngine.bookUpdateSink = { changed in
+            guard !changed.bookUrl.isEmpty else { return }
             DispatchQueue.main.async {
                 let store = BookStore.shared
-                guard let idx = store.bookshelf.firstIndex(where: { $0.bookUrl == updated.bookUrl }) else { return }
-                let old = store.bookshelf[idx]
-                guard old.variable != updated.variable || old.useReplaceRule != updated.useReplaceRule else { return }
-                store.bookshelf[idx].variable = updated.variable
-                store.bookshelf[idx].useReplaceRule = updated.useReplaceRule
-                store.saveBookshelf()
-            }
-        }
-        // 搜索实测耗时写回书源 respondTime，下一次选源排序就有真实依据。
-        BookSearchService.respondTimeSink = { url, milliseconds in
-            guard !url.isEmpty, milliseconds > 0 else { return }
-            DispatchQueue.main.async {
-                let store = BookStore.shared
-                guard let idx = store.sources.firstIndex(where: { $0.bookSourceUrl == url }) else { return }
-                let old = store.sources[idx].respondTime
-                // 抖动小于 50ms 不重写，避免每次搜索都刷 UserDefaults
-                if let old, abs(old - milliseconds) < 50 { return }
-                store.sources[idx].respondTime = milliseconds
-                store.scheduleRespondTimeSave()
+                guard let index = store.bookshelf.firstIndex(where: { $0.bookUrl == changed.bookUrl }) else { return }
+                let current = store.bookshelf[index]
+                guard current.variable != changed.variable || current.useReplaceRule != changed.useReplaceRule else { return }
+                store.bookshelf[index].variable = changed.variable
+                store.bookshelf[index].useReplaceRule = changed.useReplaceRule
+                store.persistShelf()
             }
         }
     }
 
-    private func scheduleRespondTimeSave() {
-        respondTimeSaveWorkItem?.cancel()
-        let item = DispatchWorkItem { [weak self] in
-            self?.saveSources()
+    private func installSearchTimingSink() {
+        BookSearchService.respondTimeSink = { sourceURL, milliseconds in
+            guard !sourceURL.isEmpty, milliseconds > 0 else { return }
+            DispatchQueue.main.async {
+                let store = BookStore.shared
+                guard let index = store.sources.firstIndex(where: { $0.bookSourceUrl == sourceURL }) else { return }
+                if let previous = store.sources[index].respondTime, abs(previous - milliseconds) < 50 {
+                    return
+                }
+                store.sources[index].respondTime = milliseconds
+                store.scheduleRespondTimeFlush()
+            }
         }
-        respondTimeSaveWorkItem = item
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5, execute: item)
     }
 
-    private func loadBookmarks() {
-        if let data = UserDefaults.standard.data(forKey: bookmarksKey),
-           let decoded = try? JSONDecoder().decode([BookBookmark].self, from: data) {
-            bookmarks = decoded
-        }
+    private func scheduleRespondTimeFlush() {
+        pendingRespondTimeWrite?.cancel()
+        let task = DispatchWorkItem { [weak self] in self?.persistSources() }
+        pendingRespondTimeWrite = task
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5, execute: task)
     }
 
-    private func saveBookmarks() {
-        if let data = try? JSONEncoder().encode(bookmarks) {
-            UserDefaults.standard.set(data, forKey: bookmarksKey)
-        }
-    }
+    // MARK: - 书签与标注
 
     public func bookmarks(for bookUrl: String) -> [BookBookmark] {
-        bookmarks.filter { $0.bookUrl == bookUrl }.sorted { $0.createdAt > $1.createdAt }
+        bookmarks
+            .filter { $0.bookUrl == bookUrl }
+            .sorted { $0.createdAt > $1.createdAt }
     }
 
-    /// 段落级标注（下划线 / 底色）：同一段只留一种样式，重复点就是取消。
-    /// 返回 true 表示这次是「加上」，false 表示「取消掉」。
+    public func addBookmark(_ bookmark: BookBookmark) {
+        bookmarks.append(bookmark)
+        persistBookmarks()
+    }
+
+    public func removeBookmark(_ bookmark: BookBookmark) {
+        bookmarks.removeAll { $0.id == bookmark.id }
+        persistBookmarks()
+    }
+
+    public func updateBookmarkNote(id: UUID, note: String) {
+        guard let index = bookmarks.firstIndex(where: { $0.id == id }) else { return }
+        bookmarks[index].note = note
+        persistBookmarks()
+    }
+
     @discardableResult
     public func toggleAnnotation(
         bookUrl: String,
@@ -134,81 +151,43 @@ public class BookStore: ObservableObject {
         charScoped: Bool = false,
         forceRemove: Bool = false
     ) -> Bool {
-        if charScoped {
-            // 明确「清除」：不比较颜色，命中同段同区间的那条就删
-            if forceRemove {
-                let before = bookmarks.count
-                bookmarks.removeAll {
-                    $0.bookUrl == bookUrl && $0.chapterIndex == chapterIndex
-                        && $0.blockId == blockId && $0.kind == kind
-                        && $0.charOffset == charOffset && $0.length == length
-                        && $0.rangeUnitRaw == "char"
-                }
-                if bookmarks.count != before { saveBookmarks() }
-                return false
-            }
-            // 逐字标注：同一段可以有多个区间。同区间点同色 = 取消，点别的色 = 换色
-            let sameRange = bookmarks.firstIndex {
-                $0.bookUrl == bookUrl && $0.chapterIndex == chapterIndex
-                    && $0.blockId == blockId && $0.kind == kind
-                    && $0.charOffset == charOffset && $0.length == length
-                    && $0.rangeUnitRaw == "char"
-            }
-            if let sameRange {
-                let current = bookmarks[sameRange].color
-                    ?? (kind == .underline ? "#2F7BF6" : "#FFF59D")
-                let sameColor = current == color
-                bookmarks.remove(at: sameRange)
-                if sameColor {
-                    saveBookmarks()
-                    return false
-                }
-            }
-            bookmarks.append(BookBookmark(
+        if forceRemove {
+            return removeMatchingAnnotation(
                 bookUrl: bookUrl,
                 chapterIndex: chapterIndex,
-                chapterTitle: chapterTitle,
-                charOffset: charOffset,
-                snippet: String(snippet.prefix(60)),
                 blockId: blockId,
-                length: length,
-                color: color,
-                rangeUnit: "char",
-                kind: kind
-            ))
-            saveBookmarks()
-            return true
+                kind: kind,
+                charOffset: charScoped ? charOffset : nil,
+                length: charScoped ? length : nil
+            )
         }
-        // 整段标注的「清除」：这一段这一类标注全部撤掉，不看颜色
-        if forceRemove {
-            let before = bookmarks.count
-            bookmarks.removeAll {
-                $0.bookUrl == bookUrl && $0.chapterIndex == chapterIndex
-                    && $0.blockId == blockId && $0.kind == kind && $0.rangeUnitRaw == nil
-            }
-            if bookmarks.count != before { saveBookmarks() }
-            return false
-        }
-        let existing = bookmarks.firstIndex {
-            $0.bookUrl == bookUrl && $0.chapterIndex == chapterIndex
-                && $0.blockId == blockId && $0.kind == kind && $0.rangeUnitRaw == nil
-        }
-        if let existing {
-            let current = bookmarks[existing].color
-                ?? (kind == .underline ? "#2F7BF6" : "#FFF59D")
-            let sameColor = current == color
+
+        let scope: AnnotationScope = charScoped
+            ? .characters(offset: charOffset, length: length)
+            : .paragraph
+
+        if let existing = bookmarks.firstIndex(where: {
+            annotationMatches($0, bookUrl: bookUrl, chapterIndex: chapterIndex, blockId: blockId, kind: kind, scope: scope)
+        }) {
+            let activeColor = bookmarks[existing].color ?? defaultAnnotationColor(for: kind)
+            let tappingSameColor = activeColor == color
             bookmarks.remove(at: existing)
-            if sameColor {
-                saveBookmarks()
+            if tappingSameColor {
+                persistBookmarks()
                 return false
             }
         }
-        // 一段只留一种样式：先把这一段其它标注清掉，免得下划线和底色打架
-        bookmarks.removeAll {
-            $0.bookUrl == bookUrl && $0.chapterIndex == chapterIndex
-                && $0.blockId == blockId && $0.kind != .bookmark && $0.rangeUnitRaw == nil
+
+        if !charScoped {
+            // 同一段只保留一种样式，避免下划线和底色互相覆盖。
+            bookmarks.removeAll {
+                $0.bookUrl == bookUrl && $0.chapterIndex == chapterIndex
+                    && $0.blockId == blockId && $0.kind != .bookmark
+                    && $0.rangeUnitRaw == nil
+            }
         }
-        bookmarks.append(BookBookmark(
+
+        let fresh = BookBookmark(
             bookUrl: bookUrl,
             chapterIndex: chapterIndex,
             chapterTitle: chapterTitle,
@@ -217,41 +196,42 @@ public class BookStore: ObservableObject {
             blockId: blockId,
             length: length,
             color: color,
+            rangeUnit: charScoped ? "char" : nil,
             kind: kind
-        ))
-        saveBookmarks()
+        )
+        bookmarks.append(fresh)
+        persistBookmarks()
         return true
     }
 
-    /// 把这一章的标注整体换成给定的一批：选段里按「取消」要还原格式时用
     public func replaceAnnotations(_ items: [BookBookmark], bookUrl: String, chapterIndex: Int) {
         bookmarks.removeAll {
             $0.bookUrl == bookUrl && $0.chapterIndex == chapterIndex && $0.kind != .bookmark
         }
         bookmarks.append(contentsOf: items)
-        saveBookmarks()
+        persistBookmarks()
     }
 
-    /// 这一章的标注，按 blockId 索引 —— 渲染时按段查
     public func annotations(bookUrl: String, chapterIndex: Int) -> [Int: BookBookmark] {
-        var map: [Int: BookBookmark] = [:]
+        var result: [Int: BookBookmark] = [:]
         for item in bookmarks
-        where item.bookUrl == bookUrl && item.chapterIndex == chapterIndex
-            && item.kind != .bookmark && item.rangeUnitRaw == nil {
-            if let blockId = item.blockId { map[blockId] = item }
+        where item.bookUrl == bookUrl
+            && item.chapterIndex == chapterIndex
+            && item.kind != .bookmark
+            && item.rangeUnitRaw == nil {
+            if let block = item.blockId {
+                result[block] = item
+            }
         }
-        return map
+        return result
     }
 
-    /// 这一章所有非书签标注（含逐字区间），逐字绘制用
     public func userAnnotations(bookUrl: String, chapterIndex: Int) -> [BookBookmark] {
         bookmarks.filter {
             $0.bookUrl == bookUrl && $0.chapterIndex == chapterIndex && $0.kind != .bookmark
         }
     }
 
-    /// 选中范围里已有的标注：逐字选只认和选区有交集的逐字标注（段级标注也算）,
-    /// 不给 charStart 就是整段口径。
     public func annotationsOverlapping(
         bookUrl: String,
         chapterIndex: Int,
@@ -259,25 +239,15 @@ public class BookStore: ObservableObject {
         charStart: Int? = nil,
         charLength: Int? = nil
     ) -> [BookBookmark] {
-        bookmarks.filter {
-            $0.bookUrl == bookUrl && $0.chapterIndex == chapterIndex
-                && $0.blockId == blockId && $0.kind != .bookmark
-                && overlap($0, charStart: charStart, charLength: charLength)
+        bookmarks.filter { item in
+            guard item.bookUrl == bookUrl,
+                  item.chapterIndex == chapterIndex,
+                  item.blockId == blockId,
+                  item.kind != .bookmark else { return false }
+            return annotationOverlaps(item, charStart: charStart, charLength: charLength)
         }
     }
 
-    private func overlap(_ item: BookBookmark, charStart: Int?, charLength: Int?) -> Bool {
-        // 整段口径：这一段上的标注全算
-        guard let charStart, let charLength else { return true }
-        // 段级标注（rangeUnitRaw == nil）覆盖整段，逐字选区也算命中
-        guard item.rangeUnitRaw == "char" else { return true }
-        let start = item.charOffset
-        let end = item.charOffset + max(1, item.length ?? 1)
-        return start < charStart + max(1, charLength) && charStart < end
-    }
-
-    /// 撤标注：不看颜色、不挑种类，选中范围里有就删。
-    /// 之前只认「同区间同色」才取消，改过颜色的标注于是永远撤不掉。
     @discardableResult
     public func removeAnnotations(
         bookUrl: String,
@@ -287,101 +257,146 @@ public class BookStore: ObservableObject {
         charLength: Int? = nil
     ) -> Int {
         let before = bookmarks.count
-        bookmarks.removeAll {
-            $0.bookUrl == bookUrl && $0.chapterIndex == chapterIndex
-                && $0.blockId == blockId && $0.kind != .bookmark
-                && overlap($0, charStart: charStart, charLength: charLength)
+        bookmarks.removeAll { item in
+            guard item.bookUrl == bookUrl,
+                  item.chapterIndex == chapterIndex,
+                  item.blockId == blockId,
+                  item.kind != .bookmark else { return false }
+            return annotationOverlaps(item, charStart: charStart, charLength: charLength)
         }
         let removed = before - bookmarks.count
-        if removed > 0 { saveBookmarks() }
+        if removed > 0 { persistBookmarks() }
         return removed
     }
 
-    // MARK: - 正文替换（阅读页选中一段做替换，按书生效）
+    private enum AnnotationScope {
+        case paragraph
+        case characters(offset: Int, length: Int)
+    }
+
+    private func annotationMatches(
+        _ item: BookBookmark,
+        bookUrl: String,
+        chapterIndex: Int,
+        blockId: Int,
+        kind: BookBookmark.Kind,
+        scope: AnnotationScope
+    ) -> Bool {
+        guard item.bookUrl == bookUrl,
+              item.chapterIndex == chapterIndex,
+              item.blockId == blockId,
+              item.kind == kind else { return false }
+
+        switch scope {
+        case .paragraph:
+            return item.rangeUnitRaw == nil
+        case .characters(let offset, let length):
+            return item.rangeUnitRaw == "char"
+                && item.charOffset == offset
+                && item.length == length
+        }
+    }
+
+    private func removeMatchingAnnotation(
+        bookUrl: String,
+        chapterIndex: Int,
+        blockId: Int,
+        kind: BookBookmark.Kind,
+        charOffset: Int?,
+        length: Int?
+    ) -> Bool {
+        let before = bookmarks.count
+        bookmarks.removeAll { item in
+            guard item.bookUrl == bookUrl,
+                  item.chapterIndex == chapterIndex,
+                  item.blockId == blockId,
+                  item.kind == kind else { return false }
+            guard let charOffset, let length else {
+                return item.rangeUnitRaw == nil
+            }
+            return item.rangeUnitRaw == "char"
+                && item.charOffset == charOffset
+                && item.length == length
+        }
+        if bookmarks.count != before { persistBookmarks() }
+        return false
+    }
+
+    private func defaultAnnotationColor(for kind: BookBookmark.Kind) -> String {
+        kind == .underline ? "#2F7BF6" : "#FFF59D"
+    }
+
+    private func annotationOverlaps(_ item: BookBookmark, charStart: Int?, charLength: Int?) -> Bool {
+        guard let charStart, let charLength else { return true }
+        guard item.rangeUnitRaw == "char" else { return true }
+        let lower = item.charOffset
+        let upper = item.charOffset + max(1, item.length ?? 1)
+        return lower < charStart + max(1, charLength) && charStart < upper
+    }
+
+    private func persistBookmarks() {
+        Persisted.write(bookmarks, key: Keys.bookmarks)
+    }
+
+    // MARK: - 正文替换
 
     public func textReplaceRules(bookUrl: String) -> [TextReplaceRule] {
         textReplaceRulesMap[bookUrl] ?? []
     }
 
     public func addTextReplaceRule(bookUrl: String, from: String, to: String) {
-        let trimmedFrom = from.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmedFrom.isEmpty else { return }
-        var rules = textReplaceRulesMap[bookUrl] ?? []
-        rules.removeAll { $0.from == trimmedFrom }
-        rules.append(TextReplaceRule(from: trimmedFrom, to: to))
-        textReplaceRulesMap[bookUrl] = rules
-        saveTextReplaceRules()
+        let needle = from.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !needle.isEmpty else { return }
+
+        var current = textReplaceRulesMap[bookUrl] ?? []
+        current.removeAll { $0.from == needle }
+        current.append(TextReplaceRule(from: needle, to: to))
+        textReplaceRulesMap[bookUrl] = current
+        persistTextReplaceRules()
     }
 
     public func clearTextReplaceRules(bookUrl: String) {
         textReplaceRulesMap[bookUrl] = nil
-        saveTextReplaceRules()
+        persistTextReplaceRules()
     }
 
-    private func saveTextReplaceRules() {
-        if let data = try? JSONEncoder().encode(textReplaceRulesMap) {
-            UserDefaults.standard.set(data, forKey: replaceRulesKey)
-        }
+    private func persistTextReplaceRules() {
+        Persisted.write(textReplaceRulesMap, key: Keys.replaceRules)
     }
 
-    public func addBookmark(_ bookmark: BookBookmark) {
-        bookmarks.append(bookmark)
-        saveBookmarks()
-    }
-
-    public func removeBookmark(_ bookmark: BookBookmark) {
-        bookmarks.removeAll { $0.id == bookmark.id }
-        saveBookmarks()
-    }
-
-    // MARK: - 书架分组
-    @Published public var groups: [BookGroup] = []
-
-    private func loadGroups() {
-        if let data = UserDefaults.standard.data(forKey: groupsKey),
-           let decoded = try? JSONDecoder().decode([BookGroup].self, from: data) {
-            groups = decoded
-        }
-    }
-
-    private func saveGroups() {
-        if let data = try? JSONEncoder().encode(groups) {
-            UserDefaults.standard.set(data, forKey: groupsKey)
-        }
-    }
+    // MARK: - 分组
 
     @discardableResult
     public func addGroup(name: String) -> BookGroup {
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
         let group = BookGroup(name: trimmed.isEmpty ? "新分组" : trimmed)
         groups.append(group)
-        saveGroups()
+        persistGroups()
         return group
     }
 
     public func renameGroup(id: UUID, to name: String) {
-        guard let idx = groups.firstIndex(where: { $0.id == id }) else { return }
+        guard let index = groups.firstIndex(where: { $0.id == id }) else { return }
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
-        groups[idx].name = trimmed
-        saveGroups()
+        groups[index].name = trimmed
+        persistGroups()
     }
 
     public func removeGroup(id: UUID) {
         groups.removeAll { $0.id == id }
-        saveGroups()
-        // 组内书回到未分组
-        for i in 0..<bookshelf.count where bookshelf[i].groupId == id {
-            bookshelf[i].groupId = nil
+        persistGroups()
+
+        for index in bookshelf.indices where bookshelf[index].groupId == id {
+            bookshelf[index].groupId = nil
         }
-        saveBookshelf()
+        persistShelf()
     }
 
-    /// 把书挪到某个分组（nil = 移出分组）
     public func assign(_ book: Book, toGroup groupId: UUID?) {
-        guard let idx = bookshelf.firstIndex(where: { $0.bookUrl == book.bookUrl }) else { return }
-        bookshelf[idx].groupId = groupId
-        saveBookshelf()
+        guard let index = bookshelf.firstIndex(where: { $0.bookUrl == book.bookUrl }) else { return }
+        bookshelf[index].groupId = groupId
+        persistShelf()
     }
 
     public func books(inGroup groupId: UUID?) -> [Book] {
@@ -389,79 +404,78 @@ public class BookStore: ObservableObject {
         return bookshelf.filter { $0.groupId == groupId }
     }
 
-    public func updateBookmarkNote(id: UUID, note: String) {
-        guard let idx = bookmarks.firstIndex(where: { $0.id == id }) else { return }
-        bookmarks[idx].note = note
-        saveBookmarks()
+    private func persistGroups() {
+        Persisted.write(groups, key: Keys.groups)
     }
 
-    /// Documents 下的缓存目录；取不到时退回临时目录，这里不该成为崩溃点。
-    private func getDocumentsDirectory() -> URL {
+    // MARK: - 磁盘与内置源
+
+    private var documentsFolder: URL {
         FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first
             ?? FileManager.default.temporaryDirectory
     }
 
-    /// 内置书源在 SPM 包里走 Bundle.module，装进 app 后走 Bundle.main。
-    private var bundledSourcesURL: URL? {
+    private var bundledSourcesFile: URL? {
         #if SWIFT_PACKAGE
-        if let url = Bundle.module.url(forResource: "bookSources", withExtension: "json") {
-            return url
+        if let resource = Bundle.module.url(forResource: "bookSources", withExtension: "json") {
+            return resource
         }
         #endif
         return Bundle.main.url(forResource: "bookSources", withExtension: "json")
     }
 
     public func loadData() {
-        if let stored = decode([BookSource].self, forKey: sourcesKey) {
-            sources = stored
-        }
-        // 内置源每次都参与同步：本地为空整批灌入，非空只刷新规则，登录态由合并函数保住。
-        loadBundledSources()
-        if let stored = decode([Book].self, forKey: booksKey) {
-            bookshelf = stored
-        }
+        sources = Persisted.read([BookSource].self, key: Keys.sources) ?? sources
+        mergeBundledSources(forceReset: false)
+        bookshelf = Persisted.read([Book].self, key: Keys.books) ?? bookshelf
     }
 
     public func loadBundledSources(forceReset: Bool = false) {
-        guard let url = bundledSourcesURL,
-              let data = try? Data(contentsOf: url),
-              let bundled = try? JSONDecoder().decode([BookSource].self, from: data) else {
-            return
-        }
+        mergeBundledSources(forceReset: forceReset)
+    }
 
-        if forceReset || sources.isEmpty {
+    private func mergeBundledSources(forceReset: Bool) {
+        guard let bundled = decodedBundledSources() else { return }
+
+        let replaceEverything = forceReset || sources.isEmpty
+        if replaceEverything {
             sources = bundled
-            saveSources()
+            persistSources()
             return
         }
 
-        // 先把本地列表索引成字典：逐个内置源去线性扫本地表，条目一多就是 N×M。
-        var offsetByUrl: [String: Int] = [:]
-        var offsetByName: [String: Int] = [:]
-        for (offset, source) in sources.enumerated() {
-            offsetByUrl[source.bookSourceUrl] = offset
-            offsetByName[source.bookSourceName] = offset
+        var indexByURL: [String: Int] = [:]
+        var indexByName: [String: Int] = [:]
+        for (offset, item) in sources.enumerated() {
+            indexByURL[item.bookSourceUrl] = offset
+            indexByName[item.bookSourceName] = offset
         }
 
         for incoming in bundled {
-            // 先认 URL 再认书名：同一本书源换了域名时，靠书名把本地登录态接回来。
-            let matched = offsetByUrl[incoming.bookSourceUrl] ?? offsetByName[incoming.bookSourceName]
+            // 先认 URL，再认书名：书源换域名时仍能把本地登录态接回来。
+            let matched = indexByURL[incoming.bookSourceUrl] ?? indexByName[incoming.bookSourceName]
             if let matched {
-                sources[matched] = carryingLocalState(from: sources[matched], into: incoming)
+                sources[matched] = mergingUserState(from: sources[matched], into: incoming)
             } else {
                 sources.append(incoming)
             }
-            // 新追加的条目也得进索引，否则后面同名的内置源会被重复插入。
             let offset = matched ?? (sources.count - 1)
-            offsetByUrl[incoming.bookSourceUrl] = offset
-            offsetByName[incoming.bookSourceName] = offset
+            indexByURL[incoming.bookSourceUrl] = offset
+            indexByName[incoming.bookSourceName] = offset
         }
-        saveSources()
+        persistSources()
     }
 
-    /// 内置版本只负责规则；登录态、排序、启用开关是用户的，必须原样带过来。
-    private func carryingLocalState(from local: BookSource, into bundled: BookSource) -> BookSource {
-        var merged = bundled
+    private func decodedBundledSources() -> [BookSource]? {
+        guard let file = bundledSourcesFile,
+              let raw = try? Data(contentsOf: file) else {
+            return .none
+        }
+        return try? JSONDecoder().decode([BookSource].self, from: raw)
+    }
+
+    private func mergingUserState(from local: BookSource, into fresh: BookSource) -> BookSource {
+        var merged = fresh
         merged.loginHeader = local.loginHeader
         merged.loginInfo = local.loginInfo
         if let order = local.customOrder {
@@ -473,13 +487,13 @@ public class BookStore: ObservableObject {
         return merged
     }
 
-    public func saveSources() {
-        encode(sources, forKey: sourcesKey)
-    }
+    public func saveSources() { persistSources() }
+    public func saveBookshelf() { persistShelf() }
 
-    public func saveBookshelf() {
-        shelfWriter.writeNow(bookshelf)
-    }
+    private func persistSources() { Persisted.write(sources, key: Keys.sources) }
+
+    /// 结构变化（增删书、换源、导入、恢复）立刻写盘，并作废挂起的旧快照。
+    private func persistShelf() { shelfWriter.writeNow(bookshelf) }
 
     /// 阅读进度这类高频变化只标脏，静默 0.8 秒后合并写一次。
     private func scheduleShelfPersist() { shelfWriter.schedule(bookshelf, delay: 0.8) }
@@ -487,18 +501,8 @@ public class BookStore: ObservableObject {
     /// 进后台 / 退出阅读 / 退出 App：把还没落盘的进度立刻写完。
     public func flushShelf() { shelfWriter.flush() }
 
-    private func decode<T: Decodable>(_ type: T.Type, forKey key: String) -> T? {
-        guard let data = UserDefaults.standard.data(forKey: key) else { return nil }
-        return try? JSONDecoder().decode(type, from: data)
-    }
+    // MARK: - WebDAV 恢复
 
-    private func encode<T: Encodable>(_ value: T, forKey key: String) {
-        guard let data = try? JSONEncoder().encode(value) else { return }
-        UserDefaults.standard.set(data, forKey: key)
-    }
-
-    /// Merges restored WebDAV books and sources into local storage
-    /// 备份恢复的两种取向：合并保留本地进度/分组/封面；替换完全采用备份内容
     public enum RestoreMode {
         case merge
         case replace
@@ -509,45 +513,66 @@ public class BookStore: ObservableObject {
         sources: [BookSource]?,
         mode: RestoreMode = .merge
     ) -> (booksAdded: Int, sourcesAdded: Int) {
-        var addedBooks = 0
-        var addedSources = 0
+        var newBooks = 0
+        var newSources = 0
 
         if let backupBooks = books {
             for backup in backupBooks {
                 guard let index = bookshelf.firstIndex(where: { $0.bookUrl == backup.bookUrl }) else {
                     bookshelf.append(backup)
-                    addedBooks += 1
+                    newBooks += 1
                     continue
                 }
-                bookshelf[index] = mode == .replace
-                    ? backup
-                    : adoptingProgress(from: backup, over: bookshelf[index])
+                switch mode {
+                case .replace:
+                    bookshelf[index] = backup
+                case .merge:
+                    bookshelf[index] = mergingProgress(from: backup, over: bookshelf[index])
+                }
             }
-            saveBookshelf()
+            persistShelf()
         }
 
         if let admitted = BookSourceGate.admitted(sources, appStore: AppEdition.isAppStoreClean) {
-            var offsetByUrl: [String: Int] = [:]
+            var indexByURL: [String: Int] = [:]
             for (offset, local) in self.sources.enumerated() {
-                offsetByUrl[local.bookSourceUrl] = offset
+                indexByURL[local.bookSourceUrl] = offset
             }
             for incoming in admitted {
-                if let offset = offsetByUrl[incoming.bookSourceUrl] {
+                if let offset = indexByURL[incoming.bookSourceUrl] {
                     self.sources[offset] = incoming
                 } else {
                     self.sources.append(incoming)
-                    offsetByUrl[incoming.bookSourceUrl] = self.sources.count - 1
-                    addedSources += 1
+                    indexByURL[incoming.bookSourceUrl] = self.sources.count - 1
+                    newSources += 1
                 }
             }
-            saveSources()
+            persistSources()
         }
 
-        return (addedBooks, addedSources)
+        return (newBooks, newSources)
     }
 
-    /// 合并恢复：备份只补本地缺的字段，阅读进度更旧的时候不往回倒。
-    private func adoptingProgress(from backup: Book, over local: Book) -> Book {
+    /// 离线包导入：书与目录落地，正文/书评/封面已由 OfflineBookShare 写回缓存
+    @discardableResult
+    public func importOfflineBook(_ book: Book, chapters: [BookChapter]) -> Bool {
+        var incoming = book
+        incoming.origin = "local"
+        incoming.totalChapterNum = chapters.count
+
+        if let index = bookshelf.firstIndex(where: { $0.bookUrl == incoming.bookUrl }) {
+            bookshelf[index] = mergingProgress(from: incoming, over: bookshelf[index])
+            bookshelf[index].totalChapterNum = chapters.count
+        } else {
+            bookshelf.append(incoming)
+        }
+        // 本地书的目录键就是 bookUrl，阅读页打开时直接用这份，不必联网
+        saveChapters(chapters, for: incoming.bookUrl)
+        persistShelf()
+        return true
+    }
+
+    private func mergingProgress(from backup: Book, over local: Book) -> Book {
         var result = backup
         if local.durChapterTime > result.durChapterTime {
             result.durChapterIndex = local.durChapterIndex
@@ -555,120 +580,120 @@ public class BookStore: ObservableObject {
             result.durChapterPos = local.durChapterPos
             result.durChapterTime = local.durChapterTime
         }
-        if result.groupId == nil { result.groupId = local.groupId }
-        if (result.coverUrl ?? "").isEmpty { result.coverUrl = local.coverUrl }
+        if result.groupId == nil {
+            result.groupId = local.groupId
+        }
+        if (result.coverUrl ?? "").isEmpty {
+            result.coverUrl = local.coverUrl
+        }
         return result
     }
 
-    // MARK: - Book Management
+    // MARK: - 书架
+
     public func addBook(from searchResult: SearchBook) -> Book {
-        if let existing = bookshelf.first(where: { $0.bookUrl == searchResult.bookUrl }) {
+        if let duplicate = bookshelf.first(where: { $0.bookUrl == searchResult.bookUrl }) {
             AppLog.write("[书架] 加入网络书：已存在")
-            return existing
+            return duplicate
         }
 
-        let newBook = makeNetworkBook(from: searchResult)
-        bookshelf.insert(newBook, at: 0)
-        saveBookshelf()
+        let fresh = networkBook(from: searchResult)
+        bookshelf.insert(fresh, at: 0)
+        persistShelf()
         AppLog.write("[书架] 加入网络书：新增")
-        return newBook
+        return fresh
     }
 
-    private func makeNetworkBook(from searchResult: SearchBook) -> Book {
+    private func networkBook(from result: SearchBook) -> Book {
         Book(
-            bookUrl: searchResult.bookUrl,
-            name: searchResult.name,
-            author: searchResult.author,
-            kind: searchResult.kind,
-            coverUrl: searchResult.coverUrl,
-            intro: searchResult.intro,
-            origin: searchResult.origin,
-            originName: searchResult.originName,
-            latestChapterTitle: searchResult.latestChapterTitle
+            bookUrl: result.bookUrl,
+            name: result.name,
+            author: result.author,
+            kind: result.kind,
+            coverUrl: result.coverUrl,
+            intro: result.intro,
+            origin: result.origin,
+            originName: result.originName,
+            latestChapterTitle: result.latestChapterTitle
         )
     }
 
-    /// 新书插到书架最前面并存盘。导入路径都走这里，免得每处重复「插入 + 保存」。
-    private func prependToShelf(_ book: Book) {
+    private func insertAtFront(_ book: Book) {
         bookshelf.insert(book, at: 0)
-        saveBookshelf()
+        persistShelf()
     }
 
-    /// 有就整条替换、没有就插到最前。EPUB / TXT 导入共用。
-    private func upsertShelf(_ book: Book) {
-        if let existing = bookshelf.firstIndex(where: { $0.bookUrl == book.bookUrl }) {
-            bookshelf[existing] = book
-            saveBookshelf()
+    private func insertOrReplace(_ book: Book) {
+        if let index = bookshelf.firstIndex(where: { $0.bookUrl == book.bookUrl }) {
+            bookshelf[index] = book
+            persistShelf()
         } else {
-            prependToShelf(book)
+            insertAtFront(book)
         }
     }
 
-    @discardableResult
-    /// overwriteCover 为 true 时才用传入的封面覆盖本地封面。
-    /// 刷新详情这类更新不传封面，不能覆盖用户自己设的封面。
-    public func saveOrUpdateBook(_ book: Book, overwriteCover: Bool = false) -> Book {
+    @discardableResult public func saveOrUpdateBook(_ book: Book, overwriteCover: Bool = false) -> Book {
         guard let index = bookshelf.firstIndex(where: { $0.bookUrl == book.bookUrl }) else {
-            prependToShelf(book)
+            insertAtFront(book)
             return book
         }
-        bookshelf[index] = mergingDetails(of: book, into: bookshelf[index], overwriteCover: overwriteCover)
-        saveBookshelf()
+        bookshelf[index] = mergingDetailFields(of: book, into: bookshelf[index], overwriteCover: overwriteCover)
+        persistShelf()
         return bookshelf[index]
     }
 
-    /// 详情刷新只补空字段，空值不覆盖已有内容。
-    private func mergingDetails(of incoming: Book, into local: Book, overwriteCover: Bool) -> Book {
-        var result = local
-        if incoming.name.isEmpty == false {
-            result.name = incoming.name
+    private func mergingDetailFields(of incoming: Book, into local: Book, overwriteCover: Bool) -> Book {
+        var merged = local
+
+        if !incoming.name.isEmpty {
+            merged.name = incoming.name
         }
-        if incoming.author.isEmpty == false, incoming.author != "未知作者" {
-            result.author = incoming.author
+        if !incoming.author.isEmpty, incoming.author != "未知作者" {
+            merged.author = incoming.author
         }
         if overwriteCover {
-            result.coverUrl = incoming.coverUrl
-        } else if let cover = incoming.coverUrl, cover.isEmpty == false {
-            result.coverUrl = cover
+            merged.coverUrl = incoming.coverUrl
+        } else if let cover = incoming.coverUrl, !cover.isEmpty {
+            merged.coverUrl = cover
         }
-        if let intro = incoming.intro, intro.isEmpty == false, intro.hasPrefix("源站：") == false {
-            result.intro = intro
+        if let intro = incoming.intro, !intro.isEmpty, !intro.hasPrefix("源站：") {
+            merged.intro = intro
         }
-        if let kind = incoming.kind, kind.isEmpty == false {
-            result.kind = kind
+        if let kind = incoming.kind, !kind.isEmpty {
+            merged.kind = kind
         }
-        if let wordCount = incoming.wordCount, wordCount.isEmpty == false {
-            result.wordCount = wordCount
+        if let words = incoming.wordCount, !words.isEmpty {
+            merged.wordCount = words
         }
-        if let latest = incoming.latestChapterTitle, latest.isEmpty == false {
-            result.latestChapterTitle = latest
+        if let latest = incoming.latestChapterTitle, !latest.isEmpty {
+            merged.latestChapterTitle = latest
         }
         if incoming.totalChapterNum > 0 {
-            result.totalChapterNum = incoming.totalChapterNum
+            merged.totalChapterNum = incoming.totalChapterNum
         }
-        return result
+        return merged
     }
 
     public func removeBook(bookUrl: String) {
         AppLog.write("[书架] 删除书籍")
-        bookshelf.removeAll { $0.bookUrl == bookUrl }
-        saveBookshelf()
+        bookshelf = bookshelf.filter { $0.bookUrl != bookUrl }
+        persistShelf()
     }
 
-    /// 换源：把阅读进度搬到新书源的同名书上，旧记录与旧目录缓存一并清掉。
     @discardableResult
     public func changeBookSource(from oldBook: Book, to newBook: Book) -> Book {
         AppLog.write("[书架] 更换书源")
         var target = newBook
+
         target.durChapterIndex = oldBook.durChapterIndex
         target.durChapterTitle = oldBook.durChapterTitle
         target.durChapterPos = oldBook.durChapterPos
         target.durChapterTime = oldBook.durChapterTime
-        // 分组和用户设过的封面跟着书走，新源没封面时保留旧封面
         target.groupId = oldBook.groupId
-        if (target.coverUrl ?? "").isEmpty, let oldCover = oldBook.coverUrl, !oldCover.isEmpty {
-            target.coverUrl = oldCover
+        if (target.coverUrl ?? "").isEmpty, let cover = oldBook.coverUrl, !cover.isEmpty {
+            target.coverUrl = cover
         }
+
         if target.bookUrl != oldBook.bookUrl {
             // 目录地址属于旧源：沿用它会让换源后的目录和正文继续从旧站抓。
             if target.tocUrl == oldBook.tocUrl {
@@ -676,6 +701,7 @@ public class BookStore: ObservableObject {
             }
             target.totalChapterNum = 0
         }
+
         guard let oldIndex = bookshelf.firstIndex(where: { $0.bookUrl == oldBook.bookUrl }) else {
             // 未上架的书换源只用于阅读，不能被顺带写进书架。
             if target.bookUrl != oldBook.bookUrl {
@@ -683,17 +709,19 @@ public class BookStore: ObservableObject {
             }
             return target
         }
+
         if target.bookUrl != oldBook.bookUrl {
             bookshelf.remove(at: oldIndex)
             discardChapterCache(for: oldBook.bookUrl)
         }
+
         if let index = bookshelf.firstIndex(where: { $0.bookUrl == target.bookUrl }) {
             bookshelf[index] = target
         } else {
             // 旧书在书架时放回它原来的位置，别因为换源就顶到最前面。
             bookshelf.insert(target, at: min(oldIndex, bookshelf.count))
         }
-        saveBookshelf()
+        persistShelf()
         return target
     }
 
@@ -708,52 +736,51 @@ public class BookStore: ObservableObject {
         bookshelf[index].lastCheckTime = stamp
         scheduleShelfPersist()
 
-        // 本地进度已经落盘，WebDAV 只是副本：没配就跳过，失败也不回滚。
+        // 本地进度已经写盘；WebDAV 只是副本，没配就跳过，失败也不回滚。
         let snapshot = bookshelf[index]
         let config = WebDAVService.shared.loadConfig()
-        guard config.url.isEmpty == false, config.username.isEmpty == false else { return }
+        guard !config.url.isEmpty, !config.username.isEmpty else { return }
         Task {
             try? await WebDAVService.shared.uploadBookProgress(book: snapshot, config: config)
         }
     }
 
-    /// 整架刷新：所有网络书并发拉详情，回来一条写一条，单本失败不影响其余。
     public func refreshAllBooks() async {
         let online = bookshelf.filter { $0.origin != "local" }
-        guard online.isEmpty == false else { return }
+        guard !online.isEmpty else { return }
         AppLog.write("[Bookshelf] 开始整架刷新，网络书 \(online.count) 本")
 
-        await withTaskGroup(of: Book?.self) { group in
+        await withTaskGroup(of: Optional<Book>.self) { group in
             for book in online {
-                group.addTask { await self.refreshedDetail(of: book) }
+                group.addTask { await self.reloadDetail(for: book) }
             }
-            for await refreshed in group {
-                guard let refreshed else { continue }
-                await MainActor.run { _ = self.saveOrUpdateBook(refreshed) }
+            for await detail in group {
+                guard let detail else { continue }
+                await MainActor.run { _ = self.saveOrUpdateBook(detail) }
             }
         }
         AppLog.write("[Bookshelf] ✅ 整架刷新完成")
     }
 
-    /// 单本刷新。失败只记一条脱敏日志——书名不进日志，只留 md5 前缀。
-    private func refreshedDetail(of book: Book) async -> Book? {
+    private func reloadDetail(for book: Book) async -> Book? {
         guard let source = findSource(for: book) else { return nil }
         do {
             let (detail, chapters) = try await BookContentService.shared.fetchBookDetail(book: book, source: source)
             var refreshed = detail
             refreshed.totalChapterNum = chapters.count
-            if let last = chapters.last {
-                refreshed.latestChapterTitle = last.title
+            if let final = chapters.last {
+                refreshed.latestChapterTitle = final.title
             }
             return refreshed
         } catch {
             let tag = String(CryptoUtils.md5(book.name).prefix(8))
             AppLog.write("[Bookshelf] ⚠️ 刷新失败 book#\(tag): \(error.localizedDescription)")
-            return nil
+            return .none
         }
     }
 
-    // MARK: - Source Management
+    // MARK: - 书源导入
+
     public struct SourceImportEntry: Identifiable {
         public enum Status: String {
             case new = "新增"
@@ -767,27 +794,27 @@ public class BookStore: ObservableObject {
         public let status: Status
     }
 
-    /// 只解析、不改仓库，供导入预览使用。
     public func planImportSources(json: String) throws -> [SourceImportEntry] {
         guard let data = json.data(using: .utf8) else { return [] }
-        let imported = try BookSource.decodeList(from: data)
+        let incomingList = try BookSource.decodeList(from: data)
 
-        var entries: [SourceImportEntry] = []
-        var seenURLs = Set<String>()
-        for source in imported where !source.bookSourceUrl.isEmpty {
-            guard seenURLs.insert(source.bookSourceUrl).inserted else { continue }
-            if let existing = sources.first(where: { $0.bookSourceUrl == source.bookSourceUrl }) {
-                entries.append(SourceImportEntry(incoming: source, existing: existing, status: .update))
-            } else if let sameName = sources.first(where: { $0.bookSourceName == source.bookSourceName }) {
-                entries.append(SourceImportEntry(incoming: source, existing: sameName, status: .conflict))
+        var seen = Set<String>()
+        var plan: [SourceImportEntry] = []
+
+        for incoming in incomingList where !incoming.bookSourceUrl.isEmpty {
+            guard seen.insert(incoming.bookSourceUrl).inserted else { continue }
+
+            if let sameURL = sources.first(where: { $0.bookSourceUrl == incoming.bookSourceUrl }) {
+                plan.append(SourceImportEntry(incoming: incoming, existing: sameURL, status: .update))
+            } else if let sameName = sources.first(where: { $0.bookSourceName == incoming.bookSourceName }) {
+                plan.append(SourceImportEntry(incoming: incoming, existing: sameName, status: .conflict))
             } else {
-                entries.append(SourceImportEntry(incoming: source, existing: nil, status: .new))
+                plan.append(SourceImportEntry(incoming: incoming, existing: nil, status: .new))
             }
         }
-        return entries
+        return plan
     }
 
-    /// 应用已预览的导入计划。同名不同网址默认保留两边，勾选覆盖时按名字替换。
     @discardableResult
     public func applyImport(
         entries: [BookStore.SourceImportEntry],
@@ -795,7 +822,7 @@ public class BookStore: ObservableObject {
     ) -> (added: Int, updated: Int, conflictsAdded: Int) {
         var added = 0
         var updated = 0
-        var conflictsAdded = 0
+        var conflicts = 0
 
         for entry in entries {
             switch entry.status {
@@ -804,182 +831,180 @@ public class BookStore: ObservableObject {
                     sources.append(entry.incoming)
                     added += 1
                 }
+
             case .update:
-                if let idx = sources.firstIndex(where: { $0.bookSourceUrl == entry.incoming.bookSourceUrl }) {
-                    sources[idx] = entry.incoming
+                if let index = sources.firstIndex(where: { $0.bookSourceUrl == entry.incoming.bookSourceUrl }) {
+                    sources[index] = entry.incoming
                     updated += 1
                 }
+
             case .conflict:
                 if overwriteConflicts,
-                   let idx = sources.firstIndex(where: { $0.bookSourceUrl == entry.existing?.bookSourceUrl
-                       || $0.bookSourceName == entry.incoming.bookSourceName }) {
-                    sources[idx] = entry.incoming
+                   let index = sources.firstIndex(where: {
+                       $0.bookSourceUrl == entry.existing?.bookSourceUrl
+                           || $0.bookSourceName == entry.incoming.bookSourceName
+                   }) {
+                    sources[index] = entry.incoming
                     updated += 1
                 } else if !sources.contains(where: { $0.bookSourceUrl == entry.incoming.bookSourceUrl }) {
-                    // 同名不同网址：名字后加标记，避免列表里两个同名源分不清。
                     var incoming = entry.incoming
-                    if let existingName = entry.existing?.bookSourceName, existingName == incoming.bookSourceName {
+                    if let existingName = entry.existing?.bookSourceName,
+                       existingName == incoming.bookSourceName {
                         incoming.bookSourceName += "（导入）"
                     }
                     sources.append(incoming)
-                    conflictsAdded += 1
+                    conflicts += 1
                 }
             }
         }
-        if added + updated + conflictsAdded > 0 { saveSources() }
-        return (added, updated, conflictsAdded)
+
+        if added + updated + conflicts > 0 {
+            persistSources()
+        }
+        return (added, updated, conflicts)
     }
 
     public func importSources(json: String) throws -> Int {
         guard let data = json.data(using: .utf8) else { return 0 }
-        let imported = try BookSource.decodeList(from: data)
+        let incomingList = try BookSource.decodeList(from: data)
 
-        var offsetByUrl: [String: Int] = [:]
-        var offsetByName: [String: Int] = [:]
+        var byURL: [String: Int] = [:]
+        var byName: [String: Int] = [:]
         for (offset, local) in sources.enumerated() {
-            offsetByUrl[local.bookSourceUrl] = offset
-            offsetByName[local.bookSourceName] = offset
+            byURL[local.bookSourceUrl] = offset
+            byName[local.bookSourceName] = offset
         }
 
-        for incoming in imported {
-            // 同名但换了域名的源按书名认领，避免导入后列表里出现两条同名条目
-            if let matched = offsetByUrl[incoming.bookSourceUrl] ?? offsetByName[incoming.bookSourceName] {
+        for incoming in incomingList {
+            // 同名换域名的源按书名认领，避免导入后出现两条同名条目。
+            if let matched = byURL[incoming.bookSourceUrl] ?? byName[incoming.bookSourceName] {
                 sources[matched] = incoming
-                offsetByUrl[incoming.bookSourceUrl] = matched
-                offsetByName[incoming.bookSourceName] = matched
+                byURL[incoming.bookSourceUrl] = matched
+                byName[incoming.bookSourceName] = matched
             } else {
                 sources.append(incoming)
-                offsetByUrl[incoming.bookSourceUrl] = sources.count - 1
-                offsetByName[incoming.bookSourceName] = sources.count - 1
+                byURL[incoming.bookSourceUrl] = sources.count - 1
+                byName[incoming.bookSourceName] = sources.count - 1
             }
         }
-        saveSources()
-        // 覆盖更新也算导入成功：只数新增的话，同一个文件导第二次会返回 0，
-        // 界面就会误报「未在文件中发现有效书源」。
-        return imported.count
+        persistSources()
+
+        // 覆盖更新也算成功；只数新增会让同一个文件导第二次返回 0。
+        return incomingList.count
     }
 
     public func toggleSource(sourceUrl: String) {
         guard let index = sources.firstIndex(where: { $0.bookSourceUrl == sourceUrl }) else { return }
         sources[index].enabled = !(sources[index].enabled ?? true)
-        saveSources()
+        persistSources()
     }
 
     public func deleteSource(sourceUrl: String) {
         deleteSources(sourceUrls: [sourceUrl])
     }
 
-    /// 批量删除：一次扫描、一次写盘、一次刷新。
-    ///
-    /// 逐条调 `deleteSource` 的话，删 500 条就会做 500 次「全表扫描 + 整张书源表
-    /// 编码写进 UserDefaults + 发一次 @Published」，界面会卡住好一会儿。
     public func deleteSources(sourceUrls: Set<String>) {
         guard !sourceUrls.isEmpty else { return }
         sources.removeAll { sourceUrls.contains($0.bookSourceUrl) }
-        saveSources()
+        persistSources()
     }
 
-    /// 解析这本书所属的书源。
-    ///
-    /// 判定顺序与安卓一致：origin 精确匹配 → bookUrlPattern → 源名精确匹配 →
-    /// 同域且路径相关。后缀模糊匹配只接受唯一候选，找不到就返回 nil；
-    /// 以前兜底 `sources.first` 会把书串到完全无关的源上。
     public func findSource(for book: Book) -> BookSource? {
         BookSourceResolver.find(book: book, in: sources)
     }
 
-    /// 搜索结果自身的来源：只按 origin / 源名 / bookUrlPattern 精确判定。
-    /// 避免换源面板或搜索跳转把结果挂到另一个同站书源上。
     public func source(forSearchBook item: SearchBook) -> BookSource? {
         BookSourceResolver.find(searchBook: item, in: sources)
     }
 
     public func updateSource(originalSource: BookSource? = nil, newSource: BookSource) {
-        let previousUrl = originalSource?.bookSourceUrl ?? newSource.bookSourceUrl
+        let previousURL = originalSource?.bookSourceUrl ?? newSource.bookSourceUrl
         let previousName = originalSource?.bookSourceName ?? newSource.bookSourceName
-        let previousId = originalSource?.id ?? newSource.id
+        let previousID = originalSource?.id ?? newSource.id
 
-        if let index = sources.firstIndex(where: { $0.bookSourceUrl == previousUrl || $0.id == previousId }) {
-            sources[index] = newSource
-            saveSources()
+        let matchIndex = sources.firstIndex { $0.bookSourceUrl == previousURL || $0.id == previousID }
+        if let matchIndex {
+            sources[matchIndex] = newSource
+            persistSources()
         }
 
-        // 书架上指向旧源的条目要跟着改，否则改完源名点开书就「找不到书源」。
-        var touchedBookshelf = false
+        var shelfChanged = false
         for index in bookshelf.indices
-        where bookshelf[index].origin == previousUrl || bookshelf[index].originName == previousName {
+        where bookshelf[index].origin == previousURL || bookshelf[index].originName == previousName {
             bookshelf[index].origin = newSource.bookSourceUrl
             bookshelf[index].originName = newSource.bookSourceName
-            touchedBookshelf = true
+            shelfChanged = true
         }
-        if touchedBookshelf {
-            saveBookshelf()
+        if shelfChanged {
+            persistShelf()
         }
+
         SourceLoginService.shared.invalidate(sourceUrl: newSource.bookSourceUrl)
     }
 
     public func updateSource(_ source: BookSource) {
-        let original = sources.first(where: { $0.id == source.id || $0.bookSourceUrl == source.bookSourceUrl })
-        updateSource(originalSource: original, newSource: source)
+        let original = sources.first { $0.id == source.id || $0.bookSourceUrl == source.bookSourceUrl }
+        updateSource(
+            originalSource: original,
+            newSource: source
+        )
     }
 
-    /// 置顶书源。和书源列表里的「置顶」走同一条路，否则这里只挪位置、不写置顶状态。
     public func pinSource(sourceUrl: String) {
         setPinned(true, sourceUrl: sourceUrl)
     }
 
-    /// 置顶 / 取消置顶。状态记在 `customOrder`（-1 = 置顶），
-    /// 同时把条目挪到数组最前，让「默认顺序」也连续。
     public func setPinned(_ pinned: Bool, sourceUrl: String) {
-        guard let idx = sources.firstIndex(where: { $0.bookSourceUrl == sourceUrl }) else { return }
-        sources[idx].customOrder = pinned ? -1 : nil
+        guard let index = sources.firstIndex(where: { $0.bookSourceUrl == sourceUrl }) else { return }
+        sources[index].customOrder = pinned ? -1 : nil
         if pinned {
-            let item = sources.remove(at: idx)
+            let item = sources.remove(at: index)
             sources.insert(item, at: 0)
         }
-        saveSources()
+        persistSources()
     }
 
     public func isPinned(_ source: BookSource) -> Bool {
         (source.customOrder ?? 0) < 0
     }
 
-    /// 改分组。传空串或 nil 为清掉分组
     public func setSourceGroup(sourceUrl: String, group: String?) {
-        guard let idx = sources.firstIndex(where: { $0.bookSourceUrl == sourceUrl }) else { return }
+        guard let index = sources.firstIndex(where: { $0.bookSourceUrl == sourceUrl }) else { return }
         let trimmed = group?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        sources[idx].bookSourceGroup = trimmed.isEmpty ? nil : trimmed
-        saveSources()
+        sources[index].bookSourceGroup = trimmed.isEmpty ? nil : trimmed
+        persistSources()
     }
 
-    /// 按地址改一份书源再存回；找不到就什么都不做。
-    private func mutateSource(_ sourceUrl: String, _ change: (inout BookSource) -> Void) {
-        guard let idx = sources.firstIndex(where: { $0.bookSourceUrl == sourceUrl }) else { return }
-        change(&sources[idx])
-        saveSources()
+    private func modifySource(_ sourceUrl: String, change: (inout BookSource) -> Void) {
+        guard let index = sources.firstIndex(where: { $0.bookSourceUrl == sourceUrl }) else { return }
+        change(&sources[index])
+        persistSources()
     }
 
     public func updateSourceHeader(sourceUrl: String, header: String) {
-        mutateSource(sourceUrl) { $0.loginHeader = header }
+        modifySource(sourceUrl) { $0.loginHeader = header }
     }
 
-    /// 表单登录：跑 loginUrl，再跑 loginUi 里挑出来的登录按钮 action。
+    // MARK: - 登录
+
     public func performLogin(source: BookSource, credentials: [String: String]) async throws -> String {
-        try await runLoginFlow(source: source,
-                               credentials: credentials,
-                               actions: Self.loginButtonActions(from: source.loginUi),
-                               requireCredentials: true)
+        try await executeLoginFlow(
+            source: source,
+            credentials: credentials,
+            actions: Self.loginButtonActions(from: source.loginUi),
+            credentialsRequired: true
+        )
     }
 
-    /// 跑 `loginUi` 里某个按钮的 action。
-    /// 登录面板每个按钮各带一段脚本（登录 / 注册 / 番茄登录 / 切换服务器 / 检测登录）。
     public func runLoginAction(source: BookSource, credentials: [String: String], action: String) async throws -> String {
-        let header = try await runLoginFlow(source: source,
-                                            credentials: credentials,
-                                            actions: [action],
-                                            // 非登录按钮（检测、切换服务器）不产出凭据，不算失败
-                                            requireCredentials: false)
-        // 退出登录只清 cookie，宿主这边的登录态一起清
+        let header = try await executeLoginFlow(
+            source: source,
+            credentials: credentials,
+            actions: [action],
+            // 检测、切换服务器这类按钮不产出凭据，不算失败。
+            credentialsRequired: false
+        )
+
         let lower = action.lowercased()
         if lower.hasPrefix("logout") || lower.contains("logout(") {
             await MainActor.run { logoutSource(sourceUrl: source.bookSourceUrl) }
@@ -987,108 +1012,99 @@ public class BookStore: ObservableObject {
         return header
     }
 
-    private func runLoginFlow(
-        source: BookSource,
+    private func executeLoginFlow(
+        source supplied: BookSource,
         credentials: [String: String],
         actions: [String],
-        requireCredentials: Bool
+        credentialsRequired: Bool
     ) async throws -> String {
-        // 面板手里的 source 是打开面板那一刻的快照，脚本上一轮改过的 variable（当前服务器、
-        // 设置中心结果、token）不在里面。每一步都取仓库里最新的一份，否则「切换服务器」
-        // 永远从同一个旧值算下一台。
+        // 面板拿到的是打开那一刻的快照；每一步都取仓库里最新的一份，
+        // 否则「切换服务器」永远从同一个旧值开始算。
         let source = await MainActor.run {
-            BookStore.shared.sources.first { $0.bookSourceUrl == source.bookSourceUrl } ?? source
+            BookStore.shared.sources.first { $0.bookSourceUrl == supplied.bookSourceUrl } ?? supplied
         }
         guard let loginScript = source.loginUrl, !loginScript.isEmpty else {
-            throw NSError(domain: "BookStore", code: 1, userInfo: [NSLocalizedDescriptionKey: "这个源没有登录脚本。"])
+            throw NSError(domain: "BookStore", code: 1, userInfo: [
+                NSLocalizedDescriptionKey: "这个源没有登录脚本。"
+            ])
         }
 
-        let credData = (try? JSONSerialization.data(withJSONObject: credentials)) ?? Data()
-        let credJson = String(data: credData, encoding: .utf8) ?? "{}"
+        let credentialData = (try? JSONSerialization.data(withJSONObject: credentials)) ?? Data()
+        let credentialJSON = String(data: credentialData, encoding: .utf8) ?? "{}"
 
-        var updatedSource = source
-        updatedSource.loginInfo = credJson
+        var working = source
+        working.loginInfo = credentialJSON
 
-        let jsEngine = JSEngine(bookSource: updatedSource, baseUrl: source.bookSourceUrl)
+        let engine = JSEngine(bookSource: working, baseUrl: source.bookSourceUrl)
+        var capturedHeader: String?
+        var capturedLoginInfo: String?
 
-        var capturedHeader: String? = nil
-        jsEngine.onLoginHeaderUpdated = { newH in
-            capturedHeader = newH
-        }
-        var capturedLoginInfo: String? = nil
-        jsEngine.onLoginInfoUpdated = { newInfo in
-            capturedLoginInfo = newInfo
-        }
+        engine.onLoginHeaderUpdated = { capturedHeader = $0 }
+        engine.onLoginInfoUpdated = { capturedLoginInfo = $0 }
 
-        // 跑脚本前清掉「最近写入的 host」，只认这一次登录写的 cookie
         CookieJar.shared.resetLastWrite()
+        _ = engine.eval(script: JSEngine.unwrapJsScript(loginScript), result: credentials)
 
-        // 表单值要注入脚本里的 result，源脚本靠 result['邮箱'] 这类取值
-        _ = jsEngine.eval(script: JSEngine.unwrapJsScript(loginScript), result: credentials)
-
-        // 很多书源的 loginUrl 只定义函数，真正触发登录的是按钮 action，
-        // 例如 {"type":"button","action":"login(true)"}。
         if capturedHeader?.isEmpty ?? true {
             for action in actions {
-                _ = jsEngine.eval(script: JSEngine.unwrapJsScript(action), result: credentials)
-                if let header = capturedHeader, !header.isEmpty { break }
+                _ = engine.eval(script: JSEngine.unwrapJsScript(action), result: credentials)
+                if let header = capturedHeader, !header.isEmpty {
+                    break
+                }
             }
         }
 
-        // 脚本自己改写过的登录信息（聚合源把 token 存这儿）要落盘：登录失败时脚本
-        // 也会删掉过期 token 再写回，跟着存才对。
-        if let scriptLoginInfo = capturedLoginInfo {
+        if let scriptedInfo = capturedLoginInfo {
             await MainActor.run {
-                if let idx = sources.firstIndex(where: { $0.bookSourceUrl == source.bookSourceUrl }) {
-                    sources[idx].loginInfo = scriptLoginInfo
-                    saveSources()
+                if let index = sources.firstIndex(where: { $0.bookSourceUrl == source.bookSourceUrl }) {
+                    sources[index].loginInfo = scriptedInfo
+                    self.persistSources()
                 }
             }
         }
 
-        var finalHeader = capturedHeader ?? updatedSource.loginHeader
-        if finalHeader?.isEmpty ?? true {
-            // 有些脚本（例：大灰狼聚合）只把 token 写进 cookie，从不调 putLoginHeader。
-            // 这里给 cookie 兜底，否则脚本跑通了照样判失败。
-            let jarCookies = CookieJar.shared.cookieString(for: source.bookSourceUrl)
-            if !jarCookies.isEmpty {
-                finalHeader = "Cookie: \(jarCookies)"
-            } else if let hostKey = CookieJar.shared.lastWrittenHostKey {
-                // bookSourceUrl 不是域名时（「大灰狼融合VIP5.0」这种），按它查 cookie 必然查不到。
-                // 脚本刚把 cookie 写在了真实 host 上，用那个 host 再查一次。
-                let hostCookies = CookieJar.shared.cookieString(for: hostKey)
-                if !hostCookies.isEmpty {
-                    finalHeader = "Cookie: \(hostCookies)"
-                }
-            }
+        var resolved = capturedHeader ?? working.loginHeader
+        if resolved?.isEmpty ?? true {
+            resolved = cookieBackupHeader(for: source.bookSourceUrl)
         }
 
-        guard let resolvedHeader = finalHeader, !resolvedHeader.isEmpty else {
-            if !requireCredentials {
-                // 非登录按钮：脚本没产出凭据是正常的，把脚本错误（如果有）捎回去就行
-                if let err = jsEngine.lastError { throw NSError(domain: "BookStore", code: 3, userInfo: [NSLocalizedDescriptionKey: "脚本报错：\(err)"]) }
+        guard let finalHeader = resolved, !finalHeader.isEmpty else {
+            if !credentialsRequired {
+                if let error = engine.lastError {
+                    throw NSError(domain: "BookStore", code: 3, userInfo: [
+                        NSLocalizedDescriptionKey: "脚本报错：\(error)"
+                    ])
+                }
                 return ""
             }
-            let detail = jsEngine.lastError.map { "（脚本报错：\($0)）" } ?? ""
-            throw NSError(domain: "BookStore", code: 2, userInfo: [NSLocalizedDescriptionKey: "登录未返回有效凭据，请检查账号密码\(detail)"])
+            let suffix = engine.lastError.map { "（脚本报错：\($0)）" } ?? ""
+            throw NSError(domain: "BookStore", code: 2, userInfo: [
+                NSLocalizedDescriptionKey: "登录未返回有效凭据，请检查账号密码\(suffix)"
+            ])
         }
 
-        // 取成不可变值再进并发闭包，别在闭包里读被脚本回调改写的 var
-        let resolvedLoginInfo = capturedLoginInfo ?? credJson
+        let finalInfo = capturedLoginInfo ?? credentialJSON
         await MainActor.run {
-            if let idx = sources.firstIndex(where: { $0.bookSourceUrl == source.bookSourceUrl }) {
-                sources[idx].loginInfo = resolvedLoginInfo
-                sources[idx].loginHeader = resolvedHeader
-                saveSources()
+            if let index = sources.firstIndex(where: { $0.bookSourceUrl == source.bookSourceUrl }) {
+                sources[index].loginInfo = finalInfo
+                sources[index].loginHeader = finalHeader
+                self.persistSources()
             }
         }
         SourceLoginService.shared.invalidate(sourceUrl: source.bookSourceUrl)
-
-        return resolvedHeader
+        return finalHeader
     }
 
-    /// 从 loginUi 里挑出真正「触发登录」的按钮 action。
-    /// 跳过注册、退出、切服务器、番茄网页登录、检测、清设备这些会改状态或弹浏览器的按钮。
+    private func cookieBackupHeader(for sourceURL: String) -> String? {
+        let direct = CookieJar.shared.cookieString(for: sourceURL)
+        if !direct.isEmpty {
+            return "Cookie: \(direct)"
+        }
+        guard let host = CookieJar.shared.lastWrittenHostKey else { return nil }
+        let byHost = CookieJar.shared.cookieString(for: host)
+        return byHost.isEmpty ? nil : "Cookie: \(byHost)"
+    }
+
     static func loginButtonActions(from loginUi: String?) -> [String] {
         guard let loginUi,
               let data = loginUi.data(using: .utf8),
@@ -1096,33 +1112,33 @@ public class BookStore: ObservableObject {
             return []
         }
 
-        var actions: [String] = []
-        for item in items {
-            guard (item["type"] as? String) == "button" else { continue }
+        let blockedPrefixes = [
+            "logout", "register", "fq_login", "loginqt", "checkstatus",
+            "cleardevice", "set_server", "vip", "api"
+        ]
+
+        return items.compactMap { item in
+            guard (item["type"] as? String) == "button" else { return nil }
             let name = (item["name"] as? String) ?? ""
             let action = ((item["action"] as? String) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !action.isEmpty else { continue }
+            guard !action.isEmpty else { return nil }
 
             let lower = action.lowercased()
-            if name.contains("退出") || lower.hasPrefix("logout") { continue }
-            if name.contains("注册") || lower.hasPrefix("register") { continue }
-            if lower.hasPrefix("fq_login")
-                || lower.hasPrefix("loginqt")
-                || lower.hasPrefix("checkstatus")
-                || lower.hasPrefix("cleardevice")
-                || lower.hasPrefix("set_server")
-                || lower.hasPrefix("vip")
-                || lower.hasPrefix("api") { continue }
-
-            if lower.hasPrefix("login") || name.contains("登录") || name.contains("登陆") {
-                actions.append(action)
+            if name.contains("退出") || name.contains("注册") {
+                return nil
             }
+            if blockedPrefixes.contains(where: { lower.hasPrefix($0) }) {
+                return nil
+            }
+            let looksLikeLogin = lower.hasPrefix("login")
+                || name.contains("登录")
+                || name.contains("登陆")
+            return looksLikeLogin ? action : nil
         }
-        return actions
     }
 
     public func logoutSource(sourceUrl: String) {
-        mutateSource(sourceUrl) {
+        modifySource(sourceUrl) {
             $0.loginHeader = nil
             $0.loginInfo = nil
         }
@@ -1133,176 +1149,210 @@ public class BookStore: ObservableObject {
         SourceLoginService.shared.invalidate(sourceUrl: sourceUrl)
     }
 
-    // MARK: - EPUB & Chapter Storage
-    private var chaptersCache: [String: [BookChapter]] = [:]
+    // MARK: - 目录缓存
 
-    /// 目录落盘文件名按书地址的 md5 取，避免书名里有斜杠或冒号。
-    private func chapterFileURL(for bookUrl: String) -> URL {
-        getDocumentsDirectory()
-            .appendingPathComponent("chapters_\(CryptoUtils.md5(bookUrl)).json")
+    private func chapterCacheURL(for bookUrl: String) -> URL {
+        documentsFolder.appendingPathComponent("chapters_\(CryptoUtils.md5(bookUrl)).json")
     }
 
     /// 换源 / 删书时把旧 bookUrl 的内存和磁盘目录缓存一起丢掉，否则每次换源都留一份。
     /// 目录缓存键是「bookUrl#书源」，所以要把这条书的所有源都扫掉。
     private func discardChapterCache(for bookUrl: String) {
         let keys = Set([bookUrl]).union(
-            chaptersCache.keys.filter { $0 == bookUrl || $0.hasPrefix(bookUrl + "#") }
+            chapterMemory.keys.filter { $0 == bookUrl || $0.hasPrefix(bookUrl + "#") }
         )
         for key in keys {
-            chaptersCache.removeValue(forKey: key)
-            try? FileManager.default.removeItem(at: chapterFileURL(for: key))
+            chapterMemory.removeValue(forKey: key)
+            try? FileManager.default.removeItem(at: chapterCacheURL(for: key))
         }
     }
 
     public func saveChapters(_ chapters: [BookChapter], for bookUrl: String) {
-        chaptersCache[bookUrl] = chapters
-        guard let data = try? JSONEncoder().encode(chapters) else { return }
-        try? data.write(to: chapterFileURL(for: bookUrl))
+        chapterMemory[bookUrl] = chapters
+        let encoded = try? JSONEncoder().encode(chapters)
+        if let encoded {
+            try? encoded.write(to: chapterCacheURL(for: bookUrl))
+        }
     }
 
     public func getChapters(for bookUrl: String) -> [BookChapter] {
-        if let memory = chaptersCache[bookUrl] {
-            return memory
+        if let cached = chapterMemory[bookUrl] {
+            return cached
         }
-        let chapterFile = chapterFileURL(for: bookUrl)
-        if let data = try? Data(contentsOf: chapterFile),
-           var list = try? JSONDecoder().decode([BookChapter].self, from: data) {
-            var needsRepair = false
-            for i in 0..<list.count {
-                if list[i].index != i {
-                    list[i].index = i
-                    needsRepair = true
-                }
-                if list[i].url.contains("%23") {
-                    list[i].url = list[i].url.replacingOccurrences(of: "%23", with: "#")
-                    needsRepair = true
-                }
-            }
-            if needsRepair {
-                saveChapters(list, for: bookUrl)
-            }
-            chaptersCache[bookUrl] = list
-            return list
+
+        let file = chapterCacheURL(for: bookUrl)
+        guard let data = try? Data(contentsOf: file),
+              var list = try? JSONDecoder().decode([BookChapter].self, from: data) else {
+            return []
         }
-        return []
+
+        var repaired = false
+        for index in list.indices {
+            if list[index].index != index {
+                list[index].index = index
+                repaired = true
+            }
+            if list[index].url.contains("%23") {
+                list[index].url = list[index].url.replacingOccurrences(of: "%23", with: "#")
+                repaired = true
+            }
+        }
+        if repaired {
+            saveChapters(list, for: bookUrl)
+        }
+
+        chapterMemory[bookUrl] = list
+        return list
     }
 
+    // MARK: - 导入
+
     public func importEpub(from fileUrl: URL) throws -> Book {
-        let parsed = try EpubParser.shared.parse(epubUrl: fileUrl)
-        saveChapters(parsed.chapters, for: parsed.book.bookUrl)
-        upsertShelf(parsed.book)
-        return parsed.book
+        let package = try EpubParser.shared.parse(epubUrl: fileUrl)
+        saveChapters(package.chapters, for: package.book.bookUrl)
+        insertOrReplace(package.book)
+        return package.book
     }
 
     /// MOBI/AZW3、FB2、UMD 走同一套：解析器负责拆章落盘，这里只管入库。
     public func importLocalBook(from fileUrl: URL) throws -> Book {
-        let parsed = try LocalBookParser.shared.parse(url: fileUrl)
-        saveChapters(parsed.chapters, for: parsed.book.bookUrl)
-        upsertShelf(parsed.book)
-        return parsed.book
+        let package = try LocalBookParser.shared.parse(url: fileUrl)
+        saveChapters(package.chapters, for: package.book.bookUrl)
+        insertOrReplace(package.book)
+        return package.book
     }
 
-    /// TXT 编码没有统一约定：先按 UTF-8 试，再按 GB18030（老小说站主流），
-    /// 最后按 UTF-8 容错解，保证任何字节都能出文本。
-    private func decodeTxt(_ data: Data) -> String {
-        if let utf8 = String(data: data, encoding: .utf8) { return utf8 }
-        let gbRaw = CFStringConvertEncodingToNSStringEncoding(
-            CFStringEncoding(CFStringEncodings.GB_18030_2000.rawValue))
-        if let legacy = String(data: data, encoding: String.Encoding(rawValue: gbRaw)) { return legacy }
+    private func textFromTXTData(_ data: Data) -> String {
+        if let utf8 = String(data: data, encoding: .utf8) {
+            return utf8
+        }
+        let encoding = CFStringConvertEncodingToNSStringEncoding(
+            CFStringEncoding(CFStringEncodings.GB_18030_2000.rawValue)
+        )
+        if let legacy = String(data: data, encoding: String.Encoding(rawValue: encoding)) {
+            return legacy
+        }
         return String(decoding: data, as: UTF8.self)
     }
 
     public func importTxt(from fileUrl: URL) throws -> Book {
-        guard let data = try? Data(contentsOf: fileUrl) else {
-            throw NSError(domain: "BookStore", code: 1, userInfo: [NSLocalizedDescriptionKey: "无法读取TXT文件内容"])
+        guard let rawData = try? Data(contentsOf: fileUrl) else {
+            throw NSError(domain: "BookStore", code: 1, userInfo: [
+                NSLocalizedDescriptionKey: "无法读取TXT文件内容"
+            ])
         }
-        let content = decodeTxt(data)
 
-        let bookTitle = fileUrl.deletingPathExtension().lastPathComponent
-        let bookUrl = "txt://\(CryptoUtils.md5(fileUrl.absoluteString))"
-        let bookId = CryptoUtils.md5(bookUrl)
+        let text = textFromTXTData(rawData)
+        let title = fileUrl.deletingPathExtension().lastPathComponent
+        let bookURL = "txt://\(CryptoUtils.md5(fileUrl.absoluteString))"
+        let bookID = CryptoUtils.md5(bookURL)
+        let directory = documentsFolder.appendingPathComponent("Books/TXT/\(bookID)")
+        try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
 
-        let docsDir = getDocumentsDirectory()
-        let txtBookDir = docsDir.appendingPathComponent("Books/TXT/\(bookId)")
-        try? FileManager.default.createDirectory(at: txtBookDir, withIntermediateDirectories: true)
-
-        let pattern = "(?m)^\\s*(第[0-9一二三四五六七八九十百千]+[章回节卷].*)$"
+        let pattern = #"(?m)^\s*(第[0-9一二三四五六七八九十百千]+[章回节卷].*)$"#
         let regex = try? NSRegularExpression(pattern: pattern)
-        let nsString = content as NSString
-        let matches = regex?.matches(in: content, range: NSRange(location: 0, length: nsString.length)) ?? []
+        let source = text as NSString
+        let headings = regex?.matches(in: text, range: NSRange(location: 0, length: source.length)) ?? []
 
-        var chapters: [BookChapter] = []
+        let parsedChapters = headings.isEmpty
+            ? singleTXTChapter(text: text, title: title, bookURL: bookURL, directory: directory)
+            : splitTXTChapters(headings: headings, source: source, bookURL: bookURL, directory: directory)
 
-        if matches.isEmpty {
-            let chFile = txtBookDir.appendingPathComponent("chapter_0.txt")
-            try? content.write(to: chFile, atomically: true, encoding: .utf8)
-            chapters.append(BookChapter(
-                bookUrl: bookUrl,
-                url: chFile.absoluteString,
-                title: bookTitle,
-                index: 0
-            ))
-        } else {
-            for i in 0..<matches.count {
-                let match = matches[i]
-                let title = nsString.substring(with: match.range).trimmingCharacters(in: .whitespacesAndNewlines)
-                let startPos = match.range.location
-                let endPos = (i + 1 < matches.count) ? matches[i + 1].range.location : nsString.length
-                let chapterText = nsString.substring(with: NSRange(location: startPos, length: endPos - startPos))
+        let localAuthor = "本地书籍"
+        let localKind = "TXT 本地书籍"
+        let localIntro = "本地导入的TXT小说"
+        let localOrigin = "local"
+        let localOriginName = "本地导入"
 
-                let chFile = txtBookDir.appendingPathComponent("chapter_\(i).txt")
-                try? chapterText.write(to: chFile, atomically: true, encoding: .utf8)
-
-                chapters.append(BookChapter(
-                    bookUrl: bookUrl,
-                    url: chFile.absoluteString,
-                    title: title,
-                    index: i
-                ))
-            }
-        }
-
-        let book = Book(
-            bookUrl: bookUrl,
-            name: bookTitle,
-            author: "本地书籍",
-            kind: "TXT 本地书籍",
-            // 本地书没有封面；简介用固定文案，详情页不显示空行
-            coverUrl: nil,
-            intro: "本地导入的TXT小说",
-            // 来源标记本地，详情页据此隐藏「换源」
-            origin: "local",
-            // 显示名走本地导入，目录由 TXT 切章自己生成
-            originName: "本地导入",
-            tocUrl: "",
-            totalChapterNum: chapters.count
+        let localBook = Book(
+            bookUrl: bookURL,
+            name: title,
+            author: localAuthor,
+            kind: localKind,
+            intro: localIntro,
+            origin: localOrigin,
+            originName: localOriginName,
+            totalChapterNum: parsedChapters.count
         )
 
-        saveChapters(chapters, for: bookUrl)
-        upsertShelf(book)
-        return book
+        saveChapters(parsedChapters, for: bookURL)
+        insertOrReplace(localBook)
+        return localBook
+    }
+
+    private func singleTXTChapter(
+        text: String,
+        title: String,
+        bookURL: String,
+        directory: URL
+    ) -> [BookChapter] {
+        let file = directory.appendingPathComponent("chapter_0.txt")
+        try? text.write(to: file, atomically: true, encoding: .utf8)
+        return [BookChapter(bookUrl: bookURL, url: file.absoluteString, title: title, index: 0)]
+    }
+
+    private func splitTXTChapters(
+        headings: [NSTextCheckingResult],
+        source: NSString,
+        bookURL: String,
+        directory: URL
+    ) -> [BookChapter] {
+        var result: [BookChapter] = []
+        for index in headings.indices {
+            let heading = headings[index]
+            let chapterTitle = source.substring(with: heading.range)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            let begin = heading.range.location
+            let end = index + 1 < headings.count ? headings[index + 1].range.location : source.length
+            let body = source.substring(with: NSRange(location: begin, length: end - begin))
+
+            let file = directory.appendingPathComponent("chapter_\(index).txt")
+            try? body.write(to: file, atomically: true, encoding: .utf8)
+            result.append(BookChapter(bookUrl: bookURL, url: file.absoluteString, title: chapterTitle, index: index))
+        }
+        return result
     }
 
     public func importFile(from fileUrl: URL) throws -> Book {
-        let ext = fileUrl.pathExtension.lowercased()
-        AppLog.write("[导入] 开始 type=\(ext.isEmpty ? "?" : ext)")
-        switch ext {
+        let suffix = fileUrl.pathExtension.lowercased()
+        AppLog.write("[导入] 开始 type=\(suffix.isEmpty ? "?" : suffix)")
+
+        switch suffix {
         case "txt":
-            return try importTxt(from: fileUrl)
+            return try textImport(from: fileUrl)
         case "zip", "cbz":
-            return try importComic(from: fileUrl)
+            return try comicImport(from: fileUrl)
         case "pdf":
-            return try importPDF(from: fileUrl)
+            return try pdfImport(from: fileUrl)
         case "mobi", "azw", "azw3", "prc", "fb2", "umd":
             return try importLocalBook(from: fileUrl)
         default:
-            return try importEpub(from: fileUrl)
+            return try epubImport(from: fileUrl)
         }
+    }
+
+    private func textImport(from url: URL) throws -> Book { try importTxt(from: url) }
+    private func comicImport(from url: URL) throws -> Book { try importComic(from: url) }
+    private func pdfImport(from url: URL) throws -> Book { try importPDF(from: url) }
+    private func epubImport(from url: URL) throws -> Book { try importEpub(from: url) }
+}
+
+// MARK: - 持久化
+
+private enum Persisted {
+    static func read<T: Decodable>(_ type: T.Type, key: String) -> T? {
+        guard let data = UserDefaults.standard.data(forKey: key) else { return nil }
+        return try? JSONDecoder().decode(type, from: data)
+    }
+
+    static func write<T: Encodable>(_ value: T, key: String) {
+        guard let data = try? JSONEncoder().encode(value) else { return }
+        UserDefaults.standard.set(data, forKey: key)
     }
 }
 
 // MARK: - 阅读统计
-/// 阅读时长 / 字数 / 章节数，按天存，用来算连续天数
+
 public final class ReadingStatsStore: ObservableObject {
     public static let shared = ReadingStatsStore()
 
@@ -1314,80 +1364,96 @@ public final class ReadingStatsStore: ObservableObject {
 
     @Published public private(set) var snapshot = Snapshot()
 
-    private let key = "reading_stats_v1"
-    private let dayFormatter: DateFormatter = {
-        let f = DateFormatter()
-        f.dateFormat = "yyyy-MM-dd"
-        return f
+    private let storageKey = "reading_stats_v1"
+    private let dayFormat: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd"
+        return formatter
     }()
 
     public init() {
-        if let data = UserDefaults.standard.data(forKey: key),
+        if let data = UserDefaults.standard.data(forKey: storageKey),
            let decoded = try? JSONDecoder().decode(Snapshot.self, from: data) {
             snapshot = decoded
         }
     }
 
-    private func save() {
-        if let data = try? JSONEncoder().encode(snapshot) {
-            UserDefaults.standard.set(data, forKey: key)
-        }
+    private func flush() {
+        guard let data = try? JSONEncoder().encode(snapshot) else { return }
+        UserDefaults.standard.set(data, forKey: storageKey)
     }
 
-    private func key(for date: Date) -> String { dayFormatter.string(from: date) }
+    private func dayKey(for date: Date = Date()) -> String {
+        dayFormat.string(from: date)
+    }
 
-    /// 记一段阅读：秒数 + 这次新读到的字数
     public func addReading(seconds: Int, characters: Int = 0, chapters: Int = 0) {
         guard seconds > 0 || characters > 0 || chapters > 0 else { return }
+
         if seconds > 0 {
-            let k = key(for: Date())
-            snapshot.dailySeconds[k, default: 0] += seconds
+            snapshot.dailySeconds[dayKey(), default: 0] += seconds
         }
         snapshot.totalCharacters += max(0, characters)
         snapshot.chaptersRead += max(0, chapters)
-        save()
+        flush()
     }
 
-    public var todaySeconds: Int { snapshot.dailySeconds[key(for: Date())] ?? 0 }
-    public var totalSeconds: Int { snapshot.dailySeconds.values.reduce(0, +) }
+    public var todaySeconds: Int {
+        snapshot.dailySeconds[dayKey()] ?? 0
+    }
+
+    public var totalSeconds: Int {
+        snapshot.dailySeconds.values.reduce(0, +)
+    }
+
     public var totalCharacters: Int { snapshot.totalCharacters }
     public var chaptersRead: Int { snapshot.chaptersRead }
-    public var daysRead: Int { snapshot.dailySeconds.filter { $0.value > 0 }.count }
 
-    /// 连续阅读天数：从今天往回数
+    public var daysRead: Int {
+        var count = 0
+        for entry in snapshot.dailySeconds where entry.value > 0 {
+            count += 1
+        }
+        return count
+    }
+
     public var streakDays: Int {
         var streak = 0
-        var date = Date()
-        while true {
-            let k = key(for: date)
-            if (snapshot.dailySeconds[k] ?? 0) > 0 {
+        var cursor = Date()
+
+        while streak <= 3650 {
+            let seconds = snapshot.dailySeconds[dayKey(for: cursor)] ?? 0
+            if seconds > 0 {
                 streak += 1
-                date = Calendar.current.date(byAdding: .day, value: -1, to: date) ?? date
-            } else if streak == 0 {
-                // 今天还没读，从昨天开始数
-                date = Calendar.current.date(byAdding: .day, value: -1, to: date) ?? date
-                if (snapshot.dailySeconds[key(for: date)] ?? 0) == 0 { break }
-            } else {
-                break
+                cursor = Calendar.current.date(byAdding: .day, value: -1, to: cursor) ?? cursor
+                continue
             }
-            if streak > 3650 { break }
+
+            if streak == 0 {
+                cursor = Calendar.current.date(byAdding: .day, value: -1, to: cursor) ?? cursor
+                if (snapshot.dailySeconds[dayKey(for: cursor)] ?? 0) == 0 {
+                    break
+                }
+                continue
+            }
+            break
         }
         return streak
     }
 
-    /// 最近 n 天，从早到晚
     public func recentDays(_ n: Int = 7) -> [(day: String, seconds: Int)] {
-        var out: [(String, Int)] = []
+        var result: [(String, Int)] = []
         for offset in stride(from: n - 1, through: 0, by: -1) {
             guard let date = Calendar.current.date(byAdding: .day, value: -offset, to: Date()) else { continue }
-            let k = key(for: date)
-            out.append((k, snapshot.dailySeconds[k] ?? 0))
+            let key = dayKey(for: date)
+            result.append((key, snapshot.dailySeconds[key] ?? 0))
         }
-        return out
+        return result
     }
 }
 
 // MARK: - 书架分组
+
 public struct BookGroup: Codable, Identifiable, Equatable {
     public var id: UUID
     public var name: String
@@ -1399,6 +1465,7 @@ public struct BookGroup: Codable, Identifiable, Equatable {
 }
 
 // MARK: - 批量下载
+
 public struct DownloadJob: Identifiable, Equatable {
     public let id: UUID
     public var bookUrl: String
@@ -1429,242 +1496,511 @@ public struct DownloadJob: Identifiable, Equatable {
     }
 }
 
-/// 批量缓存章节：一次排队一批，能暂停/继续/取消，进度看得见
 public final class ChapterDownloadManager: ObservableObject {
     public static let shared = ChapterDownloadManager()
 
     @Published public private(set) var jobs: [DownloadJob] = []
 
-    private var tasks: [UUID: Task<Void, Never>] = [:]
+    private var workers: [UUID: Task<Void, Never>] = [:]
 
     public init() {}
 
-    /// indices：要下载的章节下标（对应 chapters 数组）
     @discardableResult
     public func start(book: Book, chapters: [BookChapter], source: BookSource?, indices: [Int]) -> UUID? {
         guard !indices.isEmpty else { return nil }
+
         let job = DownloadJob(bookUrl: book.bookUrl, bookName: book.name, total: indices.count)
-        let jobId = job.id
+        let jobID = job.id
         jobs.insert(job, at: 0)
 
-        tasks[jobId] = Task { [weak self] in
-            for index in indices {
-                guard let self else { return }
-                // 暂停原地等，取消就退出
-                while true {
-                    let state = await self.jobState(jobId)
-                    if state == nil || state == .cancelled { return }
-                    if state == .running { break }
-                    try? await Task.sleep(nanoseconds: 300_000_000)
+        workers[jobID] = Task { [weak self] in
+            // 一轮抓完把失败的再试一次；已缓存的章节自然跳过，所以重开任务就是断点续下
+            var queue = indices
+            var round = 0
+            while !queue.isEmpty && round < 2 {
+                var retry: [Int] = []
+                for index in queue {
+                    guard let self else { return }
+
+                    while true {
+                        guard let current = await self.state(of: jobID) else { return }
+                        switch current {
+                        case .cancelled:
+                            return
+                        case .paused:
+                            try? await Task.sleep(nanoseconds: 300_000_000)
+                            continue
+                        case .running:
+                            break
+                        }
+                        break
+                    }
+
+                    guard index >= 0, index < chapters.count else { continue }
+                    let chapter = chapters[index]
+
+                    if BookContentService.shared.hasCachedChapter(bookUrl: book.bookUrl, chapterIndex: chapter.index) {
+                        if ReviewCache.enabled,
+                           let cached = BookContentService.shared.getCachedChapterContent(
+                               bookUrl: book.bookUrl,
+                               chapterIndex: chapter.index
+                           ) {
+                            await ReviewCache.prefetchComments(inContent: cached)
+                        }
+                        await self.increment(jobID, finished: 1)
+                    } else {
+                        await self.setChapter(jobID, chapter.title)
+                        do {
+                            let content = try await BookContentService.shared.fetchChapterContent(
+                                chapter: chapter,
+                                source: source,
+                                book: book
+                            )
+                            if ReviewCache.enabled, !content.isEmpty {
+                                await ReviewCache.prefetchComments(inContent: content)
+                            }
+                            await self.increment(jobID, finished: 1)
+                        } catch {
+                            retry.append(index)
+                        }
+                    }
+
+                    try? await Task.sleep(nanoseconds: 120_000_000)
                 }
 
-                guard index >= 0, index < chapters.count else { continue }
-                let chapter = chapters[index]
-                if BookContentService.shared.hasCachedChapter(bookUrl: book.bookUrl, chapterIndex: chapter.index) {
-                    // 已缓存的章也顺手补评论：上次缓存时开关可能还没开
-                    if ReviewCache.enabled,
-                       let cached = BookContentService.shared.getCachedChapterContent(bookUrl: book.bookUrl, chapterIndex: chapter.index) {
-                        await ReviewCache.prefetchComments(inContent: cached)
-                    }
-                    await self.mark(jobId, finished: 1)
-                } else {
-                    await self.setCurrentChapter(jobId, chapter.title)
-                    do {
-                        let content = try await BookContentService.shared.fetchChapterContent(chapter: chapter, source: source, book: book)
-                        // 书评一起缓存（可选）：只在抓到正文后补评论首页，别抢正文的带宽
-                        if ReviewCache.enabled, !content.isEmpty {
-                            await ReviewCache.prefetchComments(inContent: content)
-                        }
-                        await self.mark(jobId, finished: 1)
-                    } catch {
-                        await self.mark(jobId, failed: 1)
-                    }
+                // 还有下一轮就先把这些留在队列里重试，最后一轮仍失败才计入失败数
+                if !retry.isEmpty && round == 0 {
+                    queue = retry
+                    round += 1
+                    try? await Task.sleep(nanoseconds: 500_000_000)
+                    continue
                 }
-                try? await Task.sleep(nanoseconds: 120_000_000)
+                for _ in retry {
+                    await self?.increment(jobID, failed: 1)
+                }
+                queue = []
             }
-            await self?.finish(jobId)
+            await self?.complete(jobID)
         }
-        return jobId
+        return jobID
     }
 
     enum JobState { case running, paused, cancelled }
 
-    @MainActor private func jobState(_ id: UUID) -> JobState? {
+    @MainActor private func state(of id: UUID) -> JobState? {
         guard let job = jobs.first(where: { $0.id == id }) else { return nil }
         if job.isCancelled { return .cancelled }
         return job.isPaused ? .paused : .running
     }
 
-    @MainActor private func setCurrentChapter(_ id: UUID, _ title: String) {
-        guard let i = jobs.firstIndex(where: { $0.id == id }) else { return }
-        jobs[i].currentChapter = title
+    @MainActor private func setChapter(_ id: UUID, _ title: String) {
+        guard let index = jobs.firstIndex(where: { $0.id == id }) else { return }
+        jobs[index].currentChapter = title
     }
 
-    @MainActor private func mark(_ id: UUID, finished: Int = 0, failed: Int = 0) {
-        guard let i = jobs.firstIndex(where: { $0.id == id }) else { return }
-        jobs[i].finished += finished
-        jobs[i].failed += failed
+    @MainActor private func increment(_ id: UUID, finished: Int = 0, failed: Int = 0) {
+        guard let index = jobs.firstIndex(where: { $0.id == id }) else { return }
+        jobs[index].finished += finished
+        jobs[index].failed += failed
     }
 
-    @MainActor private func finish(_ id: UUID) {
-        guard let i = jobs.firstIndex(where: { $0.id == id }) else { return }
-        jobs[i].isRunning = false
-        jobs[i].currentChapter = ""
+    @MainActor private func complete(_ id: UUID) {
+        guard let index = jobs.firstIndex(where: { $0.id == id }) else { return }
+        jobs[index].isRunning = false
+        jobs[index].currentChapter = ""
     }
 
     public func pause(_ id: UUID) {
-        guard let i = jobs.firstIndex(where: { $0.id == id }) else { return }
-        jobs[i].isPaused = true
+        guard let index = jobs.firstIndex(where: { $0.id == id }) else { return }
+        jobs[index].isPaused = true
     }
 
     public func resume(_ id: UUID) {
-        guard let i = jobs.firstIndex(where: { $0.id == id }) else { return }
-        jobs[i].isPaused = false
+        guard let index = jobs.firstIndex(where: { $0.id == id }) else { return }
+        jobs[index].isPaused = false
     }
 
     public func cancel(_ id: UUID) {
-        guard let i = jobs.firstIndex(where: { $0.id == id }) else { return }
-        jobs[i].isCancelled = true
-        jobs[i].isRunning = false
-        tasks[id]?.cancel()
-        tasks[id] = nil
+        guard let index = jobs.firstIndex(where: { $0.id == id }) else { return }
+        jobs[index].isCancelled = true
+        jobs[index].isRunning = false
+        workers[id]?.cancel()
+        workers[id] = nil
     }
 
+    /// 对齐安卓：暂停的任务也算已结束，清理时一并移除，并停掉还在睡眠的 worker。
     public func clearFinished() {
-        jobs.removeAll { !$0.isRunning }
+        for job in jobs where !job.isRunning || job.isPaused {
+            workers[job.id]?.cancel()
+            workers[job.id] = nil
+        }
+        jobs.removeAll { !$0.isRunning || $0.isPaused }
     }
 }
 
-// MARK: - OPDS 书库配置
+// MARK: - 离线书导出/导入
+
+/// 离线包清单：书籍元数据 + 完整目录 + 正文/书评文件列表
+public struct OfflineBookManifest: Codable {
+    public var version: Int
+    public var book: Book
+    public var chapters: [BookChapter]
+    public var reviewFiles: [String]
+    public var coverFile: String?
+
+    public init(version: Int, book: Book, chapters: [BookChapter], reviewFiles: [String], coverFile: String?) {
+        self.version = version
+        self.book = book
+        self.chapters = chapters
+        self.reviewFiles = reviewFiles
+        self.coverFile = coverFile
+    }
+}
+
+public enum OfflineBookShare {
+    public static let fileExtension = "jybook"
+
+    public enum ShareError: LocalizedError {
+        case unreadable
+        case badManifest
+
+        public var errorDescription: String? {
+            switch self {
+            case .unreadable: return "离线包无法读取"
+            case .badManifest: return "离线包缺少清单文件"
+            }
+        }
+    }
+
+    /// 打包已缓存的正文、书评与封面，返回可直接分享的 zip 文件
+    public static func export(book: Book, chapters: [BookChapter]) throws -> URL {
+        let fm = FileManager.default
+        let staging = fm.temporaryDirectory.appendingPathComponent("OfflineExport-\(UUID().uuidString)", isDirectory: true)
+        let chaptersDir = staging.appendingPathComponent("chapters", isDirectory: true)
+        let reviewsDir = staging.appendingPathComponent("reviews", isDirectory: true)
+        try fm.createDirectory(at: chaptersDir, withIntermediateDirectories: true)
+        try fm.createDirectory(at: reviewsDir, withIntermediateDirectories: true)
+
+        var reviewNames = Set<String>()
+        for chapter in chapters {
+            guard let content = BookContentService.shared.getCachedChapterContent(
+                bookUrl: book.bookUrl,
+                chapterIndex: chapter.index
+            ), !content.isEmpty else { continue }
+            try content.write(
+                to: chaptersDir.appendingPathComponent("\(chapter.index).txt"),
+                atomically: true,
+                encoding: .utf8
+            )
+
+            guard ReviewCache.enabled else { continue }
+            for target in ReviewCache.commentTargets(inContent: content, limit: 80) {
+                guard let api = ReviewCache.apiURL(fromRaw: target.raw, mode: target.mode),
+                      let data = ReviewCache.load(for: api) else { continue }
+                let name = CryptoUtils.md5(api.absoluteString) + ".json"
+                guard reviewNames.insert(name).inserted else { continue }
+                try? data.write(to: reviewsDir.appendingPathComponent(name), options: .atomic)
+            }
+        }
+
+        var coverFile: String?
+        if let cover = book.coverUrl, let cached = BookCoverStorage.cachedFileURL(for: cover),
+           fm.fileExists(atPath: cached.path) {
+            let target = staging.appendingPathComponent("cover.img")
+            if (try? fm.copyItem(at: cached, to: target)) != nil { coverFile = "cover.img" }
+        }
+
+        let manifest = OfflineBookManifest(
+            version: 1,
+            book: book,
+            chapters: chapters,
+            reviewFiles: reviewNames.sorted(),
+            coverFile: coverFile
+        )
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        try encoder.encode(manifest).write(to: staging.appendingPathComponent("manifest.json"), options: .atomic)
+
+        let safeName = book.name.replacingOccurrences(of: "/", with: "_")
+        let target = fm.temporaryDirectory.appendingPathComponent("\(safeName).\(fileExtension)")
+        try? fm.removeItem(at: target)
+        let archive = try Archive(url: target, accessMode: .create)
+        try addContents(of: staging, to: archive, prefix: "")
+        try? fm.removeItem(at: staging)
+        return target
+    }
+
+    /// 解包并把正文、书评、封面写回各自的缓存位置；书本身按本地书返回
+    public static func unpack(at archiveURL: URL) throws -> OfflineBookManifest {
+        let fm = FileManager.default
+        let work = fm.temporaryDirectory.appendingPathComponent("OfflineImport-\(UUID().uuidString)", isDirectory: true)
+        try fm.createDirectory(at: work, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: work) }
+
+        guard let archive = Archive(url: archiveURL, accessMode: .read) else { throw ShareError.unreadable }
+        for entry in archive {
+            try archive.extract(entry, to: work.appendingPathComponent(entry.path))
+        }
+
+        let manifestURL = work.appendingPathComponent("manifest.json")
+        guard let data = try? Data(contentsOf: manifestURL),
+              let manifest = try? JSONDecoder().decode(OfflineBookManifest.self, from: data) else {
+            throw ShareError.badManifest
+        }
+
+        let chaptersDir = work.appendingPathComponent("chapters", isDirectory: true)
+        if let files = try? fm.contentsOfDirectory(at: chaptersDir, includingPropertiesForKeys: nil) {
+            for file in files where file.pathExtension == "txt" {
+                guard let index = Int(file.deletingPathExtension().lastPathComponent),
+                      let content = try? String(contentsOf: file, encoding: .utf8) else { continue }
+                BookContentService.shared.saveCachedChapterContent(
+                    bookUrl: manifest.book.bookUrl,
+                    chapterIndex: index,
+                    content: content
+                )
+            }
+        }
+
+        let reviewsDir = work.appendingPathComponent("reviews", isDirectory: true)
+        for name in manifest.reviewFiles {
+            guard let review = try? Data(contentsOf: reviewsDir.appendingPathComponent(name)) else { continue }
+            ReviewCache.restoreFile(named: name, data: review)
+        }
+
+        if let coverFile = manifest.coverFile,
+           let cover = manifest.book.coverUrl,
+           let cached = BookCoverStorage.cachedFileURL(for: cover) {
+            let folder = BookCoverStorage.directory()
+            try? fm.createDirectory(at: folder, withIntermediateDirectories: true)
+            try? fm.removeItem(at: cached)
+            try? fm.copyItem(at: work.appendingPathComponent(coverFile), to: cached)
+        }
+
+        var imported = manifest.book
+        // 导入的书不依赖书源：目录与正文都走离线缓存
+        imported.origin = "local"
+        return OfflineBookManifest(
+            version: manifest.version,
+            book: imported,
+            chapters: manifest.chapters,
+            reviewFiles: manifest.reviewFiles,
+            coverFile: manifest.coverFile
+        )
+    }
+
+    private static func addContents(of directory: URL, to archive: Archive, prefix: String) throws {
+        let fm = FileManager.default
+        guard let enumerator = fm.enumerator(at: directory, includingPropertiesForKeys: [.isDirectoryKey]) else { return }
+        for case let item as URL in enumerator {
+            let isDirectory = (try? item.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) ?? false
+            guard !isDirectory else { continue }
+            let relative = String(item.path.dropFirst(directory.path.count + 1))
+            let name = prefix.isEmpty ? relative : "\(prefix)/\(relative)"
+            try archive.addEntry(with: name, relativeTo: directory, compressionMethod: .deflate)
+        }
+    }
+}
+
+// MARK: - OPDS
+
 public final class OPDSStore: ObservableObject {
     public static let shared = OPDSStore()
 
     @Published public var catalogs: [OPDSCatalog] = []
 
-    private let key = "opds_catalogs_v1"
+    private let storageKey = "opds_catalogs_v1"
 
     public init() {
-        if let data = UserDefaults.standard.data(forKey: key),
+        if let data = UserDefaults.standard.data(forKey: storageKey),
            let decoded = try? JSONDecoder().decode([OPDSCatalog].self, from: data) {
             catalogs = decoded
         }
     }
 
-    private func save() {
-        if let data = try? JSONEncoder().encode(catalogs) {
-            UserDefaults.standard.set(data, forKey: key)
-        }
+    private func flush() {
+        guard let data = try? JSONEncoder().encode(catalogs) else { return }
+        UserDefaults.standard.set(data, forKey: storageKey)
     }
 
     public func add(name: String, url: String, username: String, password: String) {
         let trimmed = url.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
-        catalogs.append(OPDSCatalog(name: name.trimmingCharacters(in: .whitespacesAndNewlines), url: trimmed, username: username, password: password))
-        save()
+
+        catalogs.append(OPDSCatalog(
+            name: name.trimmingCharacters(in: .whitespacesAndNewlines),
+            url: trimmed,
+            username: username,
+            password: password
+        ))
+        flush()
         AppLog.write("[OPDS] 新增书库 \(catalogs.count) 个")
     }
 
     public func remove(_ catalog: OPDSCatalog) {
         catalogs.removeAll { $0.id == catalog.id }
-        save()
+        flush()
         AppLog.write("[OPDS] 删除书库 \(catalogs.count) 个")
     }
 }
 
-// MARK: - 漫画（cbz / zip）与 PDF 导入
-public extension BookStore {
+// MARK: - 漫画与 PDF
 
-    /// cbz / zip 漫画：解包出图片，按自然顺序一页一章
+public extension BookStore {
     @discardableResult
     func importComic(from fileUrl: URL) throws -> Book {
         guard let archive = Archive(url: fileUrl, accessMode: .read) else {
-            throw NSError(domain: "Legado", code: 1, userInfo: [NSLocalizedDescriptionKey: "打不开这个压缩包"])
+            throw NSError(domain: "Legado", code: 1, userInfo: [
+                NSLocalizedDescriptionKey: "打不开这个压缩包"
+            ])
         }
-        let imageExts: Set<String> = ["jpg", "jpeg", "png", "webp", "gif", "bmp"]
-        var entries: [Entry] = []
-        for entry in archive where imageExts.contains((entry.path as NSString).pathExtension.lowercased()) {
-            entries.append(entry)
-        }
-        guard !entries.isEmpty else {
-            throw NSError(domain: "Legado", code: 2, userInfo: [NSLocalizedDescriptionKey: "包里没有图片"])
-        }
-        entries.sort { $0.path.localizedStandardCompare($1.path) == .orderedAscending }
 
-        let bookUrl = "comic://" + CryptoUtils.md5(fileUrl.absoluteString)
-        let dir = getDocumentsDirectory().appendingPathComponent("Books/Comics/\(CryptoUtils.md5(bookUrl))", isDirectory: true)
-        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let imageExtensions: Set<String> = ["jpg", "jpeg", "png", "webp", "gif", "bmp"]
+        var pages: [Entry] = []
+        for entry in archive where imageExtensions.contains((entry.path as NSString).pathExtension.lowercased()) {
+            pages.append(entry)
+        }
+        guard !pages.isEmpty else {
+            throw NSError(domain: "Legado", code: 2, userInfo: [
+                NSLocalizedDescriptionKey: "包里没有图片"
+            ])
+        }
+        pages.sort { $0.path.localizedStandardCompare($1.path) == .orderedAscending }
 
-        var chapters: [BookChapter] = []
-        for (index, entry) in entries.enumerated() {
+        let bookURL = "comic://" + CryptoUtils.md5(fileUrl.absoluteString)
+        let directory = documentsFolderForImports
+            .appendingPathComponent("Books/Comics/\(CryptoUtils.md5(bookURL))", isDirectory: true)
+        try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+
+        var pageChapters: [BookChapter] = []
+        for (index, entry) in pages.enumerated() {
             let ext = (entry.path as NSString).pathExtension.lowercased()
-            let dest = dir.appendingPathComponent(String(format: "page-%04d.%@", index + 1, ext))
-            if !FileManager.default.fileExists(atPath: dest.path) {
+            let destination = directory.appendingPathComponent(String(format: "page-%04d.%@", index + 1, ext))
+            if !FileManager.default.fileExists(atPath: destination.path) {
                 _ = try? archive.extract(entry, consumer: { data in
-                    try? data.write(to: dest)
+                    try? data.write(to: destination)
                 })
             }
-            let title = String(format: "第 %d 页", index + 1)
-            chapters.append(BookChapter(bookUrl: bookUrl, url: "imgpage://" + dest.path, title: title, index: index))
+            pageChapters.append(BookChapter(
+                bookUrl: bookURL,
+                url: "imgpage://" + destination.path,
+                title: String(format: "第 %d 页", index + 1),
+                index: index
+            ))
         }
 
-        let name = fileUrl.deletingPathExtension().lastPathComponent
-        let book = Book(bookUrl: bookUrl, name: name, author: "", intro: "", origin: "local", originName: "本地漫画", tocUrl: "", latestChapterTitle: chapters.last?.title, totalChapterNum: chapters.count)
-        saveChapters(chapters, for: bookUrl)
-        upsertShelf(book)
+        let title = fileUrl.deletingPathExtension().lastPathComponent
+        let book = Book(
+            bookUrl: bookURL,
+            name: title,
+            author: "",
+            intro: "",
+            origin: "local",
+            originName: "本地漫画",
+            tocUrl: "",
+            latestChapterTitle: pageChapters.last?.title,
+            totalChapterNum: pageChapters.count
+        )
+        saveChapters(pageChapters, for: bookURL)
+        insertOrReplace(book)
         return book
     }
 
-    /// PDF：每页渲染成图片，一页一章
     @discardableResult
     func importPDF(from fileUrl: URL) throws -> Book {
         #if canImport(PDFKit)
-        guard let doc = PDFDocument(url: fileUrl) else {
-            throw NSError(domain: "Legado", code: 3, userInfo: [NSLocalizedDescriptionKey: "打不开这个 PDF"])
+        guard let document = PDFDocument(url: fileUrl) else {
+            throw NSError(domain: "Legado", code: 3, userInfo: [
+                NSLocalizedDescriptionKey: "打不开这个 PDF"
+            ])
         }
-        let bookUrl = "pdf://" + CryptoUtils.md5(fileUrl.absoluteString)
-        let dir = getDocumentsDirectory().appendingPathComponent("Books/PDF/\(CryptoUtils.md5(bookUrl))", isDirectory: true)
-        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
 
-        var chapters: [BookChapter] = []
-        for index in 0..<doc.pageCount {
-            guard let page = doc.page(at: index) else { continue }
-            let dest = dir.appendingPathComponent(String(format: "page-%04d.png", index + 1))
-            if !FileManager.default.fileExists(atPath: dest.path) {
+        let bookURL = "pdf://" + CryptoUtils.md5(fileUrl.absoluteString)
+        let directory = documentsFolderForImports
+            .appendingPathComponent("Books/PDF/\(CryptoUtils.md5(bookURL))", isDirectory: true)
+        try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+
+        var pageChapters: [BookChapter] = []
+        for index in 0..<document.pageCount {
+            guard let page = document.page(at: index) else { continue }
+            let destination = directory.appendingPathComponent(String(format: "page-%04d.png", index + 1))
+
+            if !FileManager.default.fileExists(atPath: destination.path) {
                 let bounds = page.bounds(for: .mediaBox)
                 let scale: CGFloat = 2
                 let width = max(1, Int(bounds.width * scale))
                 let height = max(1, Int(bounds.height * scale))
-                guard let ctx = CGContext(data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: 0, space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue) else { continue }
-                ctx.setFillColor(CGColor(red: 1, green: 1, blue: 1, alpha: 1))
-                ctx.fill(CGRect(x: 0, y: 0, width: CGFloat(width), height: CGFloat(height)))
-                ctx.scaleBy(x: scale, y: scale)
-                page.draw(with: .mediaBox, to: ctx)
-                guard let cgImage = ctx.makeImage(),
-                      let out = CGImageDestinationCreateWithURL(dest as CFURL, "public.png" as CFString, 1, nil) else { continue }
-                CGImageDestinationAddImage(out, cgImage, nil)
-                CGImageDestinationFinalize(out)
+                guard let context = CGContext(
+                    data: nil,
+                    width: width,
+                    height: height,
+                    bitsPerComponent: 8,
+                    bytesPerRow: 0,
+                    space: CGColorSpaceCreateDeviceRGB(),
+                    bitmapInfo: CGImageAlphaInfo.premultipliedFirst.rawValue
+                ) else { continue }
+
+                context.setFillColor(CGColor(red: 1, green: 1, blue: 1, alpha: 1))
+                context.fill(CGRect(x: 0, y: 0, width: CGFloat(width), height: CGFloat(height)))
+                context.scaleBy(x: scale, y: scale)
+                page.draw(with: .mediaBox, to: context)
+
+                guard let image = context.makeImage(),
+                      let output = CGImageDestinationCreateWithURL(
+                          destination as CFURL,
+                          "public.png" as CFString,
+                          1,
+                          nil
+                      ) else { continue }
+                CGImageDestinationAddImage(output, image, nil)
+                CGImageDestinationFinalize(output)
             }
-            chapters.append(BookChapter(bookUrl: bookUrl, url: "imgpage://" + dest.path, title: String(format: "第 %d 页", index + 1), index: index))
-        }
-        guard !chapters.isEmpty else {
-            throw NSError(domain: "Legado", code: 4, userInfo: [NSLocalizedDescriptionKey: "PDF 没渲染出页面"])
+
+            pageChapters.append(BookChapter(
+                bookUrl: bookURL,
+                url: "imgpage://" + destination.path,
+                title: String(format: "第 %d 页", index + 1),
+                index: index
+            ))
         }
 
-        let name = fileUrl.deletingPathExtension().lastPathComponent
-        let book = Book(bookUrl: bookUrl, name: name, author: "", intro: "", origin: "local", originName: "本地 PDF", tocUrl: "", latestChapterTitle: chapters.last?.title, totalChapterNum: chapters.count)
-        saveChapters(chapters, for: bookUrl)
-        upsertShelf(book)
+        guard !pageChapters.isEmpty else {
+            throw NSError(domain: "Legado", code: 4, userInfo: [
+                NSLocalizedDescriptionKey: "PDF 没渲染出页面"
+            ])
+        }
+
+        let title = fileUrl.deletingPathExtension().lastPathComponent
+        let book = Book(
+            bookUrl: bookURL,
+            name: title,
+            author: "",
+            intro: "",
+            origin: "local",
+            originName: "本地 PDF",
+            tocUrl: "",
+            latestChapterTitle: pageChapters.last?.title,
+            totalChapterNum: pageChapters.count
+        )
+        saveChapters(pageChapters, for: bookURL)
+        insertOrReplace(book)
         return book
         #else
-        throw NSError(domain: "Legado", code: 5, userInfo: [NSLocalizedDescriptionKey: "这个平台不支持 PDF"])
+        throw NSError(domain: "Legado", code: 5, userInfo: [
+            NSLocalizedDescriptionKey: "这个平台不支持 PDF"
+        ])
         #endif
     }
 }
 
-// MARK: - 书评缓存（段评 / 本章说 / 热评首页）
+private extension BookStore {
+    var documentsFolderForImports: URL {
+        FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first
+            ?? FileManager.default.temporaryDirectory
+    }
+}
 
-/// 评论接口的 JSON 落盘：书源没登录、断网时，之前抓过的评论还能翻。
-/// 开关 `reader_cache_reviews`（设置 → 存储），默认关；只在缓存章节时顺手抓首页。
+// MARK: - 书评缓存
+
 public enum ReviewCache {
     public static let enabledKey = "reader_cache_reviews"
 
@@ -1685,15 +2021,15 @@ public enum ReviewCache {
         root.appendingPathComponent(CryptoUtils.md5(url.absoluteString) + ".json")
     }
 
-    /// 评论面板抓到内容就存；开关关掉时不写盘，读还是照读（老缓存别丢）
     public static func store(_ data: Data, for url: URL) {
         guard enabled, !data.isEmpty else { return }
         try? data.write(to: file(for: url), options: .atomic)
     }
 
     public static func load(for url: URL) -> Data? {
-        guard FileManager.default.fileExists(atPath: file(for: url).path) else { return nil }
-        return try? Data(contentsOf: file(for: url))
+        let path = file(for: url)
+        guard FileManager.default.fileExists(atPath: path.path) else { return nil }
+        return try? Data(contentsOf: path)
     }
 
     public static func hasCache(for url: URL) -> Bool {
@@ -1708,70 +2044,84 @@ public enum ReviewCache {
         try? FileManager.default.removeItem(at: root)
     }
 
-    /// 评论接口地址：跟阅读页评论面板同一套拼法（/para_review + hot=1 + 首页无 cursor）
+    /// 离线包导入：文件名就是 md5(apiURL)，直接写回缓存目录
+    public static func restoreFile(named name: String, data: Data) {
+        try? data.write(to: root.appendingPathComponent(name), options: .atomic)
+    }
+
     public static func apiURL(fromRaw raw: String, mode: String = "chapter") -> URL? {
         guard var components = URLComponents(string: raw) else { return nil }
         let query = components.queryItems ?? []
-        let para = query.first(where: { $0.name == "para" || $0.name == "paragraph_id" })?.value ?? "0"
+
+        func value(_ names: [String], fallback: String) -> String {
+            for name in names {
+                if let found = query.first(where: { $0.name == name })?.value {
+                    return found
+                }
+            }
+            return fallback
+        }
+
         components.path = "/para_review"
         components.queryItems = [
-            URLQueryItem(name: "book_id", value: query.first(where: { $0.name == "book_id" })?.value ?? ""),
-            URLQueryItem(name: "item_id", value: query.first(where: { $0.name == "item_id" })?.value ?? ""),
-            URLQueryItem(name: "item_version", value: query.first(where: { $0.name == "item_version" })?.value ?? ""),
-            URLQueryItem(name: "para", value: para),
-            URLQueryItem(name: "source", value: query.first(where: { $0.name == "source" })?.value ?? "番茄"),
+            URLQueryItem(name: "book_id", value: value(["book_id"], fallback: "")),
+            URLQueryItem(name: "item_id", value: value(["item_id"], fallback: "")),
+            URLQueryItem(name: "item_version", value: value(["item_version"], fallback: "")),
+            URLQueryItem(name: "para", value: value(["para", "paragraph_id"], fallback: "0")),
+            URLQueryItem(name: "source", value: value(["source"], fallback: "番茄")),
             URLQueryItem(name: "mode", value: mode),
             URLQueryItem(name: "hot", value: "1")
         ]
         return components.url
     }
 
-    /// 正文里的评论哨兵：段评（C）带地址和条数，本章说（H）只带地址。
-    /// 神评论（G）正文和插图都在哨兵里，不需要再请求。
     public static func commentTargets(inContent content: String, limit: Int) -> [(raw: String, mode: String)] {
-        var candidates: [(String, String)] = []
-        let ns = content as NSString
-        let range = NSRange(location: 0, length: ns.length)
-        if let rx = try? NSRegularExpression(pattern: "\u{E000}C\u{1F}\\d+\u{1F}([^\u{E001}]*)\u{E001}") {
-            for match in rx.matches(in: content, range: range) {
-                let raw = ns.substring(with: match.range(at: 1))
-                if !raw.isEmpty { candidates.append((raw, "paragraph")) }
+        var found: [(String, String)] = []
+        let text = content as NSString
+        let fullRange = NSRange(location: 0, length: text.length)
+
+        if let regex = try? NSRegularExpression(pattern: "\u{E000}C\u{1F}\\d+\u{1F}([^\u{E001}]*)\u{E001}") {
+            for match in regex.matches(in: content, range: fullRange) {
+                let raw = text.substring(with: match.range(at: 1))
+                if !raw.isEmpty { found.append((raw, "paragraph")) }
             }
         }
-        if let rx = try? NSRegularExpression(pattern: "\u{E000}H\u{1F}([^\u{E001}]*)\u{E001}") {
-            for match in rx.matches(in: content, range: range) {
-                let raw = ns.substring(with: match.range(at: 1))
-                if !raw.isEmpty { candidates.append((raw, "chapter")) }
+        if let regex = try? NSRegularExpression(pattern: "\u{E000}H\u{1F}([^\u{E001}]*)\u{E001}") {
+            for match in regex.matches(in: content, range: fullRange) {
+                let raw = text.substring(with: match.range(at: 1))
+                if !raw.isEmpty { found.append((raw, "chapter")) }
             }
         }
+
         var seen = Set<String>()
-        var result: [(raw: String, mode: String)] = []
-        for item in candidates where seen.insert(item.0).inserted {
-            result.append((raw: item.0, mode: item.1))
-            if result.count >= limit { break }
+        var targets: [(raw: String, mode: String)] = []
+        for item in found where seen.insert(item.0).inserted {
+            targets.append((raw: item.0, mode: item.1))
+            if targets.count >= limit { break }
         }
-        return result
+        return targets
     }
 
-    /// 缓存章节时顺手抓评论首页。一条失败不影响其它，正文缓存才是主目标。
     public static func prefetchComments(inContent content: String, limit: Int = 3) async {
         guard enabled, !content.isEmpty else { return }
         let targets = commentTargets(inContent: content, limit: limit)
         guard !targets.isEmpty else { return }
-        var saved = 0
+
+        var stored = 0
         for target in targets {
             guard let api = apiURL(fromRaw: target.raw, mode: target.mode) else { continue }
             if hasCache(for: api) { continue }
+
             do {
                 let (data, _) = try await URLSession.shared.data(from: api)
                 guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                       object["data"] != nil else { continue }
                 try? data.write(to: file(for: api), options: .atomic)
-                saved += 1
+                stored += 1
             } catch {
                 continue
             }
         }
-        AppLog.write("[书评] 缓存评论 \(saved)/\(targets.count) 条 · 抓取上限 \(limit)")
+        AppLog.write("[书评] 缓存评论 \(stored)/\(targets.count) 条 · 抓取上限 \(limit)")
     }
 }

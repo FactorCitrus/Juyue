@@ -80,6 +80,7 @@ enum ReaderPaginator {
 
         var pages: [[ContentBlock]] = []
         var currentPageItems: [PageItem] = []
+        var currentItemHeights: [CGFloat] = []
         var currentPageHeight: CGFloat = 0
         var maxHeightForCurrentPage = firstPageHeight
         var blockIdCounter = 10000
@@ -92,6 +93,7 @@ enum ReaderPaginator {
         func appendCurrentPage() {
             pages.append(buildPageBlocks(from: currentPageItems, startingId: &blockIdCounter))
             currentPageItems.removeAll(keepingCapacity: true)
+            currentItemHeights.removeAll(keepingCapacity: true)
             currentPageHeight = 0
             maxHeightForCurrentPage = normalHeight
         }
@@ -119,6 +121,7 @@ enum ReaderPaginator {
                     appendCurrentPage()
                 }
                 currentPageItems.append(.image(block))
+                currentItemHeights.append(size.height + imageVerticalPadding)
                 currentPageHeight += size.height + imageVerticalPadding
                 continue
             }
@@ -148,20 +151,44 @@ enum ReaderPaginator {
                     appendCurrentPage()
                 }
             }
-            for lineInfo in pLines {
+            for (lineIdx, lineInfo) in pLines.enumerated() {
                 let baseHeight = isReviewBlock ? reviewLineHeight : lineHeight
                 let gap = lastLineIsParagraphEnd()
                     ? layout.paragraphSpacing
                     : 0
                 let advance = baseHeight + gap
 
-                let overflows = !currentPageItems.isEmpty
-                    && currentPageHeight + advance > maxHeightForCurrentPage
-                if overflows {
+                // 孤行控制：段首行不能单独留在页底，放不下「本行 + 下一行」就整段下移
+                if !isReviewBlock, lineIdx == 0, pLines.count > 1,
+                   !currentPageItems.isEmpty,
+                   currentPageHeight + advance + baseHeight > maxHeightForCurrentPage {
                     appendCurrentPage()
                 }
 
+                let overflows = !currentPageItems.isEmpty
+                    && currentPageHeight + advance > maxHeightForCurrentPage
+                if overflows {
+                    // 寡行控制：段末行不单独起页，把本段上一行一起带下去
+                    var carried: PageLine?
+                    if !isReviewBlock,
+                       lineIdx == pLines.count - 1, lineIdx > 0,
+                       currentPageItems.count >= 2,
+                       case .line(let prev)? = currentPageItems.last,
+                       prev.paragraphId == block.id {
+                        carried = prev
+                        currentPageHeight -= currentItemHeights.removeLast()
+                        currentPageItems.removeLast()
+                    }
+                    appendCurrentPage()
+                    if let carried {
+                        currentPageItems.append(.line(carried))
+                        currentItemHeights.append(baseHeight)
+                        currentPageHeight += baseHeight
+                    }
+                }
+
                 currentPageItems.append(.line((lineInfo.text, lineInfo.isParagraphEnd, lineInfo.charStart, block.id)))
+                currentItemHeights.append(advance)
                 currentPageHeight += advance
             }
         }
@@ -300,7 +327,7 @@ enum ReaderPaginator {
     /// 行尾禁则把该字符挪到下一行。CoreText 不做中文禁则，需要在这里补。
     static let forbiddenLineStart: Set<unichar> = {
         var set = Set<unichar>()
-        for scalar in "。，、；：？！…～·）】》」』〉”’.，;:?!)]}%".unicodeScalars where scalar.value <= 0xFFFF {
+        for scalar in "。，、；：？！…～·）】》」』〉”’.，;:?!)]}%—".unicodeScalars where scalar.value <= 0xFFFF {
             set.insert(unichar(scalar.value))
         }
         return set
@@ -326,18 +353,22 @@ enum ReaderPaginator {
 
     static func applyLineBreakRules(nsStr: NSString, start: Int, count: Int, textLen: Int) -> Int {
         var adjusted = count
-        // 行首禁则：后方紧跟句读类标点时拉到本行，一次最多两个
+        // 行首禁则：后方紧跟句读类标点时拉到本行，一次最多三个
         var pulled = 0
         var next = start + count
-        while pulled < 2, next < textLen, forbiddenLineStart.contains(nsStr.character(at: next)) {
+        while pulled < 3, next < textLen, forbiddenLineStart.contains(nsStr.character(at: next)) {
             pulled += 1
             next += 1
         }
         adjusted += pulled
-        // 行尾禁则：本行最后一个是开引号/开括号就把它推到下一行
-        if adjusted > 1, forbiddenLineEnd.contains(nsStr.character(at: start + adjusted - 1)) {
-            adjusted -= 1
+        // 行尾禁则：开引号/开括号连续出现时一并推到下一行，避免行尾挂半个引号
+        var trailingOpen = 0
+        while trailingOpen < 2,
+              adjusted - trailingOpen > 1,
+              forbiddenLineEnd.contains(nsStr.character(at: start + adjusted - trailingOpen - 1)) {
+            trailingOpen += 1
         }
+        adjusted -= trailingOpen
         return max(1, adjusted)
     }
 
@@ -364,8 +395,7 @@ enum ReaderPaginator {
         }
         startingId = identifier
         return blocks
-    }
-}
+    }}
 
 /// 分页后的一页按内容拆段：文字段 / 插图 / 热评卡片。
 /// 左右翻页和仿真翻页共用，插图才能和文字排在同一页。
@@ -491,3 +521,4 @@ enum ReaderImageMetrics {
         return CGSize(width: width, height: height)
     }
 }
+

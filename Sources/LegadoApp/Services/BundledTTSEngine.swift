@@ -98,12 +98,30 @@ final class BundledTTSEngine {
             guard let self, let engine else { return }
             guard self.generation == token, !finished else { return }
             guard !engine.isPlaying, !engine.isPreparing, !engine.isPaused else { return }
+            finished = true
+            engine.stop()
             if let reason = engine.lastError {
                 engine.clearError()
                 onFailure(reason)
             } else {
                 onFailure("百度离线引擎没有起播")
             }
+        }
+        // loadOfflineEngine 卡住时 isPreparing 会一直为 true，上面 2.5 秒那条被挡住。
+        // 20 秒还没起播就收回状态并退回系统语音，别让试听按钮永远停在「播放中」。
+        DispatchQueue.main.asyncAfter(deadline: .now() + 20) { [weak self, weak engine] in
+            guard let self, let engine else { return }
+            guard self.generation == token, !finished else { return }
+            guard !engine.isPlaying, !engine.isPaused else { return }
+            finished = true
+            let wasPreparing = engine.isPreparing
+            engine.stop()
+            engine.cancelLoading()
+            let reason = wasPreparing
+                ? "百度离线引擎加载超时"
+                : (engine.lastError ?? "百度离线引擎没有起播")
+            engine.clearError()
+            onFailure(reason)
         }
         #else
         LocalTTSEngine.shared.speak(text: text, speed: speed,

@@ -8,7 +8,7 @@ import LegadoCore
 /// 只装「用户自己攒出来的东西」：阅读排版、书架外观、外观主题、替换净化规则、
 /// 书源、朗读设置、多角色音色表。独立设置备份默认还会去掉书源登录态。
 /// 不含凭据：语音源地址、WebDAV 账号密码一律不写入。
-/// 安卓版 Legado 读到不认识的条目会直接忽略，不影响它继续读 bookshelf.json / bookSource.json。
+/// 安卓版阅读读到不认识的条目会直接忽略，不影响它继续读 bookshelf.json / bookSource.json。
 public struct AppSettingsPayload: Codable {
     /// 结构版本，日后加字段时靠它决定怎么迁移
     public static let currentSchemaVersion = 2

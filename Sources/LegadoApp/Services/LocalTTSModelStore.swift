@@ -66,9 +66,9 @@ struct LocalTTSModel: Identifiable, Hashable {
 final class LocalTTSModelStore: ObservableObject {
     static let shared = LocalTTSModelStore()
 
-    static let modelKey = "juyue_tts_local_model"
-    static let speakerKey = "juyue_tts_local_speaker"
-    static let hiddenKey = "juyue_tts_local_hidden"
+    static let modelKey = "legado_tts_local_model"
+    static let speakerKey = "legado_tts_local_speaker"
+    static let hiddenKey = "legado_tts_local_hidden"
 
     @Published private(set) var models: [LocalTTSModel] = []
     @Published private(set) var selectedId: String

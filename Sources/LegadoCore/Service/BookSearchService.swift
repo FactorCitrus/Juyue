@@ -3,51 +3,11 @@ import Foundation
 public class BookSearchService {
     public static let shared = BookSearchService()
 
-    /// 搜完一次请求把实测耗时送回宿主，写回书源 `respondTime`。Core 不认识仓库，
-    /// 和 `JSEngine.variableSink` 一样由 App 层注入。
+    /// 单次搜索的实测耗时回传给宿主，用来更新书源的 `respondTime`。
     public static var respondTimeSink: ((_ sourceUrl: String, _ milliseconds: Int64) -> Void)?
 
     public init() {}
 
-    /// 搜索地址先执行 `<js>`（如果有），再统一做一次 `{{key}}` / `{{page}}` 渲染。
-    /// JS 常常只拼出带占位符的地址；二次渲染时不再执行 `<js>`，避免脚本副作用跑两遍。
-    static func renderSearchURL(_ template: String, key: String, page: Int, engine: JSEngine) -> String {
-        var renderedUrl = template
-        if template.contains("<js>") || template.hasPrefix("@js:") {
-            let script: String
-            if template.contains("<js>") {
-                let start = template.range(of: "<js>")?.upperBound ?? template.startIndex
-                let end = template.range(of: "</js>")?.lowerBound ?? template.endIndex
-                script = String(template[start..<end])
-            } else {
-                script = String(template.dropFirst(4))
-            }
-
-            if let result = engine.context.evaluateScript(script)?.toString(),
-               !result.isEmpty && result != "undefined" && result != "null" {
-                renderedUrl = result
-            }
-        }
-        return fillTemplate(renderedUrl, key: key, page: page, engine: engine)
-    }
-
-    private static func fillTemplate(_ template: String, key: String, page: Int, engine: JSEngine) -> String {
-        var address = template
-            .replacingOccurrences(of: "searchKey", with: key)
-            .replacingOccurrences(of: "{{key}}", with: key)
-            .replacingOccurrences(of: "{{page}}", with: "\(page)")
-            .replacingOccurrences(of: "{{searchPage}}", with: "\(page)")
-
-        address = engine.renderTemplate(address, variables: [
-            "key": key,
-            "searchKey": key,
-            "page": page,
-            "searchPage": page
-        ])
-        return address
-    }
-
-    /// Searches books across a single BookSource
     /// 公开行为保持原样：HTTP 非 2xx、请求地址解析失败这类「源自身的问题」
     /// 仍按空结果返回；多源换源要走 `searchMultiSourcesDetailed` 才拿得到原因。
     public func search(
@@ -70,63 +30,39 @@ public class BookSearchService {
         page: Int = 1,
         diagnostics: ((SourceRequestDiagnostic) -> Void)? = nil
     ) async throws -> [SearchBook] {
-        guard let rawSearchUrl = source.searchUrl, !rawSearchUrl.isEmpty else {
+        guard let template = source.searchUrl, !template.isEmpty else {
             return []
         }
         try await SourceLoginService.shared.requireLoginIfNeeded(source: source)
 
-        // Setup JS engine and render URL template
-        let jsEngine = JSEngine(bookSource: source, baseUrl: source.bookSourceUrl)
-        var renderedUrl = rawSearchUrl
+        let engine = JSEngine(bookSource: source, baseUrl: source.bookSourceUrl)
+        bind(engine: engine, key: key, page: page, source: source)
 
-        // Inject standard Legado search variables
-        jsEngine.context.setObject(key, forKeyedSubscript: "key" as NSString)
-        jsEngine.context.setObject(key, forKeyedSubscript: "searchKey" as NSString)
-        jsEngine.context.setObject(page, forKeyedSubscript: "page" as NSString)
-        jsEngine.context.setObject(page, forKeyedSubscript: "searchPage" as NSString)
-        jsEngine.context.setObject(source.bookSourceUrl, forKeyedSubscript: "baseUrl" as NSString)
+        let address = SearchTemplate.renderURL(template, key: key, page: page, engine: engine)
+        let header = SearchTemplate.renderHeader(source.loginHeader ?? source.header, engine: engine)
 
-        renderedUrl = Self.renderSearchURL(renderedUrl, key: key, page: page, engine: jsEngine)
-
-        // Parse and send request with loginHeader priority and baseUrl fallback
-        var headerToUse = source.loginHeader ?? source.header
-        if let h = headerToUse, (h.contains("<js>") || h.hasPrefix("@js:")) {
-            let script: String
-            if h.contains("<js>") {
-                let start = h.range(of: "<js>")?.upperBound ?? h.startIndex
-                let end = h.range(of: "</js>")?.lowerBound ?? h.endIndex
-                script = String(h[start..<end])
-            } else {
-                script = String(h.dropFirst(4))
-            }
-            if let evalResult = jsEngine.context.evaluateScript(script)?.toString(),
-               !evalResult.isEmpty && evalResult != "undefined" && evalResult != "null" {
-                headerToUse = evalResult
-            }
-        }
-
-        guard let searchRule = source.ruleSearch else {
+        guard let rule = source.ruleSearch else {
             LegadoLog.log("[Search] ⚠️ [\(source.bookSourceName)] 没有配置搜索规则")
             return []
         }
 
         var bodyString: String
-        var baseURLString: String
+        var baseURL: String
         var responseBytes: Int
         var statusCode = 200
         var headersSummary = ""
-        var elapsedMs: Int64 = 0
+        var elapsed: Int64 = 0
 
         // 聚合源的搜索地址可能是 data: 包：直接在本机跑规则，不发网络请求。
-        if let payload = NetworkClient.dataURLPayload(renderedUrl) {
+        if let payload = NetworkClient.dataURLPayload(address) {
             bodyString = payload
-            baseURLString = renderedUrl
+            baseURL = address
             responseBytes = payload.utf8.count
             LegadoLog.log("[Search] [\(source.bookSourceName)] data: 搜索载荷 \(responseBytes) 字节")
         } else {
             // 自定义协议在书源里常见于聚合源（如 moyue://），依赖外部 App / 服务端，
             // 不能交给 URLSession，否则只剩一句「不支持的 URL」。
-            if let scheme = NetworkClient.unsupportedScheme(in: renderedUrl) {
+            if let scheme = NetworkClient.unsupportedScheme(in: address) {
                 let error = UnsupportedBookSourceSchemeError(
                     scheme: scheme,
                     sourceName: source.bookSourceName
@@ -135,130 +71,104 @@ public class BookSearchService {
                 DiagnosticHub.emit(SourceRequestDiagnostic(
                     step: "搜索",
                     sourceName: source.bookSourceName,
-                    url: renderedUrl,
+                    url: address,
                     failureKind: DiagnosticFailure.classify(error),
                     note: error.localizedDescription
                 ), to: diagnostics)
                 throw SearchRequestFailure(failure: .unsupportedScheme(scheme))
             }
 
-            // 脱敏：渲染后的 URL 里带着搜索关键词，只记域名
-            LegadoLog.log("[Search] [\(source.bookSourceName)] 请求已构造 host=\(URL(string: renderedUrl)?.host ?? "-")")
+            LegadoLog.log("[Search] [\(source.bookSourceName)] 请求已构造 host=\(URL(string: address)?.host ?? "-")")
 
-            guard let parsedReq = NetworkClient.parseLegadoUrl(renderedUrl, defaultHeader: headerToUse, baseUrl: source.bookSourceUrl) else {
-                LegadoLog.log("[Search] ❌ [\(source.bookSourceName)] 请求 URL 解析失败 host=\(URL(string: renderedUrl)?.host ?? "-")")
-                throw SearchRequestFailure(failure: .urlParseFailed(host: URL(string: renderedUrl)?.host))
+            guard let request = NetworkClient.parseJuyueUrl(
+                address,
+                defaultHeader: header,
+                baseUrl: source.bookSourceUrl
+            ) else {
+                LegadoLog.log("[Search] ❌ [\(source.bookSourceName)] 请求 URL 解析失败 host=\(URL(string: address)?.host ?? "-")")
+                throw SearchRequestFailure(failure: .urlParseFailed(host: URL(string: address)?.host))
             }
 
-            let requestStarted = Date()
+            let started = Date()
             let response: NetworkResponse
             do {
                 response = try await NetworkClient.shared.request(
-                    parsed: parsedReq,
+                    parsed: request,
                     timeout: nil,
                     rateKey: source.bookSourceUrl,
                     rateLimit: source.rateLimit
                 )
             } catch {
-                DiagnosticHub.emit(SourceRequestDiagnostic(
-                    step: "搜索",
-                    sourceName: source.bookSourceName,
-                    url: parsedReq.url.absoluteString,
-                    elapsedMs: Int64(Date().timeIntervalSince(requestStarted) * 1000),
-                    headersSummary: DiagnosticFailure.summarize(parsedReq.headers),
-                    failureKind: DiagnosticFailure.classify(error),
-                    note: "请求失败：\(error.localizedDescription)"
-                ), to: diagnostics)
+                emitFailure(
+                    source: source,
+                    request: request,
+                    started: started,
+                    error: error,
+                    diagnostics: diagnostics
+                )
                 throw error
             }
-            elapsedMs = Int64(Date().timeIntervalSince(requestStarted) * 1000)
-            if response.statusCode >= 200 && response.statusCode < 400 {
-                BookSearchService.respondTimeSink?(source.bookSourceUrl, elapsedMs)
+
+            elapsed = Int64(Date().timeIntervalSince(started) * 1000)
+            let success = (200..<400).contains(response.statusCode)
+            if success {
+                BookSearchService.respondTimeSink?(source.bookSourceUrl, elapsed)
             }
             LegadoLog.log("[Search] [\(source.bookSourceName)] HTTP \(response.statusCode)，收到 \(response.data.count) 字节")
 
-            guard response.statusCode >= 200 && response.statusCode < 400 else {
+            guard success else {
                 LegadoLog.log("[Search] ⚠️ [\(source.bookSourceName)] HTTP \(response.statusCode) 非成功状态，跳过")
                 throw SearchRequestFailure(failure: .httpStatus(response.statusCode))
             }
 
             bodyString = response.bodyString
-            baseURLString = parsedReq.url.absoluteString
+            baseURL = request.url.absoluteString
             responseBytes = response.data.count
             statusCode = response.statusCode
-            headersSummary = DiagnosticFailure.summarize(parsedReq.headers)
+            headersSummary = DiagnosticFailure.summarize(request.headers)
         }
 
-        // Analyze result
         let analyzer = RuleAnalyzer(
             content: bodyString,
-            baseUrl: baseURLString,
+            baseUrl: baseURL,
             bookSource: source,
-            jsEngine: jsEngine
+            jsEngine: engine
         )
 
         let ruleStarted = Date()
-        let bookElements = analyzer.getElements(searchRule.bookList)
-        let ruleEvalMs = Int64(Date().timeIntervalSince(ruleStarted) * 1000)
+        let elements = analyzer.getElements(rule.bookList)
+        let ruleElapsed = Int64(Date().timeIntervalSince(ruleStarted) * 1000)
+
         DiagnosticHub.emit(SourceRequestDiagnostic(
             step: "搜索",
             sourceName: source.bookSourceName,
-            url: baseURLString,
+            url: baseURL,
             statusCode: statusCode,
-            elapsedMs: elapsedMs,
+            elapsedMs: elapsed,
             responseBytes: responseBytes,
             responsePreview: DiagnosticPreview.make(bodyString),
-            ruleHits: bookElements.count,
-            ruleEvalMs: ruleEvalMs,
+            ruleHits: elements.count,
+            ruleEvalMs: ruleElapsed,
             headersSummary: headersSummary,
-            note: "解析出 \(bookElements.count) 个候选"
+            note: "解析出 \(elements.count) 个候选"
         ), to: diagnostics)
-        LegadoLog.log("[Search] [\(source.bookSourceName)] 候选条目 \(bookElements.count) 个")
-        var searchBooks: [SearchBook] = []
 
-        for item in bookElements {
-            let itemAnalyzer = RuleAnalyzer(
-                content: item,
-                baseUrl: baseURLString,
-                bookSource: source,
-                jsEngine: jsEngine
+        LegadoLog.log("[Search] [\(source.bookSourceName)] 候选条目 \(elements.count) 个")
+
+        let books = elements.compactMap { element in
+            makeBook(
+                element: element,
+                rule: rule,
+                source: source,
+                baseURL: baseURL,
+                engine: engine
             )
-
-            let name = itemAnalyzer.getString(searchRule.name)
-            let author = itemAnalyzer.getString(searchRule.author)
-            let bookUrl = itemAnalyzer.getString(searchRule.bookUrl, isUrl: true)
-
-            guard !name.isEmpty, !bookUrl.isEmpty else { continue }
-
-            let rawCover = itemAnalyzer.getString(searchRule.coverUrl, isUrl: true)
-            let coverUrl = rawCover.isEmpty
-                ? ""
-                : CoverURLResolver.resolve(rawCover, source: source, baseUrl: baseURLString)
-            let intro = itemAnalyzer.getString(searchRule.intro)
-            let kind = itemAnalyzer.getString(searchRule.kind)
-            let lastChapter = itemAnalyzer.getString(searchRule.lastChapter)
-            let wordCount = itemAnalyzer.getString(searchRule.wordCount)
-
-            let book = SearchBook(
-                name: name,
-                author: author,
-                bookUrl: bookUrl,
-                origin: source.bookSourceUrl,
-                originName: source.bookSourceName,
-                kind: kind.isEmpty ? nil : kind,
-                coverUrl: coverUrl.isEmpty ? nil : coverUrl,
-                intro: intro.isEmpty ? nil : intro,
-                latestChapterTitle: lastChapter.isEmpty ? nil : lastChapter,
-                wordCount: wordCount.isEmpty ? nil : wordCount
-            )
-            searchBooks.append(book)
         }
 
-        LegadoLog.log("[Search] ✅ [\(source.bookSourceName)] 解析出 \(searchBooks.count) 本书")
-        return searchBooks
+        LegadoLog.log("[Search] ✅ [\(source.bookSourceName)] 解析出 \(books.count) 本书")
+        return books
     }
 
-    /// Searches across multiple sources concurrently for a specific page, returning an AsyncStream of (source, books)
     public func searchMultiSources(
         sources: [BookSource],
         key: String,
@@ -289,16 +199,16 @@ public class BookSearchService {
         key: String,
         page: Int = 1
     ) -> AsyncStream<SearchSourceOutcome> {
-        let enabledSources = sources
+        let targets = sources
             .filter { $0.enabled != false && $0.searchUrl != nil }
             .sorted(by: BookSource.selectionOrder)
-        // 脱敏：不记关键词原文，也不列全部书源名
-        LegadoLog.log("[Search] 开始多源搜索 page=\(page) 源数=\(enabledSources.count) 关键词长度=\(key.count)")
+
+        LegadoLog.log("[Search] 开始多源搜索 page=\(page) 源数=\(targets.count) 关键词长度=\(key.count)")
 
         return AsyncStream { continuation in
             let worker = Task {
                 await withTaskGroup(of: SearchSourceOutcome.self) { group in
-                    var pending = enabledSources.makeIterator()
+                    var pending = targets.makeIterator()
                     var inFlight = 0
                     // 滑动窗口：先塞满，每完成一个再补一个，结果仍然按完成顺序流出。
                     while inFlight < Self.maxConcurrentSources, let source = pending.next() {
@@ -314,8 +224,6 @@ public class BookSearchService {
                 }
                 continuation.finish()
             }
-            // worker 是非结构化任务：消费端取消（暂停 / 退出）不会自动带上它，
-            // 要显式取消，任务组里的 URLSession 请求才会一起中止。
             continuation.onTermination = { _ in
                 worker.cancel()
             }
@@ -336,7 +244,6 @@ public class BookSearchService {
         }
     }
 
-    /// Searches across multiple sources concurrently (defaults to page 1), returning an AsyncStream of book batches
     public func searchMultiSources(sources: [BookSource], key: String) -> AsyncStream<[SearchBook]> {
         AsyncStream { continuation in
             let worker = Task {
@@ -350,6 +257,74 @@ public class BookSearchService {
                 worker.cancel()
             }
         }
+    }
+
+    // MARK: - 组装请求
+
+    private func bind(engine: JSEngine, key: String, page: Int, source: BookSource) {
+        let context = engine.context
+        context.setObject(key, forKeyedSubscript: "key" as NSString)
+        context.setObject(key, forKeyedSubscript: "searchKey" as NSString)
+        context.setObject(page, forKeyedSubscript: "page" as NSString)
+        context.setObject(page, forKeyedSubscript: "searchPage" as NSString)
+        context.setObject(source.bookSourceUrl, forKeyedSubscript: "baseUrl" as NSString)
+    }
+
+    private func makeBook(
+        element: Any,
+        rule: SearchRule,
+        source: BookSource,
+        baseURL: String,
+        engine: JSEngine
+    ) -> SearchBook? {
+        let row = RuleAnalyzer(
+            content: element,
+            baseUrl: baseURL,
+            bookSource: source,
+            jsEngine: engine
+        )
+
+        let name = row.getString(rule.name)
+        let bookURL = row.getString(rule.bookUrl, isUrl: true)
+        guard !name.isEmpty, !bookURL.isEmpty else { return nil }
+
+        let author = row.getString(rule.author)
+        let cover = row.getString(rule.coverUrl, isUrl: true)
+        let intro = row.getString(rule.intro)
+        let kind = row.getString(rule.kind)
+        let latest = row.getString(rule.lastChapter)
+        let words = row.getString(rule.wordCount)
+
+        return SearchBook(
+            name: name,
+            author: author,
+            bookUrl: bookURL,
+            origin: source.bookSourceUrl,
+            originName: source.bookSourceName,
+            kind: kind.isEmpty ? nil : kind,
+            coverUrl: cover.isEmpty ? nil : CoverURLResolver.resolve(cover, source: source, baseUrl: baseURL),
+            intro: intro.isEmpty ? nil : intro,
+            latestChapterTitle: latest.isEmpty ? nil : latest,
+            wordCount: words.isEmpty ? nil : words
+        )
+    }
+
+    private func emitFailure(
+        source: BookSource,
+        request: NetworkClient.ParsedRequest,
+        started: Date,
+        error: Error,
+        diagnostics: ((SourceRequestDiagnostic) -> Void)?
+    ) {
+        DiagnosticHub.emit(SourceRequestDiagnostic(
+            step: "搜索",
+            sourceName: source.bookSourceName,
+            url: request.url.absoluteString,
+            elapsedMs: Int64(Date().timeIntervalSince(started) * 1000),
+            headersSummary: DiagnosticFailure.summarize(request.headers),
+            failureKind: DiagnosticFailure.classify(error),
+            note: "请求失败：\(error.localizedDescription)"
+        ), to: diagnostics)
     }
 }
 
@@ -452,15 +427,72 @@ struct SearchRequestFailure: LocalizedError {
     var errorDescription: String? { failure.message }
 }
 
-// MARK: - 换源时候选书的匹配口径
+// MARK: - 模板渲染
+
+enum SearchTemplate {
+    static func renderURL(_ template: String, key: String, page: Int, engine: JSEngine) -> String {
+        if let script = SearchScript.body(in: template),
+           let rendered = SearchScript.evaluate(script, engine: engine),
+           !rendered.isEmpty {
+            // JS 常常只拼出带 {{key}} / {{page}} 的地址，再用模板渲染一次；
+            // 这里不执行 <js>，否则脚本会被跑两遍。
+            return fill(rendered, key: key, page: page, engine: engine)
+        }
+        guard SearchScript.body(in: template) == nil else { return template }
+        return fill(template, key: key, page: page, engine: engine)
+    }
+
+    private static func fill(_ template: String, key: String, page: Int, engine: JSEngine) -> String {
+        var address = template
+            .replacingOccurrences(of: "searchKey", with: key)
+            .replacingOccurrences(of: "{{key}}", with: key)
+            .replacingOccurrences(of: "{{page}}", with: "\(page)")
+            .replacingOccurrences(of: "{{searchPage}}", with: "\(page)")
+
+        address = engine.renderTemplate(address, variables: [
+            "key": key,
+            "searchKey": key,
+            "page": page,
+            "searchPage": page
+        ])
+        return address
+    }
+
+    static func renderHeader(_ raw: String?, engine: JSEngine) -> String? {
+        guard let raw, let script = SearchScript.body(in: raw) else { return raw }
+        return SearchScript.evaluate(script, engine: engine) ?? raw
+    }
+}
+
+private enum SearchScript {
+    static func body(in text: String) -> String? {
+        if let open = text.range(of: "<js>") {
+            let close = text.range(of: "</js>")?.lowerBound ?? text.endIndex
+            return String(text[open.upperBound..<close])
+        }
+        if text.hasPrefix("@js:") {
+            return String(text.dropFirst(4))
+        }
+        return nil
+    }
+
+    static func evaluate(_ script: String, engine: JSEngine) -> String? {
+        guard let value = engine.context.evaluateScript(script)?.toString(),
+              !value.isEmpty,
+              value != "undefined",
+              value != "null" else {
+            return nil
+        }
+        return value
+    }
+}
+
+// MARK: - 换源与搜索匹配
 
 /// 换源界面用哪几个字段判定「这是同一本书」。
 public struct SourceMatchOptions: Equatable {
-    /// 要求书名中
     public var matchTitle: Bool
-    /// 要求作者中
     public var matchAuthor: Bool
-    /// 精确匹配：归一化后完全相等；否则双向包含
     public var exact: Bool
 
     public init(matchTitle: Bool = true, matchAuthor: Bool = false, exact: Bool = false) {
@@ -470,10 +502,6 @@ public struct SourceMatchOptions: Equatable {
     }
 }
 
-/// 候选书与目标书的匹配判定。
-///
-/// 开了几个字段就是几个字段都要中（AND）：开了书名和作者，就要求候选书名中、作者也中，
-/// 只用 OR 的话同名不同作者的书会混进换源列表。
 /// 换源暂停时记下的「真正影响请求」的条件。
 /// 匹配书名 / 作者 / 精确只过滤已返回结果，不参与请求，改它们不需要重搜。
 public struct SourceSwitchCriteria: Equatable {
@@ -491,16 +519,12 @@ public struct SourceSwitchCriteria: Equatable {
 }
 
 public enum SourceMatchRules {
-
-    /// 搜索页只看一个关键词：命中选中字段里的任意一个就算。
     public enum SearchField: String, CaseIterable {
         case title
         case author
         case either
     }
 
-    /// 搜索结果过滤：关键词落在选中的字段里就算命中。
-    /// 换源那边两个字段是两个不同的目标、按 AND；搜索页只有一个关键词，所以是 OR。
     public static func matchesKeyword(
         _ candidate: SearchBook,
         keyword: String,
@@ -508,40 +532,46 @@ public enum SourceMatchRules {
         exact: Bool
     ) -> Bool {
         guard !normalized(keyword).isEmpty else { return true }
+
         switch field {
         case .title:
             return hit(candidate.name, keyword, exact: exact)
         case .author:
             return hit(candidate.author, keyword, exact: exact)
         case .either:
-            return hit(candidate.name, keyword, exact: exact) || hit(candidate.author, keyword, exact: exact)
+            let titleHit = hit(candidate.name, keyword, exact: exact)
+            let authorHit = hit(candidate.author, keyword, exact: exact)
+            return titleHit || authorHit
         }
     }
 
-    /// 搜索范围：按「源名 / 分组含这几个字」和分组过滤要搜的源。
     public static func filterSources(
         _ sources: [BookSource],
         nameFilter: String,
         group: String?
     ) -> [BookSource] {
-        var list = sources
+        var scoped = sources
         if let group, !group.isEmpty {
-            list = list.filter { ($0.bookSourceGroup ?? "") == group }
+            scoped = scoped.filter { ($0.bookSourceGroup ?? "") == group }
         }
-        let needle = nameFilter.trimmingCharacters(in: .whitespaces).lowercased()
-        guard !needle.isEmpty else { return list }
-        return list.filter {
-            $0.bookSourceName.lowercased().contains(needle)
-                || ($0.bookSourceGroup ?? "").lowercased().contains(needle)
+
+        let query = nameFilter.trimmingCharacters(in: .whitespaces).lowercased()
+        guard !query.isEmpty else { return scoped }
+
+        return scoped.filter { source in
+            let nameMatches = source.bookSourceName.lowercased().contains(query)
+            let groupMatches = (source.bookSourceGroup ?? "").lowercased().contains(query)
+            return nameMatches || groupMatches
         }
     }
 
-    /// 归一化：去掉空白（含全角）、书名号 / 引号 / 间隔号，英文转小写。
-    /// 「《凡人修仙传》」「凡人 修仙传」「凡人·修仙传」都算同一个书名。
+    /// 去掉空白与书名号 / 引号 / 间隔号，英文转小写。
     public static func normalized(_ text: String) -> String {
-        let dropped: Set<Character> = [" ", "\t", "\n", "\u{3000}", "《", "》", "「", "」", "『", "』",
-                                       "“", "”", "‘", "’", "\"", "'", "·", "•"]
-        return String(text.filter { !dropped.contains($0) }).lowercased()
+        text.unicodeScalars
+            .filter { !noise.contains($0) }
+            .map { String($0) }
+            .joined()
+            .lowercased()
     }
 
     public static func matches(
@@ -550,23 +580,24 @@ public enum SourceMatchRules {
         author: String,
         options: SourceMatchOptions
     ) -> Bool {
-        var checked = 0
+        var decisions: [Bool] = []
         if options.matchTitle {
-            checked += 1
-            guard hit(candidate.name, title, exact: options.exact) else { return false }
+            decisions.append(hit(candidate.name, title, exact: options.exact))
         }
         if options.matchAuthor {
-            checked += 1
-            guard hit(candidate.author, author, exact: options.exact) else { return false }
+            decisions.append(hit(candidate.author, author, exact: options.exact))
         }
-        // 一个字段都没开就没法判定「是同一本书」
-        return checked > 0
+        return !decisions.isEmpty && decisions.allSatisfy { $0 }
     }
 
-    private static func hit(_ candidateValue: String, _ wanted: String, exact: Bool) -> Bool {
-        let value = normalized(candidateValue)
-        let target = normalized(wanted)
-        guard !value.isEmpty, !target.isEmpty else { return false }
-        return exact ? value == target : (value.contains(target) || target.contains(value))
+    private static let noise = CharacterSet.whitespacesAndNewlines
+        .union(CharacterSet(charactersIn: "《》「」『』“”‘’\"'·•"))
+
+    private static func hit(_ candidate: String, _ target: String, exact: Bool) -> Bool {
+        let left = normalized(candidate)
+        let right = normalized(target)
+        guard !left.isEmpty, !right.isEmpty else { return false }
+        if exact { return left == right }
+        return left.contains(right) || right.contains(left)
     }
 }

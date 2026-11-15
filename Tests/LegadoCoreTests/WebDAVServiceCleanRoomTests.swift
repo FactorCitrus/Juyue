@@ -63,48 +63,48 @@ final class WebDAVServiceCleanRoomTests: XCTestCase {
     <?xml version="1.0" encoding="utf-8"?>
     <D:multistatus xmlns:D="DAV:">
       <D:response>
-        <D:href>/dav/legado/</D:href>
+        <D:href>/dav/juyue/</D:href>
         <D:propstat><D:prop><D:resourcetype><D:collection/></D:resourcetype></D:prop></D:propstat>
       </D:response>
       <D:response>
-        <D:href>/dav/legado/backup2026-10-20-iPhone.zip</D:href>
+        <D:href>/dav/juyue/backup2026-10-20-iPhone.zip</D:href>
         <D:propstat><D:prop>
           <D:getcontentlength>1234</D:getcontentlength>
           <D:getlastmodified>Mon, 20 Oct 2026 08:00:00 GMT</D:getlastmodified>
         </D:prop></D:propstat>
       </D:response>
       <D:response>
-        <D:href>/dav/legado/backup2026-10-24-iPad.zip</D:href>
+        <D:href>/dav/juyue/backup2026-10-24-iPad.zip</D:href>
         <D:propstat><D:prop>
           <D:getcontentlength>2048</D:getcontentlength>
           <D:getlastmodified>Sat, 24 Oct 2026 09:30:00 GMT</D:getlastmodified>
         </D:prop></D:propstat>
       </D:response>
       <D:response>
-        <D:href>/dav/legado/bookshelf.json</D:href>
+        <D:href>/dav/juyue/bookshelf.json</D:href>
       </D:response>
     </D:multistatus>
     """
 
     func testPropfindParsesBackupsAndSortsNewestFirst() throws {
-        let base = try XCTUnwrap(URL(string: "https://dav.example.com/dav/legado/"))
+        let base = try XCTUnwrap(URL(string: "https://dav.example.com/dav/juyue/"))
         let items = WebDAVService().parseBackupsFromPropfindXML(propfindSample, baseURL: base)
 
         XCTAssertEqual(items.map(\.fileName), ["backup2026-10-24-iPad.zip", "backup2026-10-20-iPhone.zip"])
         XCTAssertEqual(items[0].size, 2048)
         XCTAssertNotNil(items[0].lastModified)
-        XCTAssertEqual(items[0].url.absoluteString, "https://dav.example.com/dav/legado/backup2026-10-24-iPad.zip")
+        XCTAssertEqual(items[0].url.absoluteString, "https://dav.example.com/dav/juyue/backup2026-10-24-iPad.zip")
     }
 
     func testPropfindDecodesPercentEscapedHref() throws {
         let xml = """
         <multistatus xmlns="DAV:">
           <response>
-            <href>/dav/legado/backup2026-10-24-%E6%A1%8C%E9%9D%A2.zip</href>
+            <href>/dav/juyue/backup2026-10-24-%E6%A1%8C%E9%9D%A2.zip</href>
           </response>
         </multistatus>
         """
-        let base = try XCTUnwrap(URL(string: "https://dav.example.com/dav/legado/"))
+        let base = try XCTUnwrap(URL(string: "https://dav.example.com/dav/juyue/"))
         let items = WebDAVService().parseBackupsFromPropfindXML(xml, baseURL: base)
 
         XCTAssertEqual(items.count, 1)

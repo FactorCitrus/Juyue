@@ -16,10 +16,10 @@ import CommonCrypto
     func base64Decode(_ str: String) -> String
     func base64DecodeToByteArray(_ str: String) -> JSValue
     func encodeURI(_ str: String) -> String
-    func stringToBytes(_ str: String) -> JSValue
     func timeFormat(_ timestamp: JSValue) -> String
-    func timeFormatUTC(_ timestamp: JSValue, _ format: String) -> String
+    func timeFormatUTC(_ timestamp: JSValue, _ format: String, _ timeZoneOffset: JSValue) -> String
     func messageDigest(_ algorithm: String, _ parts: JSValue) -> JSValue
+    func stringToBytes(_ str: String) -> JSValue
     func getString(_ path: String) -> String
     func jsonPath(_ json: String, _ path: String) -> JSValue
     func getElements(_ html: JSValue, _ rule: JSValue) -> JSValue
@@ -33,29 +33,20 @@ import CommonCrypto
     func getCookie(_ url: String) -> String
     func refreshExplore()
     func hexDecodeToString(_ hex: String) -> String
-    // Rhino 的 Java 互操作适配，聚合源依赖这几个：
+    func htmlFormat(_ html: String) -> String
     func base64EncodeBytes(_ bytes: JSValue) -> String
     func sleepMs(_ ms: JSValue)
     func createSymmetricCrypto(_ transformation: String, _ key: String) -> JSValue
     func createSymmetricCrypto(_ transformation: String, _ key: String, _ iv: String) -> JSValue
-    // 需要弹浏览器的方法：注册 / 用户后台 / 教程 / 发布页 / 番茄登录 / 打赏
     func startBrowser(_ url: String, _ title: String)
     func startBrowserAwait(_ url: String, _ title: String) -> JSValue
     func startBrowserAwait(_ url: String, _ title: String, _ wait: Bool) -> JSValue
     func startBrowserDp(_ url: String, _ title: String)
     func showBrowser(_ url: String, _ title: String)
     func showReadingBrowser(_ url: String, _ title: String)
-    /// `cache.remove(key)`
     func removeCache(_ key: String)
 }
 
-/// 脚本要弹浏览器的请求。
-///
-/// `java.startBrowserAwait(url, title)` 是同步调用：宿主阻塞脚本线程，等网页关闭后把
-/// 最终 HTML 和 URL 交回去。Core 只发请求，弹窗由 App 层注册 handler 实现。
-/// 脚本里的 `java.toast` / `java.longToast` 也走这里。
-///
-/// 宿主不接 handler 时只写日志，界面上没有反馈。
 public final class ScriptToast {
     public static let shared = ScriptToast()
     public var handler: ((String) -> Void)?
@@ -64,25 +55,16 @@ public final class ScriptToast {
 
 public final class ScriptBrowser {
     public static let shared = ScriptBrowser()
-
     /// 返回最终页面 HTML 与 URL，拿不到时返回空串。
     public var present: ((String, String, Bool) -> (body: String, url: String))?
-
     private init() {}
 }
 
 @objc public class JavaShim: NSObject, JavaShimProtocol {
-    /// `cache` / `java.put`/`java.get` 的存储。
-    ///
-    /// 脚本把登录态、段评正文、临时标记放这儿，一个引擎跑一次、下一次点按钮又是新引擎，
-    /// 所以必须跨引擎共享（安卓那边是 app 级缓存）。进程内共享，退出即清。
-    private static var sharedStore: [String: String] = [:]
-    private static let storeLock = NSLock()
-    private let lock = NSLock()
     private weak var jsContext: JSContext?
     /// 书源声明的响应时间。聚合源给到 180s，默认 15s 会先超时。
     var respondTimeout: TimeInterval?
-    /// 脚本里的同步请求也要吃书源的 concurrentRate，否则规则脚本会绕过限速。
+    /// 脚本里的同步请求也要吃书源的 concurrentRate。
     var rateKey: String?
     var rateLimit: SourceRateLimit?
     /// `java.getElements(html, rule)` 要按当前书源规则解析。
@@ -94,25 +76,31 @@ public final class ScriptBrowser {
         super.init()
     }
 
-    /// 书源脚本用 cookie.setCookie 存下来的登录态，请求时自动带上。
-    private func jarCookieHeader(for url: String) -> String {
+    // MARK: - 请求
+
+    private func cookieHeader(for url: String) -> String {
         let cookies = CookieJar.shared.cookieString(for: url)
         return cookies.isEmpty ? "" : "Cookie: \(cookies)"
     }
 
-    public func ajax(_ url: String) -> String {
-        guard let parsed = NetworkClient.parseLegadoUrl(url, defaultHeader: jarCookieHeader(for: url)) else { return "" }
-        let resp = NetworkClient.shared.requestSync(
-            parsed: parsed,
+    private func perform(_ request: NetworkClient.ParsedRequest) -> NetworkResponse? {
+        NetworkClient.shared.requestSync(
+            parsed: request,
             timeout: respondTimeout ?? 15,
             rateKey: rateKey,
             rateLimit: rateLimit
         )
-        return resp?.bodyString ?? ""
+    }
+
+    public func ajax(_ url: String) -> String {
+        guard let request = NetworkClient.parseJuyueUrl(url, defaultHeader: cookieHeader(for: url)) else {
+            return ""
+        }
+        return perform(request)?.bodyString ?? ""
     }
 
     /// `java.ajaxAll(urls)`：按顺序同步请求，回响应对象数组。
-    /// 脚本里常见的用法是拿一批接口的 JSON，数量上限 20，避免一条规则把脚本卡死。
+    /// 脚本里常见的用法是拿一批章节接口的 JSON，数量上限 20，避免一条规则把脚本卡死。
     public func ajaxAll(_ urls: JSValue) -> JSValue {
         guard let ctx = jsContext else {
             return JSValue(undefinedIn: JSContext())
@@ -124,52 +112,30 @@ public final class ScriptBrowser {
         for item in raw {
             guard index < 20 else { break }
             guard let url = item as? String, !url.isEmpty else { continue }
-            guard let parsed = NetworkClient.parseLegadoUrl(url, defaultHeader: jarCookieHeader(for: url)) else {
-                array?.setValue(responseObject(body: "", code: 0, url: url, in: ctx), at: index)
-                index += 1
-                continue
-            }
-            let resp = NetworkClient.shared.requestSync(
-                parsed: parsed,
-                timeout: respondTimeout ?? 15,
-                rateKey: rateKey,
-                rateLimit: rateLimit
-            )
-            array?.setValue(
-                responseObject(
-                    body: resp?.bodyString ?? "",
-                    code: resp?.statusCode ?? 0,
-                    url: url,
-                    in: ctx
-                ),
-                at: index
-            )
+            array?.setValue(connect(url), at: index)
             index += 1
         }
         return array ?? JSValue(nullIn: ctx)
     }
 
     public func connect(_ url: String) -> JSValue {
-        return connect(url, jarCookieHeader(for: url))
+        connect(url, cookieHeader(for: url))
     }
 
     public func connect(_ url: String, _ header: String) -> JSValue {
         guard let ctx = jsContext else {
             return JSValue(undefinedIn: JSContext())
         }
-        guard let parsed = NetworkClient.parseLegadoUrl(url, defaultHeader: header) else {
+        guard let request = NetworkClient.parseJuyueUrl(url, defaultHeader: header) else {
             return JSValue(nullIn: ctx)
         }
-        let resp = NetworkClient.shared.requestSync(
-            parsed: parsed,
-            timeout: respondTimeout ?? 15,
-            rateKey: rateKey,
-            rateLimit: rateLimit
+        let response = perform(request)
+        return ScriptObjectFactory.response(
+            body: response?.bodyString ?? "",
+            code: response?.statusCode ?? 0,
+            url: url,
+            in: ctx
         )
-        let body = resp?.bodyString ?? ""
-        let code = resp?.statusCode ?? 0
-
-        return responseObject(body: body, code: code, url: url, in: ctx)
     }
 
     public func post(_ url: String, _ body: String, _ header: JSValue) -> JSValue {
@@ -177,59 +143,48 @@ public final class ScriptBrowser {
             return JSValue(undefinedIn: JSContext())
         }
 
-        var headerDict = headerFields(from: header)
-
-        if headerDict["Content-Type"] == nil {
-            headerDict["Content-Type"] = "application/json"
+        var fields = headerFields(from: header)
+        if fields["Content-Type"] == nil {
+            fields["Content-Type"] = "application/json"
         }
-        if headerDict["Cookie"] == nil, headerDict["cookie"] == nil {
+        if fields["Cookie"] == nil, fields["cookie"] == nil {
             let jar = CookieJar.shared.cookieString(for: url)
-            if !jar.isEmpty { headerDict["Cookie"] = jar }
+            if !jar.isEmpty { fields["Cookie"] = jar }
         }
 
-        let bodyData = body.data(using: .utf8)
-        guard let cleanUrl = URL(string: url) ?? URL(string: url.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? url) else {
+        guard let cleanURL = URL(string: url)
+            ?? URL(string: url.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? url) else {
             return JSValue(nullIn: ctx)
         }
 
-        let parsed = NetworkClient.ParsedRequest(url: cleanUrl, method: "POST", headers: headerDict, body: bodyData)
-        let resp = NetworkClient.shared.requestSync(
-            parsed: parsed,
-            timeout: respondTimeout ?? 15,
-            rateKey: rateKey,
-            rateLimit: rateLimit
+        let request = NetworkClient.ParsedRequest(
+            url: cleanURL,
+            method: "POST",
+            headers: fields,
+            body: body.data(using: .utf8)
         )
-        let respBody = resp?.bodyString ?? ""
-        let respCode = resp?.statusCode ?? 0
-
-        return responseObject(body: respBody, code: respCode, url: url, in: ctx)
+        let response = perform(request)
+        return ScriptObjectFactory.response(
+            body: response?.bodyString ?? "",
+            code: response?.statusCode ?? 0,
+            url: url,
+            in: ctx
+        )
     }
 
-    /// 脚本拿到的响应对象。`body` / `statusCode` / `url` 做成函数是为了兼容把响应当方法调的老脚本，
-    /// `text` 给直接读正文的新脚本，两边都给，省得按脚本年代分支。
-    private func responseObject(body: String, code: Int, url: String, in ctx: JSContext) -> JSValue {
-        let obj = JSValue(newObjectIn: ctx)
-        obj?.setValue({ body } as @convention(block) () -> String, forProperty: "body")
-        obj?.setValue({ code } as @convention(block) () -> Int, forProperty: "statusCode")
-        obj?.setValue({ url } as @convention(block) () -> String, forProperty: "url")
-        obj?.setValue(body, forProperty: "text")
-        return obj ?? JSValue(nullIn: ctx)
-    }
-
-    /// `post` 的第三个参数可能是对象，也可能是 JSON 字符串；两种都收，其它一律当空头。
+    /// `post` 的第三个参数可以是对象，也可以是 JSON 字符串。
     private func headerFields(from value: JSValue) -> [String: String] {
-        var fields: [String: String] = [:]
-        guard value.isObject || value.isString else { return fields }
+        guard value.isObject || value.isString else { return [:] }
+
         if let dict = value.toDictionary() as? [String: Any] {
-            for (name, raw) in dict { fields[name] = "\(raw)" }
-            return fields
+            return dict.mapValues { "\($0)" }
         }
-        guard let text = value.toString(), let blob = text.data(using: .utf8),
-              let dict = try? JSONSerialization.jsonObject(with: blob) as? [String: Any] else {
-            return fields
+        guard let text = value.toString(),
+              let data = text.data(using: .utf8),
+              let dict = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return [:]
         }
-        for (name, raw) in dict { fields[name] = "\(raw)" }
-        return fields
+        return dict.mapValues { "\($0)" }
     }
 
     /// `Jsoup.connect(...).get()` 的取数：沿用书源请求头、Cookie 与限速。
@@ -244,7 +199,7 @@ public final class ScriptBrowser {
             let cookies = CookieJar.shared.cookieString(for: url)
             if !cookies.isEmpty { fields["Cookie"] = cookies }
         }
-        guard let parsed = NetworkClient.parseLegadoUrl(url) else {
+        guard let parsed = NetworkClient.parseJuyueUrl(url) else {
             return ("", 0)
         }
 
@@ -262,24 +217,26 @@ public final class ScriptBrowser {
             body: upper == "POST" ? (body ?? "").data(using: .utf8) : nil,
             usesWebView: parsed.usesWebView
         )
-        let response = NetworkClient.shared.requestSync(
-            parsed: request,
-            timeout: respondTimeout ?? 15,
-            rateKey: rateKey,
-            rateLimit: rateLimit
-        )
+        let response = perform(request)
         return (response?.bodyString ?? "", response?.statusCode ?? 0)
     }
 
+    // MARK: - 脚本缓存
+
     public func get(_ key: String) -> String? {
-        Self.storeLock.lock()
-        defer { Self.storeLock.unlock() }
-        return Self.sharedStore[key]
+        ScriptMemory.read(key)
     }
 
-    // MARK: - 脚本杂项调用
-    //
-    // 脚本默认这些接口存在：longToast、deviceID、androidId。缺一个就抛 TypeError。
+    public func put(_ key: String, _ value: String) -> String {
+        ScriptMemory.write(value, for: key)
+        return value
+    }
+
+    public func removeCache(_ key: String) {
+        ScriptMemory.remove(key)
+    }
+
+    // MARK: - 杂项
 
     public func toast(_ message: String) {
         LegadoLog.log("[toast] \(message)")
@@ -303,56 +260,74 @@ public final class ScriptBrowser {
         Self.persistentDeviceID()
     }
 
-    /// 脚本自己拼 header 时要一个 WebView 的 UA（聚合源的 69书吧分支用它）。
     public func getWebViewUA() -> String {
         NetworkClient.defaultUserAgent
     }
 
-    /// 有的源把 `java.getCookie` 当 `cookie.getCookie` 的兜底（`|| java.getCookie(url)`）。
     public func getCookie(_ url: String) -> String {
         CookieJar.shared.cookieString(for: url)
     }
 
-    /// 脚本改完设置（换服务器、设置中心结果）会调它，安卓那边是刷新分类页。
-    /// 分类缓存本身按「exploreUrl + 源变量」做签名，变量一变下次解析就是新的，
-    /// 这里只负责让界面重新拉一遍。
     public func refreshExplore() {
         JSEngine.exploreRefreshSink?()
     }
 
-    /// 正文常以 hex 字符串回传。
     public func hexDecodeToString(_ hex: String) -> String {
         let cleaned = hex.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard cleaned.count >= 2, cleaned.count % 2 == 0 else { return cleaned }
+        guard cleaned.count >= 2, cleaned.count.isMultiple(of: 2) else {
+            return cleaned
+        }
 
-        var bytes = [UInt8]()
+        var bytes: [UInt8] = []
         bytes.reserveCapacity(cleaned.count / 2)
-        var index = cleaned.startIndex
-        while index < cleaned.endIndex {
-            let next = cleaned.index(index, offsetBy: 2)
-            guard let byte = UInt8(cleaned[index..<next], radix: 16) else { return cleaned }
+        var cursor = cleaned.startIndex
+        while cursor < cleaned.endIndex {
+            let end = cleaned.index(cursor, offsetBy: 2)
+            guard let byte = UInt8(cleaned[cursor..<end], radix: 16) else {
+                return cleaned
+            }
             bytes.append(byte)
-            index = next
+            cursor = end
         }
         return String(decoding: bytes, as: UTF8.self)
     }
 
-    // MARK: - Rhino / Java 互操作适配
-    //
-    // 聚合源用了 JavaImporter、with(javaImport)、Packages.android.util.Base64、
-    // java.createSymmetricCrypto 这些 Rhino 能力，这里按语义近似实现。
-
-    /// `Packages.android.util.Base64.encodeToString(bytes, flags)`
-    /// flags=2 对应 Android 的 NO_WRAP，即标准 base64，不带换行。
-    public func base64EncodeBytes(_ bytes: JSValue) -> String {
-        Data(Self.byteArray(from: bytes)).base64EncodedString()
+    /// 安卓 `java.htmlFormat`：去注释、脚本、样式与标签，压成单行纯文本。
+    public func htmlFormat(_ html: String) -> String {
+        var text = html
+        for pattern in [
+            "(?is)<!--[\\s\\S]*?-->",
+            "(?is)<(script|style)[^>]*>[\\s\\S]*?</\\1>",
+            "(?is)<[^>]*>"
+        ] {
+            guard let regex = try? NSRegularExpression(pattern: pattern) else { continue }
+            text = regex.stringByReplacingMatches(
+                in: text,
+                range: NSRange(location: 0, length: (text as NSString).length),
+                withTemplate: ""
+            )
+        }
+        text = text.replacingOccurrences(of: "&nbsp;", with: " ")
+        guard let whitespace = try? NSRegularExpression(pattern: "\\s+") else { return text }
+        return whitespace.stringByReplacingMatches(
+            in: text,
+            range: NSRange(location: 0, length: (text as NSString).length),
+            withTemplate: " "
+        ).trimmingCharacters(in: .whitespaces)
     }
 
-    /// `Packages.java.lang.Thread.sleep(ms)`，脚本用它等待异步、限速。
+    // MARK: - Rhino / Java 互操作
+
+    public func base64EncodeBytes(_ bytes: JSValue) -> String {
+        Data(ScriptCrypto.bytes(from: bytes)).base64EncodedString()
+    }
+
     public func sleepMs(_ ms: JSValue) {
-        let value = ms.isNumber ? ms.toInt32() : (Int32(ms.toString() ?? "0") ?? 0)
-        let clamped = max(0, min(value, 10_000))
-        if clamped > 0 { Thread.sleep(forTimeInterval: Double(clamped) / 1000.0) }
+        let raw = ms.isNumber ? ms.toInt32() : (Int32(ms.toString() ?? "0") ?? 0)
+        let duration = max(0, min(raw, 10_000))
+        if duration > 0 {
+            Thread.sleep(forTimeInterval: Double(duration) / 1000.0)
+        }
     }
 
     public func createSymmetricCrypto(_ transformation: String, _ key: String) -> JSValue {
@@ -363,164 +338,84 @@ public final class ScriptBrowser {
         makeCrypto(transformation: transformation, key: key, iv: iv)
     }
 
-    /// 只写算法名（"AES"）时按 BouncyCastle 惯例补成 `<算法>/ECB/PKCS5Padding`；
-    /// 密钥和 IV 按 UTF-8 取字节。
     private func makeCrypto(transformation: String, key: String, iv: String?) -> JSValue {
-        guard let ctx = jsContext else { return JSValue(undefinedIn: JSContext()) }
+        guard let ctx = jsContext else {
+            return JSValue(undefinedIn: JSContext())
+        }
+
         let parts = transformation.uppercased().split(separator: "/").map(String.init)
         let algorithm = parts.first ?? "AES"
         let mode = parts.count > 1 ? parts[1] : "ECB"
         let keyData = Data(key.utf8)
         let ivData = iv.map { Data($0.utf8) }
 
-        let encrypt: @convention(block) (JSValue) -> JSValue = { [weak self] input in
-            let plain = Self.byteArray(from: input)
-            let out = Self.symmetric(algorithm: algorithm, mode: mode, key: keyData,
-                                     iv: ivData, input: plain, encrypt: true) ?? []
-            return self?.jsArray(out) ?? JSValue(undefinedIn: ctx)
+        func transform(_ input: [UInt8], encrypt: Bool) -> [UInt8] {
+            ScriptCrypto.symmetric(
+                algorithm: algorithm,
+                mode: mode,
+                key: keyData,
+                iv: ivData,
+                input: input,
+                encrypt: encrypt
+            ) ?? []
         }
-        let decrypt: @convention(block) (JSValue) -> JSValue = { [weak self] input in
-            let cipher = Self.byteArray(from: input)
-            let out = Self.symmetric(algorithm: algorithm, mode: mode, key: keyData,
-                                     iv: ivData, input: cipher, encrypt: false) ?? []
-            return self?.jsArray(out) ?? JSValue(undefinedIn: ctx)
+
+        let encrypt: @convention(block) (JSValue) -> JSValue = { value in
+            ScriptObjectFactory.byteArray(transform(ScriptCrypto.bytes(from: value), encrypt: true), in: ctx)
         }
-        let encryptBase64: @convention(block) (JSValue) -> JSValue = { [weak ctx] input in
-            let plain = Self.byteArray(from: input)
-            let out = Self.symmetric(algorithm: algorithm, mode: mode, key: keyData,
-                                     iv: ivData, input: plain, encrypt: true) ?? []
-            return JSValue(object: Data(out).base64EncodedString(), in: ctx)
+        let decrypt: @convention(block) (JSValue) -> JSValue = { value in
+            ScriptObjectFactory.byteArray(transform(ScriptCrypto.bytes(from: value), encrypt: false), in: ctx)
         }
-        let decryptBase64: @convention(block) (JSValue) -> JSValue = { [weak self, weak ctx] input in
-            let raw = input.toString() ?? ""
-            let cipher = [UInt8](Data(base64Encoded: raw) ?? Data())
-            let out = Self.symmetric(algorithm: algorithm, mode: mode, key: keyData,
-                                     iv: ivData, input: cipher, encrypt: false) ?? []
-            return self?.jsArray(out) ?? JSValue(undefinedIn: ctx)
+        let encryptBase64: @convention(block) (JSValue) -> JSValue = { value in
+            let output = transform(ScriptCrypto.bytes(from: value), encrypt: true)
+            return JSValue(object: Data(output).base64EncodedString(), in: ctx)
         }
-        let obj: [String: Any] = [
+        let decryptBase64: @convention(block) (JSValue) -> JSValue = { value in
+            let raw = value.toString() ?? ""
+            let input = [UInt8](Data(base64Encoded: raw) ?? Data())
+            return ScriptObjectFactory.byteArray(transform(input, encrypt: false), in: ctx)
+        }
+
+        let object: [String: Any] = [
             "encrypt": encrypt,
             "decrypt": decrypt,
             "encryptBase64": encryptBase64,
             "decryptBase64": decryptBase64
         ]
-        return JSValue(object: obj, in: ctx)
+        return JSValue(object: object, in: ctx)
     }
 
-    private func jsArray(_ bytes: [UInt8]) -> JSValue {
-        let ctx = jsContext ?? JSContext()
-        return JSValue(object: bytes.map { Int($0) }, in: ctx)
-    }
-
-    /// 入参是 [Int] 数组或字符串，字符串按 UTF-8 取字节。
     static func byteArray(from value: JSValue) -> [UInt8] {
-        if let text = value.toString(), !value.isArray { return [UInt8](text.utf8) }
-        if let array = value.toArray() {
-            return array.compactMap { item in
-                if let n = item as? NSNumber { return UInt8(truncatingIfNeeded: n.intValue) }
-                if let n = item as? Int { return UInt8(truncatingIfNeeded: n) }
-                return nil
-            }
-        }
-        return []
+        ScriptCrypto.bytes(from: value)
     }
 
-    static func bytes(fromAny value: Any) -> [UInt8] {
-        if let js = value as? JSValue { return byteArray(from: js) }
-        if let text = value as? String { return [UInt8](text.utf8) }
-        if let number = value as? NSNumber { return [UInt8(truncatingIfNeeded: number.intValue)] }
-        if let array = value as? [Any] { return array.flatMap { bytes(fromAny: $0) } }
-        return []
-    }
-
-    static func digest(algorithm: String, input: [UInt8]) -> [UInt8]? {
-        switch algorithm.uppercased().replacingOccurrences(of: "_", with: "-") {
-        case "MD5":
-            var output = [UInt8](repeating: 0, count: Int(CC_MD5_DIGEST_LENGTH))
-            CC_MD5(input, CC_LONG(input.count), &output)
-            return output
-        case "SHA1", "SHA-1":
-            var output = [UInt8](repeating: 0, count: Int(CC_SHA1_DIGEST_LENGTH))
-            CC_SHA1(input, CC_LONG(input.count), &output)
-            return output
-        case "SHA256", "SHA-256":
-            var output = [UInt8](repeating: 0, count: Int(CC_SHA256_DIGEST_LENGTH))
-            CC_SHA256(input, CC_LONG(input.count), &output)
-            return output
-        default:
-            return nil
-        }
-    }
-
-    /// AES/DES 的 ECB 与 CBC，PKCS5 按 PKCS7 处理
     static func symmetric(
         algorithm: String, mode: String, key: Data, iv: Data?, input: [UInt8], encrypt: Bool
     ) -> [UInt8]? {
-        guard !input.isEmpty else { return [] }
-        let ccAlgorithm: CCAlgorithm
-        switch algorithm {
-        case "AES": ccAlgorithm = CCAlgorithm(kCCAlgorithmAES)
-        case "DES": ccAlgorithm = CCAlgorithm(kCCAlgorithmDES)
-        case "DESEDE", "3DES": ccAlgorithm = CCAlgorithm(kCCAlgorithm3DES)
-        default: return nil
-        }
-        let operation = CCOperation(encrypt ? kCCEncrypt : kCCDecrypt)
-        let options = CCOptions(mode == "CBC" ? 0 : kCCOptionECBMode)
-        var outLength = 0
-        var out = [UInt8](repeating: 0, count: input.count + kCCBlockSizeAES128)
-        let status = iv?.withUnsafeBytes { ivBytes -> CCCryptorStatus in
-            key.withUnsafeBytes { keyBytes in
-                input.withUnsafeBytes { inputBytes in
-                    CCCrypt(operation, ccAlgorithm, options,
-                            keyBytes.baseAddress, key.count,
-                            ivBytes.baseAddress,
-                            inputBytes.baseAddress, input.count,
-                            &out, out.count, &outLength)
-                }
-            }
-        } ?? key.withUnsafeBytes { keyBytes in
-            input.withUnsafeBytes { inputBytes in
-                CCCrypt(operation, ccAlgorithm, options,
-                        keyBytes.baseAddress, key.count,
-                        nil,
-                        inputBytes.baseAddress, input.count,
-                        &out, out.count, &outLength)
-            }
-        }
-        guard status == kCCSuccess else { return nil }
-        return Array(out.prefix(outLength))
+        ScriptCrypto.symmetric(
+            algorithm: algorithm,
+            mode: mode,
+            key: key,
+            iv: iv,
+            input: input,
+            encrypt: encrypt
+        )
     }
 
-    // MARK: - 脚本要弹浏览器
+    // MARK: - 浏览器
 
-    /// 删缓存键
-    public func removeCache(_ key: String) {
-        Self.storeLock.lock()
-        defer { Self.storeLock.unlock() }
-        Self.sharedStore.removeValue(forKey: key)
-    }
-
-    /// 不问结果，把网址交给宿主打开。
     public func startBrowser(_ url: String, _ title: String) {
         _ = ScriptBrowser.shared.present?(url, title, false)
     }
 
-    /// 要拿用户操作后的页面内容（注册、书源设置中心、番茄登录）。
-    /// 等待靠阻塞脚本线程实现，调用方不能是主线程。
     public func startBrowserAwait(_ url: String, _ title: String) -> JSValue {
-        browserResult(url: url, title: title, wait: true)
+        browserResult(url: url, title: title)
     }
 
-    /// 第三个参数只为对齐安卓签名保留，语义上当作「等」处理。
-    ///
-    /// `Await` 的契约就是等用户关网页再把最终 HTML / URL 交回去。书源的设置中心靠返回值
-    /// 读结果（`readSettingsResultFromBody(browserResult.body())`），传 false 也照等；
-    /// 按参数立刻返回空 body 的话，脚本必然走到「未读取到设置结果」。
     public func startBrowserAwait(_ url: String, _ title: String, _ wait: Bool) -> JSValue {
-        browserResult(url: url, title: title, wait: true)
+        browserResult(url: url, title: title)
     }
 
-    // 安卓同类接口，语义相同，走同一个宿主入口
     public func startBrowserDp(_ url: String, _ title: String) {
         _ = ScriptBrowser.shared.present?(url, title, false)
     }
@@ -533,63 +428,50 @@ public final class ScriptBrowser {
         _ = ScriptBrowser.shared.present?(url, title, false)
     }
 
-    private func browserResult(url: String, title: String, wait: Bool) -> JSValue {
-        let ctx = jsContext ?? JSContext()
-        guard let result = ScriptBrowser.shared.present?(url, title, wait) else {
-            let empty = JSValue(newObjectIn: ctx) ?? JSValue(nullIn: ctx)
-            let emptyBody: @convention(block) () -> String = { "" }
-            empty?.setValue(emptyBody, forProperty: "body")
-            empty?.setValue("", forProperty: "bodyString")
-            empty?.setValue(url, forProperty: "url")
-            empty?.setValue(0, forProperty: "code")
-            return empty ?? JSValue(nullIn: ctx)
+    private func browserResult(url: String, title: String) -> JSValue {
+        guard let ctx = jsContext ?? JSContext() else {
+            return JSValue(undefinedIn: nil)
         }
-        // 安卓契约是 `java.startBrowserAwait(...).body()`，body 必须是方法；
-        // 同时给一份 bodyString 方便原生侧读取。
-        let obj = JSValue(newObjectIn: ctx) ?? JSValue(nullIn: ctx)
-        let finalUrl = result.url.isEmpty ? url : result.url
-        let bodyBlock: @convention(block) () -> String = { result.body }
-        obj?.setValue(bodyBlock, forProperty: "body")
-        obj?.setValue(result.body, forProperty: "bodyString")
-        obj?.setValue(finalUrl, forProperty: "url")
-        obj?.setValue(200, forProperty: "code")
-        return obj ?? JSValue(nullIn: ctx)
+        guard let result = ScriptBrowser.shared.present?(url, title, true) else {
+            return ScriptObjectFactory.emptyBrowser(url: url, in: ctx)
+        }
+        return ScriptObjectFactory.browser(
+            body: result.body,
+            url: result.url.isEmpty ? url : result.url,
+            in: ctx
+        )
     }
 
     private static func persistentDeviceID() -> String {
         let key = "legado.scriptDeviceID"
-        if let existing = UserDefaults.standard.string(forKey: key), !existing.isEmpty {
-            return existing
+        if let saved = UserDefaults.standard.string(forKey: key), !saved.isEmpty {
+            return saved
         }
-        let generated = UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased()
-        UserDefaults.standard.set(generated, forKey: key)
-        return generated
+        let fresh = UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased()
+        UserDefaults.standard.set(fresh, forKey: key)
+        return fresh
     }
 
-    public func put(_ key: String, _ value: String) -> String {
-        Self.storeLock.lock()
-        defer { Self.storeLock.unlock() }
-        Self.sharedStore[key] = value
-        return value
-    }
+    // MARK: - 其他协议方法
 
     public func md5Encode(_ str: String) -> String {
-        return CryptoUtils.md5(str)
+        CryptoUtils.md5(str)
     }
 
     public func base64Encode(_ str: String) -> String {
-        return CryptoUtils.base64Encode(str)
+        CryptoUtils.base64Encode(str)
     }
 
     public func base64Decode(_ str: String) -> String {
-        return CryptoUtils.base64Decode(str)
+        CryptoUtils.base64Decode(str)
     }
 
     /// `java.base64DecodeToByteArray(str)`：解出来直接给字节数组，脚本可以再喂给解密。
     public func base64DecodeToByteArray(_ str: String) -> JSValue {
+        let ctx: JSContext = jsContext ?? JSContext()
         let cleaned = str.trimmingCharacters(in: .whitespacesAndNewlines)
         let data = Data(base64Encoded: cleaned, options: [.ignoreUnknownCharacters]) ?? Data()
-        return jsArray([UInt8](data))
+        return ScriptObjectFactory.byteArray([UInt8](data), in: ctx)
     }
 
     /// JavaScript `encodeURI` 语义：保留 URL 保留字符，其余按 UTF-8 百分号编码，空格为 `%20`。
@@ -600,13 +482,9 @@ public final class ScriptBrowser {
         return str.addingPercentEncoding(withAllowedCharacters: allowed) ?? str
     }
 
-    public func stringToBytes(_ str: String) -> JSValue {
-        jsArray([UInt8](str.utf8))
-    }
-
-    /// `java.timeFormatUTC(t, format)`：按 UTC 时区格式化。
+    /// `java.timeFormatUTC(t, format, offset)`：按指定时区格式化，offset 是小时数，缺省 UTC。
     /// 与 Legado 一致，入参按毫秒时间戳解释；format 缺省时沿用 `timeFormat` 的默认格式。
-    public func timeFormatUTC(_ timestamp: JSValue, _ format: String) -> String {
+    public func timeFormatUTC(_ timestamp: JSValue, _ format: String, _ timeZoneOffset: JSValue) -> String {
         var milliseconds = timestamp.toNumber()?.doubleValue ?? 0
         if milliseconds == 0, let text = timestamp.toString(), let parsed = Double(text) {
             milliseconds = parsed
@@ -615,7 +493,9 @@ public final class ScriptBrowser {
 
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.timeZone = TimeZone(secondsFromGMT: 0)
+        // 番茄系源会传 8 表示东八区；没有第三参时保持 UTC。
+        let hours = timeZoneOffset.toNumber()?.intValue ?? 0
+        formatter.timeZone = TimeZone(secondsFromGMT: hours * 3600) ?? TimeZone(secondsFromGMT: 0)
         formatter.dateFormat = format.isEmpty ? "yyyy-MM-dd HH:mm" : format
         return formatter.string(from: Date(timeIntervalSince1970: milliseconds / 1000))
     }
@@ -623,42 +503,49 @@ public final class ScriptBrowser {
     /// `Packages.java.security.MessageDigest` 的原生摘要实现。
     /// `parts` 是脚本 `update()` 攒下的字节数组列表，按顺序拼起来再算。
     public func messageDigest(_ algorithm: String, _ parts: JSValue) -> JSValue {
+        let ctx: JSContext = jsContext ?? JSContext()
         var input: [UInt8] = []
         if let array = parts.toArray() {
             for item in array {
-                input.append(contentsOf: Self.bytes(fromAny: item))
+                input.append(contentsOf: ScriptDigest.bytes(from: item))
             }
         } else {
-            input.append(contentsOf: Self.byteArray(from: parts))
+            input.append(contentsOf: ScriptCrypto.bytes(from: parts))
         }
 
-        guard let digest = Self.digest(algorithm: algorithm, input: input) else {
-            return jsArray([])
+        guard let digest = ScriptDigest.value(algorithm: algorithm, input: input) else {
+            return ScriptObjectFactory.byteArray([], in: ctx)
         }
-        return jsArray(digest)
+        return ScriptObjectFactory.byteArray(digest, in: ctx)
+    }
+
+    public func stringToBytes(_ str: String) -> JSValue {
+        let ctx: JSContext = jsContext ?? JSContext()
+        return ScriptObjectFactory.byteArray([UInt8](str.utf8), in: ctx)
     }
 
     public func timeFormat(_ timestamp: JSValue) -> String {
-        var num = timestamp.toNumber()?.doubleValue ?? 0
-        if num == 0, let str = timestamp.toString(), let d = Double(str) {
-            num = d
+        var seconds = timestamp.toNumber()?.doubleValue ?? 0
+        if seconds == 0, let text = timestamp.toString(), let parsed = Double(text) {
+            seconds = parsed
         }
-        guard num > 0 else { return "" }
-        if num > 10_000_000_000 {
-            num /= 1000
+        guard seconds > 0 else { return "" }
+        if seconds > 10_000_000_000 {
+            seconds /= 1000
         }
-        let date = Date(timeIntervalSince1970: num)
+
         let formatter = DateFormatter()
         formatter.dateFormat = "yyyy-MM-dd HH:mm"
-        return formatter.string(from: date)
+        return formatter.string(from: Date(timeIntervalSince1970: seconds))
     }
 
     public func getString(_ path: String) -> String {
         guard let ctx = jsContext,
-              let result = ctx.objectForKeyedSubscript("result" as NSString) else { return "" }
+              let result = ctx.objectForKeyedSubscript("result" as NSString) else {
+            return ""
+        }
 
         if result.isObject {
-            // `$.data.name` 先按去掉前缀的属性名直取，取不到再交给 JSONPath
             let directKey = String(path.drop { $0 == "$" || $0 == "." })
             if let direct = result.forProperty(directKey), !direct.isUndefined, !direct.isNull {
                 return direct.toString() ?? ""
@@ -669,10 +556,12 @@ public final class ScriptBrowser {
             }
         }
 
-        // 不是对象就当成 JSON 字符串再解析一次
-        guard let text = result.toString(), let blob = text.data(using: .utf8),
-              let parsed = try? JSONSerialization.jsonObject(with: blob, options: []),
-              let hit = JSONPath.evaluate(path: path, json: parsed) else { return "" }
+        guard let text = result.toString(),
+              let data = text.data(using: .utf8),
+              let parsed = try? JSONSerialization.jsonObject(with: data),
+              let hit = JSONPath.evaluate(path: path, json: parsed) else {
+            return ""
+        }
         return "\(hit)"
     }
 
@@ -786,30 +675,215 @@ public final class ScriptBrowser {
     }
 }
 
+// MARK: - 共享缓存
+
+private enum ScriptMemory {
+    private static var values: [String: String] = [:]
+    private static let lock = NSLock()
+
+    static func read(_ key: String) -> String? {
+        lock.lock()
+        defer { lock.unlock() }
+        return values[key]
+    }
+
+    static func write(_ value: String, for key: String) {
+        lock.lock()
+        values[key] = value
+        lock.unlock()
+    }
+
+    static func remove(_ key: String) {
+        lock.lock()
+        values.removeValue(forKey: key)
+        lock.unlock()
+    }
+}
+
+// MARK: - 脚本对象
+
+private enum ScriptObjectFactory {
+    static func response(body: String, code: Int, url: String, in ctx: JSContext) -> JSValue {
+        let object = JSValue(newObjectIn: ctx)
+        object?.setValue({ body } as @convention(block) () -> String, forProperty: "body")
+        object?.setValue({ code } as @convention(block) () -> Int, forProperty: "statusCode")
+        object?.setValue({ url } as @convention(block) () -> String, forProperty: "url")
+        object?.setValue(body, forProperty: "text")
+        return object ?? JSValue(nullIn: ctx)
+    }
+
+    static func browser(body: String, url: String, in ctx: JSContext) -> JSValue {
+        let object = JSValue(newObjectIn: ctx)
+        object?.setValue({ body } as @convention(block) () -> String, forProperty: "body")
+        object?.setValue(body, forProperty: "bodyString")
+        object?.setValue(url, forProperty: "url")
+        object?.setValue(200, forProperty: "code")
+        return object ?? JSValue(nullIn: ctx)
+    }
+
+    static func emptyBrowser(url: String, in ctx: JSContext) -> JSValue {
+        let object = JSValue(newObjectIn: ctx)
+        object?.setValue({ "" } as @convention(block) () -> String, forProperty: "body")
+        object?.setValue("", forProperty: "bodyString")
+        object?.setValue(url, forProperty: "url")
+        object?.setValue(0, forProperty: "code")
+        return object ?? JSValue(nullIn: ctx)
+    }
+
+    static func byteArray(_ bytes: [UInt8], in ctx: JSContext) -> JSValue {
+        JSValue(object: bytes.map { Int($0) }, in: ctx)
+    }
+}
+
+// MARK: - 加解密
+
+private enum ScriptCrypto {
+    static func bytes(from value: JSValue) -> [UInt8] {
+        if let text = value.toString(), !value.isArray {
+            return [UInt8](text.utf8)
+        }
+        guard let array = value.toArray() else { return [] }
+        return array.compactMap { item in
+            if let number = item as? NSNumber {
+                return UInt8(truncatingIfNeeded: number.intValue)
+            }
+            if let number = item as? Int {
+                return UInt8(truncatingIfNeeded: number)
+            }
+            return nil
+        }
+    }
+
+    static func symmetric(
+        algorithm: String,
+        mode: String,
+        key: Data,
+        iv: Data?,
+        input: [UInt8],
+        encrypt: Bool
+    ) -> [UInt8]? {
+        guard !input.isEmpty else { return [] }
+
+        let cipher: CCAlgorithm
+        switch algorithm {
+        case "AES": cipher = CCAlgorithm(kCCAlgorithmAES)
+        case "DES": cipher = CCAlgorithm(kCCAlgorithmDES)
+        case "DESEDE", "3DES": cipher = CCAlgorithm(kCCAlgorithm3DES)
+        default: return nil
+        }
+
+        let operation = CCOperation(encrypt ? kCCEncrypt : kCCDecrypt)
+        let options = CCOptions(mode == "CBC" ? 0 : kCCOptionECBMode)
+        var output = [UInt8](repeating: 0, count: input.count + kCCBlockSizeAES128)
+        var outputLength = 0
+
+        func run(_ ivBytes: UnsafeRawBufferPointer?) -> CCCryptorStatus {
+            key.withUnsafeBytes { keyBytes in
+                input.withUnsafeBytes { inputBytes in
+                    CCCrypt(
+                        operation,
+                        cipher,
+                        options,
+                        keyBytes.baseAddress,
+                        key.count,
+                        ivBytes?.baseAddress,
+                        inputBytes.baseAddress,
+                        input.count,
+                        &output,
+                        output.count,
+                        &outputLength
+                    )
+                }
+            }
+        }
+
+        let status = iv?.withUnsafeBytes { run($0) } ?? run(nil)
+        guard status == kCCSuccess else { return nil }
+        return Array(output.prefix(outputLength))
+    }
+}
+
+// MARK: - 摘要
+
+private enum ScriptDigest {
+    static func value(algorithm: String, input: [UInt8]) -> [UInt8]? {
+        switch algorithm.uppercased().replacingOccurrences(of: "_", with: "-") {
+        case "MD5":
+            var digest = [UInt8](repeating: 0, count: Int(CC_MD5_DIGEST_LENGTH))
+            CC_MD5(input, CC_LONG(input.count), &digest)
+            return digest
+        case "SHA1", "SHA-1":
+            var digest = [UInt8](repeating: 0, count: Int(CC_SHA1_DIGEST_LENGTH))
+            CC_SHA1(input, CC_LONG(input.count), &digest)
+            return digest
+        case "SHA256", "SHA-256":
+            var digest = [UInt8](repeating: 0, count: Int(CC_SHA256_DIGEST_LENGTH))
+            CC_SHA256(input, CC_LONG(input.count), &digest)
+            return digest
+        default:
+            return nil
+        }
+    }
+
+    static func bytes(from value: Any) -> [UInt8] {
+        if let js = value as? JSValue { return ScriptCrypto.bytes(from: js) }
+        if let text = value as? String { return [UInt8](text.utf8) }
+        if let number = value as? NSNumber { return [UInt8(truncatingIfNeeded: number.intValue)] }
+        if let array = value as? [Any] { return array.flatMap { bytes(from: $0) } }
+        return []
+    }
+}
+
 public class JSEngine {
     public let context: JSContext
     private let javaShim: JavaShim
-    /// 当前这本书。脚本读写 `book.getVariable` / `book.setUseReplaceRule` 都落在这份拷贝上，
-    /// 改完通过 `bookUpdateSink` 交回 App 层落盘。
     private var book: Book?
-    /// 暴露给脚本的 `book.readConfig`，改书写回时也要同步它，否则同一引擎里读到旧值
     private var bookReadConfig: JSValue?
-    /// 脚本 `source.setVariable(...)` 写进的状态往哪送。
-    ///
-    /// 聚合源把「当前服务器」「设置中心结果」「token」全放在书源 variable 里（`setArgument`
-    /// 就是读写它）。不写回书源的话，每次点击都从旧值重算：切服务器永远停在同一台，
-    /// 设置中心改了下次打开又回到原样。Core 不认识书源仓库，和 LegadoLog 一样由 App 层注入。
+
     public static var variableSink: ((_ bookSourceUrl: String, _ variable: String) -> Void)?
-    /// 脚本改写了「当前这本书」的状态（书级变量、是否替换净化）就往这儿送一份，
-    /// 由 App 层落盘。Core 不认识书架，跟 LegadoLog 一样注入。
     public static var bookUpdateSink: ((_ book: Book) -> Void)?
-    /// 脚本调 `java.refreshExplore()`（安卓语义：刷新分类页）
     public static var exploreRefreshSink: (() -> Void)?
     public var onLoginHeaderUpdated: ((String) -> Void)?
-    /// 脚本用 `source.putLoginInfo` 改写过的登录信息（聚合源把 token 存在这里）。
     public var onLoginInfoUpdated: ((String) -> Void)?
-    /// 最近一次脚本异常，供调用方拿到原始错误信息。
     public private(set) var lastError: String?
+
+    public init(bookSource: BookSource? = nil, baseUrl: String? = nil, book: Book? = nil) {
+        self.context = JSContext()
+        self.javaShim = JavaShim(context: context)
+        self.book = book
+
+        javaShim.rateKey = bookSource?.bookSourceUrl
+        javaShim.rateLimit = bookSource?.rateLimit
+        javaShim.bookSource = bookSource
+        javaShim.baseUrl = baseUrl
+        if let milliseconds = bookSource?.respondTime, milliseconds > 0 {
+            javaShim.respondTimeout = min(180, max(10, TimeInterval(milliseconds) / 1000))
+        }
+
+        installExceptionHandler()
+        installJavaShim()
+        installSourceObject(bookSource: bookSource)
+        installCookieObject()
+        installBookObject(bookSource: bookSource)
+        if let baseUrl {
+            context.setObject(baseUrl, forKeyedSubscript: "baseUrl" as NSString)
+        }
+        installRuntimePolyfills()
+        installScriptLibrary(bookSource: bookSource)
+    }
+
+    // MARK: - 环境
+
+    private func installExceptionHandler() {
+        context.exceptionHandler = { [weak self] _, exception in
+            let message = exception?.toString() ?? "unknown error"
+            self?.lastError = message
+            LegadoLog.log("[JS] \(message)")
+            #if DEBUG
+            print("[JSEngine Error] \(message)")
+            #endif
+        }
+    }
 
     /// 订阅源规则脚本要读 `source.sortUrl`（洛娅橙的 jsLib 会拿它取版本号），
     /// BookSource 模型里没有这个字段，由调用方在创建引擎后补进去。
@@ -818,271 +892,152 @@ public class JSEngine {
         source.setObject(value, forKeyedSubscript: key as NSString)
     }
 
-    public init(bookSource: BookSource? = nil, baseUrl: String? = nil, book: Book? = nil) {
-        self.context = JSContext()
-        self.javaShim = JavaShim(context: context)
-        self.book = book
-        self.javaShim.rateKey = bookSource?.bookSourceUrl
-        self.javaShim.rateLimit = bookSource?.rateLimit
-        self.javaShim.bookSource = bookSource
-        self.javaShim.baseUrl = baseUrl
-        if let ms = bookSource?.respondTime, ms > 0 {
-            javaShim.respondTimeout = min(180, max(10, TimeInterval(ms) / 1000))
+    /// 订阅源的 ruleContent 脚本要读 `rssArticle.title` / `rssArticle.sort`
+    /// （洛娅橙拿它判断当前打开的是哪一篇），Legado 的环境里有这个全局。
+    public func setRssArticle(_ fields: [String: String]) {
+        guard let article = JSValue(newObjectIn: context) else { return }
+        for (key, value) in fields {
+            article.setObject(value, forKeyedSubscript: key as NSString)
         }
-
-        setupEnvironment(bookSource: bookSource, baseUrl: baseUrl)
-
-        // 注入书源自带的 jsLib（getArguments、加解密等助手）。
-        // 正文、搜索、登录脚本直接调这些函数，不注入就 ReferenceError。
-        if let lib = bookSource?.jsLib, !lib.isEmpty {
-            // 只注一次：jsLib 里有 const 声明，重复注入 JSC 报 duplicate variable。
-            if context.objectForKeyedSubscript("__legadoJsLibLoaded")?.toBool() != true {
-                _ = eval(script: JSEngine.unwrapJsScript(lib))
-                let ok = lastError == nil
-                context.setObject(ok, forKeyedSubscript: "__legadoJsLibLoaded" as NSString)
-                // jsLib 自身报错另行记录，不算业务脚本错误
-                if !ok {
-                    LegadoLog.log("[JS] jsLib 注入失败：\(lastError ?? "")")
-                    lastError = nil
-                }
-            }
-        }
+        context.setObject(article, forKeyedSubscript: "rssArticle" as NSString)
     }
 
-    private func setupEnvironment(bookSource: BookSource?, baseUrl: String?) {
-        // Exception handler
-        context.exceptionHandler = { [weak self] _, exception in
-            let message = exception?.toString() ?? "unknown error"
-            self?.lastError = message
-            // 未捕获异常统一进诊断日志
-            LegadoLog.log("[JS] \(message)")
-            #if DEBUG
-            print("[JSEngine Error] \(message)")
-            #endif
-        }
-
-        // Expose java shim
+    private func installJavaShim() {
         context.setObject(javaShim, forKeyedSubscript: "java" as NSString)
+    }
 
-        // Expose source object
-        let sourceObj = JSValue(newObjectIn: context)
-        var loginHeader: String? = bookSource?.loginHeader ?? bookSource?.header
-        var loginInfoStr: String? = bookSource?.loginInfo
-        var variableStr: String? = bookSource?.variable
+    private func installSourceObject(bookSource: BookSource?) {
+        let object = JSValue(newObjectIn: context)
+        var loginHeader = bookSource?.loginHeader ?? bookSource?.header
+        var loginInfo = bookSource?.loginInfo
+        var variable = bookSource?.variable
 
-        let getLoginHeaderBlock: @convention(block) () -> String? = { loginHeader }
-        let putLoginHeaderBlock: @convention(block) (String) -> Void = { [weak self] newH in
-            loginHeader = newH
-            self?.onLoginHeaderUpdated?(newH)
+        let getHeader: @convention(block) () -> String? = { loginHeader }
+        let putHeader: @convention(block) (String) -> Void = { [weak self] value in
+            loginHeader = value
+            self?.onLoginHeaderUpdated?(value)
         }
-        let getLoginInfoBlock: @convention(block) () -> String? = { loginInfoStr }
-        let putLoginInfoBlock: @convention(block) (String) -> Void = { [weak self] newInfo in
-            loginInfoStr = newInfo
-            self?.onLoginInfoUpdated?(newInfo)
+        let getInfo: @convention(block) () -> String? = { loginInfo }
+        let putInfo: @convention(block) (String) -> Void = { [weak self] value in
+            loginInfo = value
+            self?.onLoginInfoUpdated?(value)
         }
-        let getVariableBlock: @convention(block) () -> String = { variableStr ?? "" }
-        let setVariableBlock: @convention(block) (String) -> Void = { newV in
-            variableStr = newV
-            JSEngine.variableSink?(bookSource?.bookSourceUrl ?? "", newV)
+        let getVariable: @convention(block) () -> String = { variable ?? "" }
+        let setVariable: @convention(block) (String) -> Void = { value in
+            variable = value
+            JSEngine.variableSink?(bookSource?.bookSourceUrl ?? "", value)
         }
-
-        let getLoginInfoMapBlock: @convention(block) () -> JSValue = { [weak self] in
+        let getInfoMap: @convention(block) () -> JSValue = { [weak self] in
             let ctx = self?.context ?? JSContext()
-            let mapObj = JSValue(newObjectIn: ctx)
-            if let info = loginInfoStr, let blob = info.data(using: .utf8),
-               let fields = try? JSONSerialization.jsonObject(with: blob) as? [String: Any] {
-                for (name, value) in fields { mapObj?.setValue(value, forProperty: name) }
+            let map = JSValue(newObjectIn: ctx)
+            if let raw = loginInfo,
+               let data = raw.data(using: .utf8),
+               let fields = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+                for (name, value) in fields {
+                    map?.setValue(value, forProperty: name)
+                }
             }
             let lookup: @convention(block) (String) -> String = { key in
-                mapObj?.forProperty(key)?.toString() ?? ""
+                map?.forProperty(key)?.toString() ?? ""
             }
-            mapObj?.setValue(lookup, forProperty: "get")
-            return mapObj ?? JSValue(newObjectIn: ctx)
+            map?.setValue(lookup, forProperty: "get")
+            return map ?? JSValue(newObjectIn: ctx)
         }
-
-        // 属性挂载与顺序无关；先挂变量读写，再挂登录态
-        sourceObj?.setValue(getVariableBlock, forProperty: "getVariable")
-        sourceObj?.setValue(setVariableBlock, forProperty: "setVariable")
-        sourceObj?.setValue(getLoginHeaderBlock, forProperty: "getLoginHeader")
-        sourceObj?.setValue(putLoginHeaderBlock, forProperty: "putLoginHeader")
-        sourceObj?.setValue(getLoginInfoMapBlock, forProperty: "getLoginInfoMap")
-        sourceObj?.setValue(putLoginInfoBlock, forProperty: "putLoginInfo")
-        sourceObj?.setValue(getLoginInfoBlock, forProperty: "getLoginInfo")
-        let sourcePutBlock: @convention(block) (String, String) -> String = { [weak javaShim] key, value in
+        let putCache: @convention(block) (String, String) -> String = { [weak javaShim] key, value in
             javaShim?.put(key, value) ?? value
         }
-        let sourceGetBlock: @convention(block) (String) -> String = { [weak javaShim] key in
+        let getCache: @convention(block) (String) -> String = { [weak javaShim] key in
             javaShim?.get(key) ?? ""
         }
-        let sourceRemoveBlock: @convention(block) (String) -> Void = { [weak javaShim] key in
+        let removeCache: @convention(block) (String) -> Void = { [weak javaShim] key in
             javaShim?.removeCache(key)
         }
-        sourceObj?.setValue(sourcePutBlock, forProperty: "put")
-        sourceObj?.setValue(sourceGetBlock, forProperty: "get")
-        sourceObj?.setValue(sourceRemoveBlock, forProperty: "remove")
-        sourceObj?.setValue(bookSource?.loginUrl ?? "", forProperty: "loginUrl")
-        // 脚本用它做缓存键：cache.put(`userInfo_${source.getKey()}`, ...)
-        let getKeyBlock: @convention(block) () -> String = { bookSource?.bookSourceUrl ?? "" }
-        sourceObj?.setValue(getKeyBlock, forProperty: "getKey")
-        sourceObj?.setValue(bookSource?.bookSourceUrl ?? "", forProperty: "bookSourceUrl")
-        sourceObj?.setValue(bookSource?.bookSourceName ?? "", forProperty: "bookSourceName")
+        let getKey: @convention(block) () -> String = { bookSource?.bookSourceUrl ?? "" }
 
-        context.setObject(sourceObj, forKeyedSubscript: "source" as NSString)
+        object?.setValue(getVariable, forProperty: "getVariable")
+        object?.setValue(setVariable, forProperty: "setVariable")
+        object?.setValue(getHeader, forProperty: "getLoginHeader")
+        object?.setValue(putHeader, forProperty: "putLoginHeader")
+        object?.setValue(getInfoMap, forProperty: "getLoginInfoMap")
+        object?.setValue(putInfo, forProperty: "putLoginInfo")
+        object?.setValue(getInfo, forProperty: "getLoginInfo")
+        object?.setValue(putCache, forProperty: "put")
+        object?.setValue(getCache, forProperty: "get")
+        object?.setValue(removeCache, forProperty: "remove")
+        object?.setValue(bookSource?.loginUrl ?? "", forProperty: "loginUrl")
+        object?.setValue(getKey, forProperty: "getKey")
+        object?.setValue(bookSource?.bookSourceUrl ?? "", forProperty: "bookSourceUrl")
+        object?.setValue(bookSource?.bookSourceName ?? "", forProperty: "bookSourceName")
 
-        // cookie API，脚本用它存登录态，缺了这个全局对象会 ReferenceError。
-        let cookieObj = JSValue(newObjectIn: context)
-        let getCookieBlock: @convention(block) (String) -> String = { url in
+        context.setObject(object, forKeyedSubscript: "source" as NSString)
+    }
+
+    private func installCookieObject() {
+        let object = JSValue(newObjectIn: context)
+        let getCookie: @convention(block) (String) -> String = { url in
             CookieJar.shared.cookieString(for: url)
         }
-        let setCookieBlock: @convention(block) (String, String) -> Void = { url, value in
+        let setCookie: @convention(block) (String, String) -> Void = { url, value in
             CookieJar.shared.setCookies(value, for: url)
         }
-        let removeCookieBlock: @convention(block) (String) -> Void = { url in
+        let removeCookie: @convention(block) (String) -> Void = { url in
             CookieJar.shared.remove(for: url)
         }
-        let getCookieKeyBlock: @convention(block) (String, String) -> String = { url, name in
+        let getKey: @convention(block) (String, String) -> String = { url, name in
             CookieJar.shared.value(for: url, name: name) ?? ""
         }
-        cookieObj?.setValue(getCookieBlock, forProperty: "getCookie")
-        cookieObj?.setValue(setCookieBlock, forProperty: "setCookie")
-        cookieObj?.setValue(removeCookieBlock, forProperty: "removeCookie")
-        cookieObj?.setValue(getCookieKeyBlock, forProperty: "getKey")
-        context.setObject(cookieObj, forKeyedSubscript: "cookie" as NSString)
 
-        // Expose book object
-        let bookObj = JSValue(newObjectIn: context)
-        bookObj?.setValue(book?.name ?? "", forProperty: "name")
-        bookObj?.setValue(book?.author ?? "", forProperty: "author")
-        bookObj?.setValue(book?.bookUrl ?? "", forProperty: "bookUrl")
-        bookObj?.setValue(book?.durChapterIndex ?? 0, forProperty: "durChapterIndex")
-        bookObj?.setValue(book?.durChapterTitle ?? "", forProperty: "durChapterTitle")
-        bookObj?.setValue(book?.totalChapterNum ?? 0, forProperty: "totalChapterNum")
-        bookObj?.setValue(bookSource?.bookSourceUrl ?? book?.origin ?? "", forProperty: "origin")
+        object?.setValue(getCookie, forProperty: "getCookie")
+        object?.setValue(setCookie, forProperty: "setCookie")
+        object?.setValue(removeCookie, forProperty: "removeCookie")
+        object?.setValue(getKey, forProperty: "getKey")
+        context.setObject(object, forKeyedSubscript: "cookie" as NSString)
+    }
 
-        // book.readConfig：源会读 `book.readConfig.useReplaceRule`，null 表示「还没记过」
-        let readConfigObj = JSValue(newObjectIn: context)
-        bookReadConfig = readConfigObj
-        if let useReplace = book?.useReplaceRule {
-            readConfigObj?.setValue(useReplace, forProperty: "useReplaceRule")
+    private func installBookObject(bookSource: BookSource?) {
+        let object = JSValue(newObjectIn: context)
+        object?.setValue(book?.name ?? "", forProperty: "name")
+        object?.setValue(book?.author ?? "", forProperty: "author")
+        object?.setValue(book?.bookUrl ?? "", forProperty: "bookUrl")
+        object?.setValue(book?.durChapterIndex ?? 0, forProperty: "durChapterIndex")
+        object?.setValue(book?.durChapterTitle ?? "", forProperty: "durChapterTitle")
+        object?.setValue(book?.totalChapterNum ?? 0, forProperty: "totalChapterNum")
+        object?.setValue(bookSource?.bookSourceUrl ?? book?.origin ?? "", forProperty: "origin")
+
+        let config = JSValue(newObjectIn: context)
+        bookReadConfig = config
+        if let flag = book?.useReplaceRule {
+            config?.setValue(flag, forProperty: "useReplaceRule")
         } else {
-            readConfigObj?.setValue(JSValue(nullIn: context), forProperty: "useReplaceRule")
+            config?.setValue(JSValue(nullIn: context), forProperty: "useReplaceRule")
         }
-        bookObj?.setValue(readConfigObj, forProperty: "readConfig")
+        object?.setValue(config, forProperty: "readConfig")
 
-        let getBookVarBlock: @convention(block) (String) -> String = { [weak self] key in
+        let getVariable: @convention(block) (String) -> String = { [weak self] key in
             self?.bookVariable(key) ?? ""
         }
-        let setBookVarBlock: @convention(block) (String, String) -> Void = { [weak self] key, value in
+        let setVariable: @convention(block) (String, String) -> Void = { [weak self] key, value in
             self?.setBookVariable(key, value)
         }
-        let getUseReplaceRuleBlock: @convention(block) () -> JSValue = { [weak self] in
+        let getReplace: @convention(block) () -> JSValue = { [weak self] in
             guard let ctx = self?.context else { return JSValue(nullIn: JSContext()) }
             guard let flag = self?.book?.useReplaceRule else { return JSValue(nullIn: ctx) }
             return JSValue(object: flag, in: ctx)
         }
-        let setUseReplaceRuleBlock: @convention(block) (Bool) -> Void = { [weak self] flag in
+        let setReplace: @convention(block) (Bool) -> Void = { [weak self] flag in
             self?.setUseReplaceRule(flag)
         }
-        bookObj?.setValue(getBookVarBlock, forProperty: "getVariable")
-        bookObj?.setValue(setBookVarBlock, forProperty: "setVariable")
-        bookObj?.setValue(getUseReplaceRuleBlock, forProperty: "getUseReplaceRule")
-        bookObj?.setValue(setUseReplaceRuleBlock, forProperty: "setUseReplaceRule")
-        context.setObject(bookObj, forKeyedSubscript: "book" as NSString)
 
-        if let baseUrl = baseUrl {
-            context.setObject(baseUrl, forKeyedSubscript: "baseUrl" as NSString)
-        }
+        object?.setValue(getVariable, forProperty: "getVariable")
+        object?.setValue(setVariable, forProperty: "setVariable")
+        object?.setValue(getReplace, forProperty: "getUseReplaceRule")
+        object?.setValue(setReplace, forProperty: "setUseReplaceRule")
+        context.setObject(object, forKeyedSubscript: "book" as NSString)
+    }
 
-        // Compatibility polyfills
-        context.evaluateScript("""
-        var console = {
-            log: function () { },
-            error: function () { }
-        };
-        function format(value) { return Array.isArray(value) ? value.join('\\n\\n') : (value || ''); }
-        function regex(value) { return value || ''; }
-        function annotate(content) { return content || ''; }
-        function update(address) { }
-        """)
-
-        // Rhino 的 Java 互操作壳：JavaImporter、with(javaImport)、importClass、
-        // Packages.android.util.Base64、Packages.java.lang.Thread.sleep。
-        // JSC 没有这些全局，缺了脚本会 ReferenceError。
-        context.evaluateScript("""
-        var JavaImporter = function(){
-          var merged = { importClass: function(){}, importPackage: function(){} };
-          for (var i = 0; i < arguments.length; i++) {
-            var pkg = arguments[i];
-            if (!pkg || typeof pkg !== 'object') continue;
-            for (var key in pkg) { merged[key] = pkg[key]; }
-          }
-          return merged;
-        };
-        var importClass = function(){};
-        var importPackage = function(){};
-        var Packages = {
-          android: { util: { Base64: { encodeToString: function(bytes, flags){ return java.base64EncodeBytes(bytes); } } } },
-          java: {
-            lang: {
-              Thread: { sleep: function(ms){ java.sleepMs(ms); } },
-              String: function(value){
-                return { getBytes: function(){ return java.stringToBytes(String(value)); } };
-              }
-            },
-            security: {
-              MessageDigest: {
-                getInstance: function(algorithm){
-                  var parts = [];
-                  var add = function(bytes){
-                    if (bytes !== undefined && bytes !== null) parts.push(bytes);
-                  };
-                  return {
-                    update: function(bytes){ add(bytes); },
-                    digest: function(bytes){
-                      add(bytes);
-                      return java.messageDigest(String(algorithm), parts);
-                    }
-                  };
-                }
-              }
-            }
-          },
-          io: { legato: { kazusa: { utils: { TimeoutCancellationException: function(message){ this.message = message; this.name = 'TimeoutCancellationException'; } } } } }
-        };
-        // Rhino 里 `java.lang` / `java.security` 是包对象；书源两种写法都用，
-        // 这里把同一套实现挂到 java 对象上，避免 `java.security.MessageDigest` 报 undefined。
-        java.lang = Packages.java.lang;
-        java.security = Packages.java.security;
-        var com = {
-          jayway: {
-            jsonpath: {
-              JsonPath: {
-                read: function(json, path){ return java.jsonPath(String(json), String(path)); },
-                parse: function(json){
-                  return { read: function(path){ return java.jsonPath(String(json), String(path)); } };
-                }
-              }
-            }
-          }
-        };
-        if (!java.refreshExplore) { java.refreshExplore = function(){}; }
-
-        // 全局 cache，脚本用它存登录态等短期数据（cache.put('userInfo_xxx', ...)），
-        // 安卓由宿主提供。
-        var cache = {
-          put: function(key, value){ java.put(String(key), String(value)); },
-          get: function(key){ var v = java.get(String(key)); return (v === undefined || v === null) ? '' : v; },
-          remove: function(key){ java.removeCache(String(key)); },
-          putMemory: function(key, value){ java.put('__mem__' + String(key), String(value)); },
-          getFromMemory: function(key){
-            var v = java.get('__mem__' + String(key));
-            if (v === undefined || v === null || v === '') return 0;
-            var n = Number(v);
-            return isNaN(n) ? 0 : n;
-          }
-        };
-        """)
-        context.exception = nil
+    private func installRuntimePolyfills() {
+        context.evaluateScript(Self.compatibilityRuntime)
+        context.evaluateScript(Self.javaRuntime)
         installJsoupShim()
         context.exception = nil
     }
@@ -1098,36 +1053,175 @@ public class JSEngine {
         context.exception = nil
     }
 
-    // MARK: - 书对象
+    private func installScriptLibrary(bookSource: BookSource?) {
+        guard let library = bookSource?.jsLib, !library.isEmpty else { return }
+        if context.objectForKeyedSubscript("__juyueJsLibLoaded")?.toBool() == true {
+            return
+        }
+        _ = eval(script: Self.unwrapJsScript(library))
+        let loaded = lastError == nil
+        context.setObject(loaded, forKeyedSubscript: "__juyueJsLibLoaded" as NSString)
+        if !loaded {
+            LegadoLog.log("[JS] jsLib 注入失败：\(lastError ?? "")")
+            lastError = nil
+        }
+    }
 
-    /// `book.getVariable(key)`：读书级变量（存在 Book.variable 的 JSON 里）。
-    /// 没有这个键就返回空串，源里一般写成 `String(book.getVariable('custom'))`。
+    private static let compatibilityRuntime = """
+    var console = {
+        log: function () { },
+        error: function () { }
+    };
+    function format(value) { return Array.isArray(value) ? value.join('\\n\\n') : (value || ''); }
+    function regex(value) { return value || ''; }
+    function annotate(content) { return content || ''; }
+    function update(address) { }
+    """
+
+    private static let javaRuntime = """
+    var JavaImporter = function(){
+      var merged = { importClass: function(){}, importPackage: function(){} };
+      for (var i = 0; i < arguments.length; i++) {
+        var pkg = arguments[i];
+        if (!pkg || typeof pkg !== 'object') continue;
+        for (var key in pkg) { merged[key] = pkg[key]; }
+      }
+      return merged;
+    };
+    var importClass = function(){};
+    var importPackage = function(){};
+    // 订阅源 ruleContent 会直接把 `${toastjs}` 插进生成的 HTML，Legado 内置了这个提示函数。
+    var toastjs = "function showToast(message){ java.toast(String(message)); }";
+    var Packages = {
+      android: { util: { Base64: { encodeToString: function(bytes, flags){ return java.base64EncodeBytes(bytes); } } } },
+      java: {
+        lang: {
+          Thread: { sleep: function(ms){ java.sleepMs(ms); } },
+          String: function(value){
+            return { getBytes: function(){ return java.stringToBytes(String(value)); } };
+          }
+        },
+        security: {
+          MessageDigest: {
+            getInstance: function(algorithm){
+              var parts = [];
+              var add = function(bytes){
+                if (bytes !== undefined && bytes !== null) parts.push(bytes);
+              };
+              return {
+                update: function(bytes){ add(bytes); },
+                digest: function(bytes){
+                  add(bytes);
+                  return java.messageDigest(String(algorithm), parts);
+                }
+              };
+            }
+          }
+        }
+      },
+      io: { legato: { kazusa: { utils: { TimeoutCancellationException: function(message){ this.message = message; this.name = 'TimeoutCancellationException'; } } } } }
+    };
+    var com = {
+      jayway: {
+        jsonpath: {
+          JsonPath: {
+            read: function(json, path){ return java.jsonPath(String(json), String(path)); },
+            parse: function(json){
+              return { read: function(path){ return java.jsonPath(String(json), String(path)); } };
+            }
+          }
+        }
+      }
+    };
+    // Rhino 里 `java.lang` / `java.security` 是包对象；书源两种写法都用，
+    // 这里把同一套实现挂到 java 对象上，避免 `java.security.MessageDigest` 报 undefined。
+    java.lang = Packages.java.lang;
+    java.security = Packages.java.security;
+    if (!java.refreshExplore) { java.refreshExplore = function(){}; }
+    var cache = {
+      put: function(key, value){ java.put(String(key), String(value)); },
+      get: function(key){ var v = java.get(String(key)); return (v === undefined || v === null) ? '' : v; },
+      remove: function(key){ java.removeCache(String(key)); },
+      putMemory: function(key, value){ java.put('__mem__' + String(key), String(value)); },
+      getFromMemory: function(key){
+        var v = java.get('__mem__' + String(key));
+        if (v === undefined || v === null || v === '') return 0;
+        var n = Number(v);
+        return isNaN(n) ? 0 : n;
+      }
+    };
+    // Legado 的 source.get / java.ajax 回的是 java.lang.String，脚本会对结果调 `.length()`
+    // （洛娅橙 ruleContent 拿它判断缓存长度）。原生 JS 字符串的 length 是数字，
+    // 直接调用抛 TypeError，这里按 Java String 的形态包一层。
+    var __javaString = function(v){
+      var raw = (v === undefined || v === null) ? '' : String(v);
+      var o = Object.create(String.prototype);
+      o.toString = function(){ return raw; };
+      o.valueOf = function(){ return raw; };
+      Object.defineProperty(o, 'length', { get: function(){ return function(){ return raw.length; }; } });
+      return o;
+    };
+    if (typeof source !== 'undefined' && source && typeof source.get === 'function') {
+      var __sourceGet = source.get;
+      source.get = function(key){ return __javaString(__sourceGet.call(source, String(key))); };
+    }
+    if (typeof java !== 'undefined' && typeof java.ajax === 'function') {
+      var __javaAjax = java.ajax;
+      // 安卓的 java.ajax(url, header) 带请求头；原生垫片只有单参版，这里转发给 connect。
+      java.ajax = function(url, header){
+        if (arguments.length > 1 && header !== undefined && header !== null) {
+          try {
+            var text = (typeof header === 'string') ? header : JSON.stringify(header);
+            var reply = java.connect(String(url), text);
+            var body = (reply && typeof reply.body === 'function') ? reply.body() : '';
+            return __javaString(body);
+          } catch (e) {}
+        }
+        return __javaString(__javaAjax.call(java, String(url)));
+      };
+    }
+    if (typeof java !== 'undefined' && typeof java.get === 'function') {
+      var __javaGet = java.get;
+      // 安卓的 java.get(key, defaultValue) 有默认值重载。
+      java.get = function(key, defaultValue){
+        var value = __javaGet.call(java, String(key));
+        if (value === undefined || value === null || value === '') {
+          return defaultValue === undefined ? '' : defaultValue;
+        }
+        return value;
+      };
+    }
+    """
+
+    // MARK: - 书对象状态
+
     private func bookVariable(_ key: String) -> String {
         guard let dict = Self.bookVariableDict(from: book?.variable),
-              let value = dict[key] else { return "" }
+              let value = dict[key] else {
+            return ""
+        }
         return "\(value)"
     }
 
-    /// `book.setVariable(key, value)`：写书级变量，写完交回宿主落盘。
     private func setBookVariable(_ key: String, _ value: String) {
-        guard var current = book else { return }
-        var dict = Self.bookVariableDict(from: current.variable) ?? [:]
+        guard var updated = book else { return }
+        var dict = Self.bookVariableDict(from: updated.variable) ?? [:]
         dict[key] = value
         guard let data = try? JSONSerialization.data(withJSONObject: dict, options: [.sortedKeys]),
-              let text = String(data: data, encoding: .utf8) else { return }
-        current.variable = text
-        book = current
-        JSEngine.bookUpdateSink?(current)
+              let text = String(data: data, encoding: .utf8) else {
+            return
+        }
+        updated.variable = text
+        book = updated
+        JSEngine.bookUpdateSink?(updated)
     }
 
-    /// `book.setUseReplaceRule(false)`：这本书用不用替换净化。安卓拿它决定正文要不要净化，
-    /// 聚合源自己清理过正文，会主动关掉。
     private func setUseReplaceRule(_ flag: Bool) {
-        guard var current = book else { return }
-        current.useReplaceRule = flag
-        book = current
+        guard var updated = book else { return }
+        updated.useReplaceRule = flag
+        book = updated
         bookReadConfig?.setValue(flag, forProperty: "useReplaceRule")
-        JSEngine.bookUpdateSink?(current)
+        JSEngine.bookUpdateSink?(updated)
     }
 
     private static func bookVariableDict(from raw: String?) -> [String: Any]? {
@@ -1135,77 +1229,59 @@ public class JSEngine {
         return try? JSONSerialization.jsonObject(with: data) as? [String: Any]
     }
 
-    /// 跑规则脚本，外面套一层块级作用域。
-    ///
-    /// 书源的规则脚本会被反复执行（列表里每本书跑一次），脚本里写了顶层 `let` / `const`
-    /// 的话，第二次就会抛 `Can't create duplicate variable`，整页解析全废。
-    /// 套成 `{ … }` 之后每次是一份新的块作用域，返回值照旧是最后一条语句的值。
+    // MARK: - 求值
+
     public func evalRule(script: String, result: Any? = nil) -> Any? {
         eval(script: "{ \(script)\n}", result: result)
     }
 
-    /// Evaluates a JavaScript snippet with optional `result` value
     public func eval(script: String, result: Any? = nil) -> Any? {
-        if let result = result {
-            context.setObject(JSEngine.jsSafeValue(result), forKeyedSubscript: "result" as NSString)
+        if let result {
+            context.setObject(Self.jsSafeValue(result), forKeyedSubscript: "result" as NSString)
         }
-        let val = context.evaluateScript(script)
+
+        let value = context.evaluateScript(script)
         if let exception = context.exception {
             lastError = exception.toString()
             context.exception = nil
         }
-        if val?.isUndefined == true || val?.isNull == true {
-            return nil
-        }
-        if val?.isString == true {
-            return val?.toString()
-        }
-        if val?.isNumber == true {
-            return val?.toNumber()
-        }
-        if val?.isBoolean == true {
-            return val?.toBool()
-        }
-        if val?.isArray == true {
-            return val?.toArray()
-        }
-        if val?.isObject == true {
-            return val?.toDictionary()
-        }
-        return val?.toObject()
+
+        guard let value, !value.isUndefined, !value.isNull else { return nil }
+        if value.isString { return value.toString() }
+        if value.isNumber { return value.toNumber() }
+        if value.isBoolean { return value.toBool() }
+        // `java.getElements(...)` 的返回值是包装对象，先还原成节点数组。
+        if let elements = JsoupShim.elements(from: value) { return elements }
+        if value.isArray { return value.toArray() }
+        if value.isObject { return value.toDictionary() }
+        return value.toObject()
     }
 
-    /// Evaluates template strings containing `{{ ... }}`
     public func renderTemplate(_ text: String, variables: [String: Any] = [:]) -> String {
         for (name, value) in variables {
-            context.setObject(JSEngine.jsSafeValue(value), forKeyedSubscript: name as NSString)
+            context.setObject(Self.jsSafeValue(value), forKeyedSubscript: name as NSString)
         }
 
         guard !text.isEmpty,
-              let templates = try? NSRegularExpression(pattern: #"\{\{(.*?)\}\}"#,
-                                                      options: [.dotMatchesLineSeparators]) else {
+              let regex = try? NSRegularExpression(
+                pattern: #"\{\{(.*?)\}\}"#,
+                options: [.dotMatchesLineSeparators]
+              ) else {
             return text
         }
 
         let source = text as NSString
-        let hits = templates.matches(in: text, range: NSRange(location: 0, length: source.length))
+        let matches = regex.matches(in: text, range: NSRange(location: 0, length: source.length))
         var output = text
-
-        // 从后往前替换：后面的区间先改，前面的 range 一直有效
-        for hit in hits.reversed() {
-            let inner = source.substring(with: hit.range(at: 1))
+        for match in matches.reversed() {
+            let expression = source.substring(with: match.range(at: 1))
                 .trimmingCharacters(in: .whitespacesAndNewlines)
-            let rendered = eval(script: inner).map { "\($0)" } ?? ""
-            output = (output as NSString).replacingCharacters(in: hit.range, with: rendered)
+            let rendered = eval(script: expression).map { "\($0)" } ?? ""
+            output = (output as NSString).replacingCharacters(in: match.range, with: rendered)
         }
-
         return output
     }
 
-    /// JavaScriptCore can only bridge Objective-C classes. Handing it a Swift-only
-    /// class (e.g. SwiftSoup.Element) aborts the process inside `classInfoForClass:`,
-    /// so every value crossing into JS is converted here first.
-    /// 剥掉规则里的 `<js>...</js>` 包裹和 `@js:` 前缀，loginUrl 与按钮 action 也带这层壳。
     public static func unwrapJsScript(_ raw: String) -> String {
         var text = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         if let open = text.range(of: "<js>"),
@@ -1219,27 +1295,30 @@ public class JSEngine {
     }
 
     static func jsSafeValue(_ value: Any) -> Any {
-        switch value {
-        case let js as JSValue:
+        if let js = value as? JSValue {
             return js
-        case let element as Element:
-            return (try? element.outerHtml()) ?? ""
-        case let elements as Elements:
-            return elements.array().map { (try? $0.outerHtml()) ?? "" }
-        case let string as String:
-            return string
-        case let number as NSNumber:
-            return number
-        case is NSNull:
-            return NSNull()
-        case let array as [Any]:
-            return array.map { jsSafeValue($0) }
-        case let dict as [String: Any]:
-            var out: [String: Any] = [:]
-            for (k, v) in dict { out[k] = jsSafeValue(v) }
-            return out
-        default:
-            return String(describing: value)
         }
+        if let element = value as? Element {
+            return (try? element.outerHtml()) ?? ""
+        }
+        if let elements = value as? Elements {
+            return elements.array().map { (try? $0.outerHtml()) ?? "" }
+        }
+        if let string = value as? String {
+            return string
+        }
+        if let number = value as? NSNumber {
+            return number
+        }
+        if value is NSNull {
+            return NSNull()
+        }
+        if let array = value as? [Any] {
+            return array.map { jsSafeValue($0) }
+        }
+        if let dict = value as? [String: Any] {
+            return dict.mapValues { jsSafeValue($0) }
+        }
+        return String(describing: value)
     }
 }

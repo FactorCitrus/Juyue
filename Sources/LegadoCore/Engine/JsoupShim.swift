@@ -64,6 +64,15 @@ enum JsoupShim {
         let jsoupPackage: JSValue = JSValue(newObjectIn: context) ?? JSValue(undefinedIn: context)
         jsoupPackage.setValue(jsoupClass, forProperty: "Jsoup")
 
+        // `org.jsoup.Connection.Method.HEAD` 这类枚举在测速脚本里很常见。
+        let methodEnum: JSValue = JSValue(newObjectIn: context) ?? JSValue(undefinedIn: context)
+        for name in ["GET", "POST", "PUT", "DELETE", "HEAD", "OPTIONS", "PATCH"] {
+            methodEnum.setValue(name, forProperty: name)
+        }
+        let connectionClass: JSValue = JSValue(newObjectIn: context) ?? JSValue(undefinedIn: context)
+        connectionClass.setValue(methodEnum, forProperty: "Method")
+        jsoupPackage.setValue(connectionClass, forProperty: "Connection")
+
         let nodes: JSValue = JSValue(newObjectIn: context) ?? JSValue(undefinedIn: context)
         nodes.setValue(context.objectForKeyedSubscript("__juyueElementCtor"), forProperty: "Element")
         nodes.setValue(context.objectForKeyedSubscript("__juyueElementsCtor"), forProperty: "Elements")
@@ -395,6 +404,18 @@ enum JsoupShim {
 
     // MARK: - 选择器
 
+    /// 脚本直接 `return java.getElements(...)` 时，把包装对象还原成节点数组。
+    /// 包装对象是普通 JS 对象，`JSValue.toDictionary()` 只拿到数字下标，
+    /// iOS 的规则求值器拿不到 SwiftSoup 节点，列表规则就会「命中 0」。
+    static func elements(from value: JSValue) -> [Element]? {
+        guard value.isObject,
+              let box = value.objectForKeyedSubscript("__juyueNode")?.toObject() as? NodeBox,
+              box.elements.size() > 0 else {
+            return nil
+        }
+        return box.elements.array()
+    }
+
     private static func selectElements(_ css: String, from elements: Elements) -> Elements {
         let output = Elements()
         var seen = Set<ObjectIdentifier>()
@@ -428,6 +449,7 @@ enum JsoupShim {
         url: String,
         headers: [String: String],
         data: [String: String],
+        method: String = "GET",
         fetch: @escaping Fetcher,
         in context: JSContext
     ) -> JSValue {
@@ -452,7 +474,13 @@ enum JsoupShim {
         }
 
         let execute: @convention(block) () -> JSValue = {
-            let (html, code) = fetch(url, headers, "GET", nil)
+            let (html, code) = fetch(url, headers, method, nil)
+            // Java 版 execute() 网络失败抛 IOException，源的测速脚本靠 try/catch 剔除死线路。
+            // 这里以前静默返回 code=0，死线路也计为可用，反倒因为失败得快排在第一位。
+            if code == 0 {
+                context.exception = JSValue(newErrorFromMessage: "connect failed: \(url)", in: context)
+                return JSValue(undefinedIn: context)
+            }
             return response(body: html, code: code, url: url, in: context)
         }
 
@@ -464,11 +492,11 @@ enum JsoupShim {
                 return JSValue(object: updated[key] ?? "", in: context)
             }
             updated[key] = raw
-            return connection(url: url, headers: updated, data: data, fetch: fetch, in: context)
+            return connection(url: url, headers: updated, data: data, method: method, fetch: fetch, in: context)
         }
 
         let chainValue: @convention(block) (JSValue) -> JSValue = { _ in
-            connection(url: url, headers: headers, data: data, fetch: fetch, in: context)
+            connection(url: url, headers: headers, data: data, method: method, fetch: fetch, in: context)
         }
 
         func chained(_ key: String, _ value: JSValue) -> JSValue {
@@ -477,7 +505,15 @@ enum JsoupShim {
                 return JSValue(object: updated[key] ?? "", in: context)
             }
             updated[key] = string(value)
-            return connection(url: url, headers: updated, data: data, fetch: fetch, in: context)
+            return connection(url: url, headers: updated, data: data, method: method, fetch: fetch, in: context)
+        }
+
+        let chainMethod: @convention(block) (JSValue, JSValue) -> JSValue = { value, _ in
+            let raw = string(value).uppercased()
+            let resolved = ["GET", "POST", "PUT", "DELETE", "HEAD", "OPTIONS", "PATCH"].contains(raw)
+                ? raw
+                : method
+            return connection(url: url, headers: headers, data: data, method: resolved, fetch: fetch, in: context)
         }
 
         let chainUserAgent: @convention(block) (JSValue, JSValue) -> JSValue = { value, _ in
@@ -493,12 +529,13 @@ enum JsoupShim {
         let chainData: @convention(block) (JSValue, JSValue) -> JSValue = { name, value in
             var updated = data
             updated[string(name)] = string(value)
-            return connection(url: url, headers: headers, data: updated, fetch: fetch, in: context)
+            return connection(url: url, headers: headers, data: updated, method: method, fetch: fetch, in: context)
         }
 
         object.setValue(get, forProperty: "get")
         object.setValue(post, forProperty: "post")
         object.setValue(execute, forProperty: "execute")
+        object.setValue(chainMethod, forProperty: "method")
         object.setValue(chain, forProperty: "header")
         object.setValue(chainUserAgent, forProperty: "userAgent")
         object.setValue(chainCookie, forProperty: "cookie")

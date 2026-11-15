@@ -46,7 +46,7 @@ public final class HttpTTSEngine {
         let context = TTSTemplateContext(speakText: text, speakSpeed: speed ?? source.effectiveSpeed)
         let rendered = try renderer.render(source.url, context: context)
             .trimmingCharacters(in: .whitespacesAndNewlines)
-        guard let parsed = NetworkClient.parseLegadoUrl(rendered, defaultHeader: source.header) else {
+        guard let parsed = NetworkClient.parseJuyueUrl(rendered, defaultHeader: source.header) else {
             throw HttpTTSError.invalidURL(rendered)
         }
         return parsed

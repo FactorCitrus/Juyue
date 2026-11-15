@@ -20,6 +20,14 @@ public struct TTSSettingsSheet: View {
     @State private var paramsExpanded = false
     /// 授权自检那几屏日志默认收起，展开才占地方
     @State private var authExpanded = false
+    /// 百度凭据编辑器：内置值不对时不用改代码重打包
+    @State private var credExpanded = false
+    @State private var credAppId = ""
+    @State private var credApiKey = ""
+    @State private var credSecretKey = ""
+    @State private var credSerials = ""
+    @State private var credBundle = ""
+    @State private var credNote: String?
     @State private var importNote: String?
     @State private var showCloudPicker = false
     @State private var cloudPreset: TTSOnlinePreset?
@@ -264,6 +272,7 @@ public struct TTSSettingsSheet: View {
         }
         .onAppear {
             reloadSources()
+            loadCredentialDraft()
             guard !didSyncTab else { return }
             didSyncTab = true
             syncEngineTab()
@@ -354,11 +363,96 @@ public struct TTSSettingsSheet: View {
 
     /// 折叠状态下的授权详情摘要：多少行、最后一条结论。收起来也知道跑没跑、跑出什么。
     private var authReportSummary: String {
-        guard !baidu.authReport.isEmpty else { return "未跑自检" }
-        let lines = baidu.authReport.split(separator: "\n")
-        let tail = lines.last.map(String.init) ?? ""
-        let head = tail.count > 22 ? String(tail.prefix(22)) + "…" : tail
-        return "\(lines.count) 行 · \(head)"
+        switch baidu.authStatus {
+        case .idle:
+            return "未跑自检"
+        case .running:
+            return "正在自检…"
+        case .success(let serial):
+            return "授权通过 · \(serial.prefix(8))…"
+        case .failure(let code, let message):
+            return code == 0 ? "授权失败 · \(message)" : "授权失败 \(code)"
+        }
+    }
+
+    private var isAuthProbing: Bool {
+        if case .running = baidu.authStatus { return true }
+        return false
+    }
+
+    private var authSummaryColor: Color {
+        switch baidu.authStatus {
+        case .success: return .green
+        case .failure: return .red
+        default: return theme.palette.secondaryInk
+        }
+    }
+
+    /// 日志太细，先给一行结论：绿勾通过、红叉失败、转圈正在跑。
+    @ViewBuilder
+    private var authStatusRow: some View {
+        switch baidu.authStatus {
+        case .idle:
+            Label("还没跑过自检", systemImage: "circle.dashed")
+                .foregroundColor(theme.palette.secondaryInk)
+        case .running:
+            HStack(spacing: 6) {
+                ProgressView().scaleEffect(0.7)
+                Text("正在自检…")
+            }
+        case .success(let serial):
+            Label("授权通过 · 序列号 \(serial)", systemImage: "checkmark.seal.fill")
+                .foregroundColor(.green)
+        case .failure(let code, let message):
+            Label(code == 0 ? "授权失败：\(message)" : "授权失败 \(code)：\(message)",
+                  systemImage: "xmark.octagon.fill")
+                .foregroundColor(.red)
+        }
+    }
+
+    /// 把当前生效的凭据抄进编辑框。打开面板和恢复默认后各调用一次。
+    private func loadCredentialDraft() {
+        credAppId = BaiduOfflineTTS.appId
+        credApiKey = BaiduOfflineTTS.apiKey
+        credSecretKey = BaiduOfflineTTS.secretKey
+        credSerials = BaiduOfflineTTS.serialNumbers.joined(separator: "\n")
+        credBundle = BaiduOfflineTTS.pinnedBundle
+    }
+
+    private func saveCredentialDraft() {
+        let oldBundle = BaiduOfflineTTS.pinnedBundle
+        let newBundle = credBundle.trimmingCharacters(in: .whitespacesAndNewlines)
+        BaiduOfflineTTS.storeCredentials(appId: credAppId,
+                                         apiKey: credApiKey,
+                                         secretKey: credSecretKey,
+                                         serials: credSerials)
+        BaiduOfflineTTS.setPinnedBundle(newBundle)
+        // 把裁剪后的值读回来：误粘贴的超长文本不会继续留在编辑框里。
+        loadCredentialDraft()
+        // 引擎把包名缓存在自己的 AppInfo 里，进程内换不掉；改了包名只能重启再验。
+        if newBundle != oldBundle {
+            baidu.invalidateAuthResult()
+            credNote = "包名已保存。引擎会缓存包名，重启 App 后再生效。"
+            return
+        }
+        credNote = "已保存，正在重跑自检…"
+        baidu.resetEngine()
+        baidu.authorizationProbe()
+    }
+
+    /// 一行小标题 + 右侧「清空」，误粘贴一大段时不用逐个字符删。
+    @ViewBuilder
+    private func credLabel(_ title: String, clear: @escaping () -> Void) -> some View {
+        HStack(spacing: 6) {
+            Text(title)
+                .font(.caption2)
+                .foregroundColor(theme.palette.secondaryInk)
+            Spacer(minLength: 6)
+            Button("清空") { clear() }
+                .font(.caption2)
+                .buttonStyle(.plain)
+                .foregroundColor(theme.palette.accent)
+        }
     }
 
     private var engineStatusLine: String {
@@ -474,29 +568,107 @@ public struct TTSSettingsSheet: View {
                     authExpanded = true
                     baidu.authorizationProbe()
                 } label: {
-                    Label("跑一次授权自检", systemImage: "checkmark.shield")
+                    Label(isAuthProbing ? "正在自检…" : "跑一次授权自检",
+                          systemImage: "checkmark.shield")
                 }
+                .disabled(isAuthProbing)
                 .accessibilityIdentifier("tts.baidu.authprobe")
                 // 容器里（LiveContainer 之类）接不到 console，这几行就是唯一能看见的证据。
                 // 但一份自检能吐几十行，铺在音色列表底下整页都是字，所以默认收起来。
                 DisclosureGroup(isExpanded: $authExpanded) {
                     VStack(alignment: .leading, spacing: 6) {
+                        authStatusRow
+                            .font(.caption)
+                            .fixedSize(horizontal: false, vertical: true)
                         // 上面那行是「引擎实际拿去换授权」的名字，下面是容器塞给系统的那串。
-                        Text("授权用：APP ID \(BaiduOfflineTTS.appId) · 包名 \(BaiduBundleShim.pinned)")
+                        Text("授权用：APP ID \(BaiduOfflineTTS.appId) · 包名 \(BaiduOfflineTTS.pinnedBundle)")
                             .font(.system(size: 10, design: .monospaced))
                             .foregroundColor(theme.palette.secondaryInk)
                         Text("容器里的真包名：\(Bundle.main.bundleIdentifier ?? "?")")
                             .font(.system(size: 10, design: .monospaced))
                             .foregroundColor(theme.palette.secondaryInk)
-                        if BaiduCredentials.hasCustomValues {
-                            Button {
-                                BaiduCredentials.resetToBuiltin()
-                                baidu.authorizationProbe()
-                            } label: {
-                                Label("清掉自填凭据，改用包内那套", systemImage: "arrow.counterclockwise")
+                        DisclosureGroup(isExpanded: $credExpanded) {
+                            VStack(alignment: .leading, spacing: 8) {
+                                credLabel("授权包名（Bundle ID）") { credBundle = "" }
+                                TextField("com.factorcitrus.juyue", text: $credBundle)
+                                    .font(.system(size: 11, design: .monospaced))
+                                    .autocorrectionDisabled()
+                                    .accessibilityIdentifier("tts.baidu.credbundle")
+                                Text("离线授权绑定这个包名；改完要重启 App，引擎会缓存旧值。")
+                                    .font(.caption2)
+                                    .foregroundColor(theme.palette.secondaryInk)
+                                credLabel("APP ID") { credAppId = "" }
+                                TextField("APP ID", text: $credAppId)
+                                    .font(.system(size: 11, design: .monospaced))
+                                    .autocorrectionDisabled()
+                                    .accessibilityIdentifier("tts.baidu.credappid")
+                                credLabel("API Key") { credApiKey = "" }
+                                TextField("API Key", text: $credApiKey)
+                                    .font(.system(size: 11, design: .monospaced))
+                                    .autocorrectionDisabled()
+                                    .accessibilityIdentifier("tts.baidu.credapikey")
+                                credLabel("Secret Key") { credSecretKey = "" }
+                                SecureField("Secret Key", text: $credSecretKey)
+                                    .font(.system(size: 11, design: .monospaced))
+                                    .accessibilityIdentifier("tts.baidu.credsecret")
+                                credLabel("离线序列号（一行一条）") { credSerials = "" }
+                                TextEditor(text: $credSerials)
+                                    .font(.system(size: 11, design: .monospaced))
+                                    .frame(minHeight: 64)
+                                    .padding(4)
+                                    .overlay(
+                                        RoundedRectangle(cornerRadius: 6)
+                                            .stroke(theme.palette.secondaryInk.opacity(0.25))
+                                    )
+                                    .accessibilityIdentifier("tts.baidu.credserials")
+                                HStack(spacing: 10) {
+                                    Button("保存并重跑自检") { saveCredentialDraft() }
+                                        .buttonStyle(.bordered)
+                                        .accessibilityIdentifier("tts.baidu.credsave")
+                                    if BaiduOfflineTTS.hasCustomCredentials || BaiduOfflineTTS.hasCustomPinnedBundle {
+                                        Button("恢复包内默认") {
+                                            let oldBundle = BaiduOfflineTTS.pinnedBundle
+                                            BaiduOfflineTTS.resetCredentialsToBuiltin()
+                                            loadCredentialDraft()
+                                            if BaiduOfflineTTS.pinnedBundle != oldBundle {
+                                                baidu.invalidateAuthResult()
+                                                credNote = "已恢复包内默认；包名已变，重启 App 后生效。"
+                                            } else {
+                                                credNote = "已恢复包内默认。"
+                                                baidu.resetEngine()
+                                                baidu.authorizationProbe()
+                                            }
+                                        }
+                                        .buttonStyle(.bordered)
+                                        .accessibilityIdentifier("tts.baidu.resetcreds")
+                                    }
+                                }
+                                Button("清空编辑框") {
+                                    credBundle = ""
+                                    credAppId = ""
+                                    credApiKey = ""
+                                    credSecretKey = ""
+                                    credSerials = ""
+                                    credNote = "编辑框已清空；保存后回到包内默认。"
+                                }
+                                .buttonStyle(.borderless)
+                                .font(.caption)
+                                .foregroundColor(theme.palette.secondaryInk)
+                                if let credNote {
+                                    Text(credNote)
+                                        .font(.caption2)
+                                        .foregroundColor(theme.palette.secondaryInk)
+                                }
+                                Text("离线合成只用 APP ID + 序列号 + 包名；API Key / Secret Key 留给在线接口。首次激活要联网。")
+                                    .font(.caption2)
+                                    .foregroundColor(theme.palette.secondaryInk)
                             }
-                            .accessibilityIdentifier("tts.baidu.resetcreds")
+                            .padding(.top, 4)
+                        } label: {
+                            Label("编辑凭据", systemImage: "key")
+                                .font(.caption)
                         }
+                        .accessibilityIdentifier("tts.baidu.crededitor")
                         if baidu.authReport.isEmpty {
                             Text("还没跑过自检。音色由百度离线引擎合成，全在包内；序列号授权只在激活时用一次，之后断网照念。")
                                 .font(.caption2)
@@ -516,7 +688,7 @@ public struct TTSSettingsSheet: View {
                         Spacer(minLength: 6)
                         Text(authReportSummary)
                             .font(.caption2)
-                            .foregroundColor(theme.palette.secondaryInk)
+                            .foregroundColor(authSummaryColor)
                     }
                 }
                 .accessibilityIdentifier("tts.baidu.authdetails")
@@ -780,6 +952,7 @@ public struct TTSSettingsSheet: View {
         activeId = TTSourceSelection.activeId
     }
 
+    /// 云服务加完直接切过去：用户点「接入云服务」就是想让书用这条念，不是只想列表里多一行。
     private func presentModelFolderPicker() {
         SystemDocumentPicker.present(contentTypes: [.folder]) { urls in
             guard let url = urls.first else { return }
@@ -796,7 +969,6 @@ public struct TTSSettingsSheet: View {
         }
     }
 
-    /// 云服务加完直接切过去：用户点「接入云服务」就是想让书用这条念，不是只想列表里多一行。
     private func install(_ preset: TTSOnlinePreset, values: [String: String]) {
         do {
             let source = try TTSOnlinePreset.install(preset, values: values)
@@ -1195,10 +1367,8 @@ struct TTSPageShell<Content: View>: View {
 struct ZeroSectionSpacing: ViewModifier {
     @ViewBuilder
     func body(content: Content) -> some View {
-        // listSectionSpacing 是 iOS 17 / macOS 14 才有的 API，而包最低支持 macOS 12，
-        // 在 macOS 上直接编不过；那边本来也不用这条（只有 iOS 端的 Form 需要压间距）。
         #if os(iOS)
-        if #available(iOS 17.0, macOS 14.0, *) {
+        if #available(iOS 17.0, *) {
             content.listSectionSpacing(0)
         } else {
             content

@@ -94,6 +94,87 @@ private struct DefaultBookCover: View {
     }
 }
 
+/// 封面区域：远程图、本地覆盖图或无封面占位，三种来源统一入口。
+private struct ShelfCoverArtwork: View {
+    let book: Book
+    var coverOverride: Image? = nil
+
+    var body: some View {
+        Group {
+            if let coverOverride {
+                coverOverride
+                    .resizable()
+                    .aspectRatio(contentMode: .fit)
+            } else if book.coverUrl != nil {
+                BookCoverImage(
+                    urlString: book.coverUrl,
+                    placeholderOverride: AnyView(DefaultBookCover(book: book))
+                )
+            } else {
+                DefaultBookCover(book: book)
+            }
+        }
+    }
+}
+
+/// 书名、作者与进度：网格卡片和列表行共用，避免两套几乎相同的排版。
+private struct ShelfBookDetails: View {
+    let book: Book
+    let index: Int
+    let groupName: String?
+    var spacing: CGFloat = 4
+    var groupTrailing: Bool = false
+    @Environment(\.appTheme) private var theme
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: spacing) {
+            HStack(spacing: 6) {
+                Text(String(format: "ARCHIVE %02d", index + 1))
+                    .font(theme.typography.mono)
+                    .foregroundColor(theme.palette.secondaryInk)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.6)
+                if groupTrailing { Spacer() }
+                if let groupName {
+                    Text(groupName)
+                        .font(theme.typography.mono)
+                        .foregroundColor(theme.palette.accent)
+                        .lineLimit(1)
+                }
+            }
+
+            Text(book.name)
+                .font(.system(size: 15, weight: .semibold))
+                .foregroundColor(theme.palette.ink)
+                .lineLimit(2)
+                .frame(maxWidth: .infinity, alignment: .leading)
+
+            if !book.author.isEmpty && book.author != "未知作者" {
+                Text(book.author)
+                    .font(theme.typography.mono)
+                    .foregroundColor(theme.palette.secondaryInk)
+                    .lineLimit(1)
+            }
+
+            if book.totalChapterNum > 0 {
+                let read = min(book.durChapterIndex + 1, book.totalChapterNum)
+                ProgressView(value: Double(read), total: Double(book.totalChapterNum))
+                    .tint(theme.palette.accent)
+                Text("\(read)/\(book.totalChapterNum) CHAPTERS")
+                    .font(theme.typography.mono)
+                    .foregroundColor(theme.palette.secondaryInk)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.7)
+            } else if let chapter = book.durChapterTitle, !chapter.isEmpty {
+                Text(chapter)
+                    .font(theme.typography.mono)
+                    .foregroundColor(theme.palette.secondaryInk)
+                    .lineLimit(1)
+            }
+        }
+    }
+}
+
 /// 只在指定模式挂手势：整理模式才启用跟手拖，平时不抢滚动。
 private struct ConditionalGesture<G: Gesture>: ViewModifier {
     let enabled: Bool
@@ -180,53 +261,55 @@ public class BookshelfConfig: ObservableObject {
     public var badgeColor: Color { Color(hex: badgeColorHex) ?? .red }
 
     public init() {
-        let d = Self.defaults
-        if let v = d.string(forKey: "shelf_badge_style"), let s = BookshelfBadgeStyle(rawValue: v) {
-            badgeStyle = s
-        }
-        if d.object(forKey: "shelf_badge_cap") != nil { badgeCap = d.integer(forKey: "shelf_badge_cap") }
-        if let v = d.string(forKey: "shelf_badge_color") { badgeColorHex = v }
-        if let v = d.string(forKey: "shelf_badge_corner"), let c = BookshelfBadgeCorner(rawValue: v) {
-            badgeCorner = c
-        }
-        if d.object(forKey: "shelf_badge_font_size") != nil {
-            badgeFontSize = CGFloat(d.double(forKey: "shelf_badge_font_size"))
-        }
-        if d.object(forKey: "shelf_badge_outline") != nil { badgeOutline = d.bool(forKey: "shelf_badge_outline") }
-        if d.object(forKey: "shelf_badge_offset") != nil {
-            badgeOffset = CGFloat(d.double(forKey: "shelf_badge_offset"))
-        }
-        if let v = d.string(forKey: "shelf_layout_style"), let l = BookshelfLayoutStyle(rawValue: v) {
-            layout = l
-        }
-        if d.object(forKey: "shelf_grid_columns") != nil {
-            gridColumns = min(4, max(2, d.integer(forKey: "shelf_grid_columns")))
-        }
-        if d.object(forKey: "shelf_card_scale") != nil {
-            cardScale = min(1.40, max(0.40, CGFloat(d.double(forKey: "shelf_card_scale"))))
-        }
-        if let text = d.string(forKey: "shelf_title_text") { titleText = text }
-        if d.object(forKey: "shelf_title_visible") != nil { titleVisible = d.bool(forKey: "shelf_title_visible") }
-        if d.object(forKey: "shelf_title_font_size") != nil {
-            titleFontSize = min(75, max(14, CGFloat(d.double(forKey: "shelf_title_font_size"))))
-        }
-        if d.object(forKey: "shelf_title_offset_x") != nil {
-            titleOffsetX = min(120, max(-120, CGFloat(d.double(forKey: "shelf_title_offset_x"))))
-        }
-        if d.object(forKey: "shelf_title_offset_y") != nil {
-            titleOffsetY = min(60, max(-40, CGFloat(d.double(forKey: "shelf_title_offset_y"))))
-        }
-        if d.object(forKey: "shelf_logo_height") != nil {
-            logoHeight = min(160, max(32, CGFloat(d.double(forKey: "shelf_logo_height"))))
-        }
-        if d.object(forKey: "shelf_logo_offset_x") != nil {
-            logoOffsetX = min(80, max(-80, CGFloat(d.double(forKey: "shelf_logo_offset_x"))))
-        }
-        if d.object(forKey: "shelf_logo_offset_y") != nil {
-            logoOffsetY = min(40, max(-40, CGFloat(d.double(forKey: "shelf_logo_offset_y"))))
-        }
+        let prefs = ShelfPreferenceReader(defaults: Self.defaults)
+        badgeStyle = prefs.enumValue("shelf_badge_style", fallback: badgeStyle)
+        badgeCap = prefs.int("shelf_badge_cap", fallback: badgeCap)
+        badgeColorHex = prefs.string("shelf_badge_color", fallback: badgeColorHex)
+        badgeCorner = prefs.enumValue("shelf_badge_corner", fallback: badgeCorner)
+        badgeFontSize = prefs.double("shelf_badge_font_size", fallback: badgeFontSize)
+        badgeOutline = prefs.bool("shelf_badge_outline", fallback: badgeOutline)
+        badgeOffset = prefs.double("shelf_badge_offset", fallback: badgeOffset)
+
+        layout = prefs.enumValue("shelf_layout_style", fallback: layout)
+        gridColumns = min(4, max(2, prefs.int("shelf_grid_columns", fallback: gridColumns)))
+        cardScale = min(1.40, max(0.40, prefs.double("shelf_card_scale", fallback: cardScale)))
+
+        titleText = prefs.string("shelf_title_text", fallback: titleText)
+        titleVisible = prefs.bool("shelf_title_visible", fallback: titleVisible)
+        titleFontSize = min(75, max(14, prefs.double("shelf_title_font_size", fallback: titleFontSize)))
+        titleOffsetX = min(120, max(-120, prefs.double("shelf_title_offset_x", fallback: titleOffsetX)))
+        titleOffsetY = min(60, max(-40, prefs.double("shelf_title_offset_y", fallback: titleOffsetY)))
+
+        logoHeight = min(160, max(32, prefs.double("shelf_logo_height", fallback: logoHeight)))
+        logoOffsetX = min(80, max(-80, prefs.double("shelf_logo_offset_x", fallback: logoOffsetX)))
+        logoOffsetY = min(40, max(-40, prefs.double("shelf_logo_offset_y", fallback: logoOffsetY)))
+
         AppLog.write("[书架] 载入 标题字号=\(titleFontSize) 位置=\(titleOffsetX),\(titleOffsetY) 文字长度=\(titleText.count) 列=\(gridColumns) 卡片=\(cardScale)")
         AppLog.write("[书架] 图标 大小=\(logoHeight) 位置=\(logoOffsetX),\(logoOffsetY) 自定义=\(ShelfLogoStorage.hasImage)")
+    }
+}
+
+private struct ShelfPreferenceReader {
+    let defaults: UserDefaults
+
+    func string(_ key: String, fallback: String) -> String {
+        defaults.string(forKey: key) ?? fallback
+    }
+
+    func int(_ key: String, fallback: Int) -> Int {
+        defaults.object(forKey: key) == nil ? fallback : defaults.integer(forKey: key)
+    }
+
+    func double(_ key: String, fallback: CGFloat) -> CGFloat {
+        defaults.object(forKey: key) == nil ? fallback : CGFloat(defaults.double(forKey: key))
+    }
+
+    func bool(_ key: String, fallback: Bool) -> Bool {
+        defaults.object(forKey: key) == nil ? fallback : defaults.bool(forKey: key)
+    }
+
+    func enumValue<T: RawRepresentable>(_ key: String, fallback: T) -> T where T.RawValue == String {
+        defaults.string(forKey: key).flatMap(T.init(rawValue:)) ?? fallback
     }
 }
 
@@ -283,6 +366,22 @@ final class ShelfLogoStore: ObservableObject {
     }
 }
 
+private enum ShelfOrdering {
+    static func sort(_ books: [Book]) -> [Book] {
+        let manualOrder = books.contains { $0.shelfOrder != nil }
+        return books.sorted { lhs, rhs in
+            let lhsRank = lhs.shelfOrder ?? Int.max
+            let rhsRank = rhs.shelfOrder ?? Int.max
+            if manualOrder, lhsRank != rhsRank { return lhsRank < rhsRank }
+            return stamp(lhs) > stamp(rhs)
+        }
+    }
+
+    private static func stamp(_ book: Book) -> Int64 {
+        max(book.durChapterTime, book.lastCheckTime)
+    }
+}
+
 public struct BookshelfView: View {
     @ObservedObject var bookStore = BookStore.shared
     @ObservedObject private var shelfConfig = BookshelfConfig.shared
@@ -299,8 +398,8 @@ public struct BookshelfView: View {
     @State private var selectedGroupId: UUID? = nil
     @State private var showNewGroupAlert: Bool = false
     @State private var newGroupName: String = ""
-    @State private var importErrorMessage: String? = nil
-    @State private var showImportAlert: Bool = false
+    @State private var importErrorText: String? = nil
+    @State private var presentingImportError: Bool = false
     @State private var isOrganizing = false
     @State private var selectedBookIDs: Set<String> = []
     @State private var showDeleteSelectedAlert = false
@@ -319,8 +418,8 @@ public struct BookshelfView: View {
 
     /// 分组筛选：nil = 全部
     private var displayedBooks: [Book] {
-        guard let selectedGroupId else { return sortedBookshelf }
-        return sortedBookshelf.filter { $0.groupId == selectedGroupId }
+        guard let selectedGroupId else { return orderedShelf }
+        return orderedShelf.filter { $0.groupId == selectedGroupId }
     }
 
     // MARK: 阅读统计（档案条用）
@@ -1418,43 +1517,30 @@ public struct BookshelfView: View {
     ) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             ZStack(alignment: .topLeading) {
-                Group {
-                    if let coverOverride {
-                        coverOverride
-                            .resizable()
-                            .aspectRatio(contentMode: .fit)
-                    } else if book.coverUrl != nil {
-                        BookCoverImage(
-                            urlString: book.coverUrl,
-                            placeholderOverride: AnyView(DefaultBookCover(book: book))
+                ShelfCoverArtwork(book: book, coverOverride: coverOverride)
+                    // 宽度必须定死：只给 maxWidth 时，图片会按自身比例把整张卡撑开
+                    .frame(width: max(0, gridCardWidth - 18))
+                    .frame(height: gridCoverHeight)
+                    .clipped()
+                    .overlay(
+                        LinearGradient(
+                            colors: [
+                                theme.palette.background.opacity(0.08),
+                                .clear,
+                                theme.palette.background.opacity(0.10)
+                            ],
+                            startPoint: .top,
+                            endPoint: .bottom
                         )
-                    } else {
-                        DefaultBookCover(book: book)
+                    )
+                    .overlay(alignment: .bottom) {
+                        LinearGradient(
+                            colors: [.clear, theme.palette.surface.opacity(0.88)],
+                            startPoint: .top,
+                            endPoint: .bottom
+                        )
+                        .frame(height: 24)
                     }
-                }
-                // 宽度必须定死：只给 maxWidth 时，图片会按自身比例把整张卡撑开
-                .frame(width: max(0, gridCardWidth - 18))
-                .frame(height: gridCoverHeight)
-                .clipped()
-                .overlay(
-                    LinearGradient(
-                        colors: [
-                            theme.palette.background.opacity(0.08),
-                            .clear,
-                            theme.palette.background.opacity(0.10)
-                        ],
-                        startPoint: .top,
-                        endPoint: .bottom
-                    )
-                )
-                .overlay(alignment: .bottom) {
-                    LinearGradient(
-                        colors: [.clear, theme.palette.surface.opacity(0.88)],
-                        startPoint: .top,
-                        endPoint: .bottom
-                    )
-                    .frame(height: 24)
-                }
 
                 if isOrganizing {
                     Image(systemName: isSelected ? "checkmark.square.fill" : "square")
@@ -1465,52 +1551,17 @@ public struct BookshelfView: View {
                 }
             }
 
-            HStack(spacing: 6) {
-                Text(String(format: "ARCHIVE %02d", index + 1))
-                    .font(theme.typography.mono)
-                    .foregroundColor(theme.palette.secondaryInk)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.6)
-                Spacer()
-                if let group = bookStore.groups.first(where: { $0.id == book.groupId }) {
-                    Text(group.name)
-                        .font(theme.typography.mono)
-                        .foregroundColor(theme.palette.accent)
-                        .lineLimit(1)
-                }
-            }
-
-            Text(book.name)
-                .font(.system(size: 15, weight: .semibold))
-                .foregroundColor(theme.palette.ink)
-                .lineLimit(2)
-                .frame(maxWidth: .infinity, alignment: .leading)
-
-            if !book.author.isEmpty && book.author != "未知作者" {
-                Text(book.author)
-                    .font(theme.typography.mono)
-                    .foregroundColor(theme.palette.secondaryInk)
-                    .lineLimit(1)
-            }
-
-            if book.totalChapterNum > 0 {
-                let read = min(book.durChapterIndex + 1, book.totalChapterNum)
-                ProgressView(value: Double(read), total: Double(book.totalChapterNum))
-                    .tint(theme.palette.accent)
-                Text("\(read)/\(book.totalChapterNum) CHAPTERS")
-                    .font(theme.typography.mono)
-                    .foregroundColor(theme.palette.secondaryInk)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.7)
-            } else if let chapter = book.durChapterTitle, !chapter.isEmpty {
-                Text(chapter)
-                    .font(theme.typography.mono)
-                    .foregroundColor(theme.palette.secondaryInk)
-                    .lineLimit(1)
-            }
+            ShelfBookDetails(
+                book: book,
+                index: index,
+                groupName: groupName(for: book),
+                spacing: 8,
+                groupTrailing: true
+            )
         }
         .padding(9)
         .frame(maxWidth: .infinity, alignment: .topLeading)
+        .frame(height: gridCoverHeight + 126, alignment: .topLeading)
         .appThemePanel()
         .overlay {
             if theme.isClassTrial && isSelected {
@@ -1518,6 +1569,10 @@ public struct BookshelfView: View {
                     .stroke(theme.palette.accent, lineWidth: 3)
             }
         }
+    }
+
+    private func groupName(for book: Book) -> String? {
+        bookStore.groups.first { $0.id == book.groupId }?.name
     }
 
     @ViewBuilder
@@ -1603,25 +1658,14 @@ public struct BookshelfView: View {
         }
     }
 
-    private var sortedBookshelf: [Book] {
-        let books = bookStore.bookshelf
-        let hasManualOrder = books.contains { $0.shelfOrder != nil }
-        return books.sorted { b1, b2 in
-            if hasManualOrder {
-                let o1 = b1.shelfOrder ?? Int.max
-                let o2 = b2.shelfOrder ?? Int.max
-                if o1 != o2 { return o1 < o2 }
-            }
-            let t1 = max(b1.durChapterTime, b1.lastCheckTime)
-            let t2 = max(b2.durChapterTime, b2.lastCheckTime)
-            return t1 > t2
-        }
+    private var orderedShelf: [Book] {
+        ShelfOrdering.sort(bookStore.bookshelf)
     }
 
     /// 拖拽换位：先把当前顺序固化成序位，再交换两本的位置并整体写回。
     private func moveBook(_ sourceUrl: String, onto targetUrl: String, persist: Bool = true) {
         guard sourceUrl != targetUrl else { return }
-        var ordered = sortedBookshelf
+        var ordered = orderedShelf
         guard let sourceIndex = ordered.firstIndex(where: { $0.bookUrl == sourceUrl }),
               let targetIndex = ordered.firstIndex(where: { $0.bookUrl == targetUrl }) else {
             return
@@ -1656,68 +1700,16 @@ public struct BookshelfView: View {
         coverOverride: Image? = nil
     ) -> some View {
         HStack(alignment: .top, spacing: 12) {
-            Group {
-                if let coverOverride {
-                    coverOverride
-                        .resizable()
-                        .aspectRatio(contentMode: .fit)
-                } else if book.coverUrl != nil {
-                    BookCoverImage(
-                        urlString: book.coverUrl,
-                        placeholderOverride: AnyView(DefaultBookCover(book: book))
-                    )
-                } else {
-                    DefaultBookCover(book: book)
-                }
-            }
-            .frame(width: coverWidth, height: coverHeight)
-            .clipped()
-            .clipShape(RoundedRectangle(cornerRadius: max(4, theme.metrics.cornerRadius - 2), style: .continuous))
-            .overlay(
-                RoundedRectangle(cornerRadius: max(4, theme.metrics.cornerRadius - 2), style: .continuous)
-                    .stroke(theme.palette.divider.opacity(0.5), lineWidth: theme.metrics.borderWidth)
-            )
+            ShelfCoverArtwork(book: book, coverOverride: coverOverride)
+                .frame(width: coverWidth, height: coverHeight)
+                .clipped()
+                .clipShape(RoundedRectangle(cornerRadius: max(4, theme.metrics.cornerRadius - 2), style: .continuous))
+                .overlay(
+                    RoundedRectangle(cornerRadius: max(4, theme.metrics.cornerRadius - 2), style: .continuous)
+                        .stroke(theme.palette.divider.opacity(0.5), lineWidth: theme.metrics.borderWidth)
+                )
 
-            VStack(alignment: .leading, spacing: 4) {
-                HStack(spacing: 6) {
-                    Text(String(format: "ARCHIVE %02d", index + 1))
-                        .font(theme.typography.mono)
-                        .foregroundColor(theme.palette.secondaryInk)
-                    if let group = bookStore.groups.first(where: { $0.id == book.groupId }) {
-                        Text(group.name)
-                            .font(theme.typography.mono)
-                            .foregroundColor(theme.palette.accent)
-                            .lineLimit(1)
-                    }
-                }
-
-                Text(book.name)
-                    .font(.system(size: 15, weight: .semibold))
-                    .foregroundColor(theme.palette.ink)
-                    .lineLimit(2)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-
-                if !book.author.isEmpty && book.author != "未知作者" {
-                    Text(book.author)
-                        .font(theme.typography.mono)
-                        .foregroundColor(theme.palette.secondaryInk)
-                        .lineLimit(1)
-                }
-
-                if book.totalChapterNum > 0 {
-                    let read = min(book.durChapterIndex + 1, book.totalChapterNum)
-                    ProgressView(value: Double(read), total: Double(book.totalChapterNum))
-                        .tint(theme.palette.accent)
-                    Text("\(read)/\(book.totalChapterNum) CHAPTERS")
-                        .font(theme.typography.mono)
-                        .foregroundColor(theme.palette.secondaryInk)
-                } else if let chapter = book.durChapterTitle, !chapter.isEmpty {
-                    Text(chapter)
-                        .font(theme.typography.mono)
-                        .foregroundColor(theme.palette.secondaryInk)
-                        .lineLimit(1)
-                }
-            }
+            ShelfBookDetails(book: book, index: index, groupName: groupName(for: book))
 
             Spacer(minLength: 4)
 
@@ -1857,42 +1849,6 @@ public struct BookshelfView: View {
         #endif
     }
 
-    private func presentImportPicker() {
-        AppLog.write("[导入] 打开文件选择器")
-        // mobi/azw3/fb2/umd 这类没有系统内置 UTType，按扩展名现造一个；
-        // 造不出来就跳过，别让整个选择器打不开。
-        let ebookTypes = ["mobi", "azw", "azw3", "prc", "fb2", "umd"]
-            .compactMap { UTType(filenameExtension: $0) }
-        SystemDocumentPicker.present(
-            contentTypes: [.epub, .plainText, .pdf, .zip, .archive] + ebookTypes
-        ) { urls in
-            handleImportedFiles(urls)
-        }
-    }
-
-    private func handleImportedFiles(_ urls: [URL]) {
-        guard let url = urls.first else {
-            AppLog.write("[导入] 选择器没有返回文件")
-            return
-        }
-        let ext = url.pathExtension.lowercased()
-        AppLog.write("[导入] 已选文件 type=\(ext.isEmpty ? "?" : ext)")
-        // asCopy 已经拷进沙盒；这里仍然取一次作用域，兼容未来换成非 asCopy 的情况
-        let canAccess = url.startAccessingSecurityScopedResource()
-        defer {
-            if canAccess { url.stopAccessingSecurityScopedResource() }
-        }
-        do {
-            let imported = try bookStore.importFile(from: url)
-            AppLog.write("[导入] 本地文件成功 type=\(ext.isEmpty ? "?" : ext)")
-            selectedBook = imported
-        } catch {
-            AppLog.write("[导入] 本地文件失败 type=\(ext.isEmpty ? "?" : ext) error=\(error.localizedDescription)")
-            importErrorMessage = "导入失败: \(error.localizedDescription)"
-            showImportAlert = true
-        }
-    }
-
     /// 验收用：`JUYUE_OPEN_BOOK=<序号 或 书名片段>` 启动后直接翻开一本书，
     /// 省掉「书架里手点封面」这一步。只活在 Debug / 模拟器里。
     /// 验收用：`JUYUE_IMPORT_TXT=<容器里的绝对路径>` 启动时先导一本本地书，
@@ -1940,18 +1896,50 @@ public struct BookshelfView: View {
         #endif
     }
 
+    private var navigationShortcuts: some View {
+        Group {
+            NavigationLink(
+                isActive: $isSearchActive,
+                destination: { SearchBookView() },
+                label: { EmptyView() }
+            )
+            NavigationLink(
+                isActive: Binding(
+                    get: { navigateToDetailBook != nil },
+                    set: { if !$0 { navigateToDetailBook = nil } }
+                ),
+                destination: { detailDestination },
+                label: { EmptyView() }
+            )
+        }
+    }
+
+    @ViewBuilder
+    private var detailDestination: some View {
+        if let book = navigateToDetailBook {
+            BookDetailView(book: book, source: bookStore.findSource(for: book))
+        } else {
+            EmptyView()
+        }
+    }
+
+    @ViewBuilder
+    private var shelfMainContent: some View {
+        if bookStore.bookshelf.isEmpty {
+            emptyShelf
+        } else {
+            groupFilterBar
+            bookshelfGrid
+        }
+    }
+
     public var body: some View {
         ZStack {
             NavigationView {
             VStack(spacing: 0) {
                 shelfTitleLockup
                 bookshelfHeader
-                if bookStore.bookshelf.isEmpty {
-                    emptyShelfView
-                } else {
-                    groupFilterBar
-                    bookshelfGrid
-                }
+                shelfMainContent
             }
             .background(AppThemeBackdrop())
             .background(
@@ -1963,35 +1951,7 @@ public struct BookshelfView: View {
                         }
                 }
             )
-            .background(
-                Group {
-                    // Programmatic push to SearchBookView
-                    NavigationLink(
-                        isActive: $isSearchActive,
-                        destination: { SearchBookView() },
-                        label: { EmptyView() }
-                    )
-
-                    // Programmatic push to BookDetailView on long press
-                    NavigationLink(
-                        isActive: Binding(
-                            get: { navigateToDetailBook != nil },
-                            set: { if !$0 { navigateToDetailBook = nil } }
-                        ),
-                        destination: {
-                            if let b = navigateToDetailBook {
-                                let source = bookStore.findSource(for: b)
-                                BookDetailView(book: b, source: source)
-                            } else {
-                                EmptyView()
-                            }
-                        },
-                        label: { EmptyView() }
-                    )
-                }
-                .hidden()
-                .frame(width: 0, height: 0)
-            )
+            .background(navigationShortcuts.hidden().frame(width: 0, height: 0))
             .safeAreaInset(edge: .bottom) {
                 if isOrganizing {
                     organizerBar
@@ -2025,7 +1985,7 @@ public struct BookshelfView: View {
             #if os(iOS)
             .navigationBarHidden(true)
             #endif
-            .alert(importErrorMessage ?? "", isPresented: $showImportAlert) {
+            .alert(importErrorText ?? "", isPresented: $presentingImportError) {
                 Button("确定", role: .cancel) {}
             }
             .alert("新建分组", isPresented: $showNewGroupAlert) {
@@ -2038,30 +1998,19 @@ public struct BookshelfView: View {
                 Button("取消", role: .cancel) {}
             }
             .sheet(isPresented: $showShelfSizeSheet) {
-                if #available(iOS 16.4, macOS 13.3, *) {
-                    shelfSizeSheet
-                        .presentationDetents([.height(190)])
-                        .presentationDragIndicator(.visible)
-                        .presentationBackground(.clear)
-                } else if #available(iOS 16.0, macOS 13.0, *) {
-                    shelfSizeSheet
-                        .presentationDetents([.height(190)])
-                        .presentationDragIndicator(.visible)
-                } else {
-                    shelfSizeSheet
-                }
+                shelfSizeSheet.modifier(ShelfSizeSheetChrome())
             }
             #if os(iOS)
             .fullScreenCover(item: $selectedBook) { book in
-                readerCoverView(for: book)
+                readerDestination(for: book)
             }
             #endif
         }
         // iPad 上不让 NavigationView 自行变双栏，否则书架被塞进左栏、右侧一片空白
         .stackNavigationStyle()
         #if !os(iOS)
-        if let book = selectedBook {
-            readerCoverView(for: book)
+        if let current = selectedBook {
+            readerDestination(for: current)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .background(Color.black)
                 .transition(.opacity)
@@ -2072,11 +2021,60 @@ public struct BookshelfView: View {
         .background(AppThemeBackdrop())
     }
 
-    @ViewBuilder
-    private func readerCoverView(for book: Book) -> some View {
+    private func presentImportPicker() {
+        AppLog.write("[导入] 打开文件选择器")
+        // mobi/azw3/fb2/umd 这类没有系统内置 UTType，按扩展名现造一个；
+        // 造不出来就跳过，别让整个选择器打不开。
+        let ebookTypes = ["mobi", "azw", "azw3", "prc", "fb2", "umd", "jybook"]
+            .compactMap { UTType(filenameExtension: $0) }
+        SystemDocumentPicker.present(
+            contentTypes: [.epub, .plainText, .pdf, .zip, .archive] + ebookTypes
+        ) { urls in
+            handleImportedFiles(.success(urls))
+        }
+    }
+
+    private func handleImportedFiles(_ result: Result<[URL], Error>) {
+        switch result {
+        case .success(let urls):
+            guard let url = urls.first else { return }
+            let kind = url.pathExtension.lowercased()
+            AppLog.write("[导入] 已选文件 type=\(kind.isEmpty ? "?" : kind)")
+            let scoped = url.startAccessingSecurityScopedResource()
+            defer {
+                if scoped { url.stopAccessingSecurityScopedResource() }
+            }
+            do {
+                if kind == OfflineBookShare.fileExtension {
+                    // 离线包：正文/书评/封面已写回缓存，这里只落书架与目录
+                    let manifest = try OfflineBookShare.unpack(at: url)
+                    bookStore.importOfflineBook(manifest.book, chapters: manifest.chapters)
+                    selectedBook = manifest.book
+                    AppLog.write("[导入] 离线书成功 chapters=\(manifest.chapters.count)")
+                } else {
+                    selectedBook = try bookStore.importFile(from: url)
+                    AppLog.write("[导入] 本地文件成功 type=\(kind.isEmpty ? "?" : kind)")
+                }
+            } catch {
+                AppLog.write("[导入] 本地文件失败 type=\(kind.isEmpty ? "?" : kind) error=\(error.localizedDescription)")
+                failImport("导入失败: \(error.localizedDescription)")
+            }
+        case .failure(let error):
+            AppLog.write("[导入] 文件选择失败 error=\(error.localizedDescription)")
+            failImport("打开文件失败: \(error.localizedDescription)")
+        }
+    }
+
+    private func failImport(_ message: String) {
+        importErrorText = message
+        presentingImportError = true
+    }
+
+    private func readerDestination(for book: Book) -> some View {
         ShelfReaderDestination(
             book: book,
             source: bookStore.findSource(for: book),
+            cachedChapters: bookStore.getChapters(for: book.bookUrl),
             initialChapter: readerInitialChapter
         ) {
             selectedBook = nil
@@ -2084,23 +2082,50 @@ public struct BookshelfView: View {
         }
     }
 
-    private var emptyShelfView: some View {
-        VStack(spacing: 16) {
+    private var emptyShelf: some View {
+        ShelfEmptyState { isSearchActive = true }
+    }
+}
+
+private struct ShelfSizeSheetChrome: ViewModifier {
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if #available(iOS 16.0, macOS 13.0, *) {
+            let base = content
+                .presentationDetents([.height(190)])
+                .presentationDragIndicator(.visible)
+            if #available(iOS 16.4, macOS 13.3, *) {
+                base.presentationBackground(.clear)
+            } else {
+                base
+            }
+        } else {
+            content
+        }
+    }
+}
+
+private struct ShelfEmptyState: View {
+    let onSearch: () -> Void
+    @Environment(\.appTheme) private var theme
+
+    var body: some View {
+        VStack(alignment: .center, spacing: 16) {
             Image(systemName: "books.vertical")
                 .font(.system(size: 64))
                 .foregroundColor(.secondary.opacity(0.6))
-            Text("书架空空如也")
+            Text(verbatim: "书架空空如也")
                 .font(.headline)
-            Text("可点击右上角放大镜搜索网络小说，或点击“+”导入本地书籍")
+            Text(verbatim: "可点击右上角放大镜搜索网络小说，或点击“+”导入本地书籍")
                 .font(.subheadline)
                 .foregroundColor(.secondary)
                 .multilineTextAlignment(.center)
                 .padding(.horizontal, 32)
 
-            Button(action: { isSearchActive = true }) {
-                HStack(spacing: 6) {
+            Button(action: onSearch) {
+                HStack(alignment: .center, spacing: 6) {
                     Image(systemName: "magnifyingglass")
-                    Text("前往全网搜索")
+                    Text(verbatim: "前往全网搜索")
                 }
                 .font(.subheadline.bold())
                 .padding(.horizontal, 18)
@@ -2118,14 +2143,14 @@ public struct BookshelfView: View {
     }
 }
 
-/// 书架点开一本书后落到哪里：正常进阅读，「书源不在了」时给出换源入口。
-/// 换源成功后原地切到新书新源，不再把人退回书架。
 private struct ShelfReaderDestination: View {
     let book: Book
     let source: BookSource?
+    let cachedChapters: [BookChapter]
     let initialChapter: Int?
     let onDismiss: () -> Void
 
+    /// 「书源不在了」页换源成功后原地切到新书新源，不再把人退回书架。
     @State private var switchedBook: Book?
     @State private var switchedSource: BookSource?
 
@@ -2173,6 +2198,7 @@ private struct ShelfReaderDestination: View {
     }
 
     private var chapters: [BookChapter] {
+        if switchedBook == nil, !cachedChapters.isEmpty { return cachedChapters }
         let stored = BookStore.shared.getChapters(for: activeBook.bookUrl)
         if !stored.isEmpty { return stored }
         return [BookChapter(
@@ -2181,134 +2207,6 @@ private struct ShelfReaderDestination: View {
             title: activeBook.name,
             index: 0
         )]
-    }
-}
-
-// MARK: - BookRow (Legado Android Style)
-
-struct BookRow: View {
-    let book: Book
-    @ObservedObject private var shelfConfig = BookshelfConfig.shared
-
-    private var unreadCount: Int {
-        guard book.totalChapterNum > 0 else { return 0 }
-        let readCount = book.durChapterTitle != nil ? (book.durChapterIndex + 1) : 0
-        return max(0, book.totalChapterNum - readCount)
-    }
-
-    private var showsBadge: Bool {
-        shelfConfig.badgeStyle != .hidden && unreadCount > 0
-    }
-
-    /// 只有「未读章数」才出数字；封顶填 0 表示不封顶
-    private var badgeText: String? {
-        guard shelfConfig.badgeStyle == .count else { return nil }
-        let cap = shelfConfig.badgeCap
-        if cap > 0 && unreadCount > cap { return "\(cap)+" }
-        return "\(unreadCount)"
-    }
-
-    private var badgeOffsetX: CGFloat {
-        shelfConfig.badgeCorner == .topTrailing ? shelfConfig.badgeOffset : -shelfConfig.badgeOffset
-    }
-
-    @ViewBuilder
-    private var badgeView: some View {
-        let fontSize = max(7, shelfConfig.badgeFontSize)
-        if let text = badgeText {
-            Text(text)
-                .font(.system(size: fontSize, weight: .bold))
-                .foregroundColor(.white)
-                .padding(.horizontal, max(3, fontSize * 0.5))
-                .padding(.vertical, max(1, fontSize * 0.22))
-                .background(Capsule().fill(shelfConfig.badgeColor))
-                .overlay {
-                    if shelfConfig.badgeOutline {
-                        Capsule().stroke(Color(white: 1).opacity(0.85), lineWidth: 1.5)
-                    }
-                }
-                .offset(x: badgeOffsetX, y: -shelfConfig.badgeOffset)
-        } else {
-            Circle()
-                .fill(shelfConfig.badgeColor)
-                .frame(width: fontSize + 3, height: fontSize + 3)
-                .overlay {
-                    if shelfConfig.badgeOutline {
-                        Circle().stroke(Color(white: 1).opacity(0.85), lineWidth: 1.5)
-                    }
-                }
-                .offset(x: badgeOffsetX, y: -shelfConfig.badgeOffset)
-        }
-    }
-
-    var body: some View {
-        HStack(alignment: .center, spacing: 14) {
-            // Book cover with Unread Red Badge
-            ZStack(alignment: shelfConfig.badgeCorner == .topTrailing ? .topTrailing : .topLeading) {
-                if book.coverUrl != nil {
-                    // 走统一的封面视图：相册选的本地封面也在这儿显示
-                    BookCoverImage(urlString: book.coverUrl)
-                    .frame(width: 54, height: 81)
-                    .cornerRadius(6)
-                    .clipped()
-                } else {
-                    coverPlaceholder
-                }
-
-                if showsBadge {
-                    badgeView
-                }
-            }
-
-            // Info column: Title, Author, Latest Chapter, Read Progress (No source)
-            VStack(alignment: .leading, spacing: 4) {
-                Text(book.name)
-                    .font(.system(size: 16, weight: .bold))
-                    .lineLimit(1)
-                    .foregroundColor(.primary)
-
-                if !book.author.isEmpty && book.author != "未知作者" {
-                    Text(book.author)
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                        .lineLimit(1)
-                }
-
-                if let latest = book.latestChapterTitle, !latest.isEmpty {
-                    Text("最新: \(latest)")
-                        .font(.caption2)
-                        .foregroundColor(.secondary)
-                        .lineLimit(1)
-                }
-
-                HStack {
-                    if let chapter = book.durChapterTitle, !chapter.isEmpty {
-                        Text("已读: \(chapter)")
-                            .font(.caption2)
-                            .foregroundColor(.accentColor)
-                            .lineLimit(1)
-                    } else {
-                        Text("未读")
-                            .font(.caption2)
-                            .foregroundColor(.secondary.opacity(0.8))
-                    }
-
-                    Spacer()
-                }
-            }
-        }
-        .padding(.vertical, 4)
-    }
-
-    private var coverPlaceholder: some View {
-        RoundedRectangle(cornerRadius: 6)
-            .fill(Color.accentColor.opacity(0.12))
-            .frame(width: 54, height: 81)
-            .overlay(
-                Image(systemName: "book.closed.fill")
-                    .font(.title2)
-                    .foregroundColor(.accentColor.opacity(0.8))
-            )
     }
 }
 

@@ -83,7 +83,7 @@ public enum SourceRequestSupport {
     /// 把书源 header 拆成请求头字典，供图片加载与 AVPlayer 使用。
     public static func headerDictionary(for source: BookSource) -> [String: String] {
         guard let raw = resolvedHeader(for: source) else { return [:] }
-        if let parsed = NetworkClient.parseLegadoUrl("https://legado.local", defaultHeader: raw) {
+        if let parsed = NetworkClient.parseJuyueUrl("https://legado.local", defaultHeader: raw) {
             var headers = parsed.headers
             headers.removeValue(forKey: "User-Agent")
             return headers

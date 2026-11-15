@@ -144,7 +144,7 @@ public struct Book: Codable, Identifiable, Equatable {
     }
 }
 
-/// WebDAV 同步用的进度文件格式，字段跟安卓版 legado 对齐。
+/// WebDAV 同步用的进度文件格式，字段跟安卓版阅读对齐。
 public struct BookProgress: Codable, Equatable {
     public var name: String
     public var author: String

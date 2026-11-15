@@ -14,8 +14,6 @@ final class LocalTTSEngine {
     static let detailText = "包内自带模型 · 断网可用 · 不依赖系统音色下载"
     static var isModelBundled: Bool { false }
     var isAvailable: Bool { false }
-    /// 没有 sherpa 就没有音频图，永远出声不了。上层用它判断「到底有没有在念」，
-    /// 缺了这个成员 macOS 侧（swift build / swift test）会直接编不过。
     var isGraphRunning: Bool { false }
     private init() {}
     func invalidate() {}
@@ -50,9 +48,9 @@ final class LocalTTSEngine {
 
     // MARK: - 状态
 
-    private let synthQueue = DispatchQueue(label: "com.factorcitrus.juyue.localtts.synth",
+    private let synthQueue = DispatchQueue(label: "com.factorcitrus.legado.localtts.synth",
                                            qos: .userInitiated)
-    private let audioQueue = DispatchQueue(label: "com.factorcitrus.juyue.localtts.audio",
+    private let audioQueue = DispatchQueue(label: "com.factorcitrus.legado.localtts.audio",
                                            qos: .userInitiated)
     private let loadLock = NSLock()
 

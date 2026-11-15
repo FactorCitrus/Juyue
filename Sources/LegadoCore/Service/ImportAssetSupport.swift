@@ -47,7 +47,7 @@ public enum DownloadLinkClassifier {
 
     public static func schemeKind(_ url: URL) -> DownloadedLinkKind {
         switch (url.scheme ?? "").lowercased() {
-        case "juyue", "legado":
+        case "juyue", "legado", "yuedu":
             return .importDeepLink
         case "data":
             return .data
@@ -206,6 +206,92 @@ public enum DownloadLinkClassifier {
             name = String(stem.prefix(room)) + (ext.isEmpty ? "" : ".\(ext)")
         }
         return name
+    }
+}
+
+// MARK: - 一键导入深链
+
+/// 订阅正文/网页里的「一键导入」链接，对齐安卓 `OnLineImportActivity` 认的写法：
+/// `legado://import/{type}?src=`、`juyue://` / `yuedu://` 同构，
+/// 老式 `yuedu://booksource/importonline?src=`，以及 `legado://importonline?src=`。
+public struct SourceImportLink: Equatable, Sendable {
+    /// 认得出类型时是 `bookSource` / `rssSource` / `httpTTS`；nil 交给导入面板按内容判定。
+    public let route: String?
+    public let sourceURL: URL
+    public let rawURL: URL
+    /// 地址尾巴带 `#requestWithoutUA` 时为 true，下载请求不带 User-Agent。
+    public let requestWithoutUA: Bool
+
+    public init(route: String?, sourceURL: URL, rawURL: URL, requestWithoutUA: Bool = false) {
+        self.route = route
+        self.sourceURL = sourceURL
+        self.rawURL = rawURL
+        self.requestWithoutUA = requestWithoutUA
+    }
+
+    public var title: String {
+        switch route {
+        case "bookSource": return "导入书源？"
+        case "rssSource": return "导入订阅源？"
+        case "httpTTS": return "导入朗读引擎？"
+        default: return "导入？"
+        }
+    }
+}
+
+public enum SourceDeepLinkParser {
+    private static let schemes: Set<String> = ["juyue", "legado", "yuedu"]
+
+    public static func parse(_ url: URL) -> SourceImportLink? {
+        guard let scheme = url.scheme?.lowercased(), schemes.contains(scheme),
+              let components = URLComponents(url: url, resolvingAgainstBaseURL: false) else {
+            return nil
+        }
+        let host = (components.host ?? "").lowercased()
+        let path = components.path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        let items = components.queryItems ?? []
+        // 个别分享页用 url= / link= 代替 src=
+        guard let rawSource = ["src", "url", "link"].lazy.compactMap({ key in
+            items.first(where: { $0.name.lowercased() == key })?.value
+        }).first else { return nil }
+
+        var source = rawSource.trimmingCharacters(in: .whitespacesAndNewlines)
+        // 安卓约定：尾巴带 #requestWithoutUA 时不发 UA，这里去掉再记下这个要求。
+        let requestWithoutUA = source.hasSuffix("#requestWithoutUA")
+        if requestWithoutUA {
+            source.removeLast("#requestWithoutUA".count)
+        }
+        guard !source.isEmpty, let sourceURL = URL(string: source),
+              let sourceScheme = sourceURL.scheme?.lowercased(),
+              sourceScheme == "http" || sourceScheme == "https" else {
+            return nil
+        }
+
+        var rawRoute: String?
+        if host == "import" {
+            rawRoute = (path.isEmpty || path.lowercased() == "importonline") ? nil : path
+        } else if host == "importonline" {
+            rawRoute = nil
+        } else if path.lowercased() == "importonline" {
+            rawRoute = host
+        } else {
+            rawRoute = path.isEmpty ? host : path
+        }
+        return SourceImportLink(
+            route: canonicalRoute(rawRoute),
+            sourceURL: sourceURL,
+            rawURL: url,
+            requestWithoutUA: requestWithoutUA
+        )
+    }
+
+    private static func canonicalRoute(_ raw: String?) -> String? {
+        switch (raw ?? "").lowercased() {
+        case "booksource": return "bookSource"
+        case "rsssource": return "rssSource"
+        case "httptts": return "httpTTS"
+        default: return nil
+        }
     }
 }
 

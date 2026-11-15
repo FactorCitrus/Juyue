@@ -146,10 +146,10 @@ final class LegadoCoreTests: XCTestCase {
         let md5 = CryptoUtils.md5("hello world")
         XCTAssertEqual(md5, "5eb63bbbe01eeed093cb22bb8f5acdc3")
 
-        let b64 = CryptoUtils.base64Encode("Legado iOS")
-        XCTAssertEqual(b64, "TGVnYWRvIGlPUw==")
+        let b64 = CryptoUtils.base64Encode("Juyue iOS")
+        XCTAssertEqual(b64, "SnV5dWUgaU9T")
         let decoded = CryptoUtils.base64Decode(b64)
-        XCTAssertEqual(decoded, "Legado iOS")
+        XCTAssertEqual(decoded, "Juyue iOS")
     }
 
     func testJSEngine() throws {
@@ -291,7 +291,7 @@ final class LegadoCoreTests: XCTestCase {
             .deletingLastPathComponent() // Tests/LegadoCoreTests
             .deletingLastPathComponent() // Tests
             .deletingLastPathComponent() // ios
-            .deletingLastPathComponent() // legado-master
+            .deletingLastPathComponent() // Juyue-iOS
         let assetFile = rootDir.appendingPathComponent("app/src/main/assets/defaultData/bookSources.json")
 
         guard FileManager.default.fileExists(atPath: assetFile.path) else {
@@ -311,7 +311,7 @@ final class LegadoCoreTests: XCTestCase {
     }
 
     func testUserEpubFileParsing() throws {
-        let epubPath = ProcessInfo.processInfo.environment["LEGADO_TEST_EPUB"]
+        let epubPath = ProcessInfo.processInfo.environment["JUYUE_TEST_EPUB"]
             ?? FileManager.default.temporaryDirectory.appendingPathComponent("test-book.epub").path
         let epubUrl = URL(fileURLWithPath: epubPath)
 
@@ -363,7 +363,7 @@ final class LegadoCoreTests: XCTestCase {
     }
 
     func testAkuyakuEpubParsing() throws {
-        let epubPath = ProcessInfo.processInfo.environment["LEGADO_TEST_EPUB_2"]
+        let epubPath = ProcessInfo.processInfo.environment["JUYUE_TEST_EPUB_2"]
             ?? FileManager.default.temporaryDirectory.appendingPathComponent("test-book-2.epub").path
         let epubUrl = URL(fileURLWithPath: epubPath)
 
@@ -464,8 +464,8 @@ final class LegadoCoreTests: XCTestCase {
 
         // 1. Perform login
         let creds = [
-            "账号": ProcessInfo.processInfo.environment["LEGADO_TEST_SOURCE_USER"] ?? "",
-            "密码": ProcessInfo.processInfo.environment["LEGADO_TEST_SOURCE_PASS"] ?? ""
+            "账号": ProcessInfo.processInfo.environment["JUYUE_TEST_SOURCE_USER"] ?? "",
+            "密码": ProcessInfo.processInfo.environment["JUYUE_TEST_SOURCE_PASS"] ?? ""
         ]
         let credData = try JSONSerialization.data(withJSONObject: creds)
         let credJson = String(data: credData, encoding: .utf8)!
@@ -591,10 +591,10 @@ final class LegadoCoreTests: XCTestCase {
             url: "https://dav.jianguoyun.com/dav",
             username: "test@example.com",
             password: "password123",
-            remotePath: "/legado/"
+            remotePath: "/juyue/"
         )
 
-        XCTAssertEqual(config.directoryURL?.absoluteString, "https://dav.jianguoyun.com/dav/legado/")
+        XCTAssertEqual(config.directoryURL?.absoluteString, "https://dav.jianguoyun.com/dav/juyue/")
         XCTAssertTrue(config.basicAuthHeader.starts(with: "Basic "))
 
         // 2. Mock URLSession for WebDAVService
@@ -705,13 +705,13 @@ final class LegadoCoreTests: XCTestCase {
             "url": "https://dav.jianguoyun.com/dav/",
             "username": "user@example.com",
             "password": "secretpassword",
-            "remotePath": "legado"
+            "remotePath": "juyue"
         }
         """.data(using: .utf8)!
 
         let decoded = try JSONDecoder().decode(WebDAVConfig.self, from: legacyJson)
         XCTAssertEqual(decoded.username, "user@example.com")
-        XCTAssertEqual(decoded.remotePath, "legado")
+        XCTAssertEqual(decoded.remotePath, "juyue")
         XCTAssertFalse(decoded.deviceName.isEmpty)
     }
 
@@ -752,7 +752,7 @@ final class LegadoCoreTests: XCTestCase {
         <?xml version="1.0" encoding="utf-8"?>
         <d:multistatus xmlns:d="DAV:">
             <d:response>
-                <d:href>/dav/legado/</d:href>
+                <d:href>/dav/juyue/</d:href>
                 <d:propstat>
                     <d:prop>
                         <d:resourcetype><d:collection/></d:resourcetype>
@@ -760,7 +760,7 @@ final class LegadoCoreTests: XCTestCase {
                 </d:propstat>
             </d:response>
             <d:response>
-                <d:href>/dav/legado/backup2026-09-29-25060RK16C.zip</d:href>
+                <d:href>/dav/juyue/backup2026-09-29-25060RK16C.zip</d:href>
                 <d:propstat>
                     <d:prop>
                         <d:getcontentlength>123456</d:getcontentlength>
@@ -769,7 +769,7 @@ final class LegadoCoreTests: XCTestCase {
                 </d:propstat>
             </d:response>
             <d:response>
-                <d:href>/dav/legado/backup2026-10-11-iPhone.zip</d:href>
+                <d:href>/dav/juyue/backup2026-10-11-iPhone.zip</d:href>
                 <d:propstat>
                     <d:prop>
                         <d:getcontentlength>234567</d:getcontentlength>
@@ -778,7 +778,7 @@ final class LegadoCoreTests: XCTestCase {
                 </d:propstat>
             </d:response>
             <d:response>
-                <d:href>/dav/legado/bookshelf.json</d:href>
+                <d:href>/dav/juyue/bookshelf.json</d:href>
                 <d:propstat>
                     <d:prop>
                         <d:getcontentlength>54321</d:getcontentlength>
@@ -788,7 +788,7 @@ final class LegadoCoreTests: XCTestCase {
         </d:multistatus>
         """
 
-        let baseUrl = URL(string: "https://dav.jianguoyun.com/dav/legado/")!
+        let baseUrl = URL(string: "https://dav.jianguoyun.com/dav/juyue/")!
         let backups = WebDAVService.shared.parseBackupsFromPropfindXML(sampleXml, baseURL: baseUrl)
 
         XCTAssertEqual(backups.count, 2)
@@ -814,8 +814,8 @@ final class LegadoCoreTests: XCTestCase {
         XCTAssertTrue(titles.contains("阅读历史") || titles.contains("全部来源") || titles.contains("kakuyomu"))
     }
 
-    func testAndroidLegadoZipBackupParsing() throws {
-        let zipPath = ProcessInfo.processInfo.environment["LEGADO_TEST_BACKUP_ZIP"]
+    func testAndroidBackupZipParsing() throws {
+        let zipPath = ProcessInfo.processInfo.environment["JUYUE_TEST_BACKUP_ZIP"]
             ?? FileManager.default.temporaryDirectory.appendingPathComponent("backup.zip").path
         guard FileManager.default.fileExists(atPath: zipPath) else {
             print("Skipping local test: backup zip not present")
@@ -825,9 +825,9 @@ final class LegadoCoreTests: XCTestCase {
         let result = try WebDAVService.shared.restoreFromZip(fileUrl: zipUrl)
 
         XCTAssertNotNil(result.books, "Books should be decoded")
-        XCTAssertEqual(result.books?.count, 228, "Should decode exactly 228 books from Android Legado backup")
+        XCTAssertEqual(result.books?.count, 228, "Should decode exactly 228 books from Android reader backup")
         XCTAssertNotNil(result.sources, "Sources should be decoded")
-        XCTAssertEqual(result.sources?.count, 2, "Should decode exactly 2 sources from Android Legado backup")
+        XCTAssertEqual(result.sources?.count, 2, "Should decode exactly 2 sources from Android reader backup")
 
         let sourceNames = result.sources?.map { $0.bookSourceName } ?? []
         XCTAssertEqual(sourceNames.count, 2, "Should decode 2 source names from backup")

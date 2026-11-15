@@ -58,8 +58,8 @@ public final class TTSTemplateRenderer {
         }
 
         let encodeURI: @convention(block) (String) -> String = { JavaURLEncoder.encode($0) }
-        jsContext.setObject(encodeURI, forKeyedSubscript: "__legadoEncodeURI" as NSString)
-        jsContext.evaluateScript("var java = { encodeURI: function(s) { return __legadoEncodeURI(String(s)); } };")
+        jsContext.setObject(encodeURI, forKeyedSubscript: "__juyueEncodeURI" as NSString)
+        jsContext.evaluateScript("var java = { encodeURI: function(s) { return __juyueEncodeURI(String(s)); } };")
 
         jsContext.setObject(context.speakText as NSString, forKeyedSubscript: "speakText" as NSString)
         jsContext.setObject(context.speakSpeed as NSNumber, forKeyedSubscript: "speakSpeed" as NSString)

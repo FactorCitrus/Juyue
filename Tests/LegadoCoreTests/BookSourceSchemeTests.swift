@@ -37,17 +37,17 @@ final class BookSourceSchemeTests: XCTestCase {
         XCTAssertNil(NetworkClient.unsupportedScheme(in: "书山聚合"))
     }
 
-    func testParseLegadoUrlRejectsCustomScheme() {
-        XCTAssertNil(NetworkClient.parseLegadoUrl("moyue://rapid/legado/search"))
+    func testParseJuyueUrlRejectsCustomScheme() {
+        XCTAssertNil(NetworkClient.parseJuyueUrl("moyue://rapid/legado/search"))
         XCTAssertNil(
-            NetworkClient.parseLegadoUrl("/legado/search", baseUrl: "moyue://rapid")
+            NetworkClient.parseJuyueUrl("/legado/search", baseUrl: "moyue://rapid")
         )
 
         XCTAssertEqual(
-            NetworkClient.parseLegadoUrl("https://example.com/a")?.url.absoluteString,
+            NetworkClient.parseJuyueUrl("https://example.com/a")?.url.absoluteString,
             "https://example.com/a"
         )
-        XCTAssertNotNil(NetworkClient.parseLegadoUrl("data:;base64,eyJrZXkiOiIxIn0="))
+        XCTAssertNotNil(NetworkClient.parseJuyueUrl("data:;base64,eyJrZXkiOiIxIn0="))
     }
 
     func testReadableUnsupportedMessages() {

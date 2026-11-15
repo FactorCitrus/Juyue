@@ -1,6 +1,3 @@
-// 只有「真机 + 带百度 SDK」这一种组合编真实现，其余一律走桩：
-// 以前写成 `#if !NO_BAIDU_TTS` 套 `#if os(iOS)`，macOS 上（swift test / SPM）
-// 两个条件都不满足，整个文件什么都不产出，引用它的视图直接「cannot find type」。
 #if !NO_BAIDU_TTS && os(iOS)
 import Foundation
 import AVFoundation
@@ -31,8 +28,24 @@ final class BaiduOfflineTTS: NSObject, ObservableObject {
 
     /// 控制台里的 APP ID（设置里填过就用填的）
     static var appId: String { BaiduCredentials.appId }
+    static var apiKey: String { BaiduCredentials.apiKey }
+    static var secretKey: String { BaiduCredentials.secretKey }
     /// 控制台申请的离线序列号，第一条授权失败就换第二条
     static var serialNumbers: [String] { BaiduCredentials.serials }
+
+    static var hasCustomCredentials: Bool { BaiduCredentials.hasCustomValues }
+    static func storeCredentials(appId: String, apiKey: String, secretKey: String, serials: String) {
+        BaiduCredentials.store(appId: appId, apiKey: apiKey, secretKey: secretKey, serials: serials)
+    }
+    static func resetCredentialsToBuiltin() {
+        BaiduCredentials.resetToBuiltin()
+        BaiduBundleShim.setPinned(nil)
+    }
+
+    /// 离线授权绑定的包名（引擎侧垫片用它替换容器包名）
+    static var pinnedBundle: String { BaiduBundleShim.pinned }
+    static var hasCustomPinnedBundle: Bool { BaiduBundleShim.hasCustomPinned }
+    static func setPinnedBundle(_ value: String) { BaiduBundleShim.setPinned(value) }
 
     /// SDK 自带只带两条；自备音库放 Documents/BaiduTTS 里，能放几包放几包
     static let builtinVoices: [Voice] = {
@@ -88,6 +101,14 @@ final class BaiduOfflineTTS: NSObject, ObservableObject {
     @Published private(set) var statusText = "未加载"
     /// 授权自检的逐行结果。LiveContainer 这类容器里没法接 console，只能让用户在 App 里看。
     @Published private(set) var authReport: String = ""
+    /// 自检的最终结论。日志几十行，成功/失败要能一眼看出来。
+    enum AuthStatus: Equatable {
+        case idle
+        case running
+        case success(serial: String)
+        case failure(code: Int32, message: String)
+    }
+    @Published private(set) var authStatus: AuthStatus = .idle
 
     var onFinish: (() -> Void)?
 
@@ -101,6 +122,8 @@ final class BaiduOfflineTTS: NSObject, ObservableObject {
 
     private override init() {
         super.init()
+        // 引擎第一次取包名之后就会缓存，垫片必须在任何 SDK 调用之前装好。
+        BaiduBundleShim.install()
         BaiduOfflineTTS.refreshUserVoices()
         // 自检由 BaiduOfflineTTS.probeIfNeeded() 在启动时触发
     }
@@ -111,25 +134,14 @@ final class BaiduOfflineTTS: NSObject, ObservableObject {
 
     // MARK: - 授权自检（跑通授权用）
 
-    /// 启动时调一次。跑过就跳过；JUYUE_BAIDU_AUTH_PROBE 可强制（=1）或禁用（=0）。
+    /// 启动时只装垫片，不再自动跑授权探测。
+    /// 自检会额外创建并释放引擎实例，紧接着试听容易把 SDK 卡在半初始化状态；
+    /// 需要自检时走设置页按钮，或 JUYUE_BAIDU_AUTH_PROBE=1 显式触发。
     static func probeIfNeeded() {
         // 引擎取包名会缓存，先装垫片再让任何 SDK 调用发生
         BaiduBundleShim.install()
         let env = ProcessInfo.processInfo.environment["JUYUE_BAIDU_AUTH_PROBE"]
-        guard env != "0" else { NSLog("[BaiduAuth] skipped by env"); return }
-        // 以前用布尔标记，跑过一次以后换包也不跑了，日志里就永远静悄悄。
-        // 改成按版本号记：每换一版自动跑一次，同版本里不重复。
-        let stamp = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "?"
-        let doneFor = UserDefaults.standard.string(forKey: "baidu_auth_probe_version")
-        guard env == "1" || doneFor != stamp else { return }
-        UserDefaults.standard.set(stamp, forKey: "baidu_auth_probe_version")
-        // 从旧备份恢复过来的 APP ID 会盖住包内那套（见过 124571480），授权永远对不上。
-        // 这里只在值和包内不一致时清一次，用户自己填的其它值也会被清，但这台机器上没有第二套。
-        let storedAppId = UserDefaults.standard.string(forKey: "baidu_app_id") ?? ""
-        if !storedAppId.isEmpty, storedAppId != BaiduCredentials.LocalDefaults.appId {
-            BaiduCredentials.resetToBuiltin()
-            AppLog.write("[BaiduAuth] 清掉旧 APP ID \(storedAppId)，改用 \(BaiduCredentials.LocalDefaults.appId)")
-        }
+        guard env == "1" else { return }
         shared.authorizationProbe()
     }
 
@@ -142,12 +154,21 @@ final class BaiduOfflineTTS: NSObject, ObservableObject {
         let voices = BaiduOfflineTTS.builtinVoices
         let bundle = Bundle.main.bundleIdentifier ?? "?"
         DispatchQueue.main.async { self.authReport = "" }
+        setAuthStatus(.running)
         probeLog(String(format: "[BaiduAuth] start appId=%@ bundle=%@ serials=%d voices=%d",
                         appId, bundle, serials.count, voices.count))
         probeLog("[BaiduAuth] 引擎将看到的包名 = "
                  + (BaiduBundleShim.withOverride { Bundle.main.bundleIdentifier ?? "?" }))
-        guard appId.isEmpty == false else { probeLog("[BaiduAuth] 没有 APP ID，停止"); return }
-        guard let voice = voices.first else { probeLog("[BaiduAuth] 包里没有内置音色，停止"); return }
+        guard appId.isEmpty == false else {
+            probeLog("[BaiduAuth] 没有 APP ID，停止")
+            setAuthStatus(.failure(code: 0, message: "没有 APP ID"))
+            return
+        }
+        guard let voice = voices.first else {
+            probeLog("[BaiduAuth] 包里没有内置音色，停止")
+            setAuthStatus(.failure(code: 0, message: "包里没有内置音色"))
+            return
+        }
 
         let model: [String: String] = [
             BDSSpeechSynthesizerParams.ttsTextModelFile: voice.textPath,
@@ -156,6 +177,7 @@ final class BaiduOfflineTTS: NSObject, ObservableObject {
         guard let data = try? JSONSerialization.data(withJSONObject: model),
               let modelJSON = String(data: data, encoding: .utf8) else {
             probeLog("[BaiduAuth] 模型 JSON 组不出来，停止")
+            setAuthStatus(.failure(code: 0, message: "模型 JSON 组不出来"))
             return
         }
 
@@ -173,8 +195,12 @@ final class BaiduOfflineTTS: NSObject, ObservableObject {
             self.probeNetworkSync()
             guard serials.isEmpty == false else {
                 self.probeLog("[BaiduAuth] 没有序列号，停止")
+                self.setAuthStatus(.failure(code: 0, message: "没有序列号"))
                 return
             }
+            var authorized = false
+            var lastCode: Int32 = 0
+            var lastDesc = ""
             for (index, serial) in serials.enumerated() {
                 let synth = BDSSpeechSynthesizer(delegate: self)
                 _ = synth.setParam(BDSSpeechSynthesizerParams.paramAppId, value: appId)
@@ -186,10 +212,36 @@ final class BaiduOfflineTTS: NSObject, ObservableObject {
                 synth.releaseEngine()
                 if result.code == 0 {
                     self.probeLog(String(format: "[BaiduAuth] 授权通过，序列号 %@ 可用", serial))
+                    // 只有授权成功才算这一版跑过，失败的下次启动继续试。
+                    if let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String {
+                        UserDefaults.standard.set(version, forKey: "baidu_auth_probe_version")
+                    }
+                    authorized = true
+                    self.setAuthStatus(.success(serial: serial))
                     break
                 }
+                lastCode = result.code
+                lastDesc = result.desc
+            }
+            if !authorized {
+                self.setAuthStatus(.failure(code: lastCode,
+                                            message: lastDesc.isEmpty ? "没有可用序列号" : lastDesc))
             }
             self.probeLog("[BaiduAuth] done")
+        }
+    }
+
+    private func setAuthStatus(_ status: AuthStatus) {
+        DispatchQueue.main.async { self.authStatus = status }
+    }
+
+    /// 包名改了以后旧的授权结论作废，避免还挂着上一轮的绿勾/红叉。
+    func invalidateAuthResult() {
+        // 版本戳一起清掉：下次启动才会用新的包名重新自动自检。
+        UserDefaults.standard.removeObject(forKey: "baidu_auth_probe_version")
+        DispatchQueue.main.async {
+            self.authStatus = .idle
+            self.authReport = ""
         }
     }
 
@@ -460,9 +512,11 @@ final class BaiduOfflineTTS: NSObject, ObservableObject {
             self.isPreparing = true
             self.statusText = "正在加载 \(voice.name)…"
         }
+        AppLog.write("[BaiduTTS] 加载开始 \(voice.id) · text=\(voice.textFileName) · speech=\(voice.speechFileName) · serials=\(BaiduOfflineTTS.serialNumbers.count)")
 
         workQueue.async { [weak self] in
             guard let self else { return }
+            AppLog.write("[BaiduTTS] workQueue 开始 \(voice.id)")
             self.synthesizer?.releaseEngine()
             self.synthesizer = nil
             self.loadedVoiceId = nil
@@ -482,12 +536,14 @@ final class BaiduOfflineTTS: NSObject, ObservableObject {
                       let modelJSON = String(data: data, encoding: .utf8) else {
                     continue
                 }
-                for serial in BaiduOfflineTTS.serialNumbers {
+                for (serialIndex, serial) in BaiduOfflineTTS.serialNumbers.enumerated() {
                     let synth = BDSSpeechSynthesizer(delegate: self)
                     _ = synth.setParam(BDSSpeechSynthesizerParams.paramAppId, value: BaiduOfflineTTS.appId)
                     _ = synth.setParam(BDSSpeechSynthesizerParams.paramAuthSerialNumber, value: serial)
                     _ = synth.setParam(BDSSpeechSynthesizerParams.paramOfflineModel, value: modelJSON)
+                    AppLog.write("[BaiduTTS] 尝试 text=\(textName) serial#\(serialIndex)")
                     let result = BaiduBundleShim.withOverride { synth.loadOfflineEngine() }
+                    AppLog.write("[BaiduTTS] text=\(textName) serial#\(serialIndex) -> code=\(result.code) desc=\(result.desc)")
                     if result.code == 0 {
                         self.synthesizer = synth
                         loaded = true
@@ -505,6 +561,7 @@ final class BaiduOfflineTTS: NSObject, ObservableObject {
             }
 
             if loaded {
+                AppLog.write("[BaiduTTS] 加载成功 \(voice.id) · \(usedPairing)")
                 DispatchQueue.main.async {
                     self.loadedVoiceId = voice.id
                     self.isPreparing = false
@@ -515,6 +572,7 @@ final class BaiduOfflineTTS: NSObject, ObservableObject {
                 }
                 completion(.success(()))
             } else {
+                AppLog.write("[BaiduTTS] 加载失败 \(voice.id) · \(lastCode) · \(lastDesc)")
                 let error = NSError(
                     domain: "BaiduOfflineTTS",
                     code: Int(lastCode),
@@ -547,8 +605,19 @@ final class BaiduOfflineTTS: NSObject, ObservableObject {
             self.synthesizer = nil
             DispatchQueue.main.async {
                 self.loadedVoiceId = nil
+                self.isPreparing = false
                 self.statusText = "未加载"
             }
+        }
+    }
+
+    /// loadOfflineEngine 卡死时把界面状态收回来，避免试听一直停在播放中。
+    func cancelLoading() {
+        DispatchQueue.main.async {
+            self.isPreparing = false
+            self.isPlaying = false
+            self.isPaused = false
+            self.statusText = "加载超时"
         }
     }
 
@@ -570,6 +639,7 @@ final class BaiduOfflineTTS: NSObject, ObservableObject {
             return
         }
         activateAudioSession()
+        AppLog.write("[BaiduTTS] start \(voice.id) · \(text.count)字 · \(chunks.count)段 · speed=\(speed)")
         ensureEngine(voice: voice) { [weak self] result in
             guard let self else { return }
             switch result {
@@ -634,15 +704,18 @@ final class BaiduOfflineTTS: NSObject, ObservableObject {
         pendingUtteranceId = utteranceId
         let entity = BDSSpeechEntity(text: chunks[index], mode: .offline, utteranceId: utteranceId, params: nil)
         let result = BaiduBundleShim.withOverride { synthesizer.speak(entity) }
+        AppLog.write("[BaiduTTS] speak #\(index) code=\(result.code) desc=\(result.desc)")
         if result.code != 0 {
             DispatchQueue.main.async {
                 self.lastError = "合成失败 \(result.code)：\(result.desc)"
+                // 同步 advance 在整章连续失败时会递归几千层，长文可能栈溢出。
+                self.advance()
             }
-            advance()
         }
     }
 
     private func advance() {
+        guard !cancelled else { return }
         let next = currentIndex + 1
         if next < chunks.count {
             // 语速已经在 speakChunk 里设过，这里复用上一次的设定
@@ -655,6 +728,7 @@ final class BaiduOfflineTTS: NSObject, ObservableObject {
     private var lastSpeed = 5
 
     private func finish() {
+        guard !cancelled else { return }
         DispatchQueue.main.async {
             self.isPlaying = false
             self.isPaused = false
@@ -666,6 +740,7 @@ final class BaiduOfflineTTS: NSObject, ObservableObject {
 extension BaiduOfflineTTS: BDSSpeechSynthesizerDelegate {
     func onSynthesizerResponse(_ response: BDSSpeechSynthesizerResponse) {
         guard !cancelled else { return }
+        AppLog.write("[BaiduTTS] 回调 \(String(describing: response.synthesizeType)) code=\(response.result.code) uid=\(response.utteranceId ?? "-")")
         switch response.synthesizeType {
         case .start:
             DispatchQueue.main.async {
@@ -691,6 +766,7 @@ extension BaiduOfflineTTS: BDSSpeechSynthesizerDelegate {
         }
     }
 }
+
 #else
 // 没有百度离线 SDK 的构建（比如 CI）：只提供同形状的空实现，功能关掉
 import Foundation
@@ -719,6 +795,13 @@ public final class BaiduOfflineTTS: ObservableObject {
     @Published public private(set) var isPreparing = false
     @Published public private(set) var statusText = "未编译百度离线引擎"
     @Published public private(set) var authReport: String = ""
+    public enum AuthStatus: Equatable {
+        case idle
+        case running
+        case success(serial: String)
+        case failure(code: Int32, message: String)
+    }
+    @Published public private(set) var authStatus: AuthStatus = .idle
 
     public var onFinish: (() -> Void)?
 
@@ -727,7 +810,15 @@ public final class BaiduOfflineTTS: ObservableObject {
     // 真机那边这两项读 BaiduCredentials；桩实现也得有同形状的成员，
     // 否则设置页里「授权用：APP ID …」那段在模拟器/CI 编不过。
     public static var appId: String { "" }
+    public static var apiKey: String { "" }
+    public static var secretKey: String { "" }
     public static var serialNumbers: [String] { [] }
+    public static var hasCustomCredentials: Bool { false }
+    public static func storeCredentials(appId: String, apiKey: String, secretKey: String, serials: String) {}
+    public static func resetCredentialsToBuiltin() {}
+    public static var pinnedBundle: String { BaiduBundleShim.defaultPinned }
+    public static var hasCustomPinnedBundle: Bool { false }
+    public static func setPinnedBundle(_ value: String) {}
     public static var activeVoiceId: String? {
         get { nil }
         set { }
@@ -740,8 +831,14 @@ public final class BaiduOfflineTTS: ObservableObject {
     public func preload(voice: Voice) {}
     public func authorizationProbe() {
         authReport = "这个构建没带百度离线引擎。"
+        authStatus = .failure(code: 0, message: "这个构建没带百度离线引擎")
+    }
+    public func invalidateAuthResult() {
+        authStatus = .idle
+        authReport = ""
     }
     public func resetEngine() {}
+    public func cancelLoading() {}
     public func clearError() {}
     public func diagnose(voice: Voice) -> [String] { ["这个构建没带百度离线引擎，无法诊断。"] }
     public static func enableVoice(_ id: String) { }

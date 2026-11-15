@@ -205,7 +205,7 @@ public final class DiagnosticHub {
 
     private let lock = NSLock()
     private var records: [SourceRequestDiagnostic] = []
-    private let ioQueue = DispatchQueue(label: "com.factorcitrus.juyue.diagnostics", qos: .utility)
+    private let ioQueue = DispatchQueue(label: "com.factorcitrus.legado.diagnostics", qos: .utility)
     private var saveWork: DispatchWorkItem?
 
     public static var fileURL: URL {

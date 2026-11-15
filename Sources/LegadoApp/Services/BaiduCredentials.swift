@@ -1,5 +1,7 @@
 import Foundation
 
+#if !NO_BAIDU_TTS
+
 // 百度语音凭据 · 公开版内置值为空
 // APP ID / API Key / Secret Key / 离线序列号都在设置页里填。
 // 不要把真实值提交到这个文件，凭据会留在 Git 历史里。
@@ -42,21 +44,31 @@ enum BaiduCredentials {
         let list = stored
             .split(whereSeparator: { $0 == "\n" || $0 == "," })
             .map { $0.trimmingCharacters(in: .whitespaces) }
-            .filter { !$0.isEmpty }
-        return list.isEmpty ? LocalDefaults.serials : list
+            .filter { !$0.isEmpty && $0.count <= 128 }
+        return list.isEmpty ? LocalDefaults.serials : Array(list.prefix(10))
     }
 
     /// 后台设置页写回的入口
     static func store(appId: String, apiKey: String, secretKey: String, serials: String) {
-        defaults.set(appId.trimmingCharacters(in: .whitespacesAndNewlines), forKey: "baidu_app_id")
-        defaults.set(apiKey.trimmingCharacters(in: .whitespacesAndNewlines), forKey: "baidu_api_key")
-        defaults.set(secretKey.trimmingCharacters(in: .whitespacesAndNewlines), forKey: "baidu_secret_key")
-        defaults.set(serials.trimmingCharacters(in: .whitespacesAndNewlines), forKey: "baidu_serials")
+        func clipped(_ value: String, _ limit: Int) -> String {
+            String(value.trimmingCharacters(in: .whitespacesAndNewlines).prefix(limit))
+        }
+        defaults.set(clipped(appId, 64), forKey: "baidu_app_id")
+        defaults.set(clipped(apiKey, 128), forKey: "baidu_api_key")
+        defaults.set(clipped(secretKey, 128), forKey: "baidu_secret_key")
+        // 误粘贴整段文本时别把几千行都存进去，自检会逐条换授权。
+        let cleaned = serials
+            .split(whereSeparator: { $0 == "\n" || $0 == "," })
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty && $0.count <= 128 }
+        defaults.set(cleaned.prefix(10).joined(separator: "\n"), forKey: "baidu_serials")
     }
 
     static var hasCustomValues: Bool {
         !(defaults.string(forKey: "baidu_app_id") ?? "").isEmpty
             || !(defaults.string(forKey: "baidu_api_key") ?? "").isEmpty
+            || !(defaults.string(forKey: "baidu_secret_key") ?? "").isEmpty
+            || !(defaults.string(forKey: "baidu_serials") ?? "").isEmpty
     }
 
     /// 清掉设置里填过的那套，回到包内写死的值。
@@ -68,4 +80,26 @@ enum BaiduCredentials {
     }
 }
 
-/// 多角色朗读里的一条「角色 → 音色」规则
+#else
+
+// 商店包与模拟器构建不带百度凭据：保持同一套 API，值全空。
+// 这样密钥不会因为设置页引用而被编进二进制。
+enum BaiduCredentials {
+    enum LocalDefaults {
+        static let appId = ""
+        static let apiKey = ""
+        static let secretKey = ""
+        static let serials: [String] = []
+    }
+
+    static var appId: String { "" }
+    static var apiKey: String { "" }
+    static var secretKey: String { "" }
+    static var serials: [String] { [] }
+    static var hasCustomValues: Bool { false }
+
+    static func store(appId: String, apiKey: String, secretKey: String, serials: String) {}
+    static func resetToBuiltin() {}
+}
+
+#endif

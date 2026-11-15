@@ -2,7 +2,7 @@ import XCTest
 @testable import LegadoCore
 
 /// 导入走 JSONDecoder().decode([BookSource].self)，
-/// 这里用安卓 Legado 实际导出的书源 JSON 钉住解析。
+/// 这里用安卓阅读实际导出的书源 JSON 钉住解析。
 final class BookSourceImportTests: XCTestCase {
     private let sampleJSON = """
     [
@@ -32,7 +32,7 @@ final class BookSourceImportTests: XCTestCase {
     ]
     """
 
-    func testDecodeLegadoExport() throws {
+    func testDecodeAndroidExport() throws {
         let data = try XCTUnwrap(sampleJSON.data(using: .utf8))
         let sources = try JSONDecoder().decode([BookSource].self, from: data)
         XCTAssertEqual(sources.count, 1)

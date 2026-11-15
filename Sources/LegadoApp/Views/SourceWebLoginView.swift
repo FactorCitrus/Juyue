@@ -1,90 +1,126 @@
 import SwiftUI
 import WebKit
+import Combine
 #if canImport(LegadoCore)
 import LegadoCore
 #endif
 
 public struct SourceWebLoginView: View {
-    @ObservedObject var bookStore = BookStore.shared
+    @StateObject private var session: SourceLoginSession
     @Environment(\.dismiss) private var dismiss
     @Environment(\.appTheme) private var theme
 
-    let source: BookSource
-    let onLoginCompleted: ((BookSource) -> Void)?
-
-    @State private var webView: WKWebView
-    @State private var currentUrl: URL?
-    @State private var pageTitle: String = ""
-    @State private var isLoading: Bool = false
-    @State private var capturedCookies: [HTTPCookie] = []
-    @State private var showManualCookieSheet: Bool = false
-    @State private var manualCookieInput: String = ""
-    @State private var alertMessage: String = ""
-    @State private var showAlert: Bool = false
-    /// 地址栏可编辑：聚合源的 loginUrl 是脚本，网址要从脚本里扒或手填
-    @State private var urlText: String = ""
-
     public init(source: BookSource, onLoginCompleted: ((BookSource) -> Void)? = nil) {
-        self.source = source
-        self.onLoginCompleted = onLoginCompleted
-
-        let config = WKWebViewConfiguration()
-        config.websiteDataStore = WKWebsiteDataStore.default()
-        let wv = WKWebView(frame: .zero, configuration: config)
-        wv.customUserAgent = "Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Mobile/15E148 Safari/604.1"
-        self._webView = State(initialValue: wv)
-
-        // 只认能打开的 http(s) 地址。聚合源的 loginUrl 是一整段 JS，
-        // bookSourceUrl 只是个标识（"大灰狼融合VIP5.0"），URL(string:) 解不出来会白屏。
-        let candidates = [source.loginUrl ?? "", source.bookSourceUrl]
-            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-        let firstUsable = candidates.first { Self.isLoadableWebUrl($0) }
-        // 都不可用时，用脚本里扒出来的候选主机当默认值
-        // （host = ['https://v5.langge.uk', ...]），比空着地址栏强得多。
-        let derived = firstUsable ?? Self.candidateHosts(from: source).first ?? ""
-        self._currentUrl = State(initialValue: firstUsable.flatMap { URL(string: $0) })
-        self._urlText = State(initialValue: derived)
+        _session = StateObject(wrappedValue: SourceLoginSession(source: source, onLoginCompleted: onLoginCompleted))
     }
 
-    /// 候选主机的中文名。
-    /// 按常见站点给可读名字，认不出来的按序号叫「线路 N」。
-    static func hostLabel(_ host: String, index: Int) -> String {
-        let lower = host.lowercased()
-        if lower.contains("fanqienovel") { return "番茄小说（\(host)）" }
-        if lower.contains("langge") { return "大灰狼线路 \(index + 1)（\(host)）" }
-        if lower.contains("cloudflare") { return "CDN 线路（\(host)）" }
-        return "线路 \(index + 1)（\(host)）"
-    }
-
-    /// 从登录脚本 / JS 库里扒出候选主机（去重、保序，最多 6 个）。
-    /// 登录页地址是运行时拼的（`getArgument('server') + '/login'`），
-    /// 只能扒出脚本里出现过的主机，作为候选给用户挑。
-    static func candidateHosts(from source: BookSource) -> [String] {
-        let text = [source.loginUrl ?? "", source.jsLib ?? "", source.bookSourceUrl].joined(separator: "\n")
-        guard let regex = try? NSRegularExpression(pattern: #"https?://[A-Za-z0-9.\-]+"#) else { return [] }
-        let ns = text as NSString
-        var seen = Set<String>()
-        var out: [String] = []
-        regex.enumerateMatches(in: text, range: NSRange(location: 0, length: ns.length)) { match, _, _ in
-            guard let match, out.count < 6 else { return }
-            let host = ns.substring(with: match.range)
-            if seen.insert(host).inserted { out.append(host) }
+    public var body: some View {
+        LoginNavigationContainer {
+            VStack(spacing: 0) {
+                addressBar
+                Divider()
+                webArea
+                if session.currentURL == nil {
+                    emptyHint
+                }
+                Divider()
+                navigationBar
+            }
+            .navigationTitle(session.source.bookSourceName)
+            .inlineNavigationTitle()
+            .toolbar { toolbarItems }
+            .sheet(isPresented: $session.showingManualSheet) { manualCookieEditor }
+            .alert(session.alertText ?? "", isPresented: alertBinding) {
+                Button("确定", role: .cancel) { session.alertText = nil }
+            }
+            .onAppear {
+                session.loadStartPage()
+                session.refreshCookies()
+            }
+            .onReceive(session.$isFinished.filter { $0 }) { _ in dismiss() }
         }
-        return out
     }
 
-    /// 能否交给 WebView 打开：需要带 host 的 http(s) 地址，
-    /// JS 文本和 "大灰狼融合VIP5.0" 这类标识都不算。
-    static func isLoadableWebUrl(_ str: String) -> Bool {
-        guard let url = URL(string: str),
-              let scheme = url.scheme?.lowercased(),
-              scheme == "http" || scheme == "https",
-              let host = url.host, !host.isEmpty else { return false }
-        return true
+    // MARK: - 地址栏
+
+    private var addressBar: some View {
+        HStack(spacing: 8) {
+            if session.loading {
+                ProgressView()
+                    .scaleEffect(0.7)
+            } else {
+                Image(systemName: "lock.shield.fill")
+                    .font(.caption)
+                    .foregroundColor(theme.palette.success)
+            }
+
+            TextField("登录页地址（https://…）", text: $session.address)
+                .font(.caption2)
+                .textFieldStyle(.plain)
+                #if os(iOS)
+                .autocapitalization(.none)
+                .disableAutocorrection(true)
+                .keyboardType(.URL)
+                #endif
+                .onSubmit { session.openTypedAddress() }
+
+            Button("打开") { session.openTypedAddress() }
+                .font(.caption)
+                .disabled(session.address.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+
+            if session.candidates.count > 1 {
+                Menu {
+                    ForEach(Array(session.candidates.enumerated()), id: \.element) { offset, host in
+                        Button(LoginPageResolver.label(for: host, position: offset)) {
+                            session.address = host
+                        }
+                    }
+                } label: {
+                    Image(systemName: "list.bullet")
+                        .font(.caption)
+                }
+            }
+
+            Spacer()
+
+            if !session.cookies.isEmpty {
+                Text("\(session.cookies.count) Cookies")
+                    .font(.system(size: 10, weight: .bold))
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .background(theme.palette.success.opacity(0.15))
+                    .foregroundColor(theme.palette.success)
+                    .cornerRadius(4)
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 6)
+        .background(theme.palette.elevated)
     }
 
-    /// 没有可打开的地址时显示的说明。
-    private var noWebUrlHint: some View {
+    // MARK: - 网页与底栏
+
+    private var webArea: some View {
+        LoginWebViewHost(
+            browser: session.webView,
+            onStartLoading: { session.loading = true },
+            onFinishLoading: { title, url in
+                session.loading = false
+                session.pageTitle = title
+                session.currentURL = url
+                session.refreshCookies()
+            },
+            onFailLoading: { session.loading = false }
+        )
+    }
+
+    private var navigationBar: some View {
+        BrowserToolbar(webView: session.webView) {
+            session.showingManualSheet = true
+        }
+    }
+
+    private var emptyHint: some View {
         VStack(spacing: 8) {
             Image(systemName: "globe")
                 .font(.system(size: 30))
@@ -101,177 +137,29 @@ public struct SourceWebLoginView: View {
         .padding(.vertical, 24)
     }
 
-    public var body: some View {
-        NavigationView {
-            VStack(spacing: 0) {
-                // Address bar / status hint
-                HStack(spacing: 8) {
-                    if isLoading {
-                        ProgressView()
-                            .scaleEffect(0.7)
-                    } else {
-                        Image(systemName: "lock.shield.fill")
-                            .foregroundColor(theme.palette.success)
-                            .font(.caption)
-                    }
-
-                    // 地址可改：扒出来的主机不一定就是登录页
-                    TextField("登录页地址（https://…）", text: $urlText)
-                        .font(.caption2)
-                        .textFieldStyle(.plain)
-                        #if os(iOS)
-                        .autocapitalization(.none)
-                        .disableAutocorrection(true)
-                        .keyboardType(.URL)
-                        #endif
-                        .onSubmit { openTypedUrl() }
-
-                    Button("打开") { openTypedUrl() }
-                        .font(.caption)
-                        .disabled(urlText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-
-                    let hosts = Self.candidateHosts(from: source)
-                    if hosts.count > 1 {
-                        Menu {
-                            ForEach(Array(hosts.enumerated()), id: \.element) { index, host in
-                                Button(Self.hostLabel(host, index: index)) {
-                                    urlText = host
-                                }
-                            }
-                        } label: {
-                            Image(systemName: "list.bullet")
-                                .font(.caption)
-                        }
-                    }
-
-                    Spacer()
-
-                    if !capturedCookies.isEmpty {
-                        Text("\(capturedCookies.count) Cookies")
-                            .font(.system(size: 10, weight: .bold))
-                            .padding(.horizontal, 6)
-                            .padding(.vertical, 2)
-                            .background(theme.palette.success.opacity(0.15))
-                            .foregroundColor(theme.palette.success)
-                            .cornerRadius(4)
-                    }
-                }
-                .padding(.horizontal, 12)
-                .padding(.vertical, 6)
-                .background(theme.palette.elevated)
-
-                Divider()
-
-                // Web view area
-                #if os(iOS)
-                IOSWebViewRepresentable(
-                    webView: webView,
-                    currentUrl: currentUrl,
-                    onLoadingChanged: { loading in
-                        self.isLoading = loading
-                    },
-                    onTitleChanged: { title in
-                        self.pageTitle = title
-                    },
-                    onUrlChanged: { url in
-                        self.currentUrl = url
-                        self.extractCookies()
-                    }
-                )
-                #else
-                MacWebViewRepresentable(
-                    webView: webView,
-                    currentUrl: currentUrl,
-                    onLoadingChanged: { loading in
-                        self.isLoading = loading
-                    },
-                    onTitleChanged: { title in
-                        self.pageTitle = title
-                    },
-                    onUrlChanged: { url in
-                        self.currentUrl = url
-                        self.extractCookies()
-                    }
-                )
-                #endif
-
-                if currentUrl == nil {
-                    noWebUrlHint
-                }
-
-                Divider()
-
-                // Bottom toolbar
-                bottomControlBar
-            }
-            .navigationTitle(source.bookSourceName)
-            #if os(iOS)
-            .navigationBarTitleDisplayMode(.inline)
-            #endif
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("取消") { dismiss() }
-                }
-
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("保存并完成") {
-                        saveCapturedCookiesAndFinish()
-                    }
-                    .font(.body.bold())
-                }
-            }
-            .sheet(isPresented: $showManualCookieSheet) {
-                manualCookieSheet
-            }
-            .alert(alertMessage, isPresented: $showAlert) {
-                Button("确定", role: .cancel) {}
-            }
-            .onAppear {
-                loadInitialUrl()
-                extractCookies()
-            }
+    @ToolbarContentBuilder
+    private var toolbarItems: some ToolbarContent {
+        CancelToolbar { dismiss() }
+        ToolbarItem(placement: .confirmationAction) {
+            Button("保存并完成") { session.finish() }
+                .font(.body.bold())
         }
-            .stackNavigationStyle()
     }
 
-    // MARK: - Bottom Control Bar
-    @ViewBuilder
-    private var bottomControlBar: some View {
-        HStack(spacing: 20) {
-            Button(action: { webView.goBack() }) {
-                Image(systemName: "chevron.backward")
-            }
-            .disabled(!webView.canGoBack)
-
-            Button(action: { webView.goForward() }) {
-                Image(systemName: "chevron.forward")
-            }
-            .disabled(!webView.canGoForward)
-
-            Button(action: { webView.reload() }) {
-                Image(systemName: "arrow.clockwise")
-            }
-
-            Spacer()
-
-            Button("手动粘贴 Cookie") {
-                showManualCookieSheet = true
-            }
-            .font(.caption)
-            .buttonStyle(.bordered)
-        }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 8)
-        .background(theme.palette.divider.opacity(0.05))
+    private var alertBinding: Binding<Bool> {
+        Binding(
+            get: { session.alertText != nil },
+            set: { if !$0 { session.alertText = nil } }
+        )
     }
 
-    // MARK: - Manual Cookie Input Sheet
-    @ViewBuilder
-    private var manualCookieSheet: some View {
-        NavigationView {
+    // MARK: - 手动 Cookie
+
+    private var manualCookieEditor: some View {
+        LoginNavigationContainer {
             Form {
-                Section(header: Text("粘贴 Cookie 字符串")) {
-                    TextEditor(text: $manualCookieInput)
+                Section("粘贴 Cookie 字符串") {
+                    TextEditor(text: $session.manualCookie)
                         .frame(minHeight: 140)
                         .font(.system(.caption, design: .monospaced))
                     Text("已在他处登录时，可粘贴浏览器 Cookie，形如 ews_key=...; ews_token=...; PHPSESSID=...。")
@@ -281,233 +169,424 @@ public struct SourceWebLoginView: View {
                 .appThemedRows()
 
                 Section {
-                    Button("保存并应用此 Cookie") {
-                        applyManualCookie()
-                    }
-                    .disabled(manualCookieInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    Button("保存并应用此 Cookie") { session.applyManualCookie() }
+                        .disabled(session.manualCookie.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 }
                 .appThemedRows()
             }
             .appThemedList()
             .navigationTitle("手动填入 Cookie")
-            #if os(iOS)
-            .navigationBarTitleDisplayMode(.inline)
-            #endif
+            .inlineNavigationTitle()
             .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("取消") { showManualCookieSheet = false }
-                }
-            }
-        }
-            .stackNavigationStyle()
-    }
-
-    // MARK: - Cookie Extraction & Saving
-    private func loadInitialUrl() {
-        guard let url = currentUrl else { return }
-        webView.load(URLRequest(url: url))
-    }
-
-    /// 打开地址栏里那条地址
-    private func openTypedUrl() {
-        let text = urlText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard let url = URL(string: text), url.scheme?.hasPrefix("http") == true else { return }
-        currentUrl = url
-        webView.load(URLRequest(url: url))
-    }
-
-    private func loadUrlString(_ str: String) {
-        guard let url = URL(string: str) else { return }
-        self.currentUrl = url
-        webView.load(URLRequest(url: url))
-    }
-
-    private func extractCookies() {
-        webView.configuration.websiteDataStore.httpCookieStore.getAllCookies { cookies in
-            let filtered = filterRelevantCookies(cookies)
-            DispatchQueue.main.async {
-                self.capturedCookies = filtered
+                CancelToolbar { session.showingManualSheet = false }
             }
         }
     }
+}
 
-    private func filterRelevantCookies(_ cookies: [HTTPCookie]) -> [HTTPCookie] {
-        // 聚合源的 bookSourceUrl 只是个标识（"大灰狼融合VIP5.0"）、loginUrl 是一段脚本，
-        // 两者的 host 都取不到，只按它们过滤会一条 cookie 都留不下。当前打开的网页 host
-        // 是真实登录域，要一起算进来。
+// MARK: - 登录会话
+
+final class SourceLoginSession: ObservableObject {
+    let source: BookSource
+    let webView: WKWebView
+    let candidates: [String]
+
+    @Published var address: String
+    @Published var currentURL: URL?
+    @Published var pageTitle = ""
+    @Published var loading = false
+    @Published var cookies: [HTTPCookie] = []
+    @Published var manualCookie = ""
+    @Published var showingManualSheet = false
+    @Published var alertText: String?
+    @Published var isFinished = false
+
+    private let onLoginCompleted: ((BookSource) -> Void)?
+
+    init(source: BookSource, onLoginCompleted: ((BookSource) -> Void)?) {
+        self.source = source
+        self.onLoginCompleted = onLoginCompleted
+
+        let configuration = WKWebViewConfiguration()
+        configuration.websiteDataStore = .default()
+        let browser = WKWebView(frame: .zero, configuration: configuration)
+        browser.customUserAgent = "Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Mobile/15E148 Safari/604.1"
+        self.webView = browser
+
+        let start = LoginPageResolver.startPage(for: source)
+        self.candidates = LoginPageResolver.hosts(in: source)
+        self.address = start.address
+        self.currentURL = start.url
+    }
+
+    func loadStartPage() {
+        guard let url = currentURL else { return }
+        loadPage(url)
+    }
+
+    func openTypedAddress() {
+        let raw = address.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let url = URL(string: raw), url.scheme?.hasPrefix("http") == true else { return }
+        open(url)
+    }
+
+    private func open(_ url: URL) {
+        currentURL = url
+        loadPage(url)
+    }
+
+    private func loadPage(_ url: URL) {
+        webView.load(URLRequest(url: url))
+    }
+
+    private func captureCookies(_ receive: @escaping ([HTTPCookie]) -> Void) {
+        webView.configuration.websiteDataStore.httpCookieStore.getAllCookies { [weak self] all in
+            guard let self else { return }
+            let relevant = LoginCookieScope.relevant(all, source: self.source, currentURL: self.currentURL)
+            DispatchQueue.main.async { receive(relevant) }
+        }
+    }
+
+    func refreshCookies() {
+        captureCookies { [weak self] relevant in
+            self?.cookies = relevant
+        }
+    }
+
+    func finish() {
+        captureCookies { [weak self] relevant in
+            guard let self else { return }
+            guard !relevant.isEmpty else {
+                self.alertText = "未检测到该网站的有效 Cookie，请先在网页内输入账号密码完成登录，或点击底部「手动粘贴 Cookie」。"
+                return
+            }
+            self.cookies = relevant
+            self.persist(
+                cookieHeader: relevant.map { "\($0.name)=\($0.value)" }.joined(separator: "; "),
+                cookies: relevant
+            )
+        }
+    }
+
+    func applyManualCookie() {
+        let cleaned = manualCookie
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: "\n", with: "")
+        guard !cleaned.isEmpty else { return }
+        showingManualSheet = false
+        persist(cookieHeader: cleaned, cookies: [])
+    }
+
+    private func persist(cookieHeader: String, cookies: [HTTPCookie]) {
+        var updated = source
+        updated.loginHeader = LoginPayload.loginHeader(
+            cookieHeader: cookieHeader,
+            userAgent: webView.customUserAgent
+        )
+        updated.loginInfo = LoginPayload.loginInfo(
+            cookieHeader: cookieHeader,
+            pageURL: currentURL?.absoluteString ?? source.loginUrl ?? source.bookSourceUrl,
+            cookieCount: cookies.count
+        )
+        LoginCookieScope.mirror(cookies, for: source.bookSourceUrl)
+
+        BookStore.shared.updateSource(updated)
+        onLoginCompleted?(updated)
+        isFinished = true
+    }
+}
+
+// MARK: - 登录地址解析
+
+enum LoginPageResolver {
+    struct StartPage {
+        let address: String
+        let url: URL?
+    }
+
+    static func startPage(for source: BookSource) -> StartPage {
+        let seeds = [source.loginUrl ?? "", source.bookSourceUrl]
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+        let usable = seeds.first(where: isWebAddress)
+        let fallback = usable ?? hosts(in: source).first ?? ""
+        return StartPage(address: fallback, url: usable.flatMap { URL(string: $0) })
+    }
+
+    static func hosts(in source: BookSource) -> [String] {
+        let haystack = [source.loginUrl ?? "", source.jsLib ?? "", source.bookSourceUrl].joined(separator: "\n")
+        guard let pattern = try? NSRegularExpression(pattern: #"https?://[A-Za-z0-9.\-]+"#) else { return [] }
+        let range = NSRange(location: 0, length: (haystack as NSString).length)
+        var ordered: [String] = []
+        for match in pattern.matches(in: haystack, options: [], range: range) {
+            guard ordered.count < 6,
+                  let found = Range(match.range, in: haystack) else { break }
+            let host = String(haystack[found])
+            if !ordered.contains(host) {
+                ordered.append(host)
+            }
+        }
+        return ordered
+    }
+
+    static func label(for host: String, position: Int) -> String {
+        let lower = host.lowercased()
+        if lower.contains("fanqienovel") { return "番茄小说（\(host)）" }
+        if lower.contains("langge") { return "大灰狼线路 \(position + 1)（\(host)）" }
+        if lower.contains("cloudflare") { return "CDN 线路（\(host)）" }
+        return "线路 \(position + 1)（\(host)）"
+    }
+
+    static func isWebAddress(_ value: String) -> Bool {
+        guard let parts = URLComponents(string: value),
+              let scheme = parts.scheme?.lowercased(),
+              scheme == "http" || scheme == "https",
+              let host = parts.host, !host.isEmpty else { return false }
+        return true
+    }
+}
+
+// MARK: - Cookie 范围与落盘格式
+
+enum LoginCookieScope {
+    static func relevant(_ cookies: [HTTPCookie], source: BookSource, currentURL: URL?) -> [HTTPCookie] {
+        let raw = [source.bookSourceUrl, source.loginUrl ?? "", currentURL?.absoluteString ?? ""]
         var hosts: [String] = []
-        for candidate in [source.bookSourceUrl, source.loginUrl ?? "", currentUrl?.absoluteString ?? ""] {
-            if let host = URL(string: candidate)?.host?.lowercased(), !host.isEmpty, !hosts.contains(host) {
-                hosts.append(host)
-            }
+        for value in raw {
+            guard let host = URL(string: value)?.host?.lowercased(), !host.isEmpty else { continue }
+            if !hosts.contains(host) { hosts.append(host) }
         }
         guard !hosts.isEmpty else { return [] }
 
-        return cookies.filter { c in
-            let domain = c.domain.lowercased().trimmingCharacters(in: CharacterSet(charactersIn: "."))
+        return cookies.filter { cookie in
+            let domain = cookie.domain
+                .lowercased()
+                .trimmingCharacters(in: CharacterSet(charactersIn: "."))
             guard !domain.isEmpty else { return false }
             return hosts.contains { $0.contains(domain) || domain.contains($0) }
         }
     }
 
-    private func saveCapturedCookiesAndFinish() {
-        webView.configuration.websiteDataStore.httpCookieStore.getAllCookies { cookies in
-            let filtered = self.filterRelevantCookies(cookies)
-            DispatchQueue.main.async {
-                guard !filtered.isEmpty else {
-                    self.alertMessage = "未检测到该网站的有效 Cookie，请先在网页内输入账号密码完成登录，或点击底部「手动粘贴 Cookie」。"
-                    self.showAlert = true
-                    return
-                }
-
-                let cookieString = filtered.map { "\($0.name)=\($0.value)" }.joined(separator: "; ")
-                self.saveCookieString(cookieString, cookiesList: filtered)
+    static func mirror(_ cookies: [HTTPCookie], for sourceURL: String) {
+        let storage = HTTPCookieStorage.shared
+        let targetHost = URL(string: sourceURL)?.host
+        for cookie in cookies {
+            storage.setCookie(cookie)
+            guard let targetHost, targetHost != cookie.domain else { continue }
+            var properties = cookie.properties ?? [:]
+            properties[.domain] = targetHost
+            if let mirrored = HTTPCookie(properties: properties) {
+                storage.setCookie(mirrored)
             }
         }
-    }
-
-    private func applyManualCookie() {
-        let clean = manualCookieInput.trimmingCharacters(in: .whitespacesAndNewlines)
-            .replacingOccurrences(of: "\n", with: "")
-        guard !clean.isEmpty else { return }
-
-        showManualCookieSheet = false
-        saveCookieString(clean, cookiesList: [])
-    }
-
-    private func saveCookieString(_ cookieString: String, cookiesList: [HTTPCookie]) {
-        var updatedSource = source
-
-        // 1. Pack into JSON header for NetworkClient
-        let headerDict: [String: String] = [
-            "Cookie": cookieString,
-            "User-Agent": webView.customUserAgent ?? "Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X)"
-        ]
-        if let data = try? JSONSerialization.data(withJSONObject: headerDict),
-           let jsonStr = String(data: data, encoding: .utf8) {
-            updatedSource.loginHeader = jsonStr
-        } else {
-            updatedSource.loginHeader = "{\"Cookie\":\"\(cookieString)\"}"
-        }
-
-        // 2. Pack loginInfo metadata
-        let infoDict: [String: Any] = [
-            "type": "web_cookie",
-            "url": currentUrl?.absoluteString ?? (source.loginUrl ?? source.bookSourceUrl),
-            "cookiesCount": cookiesList.count,
-            "date": ISO8601DateFormatter().string(from: Date()),
-            "preview": String(cookieString.prefix(60)) + "..."
-        ]
-        if let data = try? JSONSerialization.data(withJSONObject: infoDict),
-           let infoStr = String(data: data, encoding: .utf8) {
-            updatedSource.loginInfo = infoStr
-        }
-
-        // 3. Mirror cookies into shared HTTPCookieStorage
-        for c in cookiesList {
-            HTTPCookieStorage.shared.setCookie(c)
-            // Mirror to bookSourceUrl domain if different
-            if let targetHost = URL(string: source.bookSourceUrl)?.host, targetHost != c.domain {
-                var props = c.properties ?? [:]
-                props[.domain] = targetHost
-                if let mirror = HTTPCookie(properties: props) {
-                    HTTPCookieStorage.shared.setCookie(mirror)
-                }
-            }
-        }
-
-        // 4. Update in BookStore
-        bookStore.updateSource(updatedSource)
-        onLoginCompleted?(updatedSource)
-
-        dismiss()
     }
 }
 
-// MARK: - Platform WebView Wrappers
+enum LoginPayload {
+    private struct HeaderField: Encodable {
+        let cookie: String
+        let userAgent: String
+        enum CodingKeys: String, CodingKey {
+            case cookie = "Cookie"
+            case userAgent = "User-Agent"
+        }
+    }
+
+    private struct Metadata: Encodable {
+        let type: String
+        let url: String
+        let cookiesCount: Int
+        let date: String
+        let preview: String
+    }
+
+    static func loginHeader(cookieHeader: String, userAgent: String?) -> String {
+        let field = HeaderField(
+            cookie: cookieHeader,
+            userAgent: userAgent ?? "Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X)"
+        )
+        guard let data = try? JSONEncoder().encode(field),
+              let text = String(data: data, encoding: .utf8) else {
+            return "{\"Cookie\":\"\(cookieHeader)\"}"
+        }
+        return text
+    }
+
+    static func loginInfo(cookieHeader: String, pageURL: String, cookieCount: Int) -> String? {
+        let meta = Metadata(
+            type: "web_cookie",
+            url: pageURL,
+            cookiesCount: cookieCount,
+            date: ISO8601DateFormatter().string(from: Date()),
+            preview: String(cookieHeader.prefix(60)) + "..."
+        )
+        guard let data = try? JSONEncoder().encode(meta) else { return nil }
+        return String(data: data, encoding: .utf8)
+    }
+}
+
+// MARK: - WKWebView 桥接
+
+private final class LoginNavigationProxy: NSObject, WKNavigationDelegate {
+    var onStart: (() -> Void)?
+    var onFinish: ((String, URL?) -> Void)?
+    var onFail: (() -> Void)?
+
+    func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
+        onStart?()
+    }
+
+    func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+        onFinish?(webView.title ?? "", webView.url)
+    }
+
+    func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
+        onFail?()
+    }
+}
 
 #if os(iOS)
-struct IOSWebViewRepresentable: UIViewRepresentable {
-    let webView: WKWebView
-    let currentUrl: URL?
-    let onLoadingChanged: (Bool) -> Void
-    let onTitleChanged: (String) -> Void
-    let onUrlChanged: (URL?) -> Void
+private struct LoginWebViewHost: UIViewRepresentable {
+    let browser: WKWebView
+    let onStartLoading: () -> Void
+    let onFinishLoading: (String, URL?) -> Void
+    let onFailLoading: () -> Void
 
     func makeUIView(context: Context) -> WKWebView {
-        webView.navigationDelegate = context.coordinator
-        return webView
+        context.coordinator.attach(
+            to: browser,
+            onStart: onStartLoading,
+            onFinish: onFinishLoading,
+            onFail: onFailLoading
+        )
+        return browser
     }
 
     func updateUIView(_ uiView: WKWebView, context: Context) {}
 
-    func makeCoordinator() -> Coordinator {
-        Coordinator(parent: self)
-    }
+    func makeCoordinator() -> Coordinator { Coordinator() }
 
-    class Coordinator: NSObject, WKNavigationDelegate {
-        let parent: IOSWebViewRepresentable
+    final class Coordinator {
+        private let proxy = LoginNavigationProxy()
 
-        init(parent: IOSWebViewRepresentable) {
-            self.parent = parent
-        }
-
-        func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
-            parent.onLoadingChanged(true)
-        }
-
-        func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
-            parent.onLoadingChanged(false)
-            parent.onTitleChanged(webView.title ?? "")
-            parent.onUrlChanged(webView.url)
-        }
-
-        func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
-            parent.onLoadingChanged(false)
+        func attach(
+            to webView: WKWebView,
+            onStart: @escaping () -> Void,
+            onFinish: @escaping (String, URL?) -> Void,
+            onFail: @escaping () -> Void
+        ) {
+            proxy.onStart = onStart
+            proxy.onFinish = onFinish
+            proxy.onFail = onFail
+            webView.navigationDelegate = proxy
         }
     }
 }
-#endif
-
-#if os(macOS)
-struct MacWebViewRepresentable: NSViewRepresentable {
-    let webView: WKWebView
-    let currentUrl: URL?
-    let onLoadingChanged: (Bool) -> Void
-    let onTitleChanged: (String) -> Void
-    let onUrlChanged: (URL?) -> Void
+#elseif os(macOS)
+private struct LoginWebViewHost: NSViewRepresentable {
+    let browser: WKWebView
+    let onStartLoading: () -> Void
+    let onFinishLoading: (String, URL?) -> Void
+    let onFailLoading: () -> Void
 
     func makeNSView(context: Context) -> WKWebView {
-        webView.navigationDelegate = context.coordinator
-        return webView
+        context.coordinator.attach(
+            to: browser,
+            onStart: onStartLoading,
+            onFinish: onFinishLoading,
+            onFail: onFailLoading
+        )
+        return browser
     }
 
     func updateNSView(_ nsView: WKWebView, context: Context) {}
 
-    func makeCoordinator() -> Coordinator {
-        Coordinator(parent: self)
-    }
+    func makeCoordinator() -> Coordinator { Coordinator() }
 
-    class Coordinator: NSObject, WKNavigationDelegate {
-        let parent: MacWebViewRepresentable
+    final class Coordinator {
+        private let proxy = LoginNavigationProxy()
 
-        init(parent: MacWebViewRepresentable) {
-            self.parent = parent
-        }
-
-        func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
-            parent.onLoadingChanged(true)
-        }
-
-        func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
-            parent.onLoadingChanged(false)
-            parent.onTitleChanged(webView.title ?? "")
-            parent.onUrlChanged(webView.url)
-        }
-
-        func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
-            parent.onLoadingChanged(false)
+        func attach(
+            to webView: WKWebView,
+            onStart: @escaping () -> Void,
+            onFinish: @escaping (String, URL?) -> Void,
+            onFail: @escaping () -> Void
+        ) {
+            proxy.onStart = onStart
+            proxy.onFinish = onFinish
+            proxy.onFail = onFail
+            webView.navigationDelegate = proxy
         }
     }
 }
 #endif
+
+// MARK: - 视图外壳
+
+private struct LoginNavigationContainer<Content: View>: View {
+    let content: Content
+
+    init(@ViewBuilder content: () -> Content) {
+        self.content = content()
+    }
+
+    var body: some View {
+        NavigationView { content }
+            .stackNavigationStyle()
+    }
+}
+
+private struct InlineNavigationTitle: ViewModifier {
+    func body(content: Content) -> some View {
+        #if os(iOS)
+        content.navigationBarTitleDisplayMode(.inline)
+        #else
+        content
+        #endif
+    }
+}
+
+private extension View {
+    func inlineNavigationTitle() -> some View {
+        modifier(InlineNavigationTitle())
+    }
+}
+
+private struct BrowserToolbar: View {
+    let webView: WKWebView
+    let onManualCookie: () -> Void
+    @Environment(\.appTheme) private var theme
+
+    var body: some View {
+        HStack(spacing: 20) {
+            control("chevron.backward", active: webView.canGoBack) { webView.goBack() }
+            control("chevron.forward", active: webView.canGoForward) { webView.goForward() }
+            control("arrow.clockwise", active: true) { webView.reload() }
+
+            Spacer()
+
+            Button("手动粘贴 Cookie", action: onManualCookie)
+                .font(.caption)
+                .buttonStyle(.bordered)
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 8)
+        .background(theme.palette.divider.opacity(0.05))
+    }
+
+    private func control(_ symbol: String, active: Bool, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: symbol)
+        }
+        .disabled(!active)
+    }
+}
+
+private struct CancelToolbar: ToolbarContent {
+    let action: () -> Void
+
+    var body: some ToolbarContent {
+        ToolbarItem(placement: .cancellationAction) {
+            Button("取消", action: action)
+        }
+    }
+}

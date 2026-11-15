@@ -198,7 +198,7 @@ final class HttpTTSTests: XCTestCase {
 
     private func makeTemporaryStore() -> HttpTTSStore {
         let directory = URL(fileURLWithPath: NSTemporaryDirectory())
-            .appendingPathComponent("legado-httptts-tests-\(UUID().uuidString)", isDirectory: true)
+            .appendingPathComponent("juyue-httptts-tests-\(UUID().uuidString)", isDirectory: true)
         return HttpTTSStore(directory: directory)
     }
 
