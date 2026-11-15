@@ -5305,6 +5305,7 @@ struct SubscribeArticleView: View {
         NavigationView {
             Group {
                 if showWeb, let html = detailHTML, !html.isEmpty {
+                    #if canImport(UIKit)
                     SubscribeWebReader(
                         html: html,
                         url: URL(string: contentBaseURL.isEmpty ? article.link : contentBaseURL),
@@ -5321,6 +5322,9 @@ struct SubscribeArticleView: View {
                         onDownloadLink: { startDownload($0) },
                         onExternalLink: { pendingExternalLink = $0 }
                     )
+                    #else
+                    Text("网页阅读在 iOS 上可用")
+                    #endif
                 } else {
                     ScrollView {
                         VStack(alignment: .leading, spacing: 12) {
