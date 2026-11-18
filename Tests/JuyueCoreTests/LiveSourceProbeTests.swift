@@ -90,7 +90,12 @@ final class LiveSourceProbeTests: XCTestCase {
 
     /// 临时：复现「正文里出现 JS 解码脚本」的书源。
     func testProbeAntiScrapeContent() async throws {
-        let path = "/Volumes/APFS/legado-baidu/book-sources/橘阅精选书源-免费可读-2026-11-03.json"
+        let path = ProcessInfo.processInfo.environment["PROBE_SOURCE"]
+            ?? "/Volumes/APFS/legado-baidu/book-sources/橘阅精选书源-免费可读-2026-11-03.json"
+        // 本地探针：CI 上没有这份书源，跳过而不是判失败。
+        guard FileManager.default.fileExists(atPath: path) else {
+            throw XCTSkip("探针书源不存在：\(path)")
+        }
         let data = try Data(contentsOf: URL(fileURLWithPath: path))
         let sources = try JSONDecoder().decode([BookSource].self, from: data)
         let key = ProcessInfo.processInfo.environment["PROBE_BOOK"] ?? "带着MC系统到中土"
