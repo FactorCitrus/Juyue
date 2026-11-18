@@ -2,18 +2,18 @@
 import PackageDescription
 
 let package = Package(
-    name: "Legado",
+    name: "Juyue",
     platforms: [
         .iOS(.v15),
         .macOS(.v12)
     ],
     products: [
         .library(
-            name: "LegadoCore",
-            targets: ["LegadoCore"]),
+            name: "JuyueCore",
+            targets: ["JuyueCore"]),
         .library(
-            name: "LegadoApp",
-            targets: ["LegadoApp"]),
+            name: "JuyueApp",
+            targets: ["JuyueApp"]),
     ],
     dependencies: [
         .package(url: "https://github.com/scinfu/SwiftSoup.git", from: "2.6.0"),
@@ -21,15 +21,15 @@ let package = Package(
     ],
     targets: [
         .target(
-            name: "LegadoCore",
+            name: "JuyueCore",
             dependencies: [
                 "SwiftSoup",
                 "ZIPFoundation"
             ]),
         .target(
-            name: "LegadoApp",
+            name: "JuyueApp",
             dependencies: [
-                "LegadoCore"
+                "JuyueCore"
             ],
             exclude: ["Info.plist", "Info-AppStore.plist"],
             resources: [
@@ -37,7 +37,7 @@ let package = Package(
                 .copy("PrivacyInfo.xcprivacy")
             ]),
         .testTarget(
-            name: "LegadoCoreTests",
-            dependencies: ["LegadoCore", "ZIPFoundation"]),
+            name: "JuyueCoreTests",
+            dependencies: ["JuyueCore", "ZIPFoundation"]),
     ]
 )

@@ -16,7 +16,7 @@
                BuildableIdentifier = "primary"
                BlueprintIdentifier = "6AA38DB9F09E8937A03A7462"
                BuildableName = "JuyueReader.app"
-               BlueprintName = "LegadoApp"
+               BlueprintName = "JuyueApp"
                ReferencedContainer = "container:Juyue.xcodeproj">
             </BuildableReference>
          </BuildActionEntry>
@@ -38,7 +38,7 @@
             BuildableIdentifier = "primary"
             BlueprintIdentifier = "6AA38DB9F09E8937A03A7462"
             BuildableName = "JuyueReader.app"
-            BlueprintName = "LegadoApp"
+            BlueprintName = "JuyueApp"
             ReferencedContainer = "container:Juyue.xcodeproj">
          </BuildableReference>
       </BuildableProductRunnable>

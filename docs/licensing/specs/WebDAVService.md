@@ -6,7 +6,7 @@
 
 | 成员 | 说明 |
 |---|---|
-| `WebDAVConfig(url:username:password:remotePath:deviceName:lastSyncTime:)` | 默认 `https://dav.jianguoyun.com/dav/`、`remotePath = "legado"` |
+| `WebDAVConfig(url:username:password:remotePath:deviceName:lastSyncTime:)` | 默认 `https://dav.jianguoyun.com/dav/`、`remotePath = "juyue"` |
 | `WebDAVConfig.directoryURL` | 无 scheme 补 `https://`，服务器地址与 remotePath 都补尾斜杠 |
 | `WebDAVConfig.serverRootURL` | 同上但不拼 remotePath |
 | `WebDAVConfig.sendCredentialsInClear` | `http://` 为真 |
@@ -38,4 +38,4 @@
 
 ## 测试映射
 
-`Tests/LegadoCoreTests/WebDAVServiceCleanRoomTests.swift`，16 条：URL 拼接 3、凭据 2、命名 3、PROPFIND 4、zip 往返 3、进度合并 2（含倒退保护）。
+`Tests/JuyueCoreTests/WebDAVServiceCleanRoomTests.swift`，16 条：URL 拼接 3、凭据 2、命名 3、PROPFIND 4、zip 往返 3、进度合并 2（含倒退保护）。

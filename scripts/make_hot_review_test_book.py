@@ -117,7 +117,7 @@ def main() -> None:
     prefs_path = app_data / "Library" / "Preferences" / "com.factorcitrus.juyue.plist"
     with prefs_path.open("rb") as handle:
         prefs = plistlib.load(handle)
-    books = json.loads(prefs["legado_bookshelf_v1"].decode("utf-8"))
+    books = json.loads(prefs["juyue_bookshelf_v1"].decode("utf-8"))
     books = [book for book in books if book.get("bookUrl") != book_url]
     books.insert(
         0,
@@ -136,7 +136,7 @@ def main() -> None:
             "durChapterTitle": "热评测试",
         },
     )
-    prefs["legado_bookshelf_v1"] = json.dumps(books, ensure_ascii=False).encode("utf-8")
+    prefs["juyue_bookshelf_v1"] = json.dumps(books, ensure_ascii=False).encode("utf-8")
     with prefs_path.open("wb") as handle:
         plistlib.dump(prefs, handle, fmt=plistlib.FMT_BINARY)
 

@@ -10,129 +10,147 @@
 	<string>54</string>
 	<key>objects</key>
 	<dict>
-		<key>A1855DBF6B8EA4EF7D1A571F</key>
+		<key>343FA247ECC118255BE63383</key>
 		<dict>
 			<key>isa</key>
 			<string>PBXFileReference</string>
 			<key>lastKnownFileType</key>
 			<string>sourcecode.swift</string>
 			<key>path</key>
-			<string>Sources/LegadoCore/Service/BookSourceScheme.swift</string>
+			<string>Sources/JuyueCore/Service/BookSourceScheme.swift</string>
 			<key>sourceTree</key>
 			<string>&lt;group&gt;</string>
 		</dict>
-		<key>5C194B2A3B63E34EFD8C93FF</key>
+		<key>77D6A5280B589A4E7D459C97</key>
 		<dict>
 			<key>fileRef</key>
-			<string>A1855DBF6B8EA4EF7D1A571F</string>
+			<string>343FA247ECC118255BE63383</string>
 			<key>isa</key>
 			<string>PBXBuildFile</string>
 		</dict>
-		<key>1F81AB68ACEFE2CB30CABE75</key>
+		<key>B6346D9B1BBA06ECDA676D77</key>
 		<dict>
 			<key>isa</key>
 			<string>PBXFileReference</string>
 			<key>lastKnownFileType</key>
 			<string>sourcecode.swift</string>
 			<key>path</key>
-			<string>Sources/LegadoCore/Service/ContentRuleSupport.swift</string>
+			<string>Sources/JuyueCore/Service/ContentRuleSupport.swift</string>
 			<key>sourceTree</key>
 			<string>&lt;group&gt;</string>
 		</dict>
-		<key>E7247E5806345CB951342579</key>
+		<key>13330F47AB1C2B66F1939AB4</key>
 		<dict>
 			<key>fileRef</key>
-			<string>1F81AB68ACEFE2CB30CABE75</string>
+			<string>B6346D9B1BBA06ECDA676D77</string>
 			<key>isa</key>
 			<string>PBXBuildFile</string>
 		</dict>
-		<key>F8FB5996FE5B9ED5593346BE</key>
+		<key>21F67CDA0CE6D9B1E758E8A3</key>
 		<dict>
 			<key>isa</key>
 			<string>PBXFileReference</string>
 			<key>lastKnownFileType</key>
 			<string>sourcecode.swift</string>
 			<key>path</key>
-			<string>Sources/LegadoCore/Engine/JsoupShim.swift</string>
+			<string>Sources/JuyueCore/Engine/JsoupShim.swift</string>
 			<key>sourceTree</key>
 			<string>&lt;group&gt;</string>
 		</dict>
-		<key>15C3174196F69C1E653C7655</key>
+		<key>A16002044DC1C482BCD08A62</key>
 		<dict>
 			<key>fileRef</key>
-			<string>F8FB5996FE5B9ED5593346BE</string>
+			<string>21F67CDA0CE6D9B1E758E8A3</string>
 			<key>isa</key>
 			<string>PBXBuildFile</string>
 		</dict>
-		<key>62174555CF1823F705CE8BCA</key>
+		<key>F11E5EC3680C892116B635A1</key>
 		<dict>
 			<key>isa</key>
 			<string>PBXFileReference</string>
 			<key>lastKnownFileType</key>
 			<string>sourcecode.swift</string>
 			<key>path</key>
-			<string>Sources/LegadoApp/Services/HeadlessWebViewFetcher.swift</string>
+			<string>Sources/JuyueApp/Services/HeadlessWebViewFetcher.swift</string>
 			<key>sourceTree</key>
 			<string>&lt;group&gt;</string>
 		</dict>
-		<key>8BCB199A2FFBD6D943801FEE</key>
+		<key>36FD717EC9CBC8E2E37D8362</key>
 		<dict>
 			<key>isa</key>
 			<string>PBXFileReference</string>
 			<key>lastKnownFileType</key>
 			<string>sourcecode.swift</string>
 			<key>path</key>
-			<string>Sources/LegadoCore/Engine/HeadlessWebView.swift</string>
+			<string>Sources/JuyueCore/Engine/HeadlessWebView.swift</string>
 			<key>sourceTree</key>
 			<string>&lt;group&gt;</string>
 		</dict>
-		<key>68BFE44996E3C22BB2CA3588</key>
+		<key>B25572F4B3B6430967DDDCE1</key>
 		<dict>
 			<key>fileRef</key>
-			<string>62174555CF1823F705CE8BCA</string>
+			<string>F11E5EC3680C892116B635A1</string>
 			<key>isa</key>
 			<string>PBXBuildFile</string>
 		</dict>
-		<key>665E373B41BA873AB63EA504</key>
+		<key>E2D3BDC151153C17717C3F39</key>
 		<dict>
 			<key>fileRef</key>
-			<string>8BCB199A2FFBD6D943801FEE</string>
+			<string>36FD717EC9CBC8E2E37D8362</string>
 			<key>isa</key>
 			<string>PBXBuildFile</string>
 		</dict>
-		<key>8BD48FA873B1D4E1E21538B6</key>
+		<key>BF13A777ECE6B0B901E3BF48</key>
 		<dict>
 			<key>isa</key>
 			<string>PBXFileReference</string>
 			<key>lastKnownFileType</key>
 			<string>sourcecode.swift</string>
 			<key>path</key>
-			<string>Sources/LegadoCore/Service/SourceSwitchResultOrdering.swift</string>
+			<string>Sources/JuyueCore/Service/SourceSwitchResultOrdering.swift</string>
 			<key>sourceTree</key>
 			<string>&lt;group&gt;</string>
 		</dict>
-		<key>82C3A69B9AB3AA50858D38C4</key>
+		<key>4C6AB9EDF6E46839068BB96D</key>
 		<dict>
 			<key>fileRef</key>
-			<string>8BD48FA873B1D4E1E21538B6</string>
+			<string>BF13A777ECE6B0B901E3BF48</string>
 			<key>isa</key>
 			<string>PBXBuildFile</string>
 		</dict>
-		<key>26925897A30E325902A3DA57</key>
+		<key>C4618578A13D5E32DAB541F4</key>
 		<dict>
 			<key>isa</key>
 			<string>PBXFileReference</string>
 			<key>lastKnownFileType</key>
 			<string>sourcecode.swift</string>
 			<key>path</key>
-			<string>Sources/LegadoCore/Service/ImportAssetSupport.swift</string>
+			<string>Sources/JuyueCore/Service/ImportAssetSupport.swift</string>
 			<key>sourceTree</key>
 			<string>&lt;group&gt;</string>
 		</dict>
-		<key>C575D321B0D297111CAC22F5</key>
+		<key>D5A768EAB299CF5A13659525</key>
 		<dict>
 			<key>fileRef</key>
-			<string>26925897A30E325902A3DA57</string>
+			<string>C4618578A13D5E32DAB541F4</string>
+			<key>isa</key>
+			<string>PBXBuildFile</string>
+		</dict>
+		<key>A8F5F8ECA9D62A048F60F94E</key>
+		<dict>
+			<key>isa</key>
+			<string>PBXFileReference</string>
+			<key>lastKnownFileType</key>
+			<string>sourcecode.swift</string>
+			<key>path</key>
+			<string>Sources/JuyueCore/Utils/StorageMigration.swift</string>
+			<key>sourceTree</key>
+			<string>&lt;group&gt;</string>
+		</dict>
+		<key>8F6BCC61265FF30753A48F99</key>
+		<dict>
+			<key>fileRef</key>
+			<string>A8F5F8ECA9D62A048F60F94E</string>
 			<key>isa</key>
 			<string>PBXBuildFile</string>
 		</dict>
@@ -143,7 +161,7 @@
 			<key>lastKnownFileType</key>
 			<string>sourcecode.swift</string>
 			<key>path</key>
-			<string>Sources/LegadoApp/Services/LocalTTSModelStore.swift</string>
+			<string>Sources/JuyueApp/Services/LocalTTSModelStore.swift</string>
 			<key>sourceTree</key>
 			<string>&lt;group&gt;</string>
 		</dict>
@@ -161,7 +179,7 @@
 			<key>lastKnownFileType</key>
 			<string>sourcecode.swift</string>
 			<key>path</key>
-			<string>Sources/LegadoApp/Views/BookSourceDisclaimer.swift</string>
+			<string>Sources/JuyueApp/Views/BookSourceDisclaimer.swift</string>
 			<key>sourceTree</key>
 			<string>&lt;group&gt;</string>
 		</dict>
@@ -179,7 +197,7 @@
 			<key>lastKnownFileType</key>
 			<string>sourcecode.swift</string>
 			<key>path</key>
-			<string>Sources/LegadoCore/Service/BookSourceGate.swift</string>
+			<string>Sources/JuyueCore/Service/BookSourceGate.swift</string>
 			<key>sourceTree</key>
 			<string>&lt;group&gt;</string>
 		</dict>
@@ -197,7 +215,7 @@
 			<key>lastKnownFileType</key>
 			<string>sourcecode.swift</string>
 			<key>path</key>
-			<string>Sources/LegadoApp/AppEdition.swift</string>
+			<string>Sources/JuyueApp/AppEdition.swift</string>
 			<key>sourceTree</key>
 			<string>&lt;group&gt;</string>
 		</dict>
@@ -271,7 +289,7 @@
 			<key>lastKnownFileType</key>
 			<string>image.png</string>
 			<key>path</key>
-			<string>Sources/LegadoApp/Resources/AppIconClassic60x60@2x.png</string>
+			<string>Sources/JuyueApp/Resources/AppIconClassic60x60@2x.png</string>
 			<key>sourceTree</key>
 			<string>&lt;group&gt;</string>
 		</dict>
@@ -282,7 +300,7 @@
 			<key>lastKnownFileType</key>
 			<string>image.png</string>
 			<key>path</key>
-			<string>Sources/LegadoApp/Resources/AppIconClassic60x60@3x.png</string>
+			<string>Sources/JuyueApp/Resources/AppIconClassic60x60@3x.png</string>
 			<key>sourceTree</key>
 			<string>&lt;group&gt;</string>
 		</dict>
@@ -293,7 +311,7 @@
 			<key>lastKnownFileType</key>
 			<string>image.png</string>
 			<key>path</key>
-			<string>Sources/LegadoApp/Resources/AppIconClassic76x76@2x~ipad.png</string>
+			<string>Sources/JuyueApp/Resources/AppIconClassic76x76@2x~ipad.png</string>
 			<key>sourceTree</key>
 			<string>&lt;group&gt;</string>
 		</dict>
@@ -304,7 +322,7 @@
 			<key>lastKnownFileType</key>
 			<string>image.png</string>
 			<key>path</key>
-			<string>Sources/LegadoApp/Resources/AppIconClassic83.5x83.5@2x~ipad.png</string>
+			<string>Sources/JuyueApp/Resources/AppIconClassic83.5x83.5@2x~ipad.png</string>
 			<key>sourceTree</key>
 			<string>&lt;group&gt;</string>
 		</dict>
@@ -315,7 +333,7 @@
 			<key>lastKnownFileType</key>
 			<string>image.png</string>
 			<key>path</key>
-			<string>Sources/LegadoApp/Resources/AppIconOrange60x60@2x.png</string>
+			<string>Sources/JuyueApp/Resources/AppIconOrange60x60@2x.png</string>
 			<key>sourceTree</key>
 			<string>&lt;group&gt;</string>
 		</dict>
@@ -326,7 +344,7 @@
 			<key>lastKnownFileType</key>
 			<string>image.png</string>
 			<key>path</key>
-			<string>Sources/LegadoApp/Resources/AppIconOrange60x60@3x.png</string>
+			<string>Sources/JuyueApp/Resources/AppIconOrange60x60@3x.png</string>
 			<key>sourceTree</key>
 			<string>&lt;group&gt;</string>
 		</dict>
@@ -337,7 +355,7 @@
 			<key>lastKnownFileType</key>
 			<string>image.png</string>
 			<key>path</key>
-			<string>Sources/LegadoApp/Resources/AppIconOrange76x76@2x~ipad.png</string>
+			<string>Sources/JuyueApp/Resources/AppIconOrange76x76@2x~ipad.png</string>
 			<key>sourceTree</key>
 			<string>&lt;group&gt;</string>
 		</dict>
@@ -348,7 +366,7 @@
 			<key>lastKnownFileType</key>
 			<string>image.png</string>
 			<key>path</key>
-			<string>Sources/LegadoApp/Resources/AppIconOrange83.5x83.5@2x~ipad.png</string>
+			<string>Sources/JuyueApp/Resources/AppIconOrange83.5x83.5@2x~ipad.png</string>
 			<key>sourceTree</key>
 			<string>&lt;group&gt;</string>
 		</dict>
@@ -359,7 +377,7 @@
 			<key>lastKnownFileType</key>
 			<string>text.xml</string>
 			<key>path</key>
-			<string>Sources/LegadoApp/PrivacyInfo.xcprivacy</string>
+			<string>Sources/JuyueApp/PrivacyInfo.xcprivacy</string>
 			<key>sourceTree</key>
 			<string>&lt;group&gt;</string>
 		</dict>
@@ -384,7 +402,7 @@
 			<key>lastKnownFileType</key>
 			<string>sourcecode.swift</string>
 			<key>path</key>
-			<string>Sources/LegadoApp/Views/SourceCheckView.swift</string>
+			<string>Sources/JuyueApp/Views/SourceCheckView.swift</string>
 			<key>sourceTree</key>
 			<string>&lt;group&gt;</string>
 		</dict>
@@ -395,7 +413,7 @@
 			<key>lastKnownFileType</key>
 			<string>folder.assetcatalog</string>
 			<key>path</key>
-			<string>Sources/LegadoApp/Resources/Assets.xcassets</string>
+			<string>Sources/JuyueApp/Resources/Assets.xcassets</string>
 			<key>sourceTree</key>
 			<string>&lt;group&gt;</string>
 		</dict>
@@ -413,7 +431,7 @@
 			<key>lastKnownFileType</key>
 			<string>sourcecode.swift</string>
 			<key>path</key>
-			<string>Sources/LegadoApp/Views/Reader/QwenTTSSetupView.swift</string>
+			<string>Sources/JuyueApp/Views/Reader/QwenTTSSetupView.swift</string>
 			<key>sourceTree</key>
 			<string>&lt;group&gt;</string>
 		</dict>
@@ -431,7 +449,7 @@
 			<key>lastKnownFileType</key>
 			<string>folder.assetcatalog</string>
 			<key>path</key>
-			<string>Sources/LegadoApp/Resources/SideloadArt.xcassets</string>
+			<string>Sources/JuyueApp/Resources/SideloadArt.xcassets</string>
 			<key>sourceTree</key>
 			<string>&lt;group&gt;</string>
 		</dict>
@@ -449,7 +467,7 @@
 			<key>lastKnownFileType</key>
 			<string>sourcecode.swift</string>
 			<key>path</key>
-			<string>Sources/LegadoApp/Services/ExportedFile.swift</string>
+			<string>Sources/JuyueApp/Services/ExportedFile.swift</string>
 			<key>sourceTree</key>
 			<string>&lt;group&gt;</string>
 		</dict>
@@ -493,7 +511,6 @@
 				<string>EE55FF00000000000000C001</string>
 				<string>EE55FF00000000000000C005</string>
 				<string>EE55FF00000000000000C007</string>
-				<string>C0DE00000000000000000001</string>
 			</array>
 			<key>isa</key>
 			<string>PBXGroup</string>
@@ -523,7 +540,7 @@
 			<key>lastKnownFileType</key>
 			<string>sourcecode.swift</string>
 			<key>path</key>
-			<string>Sources/LegadoApp/Services/BookStore.swift</string>
+			<string>Sources/JuyueApp/Services/BookStore.swift</string>
 			<key>sourceTree</key>
 			<string>&lt;group&gt;</string>
 		</dict>
@@ -534,7 +551,7 @@
 			<key>lastKnownFileType</key>
 			<string>sourcecode.swift</string>
 			<key>path</key>
-			<string>Sources/LegadoApp/Services/AppSettingsBackup.swift</string>
+			<string>Sources/JuyueApp/Services/AppSettingsBackup.swift</string>
 			<key>sourceTree</key>
 			<string>&lt;group&gt;</string>
 		</dict>
@@ -566,7 +583,7 @@
 			<key>lastKnownFileType</key>
 			<string>sourcecode.swift</string>
 			<key>path</key>
-			<string>Sources/LegadoCore/LegadoCore.swift</string>
+			<string>Sources/JuyueCore/JuyueCore.swift</string>
 			<key>sourceTree</key>
 			<string>&lt;group&gt;</string>
 		</dict>
@@ -586,7 +603,7 @@
 			<key>lastKnownFileType</key>
 			<string>sourcecode.swift</string>
 			<key>path</key>
-			<string>Sources/LegadoCore/Utils/CryptoUtils.swift</string>
+			<string>Sources/JuyueCore/Utils/CryptoUtils.swift</string>
 			<key>sourceTree</key>
 			<string>&lt;group&gt;</string>
 		</dict>
@@ -597,7 +614,7 @@
 			<key>lastKnownFileType</key>
 			<string>sourcecode.swift</string>
 			<key>path</key>
-			<string>Sources/LegadoCore/Utils/CookieJar.swift</string>
+			<string>Sources/JuyueCore/Utils/CookieJar.swift</string>
 			<key>sourceTree</key>
 			<string>&lt;group&gt;</string>
 		</dict>
@@ -606,7 +623,6 @@
 			<key>children</key>
 			<array>
 				<string>D8DFA4D16089BF33BEFA2BEB</string>
-				<string>C0DE00000000000000000010</string>
 			</array>
 			<key>isa</key>
 			<string>PBXGroup</string>
@@ -622,7 +638,7 @@
 			<key>lastKnownFileType</key>
 			<string>sourcecode.swift</string>
 			<key>path</key>
-			<string>Sources/LegadoApp/Views/SearchBookView.swift</string>
+			<string>Sources/JuyueApp/Views/SearchBookView.swift</string>
 			<key>sourceTree</key>
 			<string>&lt;group&gt;</string>
 		</dict>
@@ -633,7 +649,7 @@
 			<key>lastKnownFileType</key>
 			<string>sourcecode.swift</string>
 			<key>path</key>
-			<string>Sources/LegadoApp/Views/SourceWebLoginView.swift</string>
+			<string>Sources/JuyueApp/Views/SourceWebLoginView.swift</string>
 			<key>sourceTree</key>
 			<string>&lt;group&gt;</string>
 		</dict>
@@ -658,7 +674,7 @@
 			<key>lastKnownFileType</key>
 			<string>sourcecode.swift</string>
 			<key>path</key>
-			<string>Sources/LegadoCore/Models/Book.swift</string>
+			<string>Sources/JuyueCore/Models/Book.swift</string>
 			<key>sourceTree</key>
 			<string>&lt;group&gt;</string>
 		</dict>
@@ -700,7 +716,7 @@
 			<key>lastKnownFileType</key>
 			<string>sourcecode.swift</string>
 			<key>path</key>
-			<string>Sources/LegadoApp/Views/SourceManagerView.swift</string>
+			<string>Sources/JuyueApp/Views/SourceManagerView.swift</string>
 			<key>sourceTree</key>
 			<string>&lt;group&gt;</string>
 		</dict>
@@ -725,7 +741,7 @@
 			<key>lastKnownFileType</key>
 			<string>sourcecode.swift</string>
 			<key>path</key>
-			<string>Sources/LegadoCore/Service/BookSearchService.swift</string>
+			<string>Sources/JuyueCore/Service/BookSearchService.swift</string>
 			<key>sourceTree</key>
 			<string>&lt;group&gt;</string>
 		</dict>
@@ -740,7 +756,7 @@
 				<key>CODE_SIGN_STYLE</key>
 				<string>Automatic</string>
 				<key>CURRENT_PROJECT_VERSION</key>
-				<string>5.1.11</string>
+				<string>5.1.12</string>
 				<key>DEVELOPMENT_TEAM</key>
 				<string></string>
 				<key>ENABLE_PREVIEWS</key>
@@ -748,7 +764,7 @@
 				<key>GENERATE_INFOPLIST_FILE</key>
 				<string>YES</string>
 				<key>INFOPLIST_FILE</key>
-				<string>Sources/LegadoApp/Info.plist</string>
+				<string>Sources/JuyueApp/Info.plist</string>
 				<key>INFOPLIST_KEY_CFBundleDisplayName</key>
 				<string>橘阅</string>
 				<key>INFOPLIST_KEY_UIApplicationSceneManifest_Generation</key>
@@ -762,7 +778,7 @@
 				<key>LD_RUNPATH_SEARCH_PATHS</key>
 				<string>$(inherited) @executable_path/Frameworks</string>
 				<key>MARKETING_VERSION</key>
-				<string>5.1.11</string>
+				<string>5.1.12</string>
 				<key>PRODUCT_BUNDLE_IDENTIFIER</key>
 				<string>com.factorcitrus.juyue</string>
 				<key>PRODUCT_NAME</key>
@@ -823,7 +839,7 @@
 			<key>lastKnownFileType</key>
 			<string>sourcecode.swift</string>
 			<key>path</key>
-			<string>Sources/LegadoCore/Models/BookSource.swift</string>
+			<string>Sources/JuyueCore/Models/BookSource.swift</string>
 			<key>sourceTree</key>
 			<string>&lt;group&gt;</string>
 		</dict>
@@ -880,7 +896,7 @@
 			<key>lastKnownFileType</key>
 			<string>sourcecode.swift</string>
 			<key>path</key>
-			<string>Sources/LegadoCore/Service/WebDAVService.swift</string>
+			<string>Sources/JuyueCore/Service/WebDAVService.swift</string>
 			<key>sourceTree</key>
 			<string>&lt;group&gt;</string>
 		</dict>
@@ -891,7 +907,7 @@
 			<key>lastKnownFileType</key>
 			<string>sourcecode.swift</string>
 			<key>path</key>
-			<string>Sources/LegadoCore/Utils/JSONPath.swift</string>
+			<string>Sources/JuyueCore/Utils/JSONPath.swift</string>
 			<key>sourceTree</key>
 			<string>&lt;group&gt;</string>
 		</dict>
@@ -920,14 +936,14 @@
 			<key>isa</key>
 			<string>PBXNativeTarget</string>
 			<key>name</key>
-			<string>LegadoApp</string>
+			<string>JuyueApp</string>
 			<key>packageProductDependencies</key>
 			<array>
 				<string>18F2053E418685EEAF8FF6A6</string>
 				<string>0194F438E6D24FA0D7FF4315</string>
 			</array>
 			<key>productName</key>
-			<string>LegadoApp</string>
+			<string>JuyueApp</string>
 			<key>productReference</key>
 			<string>D8DFA4D16089BF33BEFA2BEB</string>
 			<key>productType</key>
@@ -940,7 +956,7 @@
 			<key>lastKnownFileType</key>
 			<string>sourcecode.swift</string>
 			<key>path</key>
-			<string>Sources/LegadoCore/Service/EpubParser.swift</string>
+			<string>Sources/JuyueCore/Service/EpubParser.swift</string>
 			<key>sourceTree</key>
 			<string>&lt;group&gt;</string>
 		</dict>
@@ -972,7 +988,7 @@
 			<key>lastKnownFileType</key>
 			<string>sourcecode.swift</string>
 			<key>path</key>
-			<string>Sources/LegadoApp/LegadoApp.swift</string>
+			<string>Sources/JuyueApp/JuyueApp.swift</string>
 			<key>sourceTree</key>
 			<string>&lt;group&gt;</string>
 		</dict>
@@ -1035,16 +1051,17 @@
 				<string>E1BD9F822CAA81583692CC4A</string>
 				<string>D490C1B48204AFC3A8C09FB5</string>
 				<string>C9A65C4EBBE51CD4295A8CA7</string>
-				<string>26925897A30E325902A3DA57</string>
-				<string>8BD48FA873B1D4E1E21538B6</string>
-				<string>62174555CF1823F705CE8BCA</string>
-				<string>8BCB199A2FFBD6D943801FEE</string>
-				<string>F8FB5996FE5B9ED5593346BE</string>
-				<string>1F81AB68ACEFE2CB30CABE75</string>
-				<string>A1855DBF6B8EA4EF7D1A571F</string>
-				<string>1A0DF2CA4C8FA38F9642B346</string>
-				<string>DFE3471D376FF9D7CBC8B0BB</string>
-				<string>54C4E1B0C1B4A264EA12124F</string>
+				<string>A8F5F8ECA9D62A048F60F94E</string>
+				<string>C4618578A13D5E32DAB541F4</string>
+				<string>BF13A777ECE6B0B901E3BF48</string>
+				<string>F11E5EC3680C892116B635A1</string>
+				<string>36FD717EC9CBC8E2E37D8362</string>
+				<string>21F67CDA0CE6D9B1E758E8A3</string>
+				<string>B6346D9B1BBA06ECDA676D77</string>
+				<string>343FA247ECC118255BE63383</string>
+				<string>2A07CA412B51936E3A4F483F</string>
+				<string>D006E85B12098EE3491401B9</string>
+				<string>EA41A568140CAC528D204205</string>
 			</array>
 			<key>isa</key>
 			<string>PBXGroup</string>
@@ -1075,14 +1092,6 @@
 				<string>1</string>
 				<key>LastUpgradeCheck</key>
 				<string>1420</string>
-				<key>TargetAttributes</key>
-				<dict>
-					<key>C0DE00000000000000000020</key>
-					<dict>
-						<key>TestTargetID</key>
-						<string>6AA38DB9F09E8937A03A7462</string>
-					</dict>
-				</dict>
 			</dict>
 			<key>buildConfigurationList</key>
 			<string>877A59C8A2B3DE9D57625958</string>
@@ -1115,7 +1124,6 @@
 			<key>targets</key>
 			<array>
 				<string>6AA38DB9F09E8937A03A7462</string>
-				<string>C0DE00000000000000000020</string>
 			</array>
 		</dict>
 		<key>877A59C8A2B3DE9D57625958</key>
@@ -1140,7 +1148,7 @@
 			<key>lastKnownFileType</key>
 			<string>sourcecode.swift</string>
 			<key>path</key>
-			<string>Sources/LegadoApp/Services/SearchViewModel.swift</string>
+			<string>Sources/JuyueApp/Services/SearchViewModel.swift</string>
 			<key>sourceTree</key>
 			<string>&lt;group&gt;</string>
 		</dict>
@@ -1158,7 +1166,7 @@
 			<key>lastKnownFileType</key>
 			<string>sourcecode.swift</string>
 			<key>path</key>
-			<string>Sources/LegadoApp/Services/AudioBookService.swift</string>
+			<string>Sources/JuyueApp/Services/AudioBookService.swift</string>
 			<key>sourceTree</key>
 			<string>&lt;group&gt;</string>
 		</dict>
@@ -1169,7 +1177,7 @@
 			<key>lastKnownFileType</key>
 			<string>sourcecode.swift</string>
 			<key>path</key>
-			<string>Sources/LegadoApp/Views/WebDAVSyncView.swift</string>
+			<string>Sources/JuyueApp/Views/WebDAVSyncView.swift</string>
 			<key>sourceTree</key>
 			<string>&lt;group&gt;</string>
 		</dict>
@@ -1180,7 +1188,7 @@
 			<key>lastKnownFileType</key>
 			<string>sourcecode.swift</string>
 			<key>path</key>
-			<string>Sources/LegadoCore/Engine/JSEngine.swift</string>
+			<string>Sources/JuyueCore/Engine/JSEngine.swift</string>
 			<key>sourceTree</key>
 			<string>&lt;group&gt;</string>
 		</dict>
@@ -1191,7 +1199,7 @@
 			<key>lastKnownFileType</key>
 			<string>sourcecode.swift</string>
 			<key>path</key>
-			<string>Sources/LegadoCore/Engine/RuleAnalyzer.swift</string>
+			<string>Sources/JuyueCore/Engine/RuleAnalyzer.swift</string>
 			<key>sourceTree</key>
 			<string>&lt;group&gt;</string>
 		</dict>
@@ -1277,16 +1285,17 @@
 				<string>BD0200000000000000BF11E04</string>
 				<string>BD0200000000000000BF11E06</string>
 				<string>BD0200000000000000BF11E08</string>
-				<string>C575D321B0D297111CAC22F5</string>
-				<string>82C3A69B9AB3AA50858D38C4</string>
-				<string>68BFE44996E3C22BB2CA3588</string>
-				<string>665E373B41BA873AB63EA504</string>
-				<string>15C3174196F69C1E653C7655</string>
-				<string>E7247E5806345CB951342579</string>
-				<string>5C194B2A3B63E34EFD8C93FF</string>
-				<string>1A5AC0FF8BEC7C1DAF0F2DA6</string>
-				<string>38DC4ACB069A20E6FCFCE9FF</string>
-				<string>D90900D2E44AB751DEAF1DA8</string>
+				<string>8F6BCC61265FF30753A48F99</string>
+				<string>D5A768EAB299CF5A13659525</string>
+				<string>4C6AB9EDF6E46839068BB96D</string>
+				<string>B25572F4B3B6430967DDDCE1</string>
+				<string>E2D3BDC151153C17717C3F39</string>
+				<string>A16002044DC1C482BCD08A62</string>
+				<string>13330F47AB1C2B66F1939AB4</string>
+				<string>77D6A5280B589A4E7D459C97</string>
+				<string>ABF1937CE1B48AA780D1705F</string>
+				<string>A806F10C8A7C1E5D5AADAF99</string>
+				<string>20D2ED206A462DF998AB950C</string>
 			</array>
 			<key>isa</key>
 			<string>PBXSourcesBuildPhase</string>
@@ -1307,7 +1316,7 @@
 			<key>lastKnownFileType</key>
 			<string>sourcecode.swift</string>
 			<key>path</key>
-			<string>Sources/LegadoCore/Service/SourceRateLimiter.swift</string>
+			<string>Sources/JuyueCore/Service/SourceRateLimiter.swift</string>
 			<key>sourceTree</key>
 			<string>&lt;group&gt;</string>
 		</dict>
@@ -1325,7 +1334,7 @@
 			<key>lastKnownFileType</key>
 			<string>sourcecode.swift</string>
 			<key>path</key>
-			<string>Sources/LegadoCore/Service/SourceRequestSupport.swift</string>
+			<string>Sources/JuyueCore/Service/SourceRequestSupport.swift</string>
 			<key>sourceTree</key>
 			<string>&lt;group&gt;</string>
 		</dict>
@@ -1343,7 +1352,7 @@
 			<key>lastKnownFileType</key>
 			<string>sourcecode.swift</string>
 			<key>path</key>
-			<string>Sources/LegadoApp/Views/MediaBookReaderView.swift</string>
+			<string>Sources/JuyueApp/Views/MediaBookReaderView.swift</string>
 			<key>sourceTree</key>
 			<string>&lt;group&gt;</string>
 		</dict>
@@ -1361,7 +1370,7 @@
 			<key>lastKnownFileType</key>
 			<string>sourcecode.swift</string>
 			<key>path</key>
-			<string>Sources/LegadoCore/Models/ExploreScreen.swift</string>
+			<string>Sources/JuyueCore/Models/ExploreScreen.swift</string>
 			<key>sourceTree</key>
 			<string>&lt;group&gt;</string>
 		</dict>
@@ -1379,7 +1388,7 @@
 			<key>lastKnownFileType</key>
 			<string>sourcecode.swift</string>
 			<key>path</key>
-			<string>Sources/LegadoCore/Service/SourceLoginService.swift</string>
+			<string>Sources/JuyueCore/Service/SourceLoginService.swift</string>
 			<key>sourceTree</key>
 			<string>&lt;group&gt;</string>
 		</dict>
@@ -1397,7 +1406,7 @@
 			<key>lastKnownFileType</key>
 			<string>sourcecode.swift</string>
 			<key>path</key>
-			<string>Sources/LegadoApp/Views/ExploreFilterSheet.swift</string>
+			<string>Sources/JuyueApp/Views/ExploreFilterSheet.swift</string>
 			<key>sourceTree</key>
 			<string>&lt;group&gt;</string>
 		</dict>
@@ -1415,7 +1424,7 @@
 			<key>lastKnownFileType</key>
 			<string>sourcecode.swift</string>
 			<key>path</key>
-			<string>Sources/LegadoApp/Views/SourceImportPreviewView.swift</string>
+			<string>Sources/JuyueApp/Views/SourceImportPreviewView.swift</string>
 			<key>sourceTree</key>
 			<string>&lt;group&gt;</string>
 		</dict>
@@ -1433,7 +1442,7 @@
 			<key>lastKnownFileType</key>
 			<string>sourcecode.swift</string>
 			<key>path</key>
-			<string>Sources/LegadoApp/Views/SourceShareSheet.swift</string>
+			<string>Sources/JuyueApp/Views/SourceShareSheet.swift</string>
 			<key>sourceTree</key>
 			<string>&lt;group&gt;</string>
 		</dict>
@@ -1451,7 +1460,7 @@
 			<key>lastKnownFileType</key>
 			<string>sourcecode.swift</string>
 			<key>path</key>
-			<string>Sources/LegadoCore/Service/SourceRequestDiagnostic.swift</string>
+			<string>Sources/JuyueCore/Service/SourceRequestDiagnostic.swift</string>
 			<key>sourceTree</key>
 			<string>&lt;group&gt;</string>
 		</dict>
@@ -1469,7 +1478,7 @@
 			<key>lastKnownFileType</key>
 			<string>sourcecode.swift</string>
 			<key>path</key>
-			<string>Sources/LegadoCore/Service/BookSourceResolver.swift</string>
+			<string>Sources/JuyueCore/Service/BookSourceResolver.swift</string>
 			<key>sourceTree</key>
 			<string>&lt;group&gt;</string>
 		</dict>
@@ -1487,7 +1496,7 @@
 			<key>lastKnownFileType</key>
 			<string>sourcecode.swift</string>
 			<key>path</key>
-			<string>Sources/LegadoApp/Views/MissingBookSourceView.swift</string>
+			<string>Sources/JuyueApp/Views/MissingBookSourceView.swift</string>
 			<key>sourceTree</key>
 			<string>&lt;group&gt;</string>
 		</dict>
@@ -1505,7 +1514,7 @@
 			<key>lastKnownFileType</key>
 			<string>sourcecode.swift</string>
 			<key>path</key>
-			<string>Sources/LegadoApp/Views/AppSettingsBackupView.swift</string>
+			<string>Sources/JuyueApp/Views/AppSettingsBackupView.swift</string>
 			<key>sourceTree</key>
 			<string>&lt;group&gt;</string>
 		</dict>
@@ -1523,7 +1532,7 @@
 			<key>lastKnownFileType</key>
 			<string>sourcecode.swift</string>
 			<key>path</key>
-			<string>Sources/LegadoApp/Views/NieRTheme.swift</string>
+			<string>Sources/JuyueApp/Views/NieRTheme.swift</string>
 			<key>sourceTree</key>
 			<string>&lt;group&gt;</string>
 		</dict>
@@ -1541,7 +1550,7 @@
 			<key>lastKnownFileType</key>
 			<string>sourcecode.swift</string>
 			<key>path</key>
-			<string>Sources/LegadoApp/Views/SubscribeWebReaderView.swift</string>
+			<string>Sources/JuyueApp/Views/SubscribeWebReaderView.swift</string>
 			<key>sourceTree</key>
 			<string>&lt;group&gt;</string>
 		</dict>
@@ -1573,7 +1582,7 @@
 			<key>lastKnownFileType</key>
 			<string>sourcecode.swift</string>
 			<key>path</key>
-			<string>Sources/LegadoApp/Views/SourceDetailView.swift</string>
+			<string>Sources/JuyueApp/Views/SourceDetailView.swift</string>
 			<key>sourceTree</key>
 			<string>&lt;group&gt;</string>
 		</dict>
@@ -1591,7 +1600,7 @@
 			<key>lastKnownFileType</key>
 			<string>sourcecode.swift</string>
 			<key>path</key>
-			<string>Sources/LegadoCore/Engine/RuleTokenizer.swift</string>
+			<string>Sources/JuyueCore/Engine/RuleTokenizer.swift</string>
 			<key>sourceTree</key>
 			<string>&lt;group&gt;</string>
 		</dict>
@@ -1609,7 +1618,7 @@
 			<key>lastKnownFileType</key>
 			<string>sourcecode.swift</string>
 			<key>path</key>
-			<string>Sources/LegadoApp/Views/ExploreBookListView.swift</string>
+			<string>Sources/JuyueApp/Views/ExploreBookListView.swift</string>
 			<key>sourceTree</key>
 			<string>&lt;group&gt;</string>
 		</dict>
@@ -1620,7 +1629,7 @@
 			<key>lastKnownFileType</key>
 			<string>sourcecode.swift</string>
 			<key>path</key>
-			<string>Sources/LegadoApp/Views/CategoryExploreView.swift</string>
+			<string>Sources/JuyueApp/Views/CategoryExploreView.swift</string>
 			<key>sourceTree</key>
 			<string>&lt;group&gt;</string>
 		</dict>
@@ -1652,7 +1661,7 @@
 			<key>lastKnownFileType</key>
 			<string>sourcecode.swift</string>
 			<key>path</key>
-			<string>Sources/LegadoApp/Views/SettingsView.swift</string>
+			<string>Sources/JuyueApp/Views/SettingsView.swift</string>
 			<key>sourceTree</key>
 			<string>&lt;group&gt;</string>
 		</dict>
@@ -1663,7 +1672,7 @@
 			<key>lastKnownFileType</key>
 			<string>sourcecode.swift</string>
 			<key>path</key>
-			<string>Sources/LegadoApp/Views/EditSourceSheet.swift</string>
+			<string>Sources/JuyueApp/Views/EditSourceSheet.swift</string>
 			<key>sourceTree</key>
 			<string>&lt;group&gt;</string>
 		</dict>
@@ -1681,7 +1690,7 @@
 			<key>lastKnownFileType</key>
 			<string>sourcecode.swift</string>
 			<key>path</key>
-			<string>Sources/LegadoCore/Service/NetworkClient.swift</string>
+			<string>Sources/JuyueCore/Service/NetworkClient.swift</string>
 			<key>sourceTree</key>
 			<string>&lt;group&gt;</string>
 		</dict>
@@ -1708,7 +1717,7 @@
 			<key>lastKnownFileType</key>
 			<string>sourcecode.swift</string>
 			<key>path</key>
-			<string>Sources/LegadoCore/Service/BookExploreService.swift</string>
+			<string>Sources/JuyueCore/Service/BookExploreService.swift</string>
 			<key>sourceTree</key>
 			<string>&lt;group&gt;</string>
 		</dict>
@@ -1765,7 +1774,7 @@
 			<key>lastKnownFileType</key>
 			<string>sourcecode.swift</string>
 			<key>path</key>
-			<string>Sources/LegadoApp/Views/Reader/ReaderView.swift</string>
+			<string>Sources/JuyueApp/Views/Reader/ReaderView.swift</string>
 			<key>sourceTree</key>
 			<string>&lt;group&gt;</string>
 		</dict>
@@ -1792,7 +1801,7 @@
 			<key>isa</key>
 			<string>PBXFileReference</string>
 			<key>path</key>
-			<string>LegadoApp.app</string>
+			<string>JuyueApp.app</string>
 			<key>sourceTree</key>
 			<string>BUILT_PRODUCTS_DIR</string>
 		</dict>
@@ -1803,7 +1812,7 @@
 			<key>lastKnownFileType</key>
 			<string>sourcecode.swift</string>
 			<key>path</key>
-			<string>Sources/LegadoCore/Service/BookContentService.swift</string>
+			<string>Sources/JuyueCore/Service/BookContentService.swift</string>
 			<key>sourceTree</key>
 			<string>&lt;group&gt;</string>
 		</dict>
@@ -1835,7 +1844,7 @@
 			<key>lastKnownFileType</key>
 			<string>sourcecode.swift</string>
 			<key>path</key>
-			<string>Sources/LegadoApp/Theme/ReaderConfig.swift</string>
+			<string>Sources/JuyueApp/Theme/ReaderConfig.swift</string>
 			<key>sourceTree</key>
 			<string>&lt;group&gt;</string>
 		</dict>
@@ -1846,7 +1855,7 @@
 			<key>lastKnownFileType</key>
 			<string>sourcecode.swift</string>
 			<key>path</key>
-			<string>Sources/LegadoApp/Views/BookDetailView.swift</string>
+			<string>Sources/JuyueApp/Views/BookDetailView.swift</string>
 			<key>sourceTree</key>
 			<string>&lt;group&gt;</string>
 		</dict>
@@ -1864,7 +1873,7 @@
 			<key>lastKnownFileType</key>
 			<string>sourcecode.swift</string>
 			<key>path</key>
-			<string>Sources/LegadoCore/Models/RuleModels.swift</string>
+			<string>Sources/JuyueCore/Models/RuleModels.swift</string>
 			<key>sourceTree</key>
 			<string>&lt;group&gt;</string>
 		</dict>
@@ -1879,7 +1888,7 @@
 				<key>CODE_SIGN_STYLE</key>
 				<string>Automatic</string>
 				<key>CURRENT_PROJECT_VERSION</key>
-				<string>5.1.11</string>
+				<string>5.1.12</string>
 				<key>DEVELOPMENT_TEAM</key>
 				<string></string>
 				<key>ENABLE_PREVIEWS</key>
@@ -1887,7 +1896,7 @@
 				<key>GENERATE_INFOPLIST_FILE</key>
 				<string>YES</string>
 				<key>INFOPLIST_FILE</key>
-				<string>Sources/LegadoApp/Info.plist</string>
+				<string>Sources/JuyueApp/Info.plist</string>
 				<key>INFOPLIST_KEY_CFBundleDisplayName</key>
 				<string>橘阅</string>
 				<key>INFOPLIST_KEY_UIApplicationSceneManifest_Generation</key>
@@ -1901,7 +1910,7 @@
 				<key>LD_RUNPATH_SEARCH_PATHS</key>
 				<string>$(inherited) @executable_path/Frameworks</string>
 				<key>MARKETING_VERSION</key>
-				<string>5.1.11</string>
+				<string>5.1.12</string>
 				<key>PRODUCT_BUNDLE_IDENTIFIER</key>
 				<string>com.factorcitrus.juyue</string>
 				<key>PRODUCT_NAME</key>
@@ -1960,7 +1969,7 @@
 				<key>CODE_SIGN_STYLE</key>
 				<string>Automatic</string>
 				<key>CURRENT_PROJECT_VERSION</key>
-				<string>5.1.11</string>
+				<string>5.1.12</string>
 				<key>DEVELOPMENT_TEAM</key>
 				<string></string>
 				<key>ENABLE_PREVIEWS</key>
@@ -1968,7 +1977,7 @@
 				<key>GENERATE_INFOPLIST_FILE</key>
 				<string>YES</string>
 				<key>INFOPLIST_FILE</key>
-				<string>Sources/LegadoApp/Info-AppStore.plist</string>
+				<string>Sources/JuyueApp/Info-AppStore.plist</string>
 				<key>EXCLUDED_SOURCE_FILE_NAMES</key>
 				<string>*SideloadArt.xcassets</string>
 				<key>INFOPLIST_KEY_CFBundleDisplayName</key>
@@ -1984,7 +1993,7 @@
 				<key>LD_RUNPATH_SEARCH_PATHS</key>
 				<string>$(inherited) @executable_path/Frameworks</string>
 				<key>MARKETING_VERSION</key>
-				<string>5.1.11</string>
+				<string>5.1.12</string>
 				<key>PRODUCT_BUNDLE_IDENTIFIER</key>
 				<string>com.factorcitrus.juyue.reader</string>
 				<key>PRODUCT_NAME</key>
@@ -2074,7 +2083,7 @@
 			<key>lastKnownFileType</key>
 			<string>text.json</string>
 			<key>path</key>
-			<string>Sources/LegadoApp/Resources/bookSources.json</string>
+			<string>Sources/JuyueApp/Resources/bookSources.json</string>
 			<key>sourceTree</key>
 			<string>&lt;group&gt;</string>
 		</dict>
@@ -2085,7 +2094,7 @@
 			<key>lastKnownFileType</key>
 			<string>folder</string>
 			<key>path</key>
-			<string>Sources/LegadoApp/Resources/ChapterTitleDesigner</string>
+			<string>Sources/JuyueApp/Resources/ChapterTitleDesigner</string>
 			<key>sourceTree</key>
 			<string>&lt;group&gt;</string>
 		</dict>
@@ -2103,7 +2112,7 @@
 			<key>lastKnownFileType</key>
 			<string>sourcecode.swift</string>
 			<key>path</key>
-			<string>Sources/LegadoApp/Views/Reader/ChapterTitleDesignerView.swift</string>
+			<string>Sources/JuyueApp/Views/Reader/ChapterTitleDesignerView.swift</string>
 			<key>sourceTree</key>
 			<string>&lt;group&gt;</string>
 		</dict>
@@ -2121,7 +2130,7 @@
 			<key>lastKnownFileType</key>
 			<string>sourcecode.swift</string>
 			<key>path</key>
-			<string>Sources/LegadoApp/Views/BookshelfView.swift</string>
+			<string>Sources/JuyueApp/Views/BookshelfView.swift</string>
 			<key>sourceTree</key>
 			<string>&lt;group&gt;</string>
 		</dict>
@@ -2132,7 +2141,7 @@
 			<key>lastKnownFileType</key>
 			<string>sourcecode.swift</string>
 			<key>path</key>
-			<string>Sources/LegadoCore/Models/HttpTTS.swift</string>
+			<string>Sources/JuyueCore/Models/HttpTTS.swift</string>
 			<key>sourceTree</key>
 			<string>&lt;group&gt;</string>
 		</dict>
@@ -2150,7 +2159,7 @@
 			<key>lastKnownFileType</key>
 			<string>sourcecode.swift</string>
 			<key>path</key>
-			<string>Sources/LegadoCore/Engine/TTSTemplateRenderer.swift</string>
+			<string>Sources/JuyueCore/Engine/TTSTemplateRenderer.swift</string>
 			<key>sourceTree</key>
 			<string>&lt;group&gt;</string>
 		</dict>
@@ -2168,7 +2177,7 @@
 			<key>lastKnownFileType</key>
 			<string>sourcecode.swift</string>
 			<key>path</key>
-			<string>Sources/LegadoCore/Service/HttpTTSEngine.swift</string>
+			<string>Sources/JuyueCore/Service/HttpTTSEngine.swift</string>
 			<key>sourceTree</key>
 			<string>&lt;group&gt;</string>
 		</dict>
@@ -2186,7 +2195,7 @@
 			<key>lastKnownFileType</key>
 			<string>sourcecode.swift</string>
 			<key>path</key>
-			<string>Sources/LegadoCore/Service/HttpTTSPlayer.swift</string>
+			<string>Sources/JuyueCore/Service/HttpTTSPlayer.swift</string>
 			<key>sourceTree</key>
 			<string>&lt;group&gt;</string>
 		</dict>
@@ -2204,7 +2213,7 @@
 			<key>lastKnownFileType</key>
 			<string>sourcecode.swift</string>
 			<key>path</key>
-			<string>Sources/LegadoCore/Service/HttpTTSStore.swift</string>
+			<string>Sources/JuyueCore/Service/HttpTTSStore.swift</string>
 			<key>sourceTree</key>
 			<string>&lt;group&gt;</string>
 		</dict>
@@ -2222,7 +2231,7 @@
 			<key>lastKnownFileType</key>
 			<string>sourcecode.swift</string>
 			<key>path</key>
-			<string>Sources/LegadoCore/Utils/TTSTextChunker.swift</string>
+			<string>Sources/JuyueCore/Utils/TTSTextChunker.swift</string>
 			<key>sourceTree</key>
 			<string>&lt;group&gt;</string>
 		</dict>
@@ -2240,7 +2249,7 @@
 			<key>lastKnownFileType</key>
 			<string>sourcecode.swift</string>
 			<key>path</key>
-			<string>Sources/LegadoApp/Views/TTSourceManagerView.swift</string>
+			<string>Sources/JuyueApp/Views/TTSourceManagerView.swift</string>
 			<key>sourceTree</key>
 			<string>&lt;group&gt;</string>
 		</dict>
@@ -2258,7 +2267,7 @@
 			<key>lastKnownFileType</key>
 			<string>sourcecode.swift</string>
 			<key>path</key>
-			<string>Sources/LegadoApp/Views/Reader/SourceSwitchSheet.swift</string>
+			<string>Sources/JuyueApp/Views/Reader/SourceSwitchSheet.swift</string>
 			<key>sourceTree</key>
 			<string>&lt;group&gt;</string>
 		</dict>
@@ -2276,7 +2285,7 @@
 			<key>lastKnownFileType</key>
 			<string>sourcecode.swift</string>
 			<key>path</key>
-			<string>Sources/LegadoCore/Engine/XPathToCSS.swift</string>
+			<string>Sources/JuyueCore/Engine/XPathToCSS.swift</string>
 			<key>sourceTree</key>
 			<string>&lt;group&gt;</string>
 		</dict>
@@ -2294,7 +2303,7 @@
 			<key>lastKnownFileType</key>
 			<string>sourcecode.swift</string>
 			<key>path</key>
-			<string>Sources/LegadoApp/Views/Reader/PageCurlPager.swift</string>
+			<string>Sources/JuyueApp/Views/Reader/PageCurlPager.swift</string>
 			<key>sourceTree</key>
 			<string>&lt;group&gt;</string>
 		</dict>
@@ -2312,7 +2321,7 @@
 			<key>lastKnownFileType</key>
 			<string>sourcecode.swift</string>
 			<key>path</key>
-			<string>Sources/LegadoApp/Views/Reader/JustifiedBodyText.swift</string>
+			<string>Sources/JuyueApp/Views/Reader/JustifiedBodyText.swift</string>
 			<key>sourceTree</key>
 			<string>&lt;group&gt;</string>
 		</dict>
@@ -2330,7 +2339,7 @@
 			<key>lastKnownFileType</key>
 			<string>sourcecode.swift</string>
 			<key>path</key>
-			<string>Sources/LegadoApp/Views/Reader/ReaderScrollTextMetrics.swift</string>
+			<string>Sources/JuyueApp/Views/Reader/ReaderScrollTextMetrics.swift</string>
 			<key>sourceTree</key>
 			<string>&lt;group&gt;</string>
 		</dict>
@@ -2348,7 +2357,7 @@
 			<key>lastKnownFileType</key>
 			<string>sourcecode.swift</string>
 			<key>path</key>
-			<string>Sources/LegadoApp/Views/Reader/TTSSettingsSheet.swift</string>
+			<string>Sources/JuyueApp/Views/Reader/TTSSettingsSheet.swift</string>
 			<key>sourceTree</key>
 			<string>&lt;group&gt;</string>
 		</dict>
@@ -2366,7 +2375,7 @@
 			<key>lastKnownFileType</key>
 			<string>sourcecode.swift</string>
 			<key>path</key>
-			<string>Sources/LegadoApp/Theme/ReaderFont.swift</string>
+			<string>Sources/JuyueApp/Theme/ReaderFont.swift</string>
 			<key>sourceTree</key>
 			<string>&lt;group&gt;</string>
 		</dict>
@@ -2384,7 +2393,7 @@
 			<key>lastKnownFileType</key>
 			<string>sourcecode.swift</string>
 			<key>path</key>
-			<string>Sources/LegadoApp/Views/Reader/BookInfoSheet.swift</string>
+			<string>Sources/JuyueApp/Views/Reader/BookInfoSheet.swift</string>
 			<key>sourceTree</key>
 			<string>&lt;group&gt;</string>
 		</dict>
@@ -2420,7 +2429,7 @@
 			<key>lastKnownFileType</key>
 			<string>sourcecode.swift</string>
 			<key>path</key>
-			<string>Sources/LegadoApp/Services/LocalTTSEngine.swift</string>
+			<string>Sources/JuyueApp/Services/LocalTTSEngine.swift</string>
 			<key>sourceTree</key>
 			<string>&lt;group&gt;</string>
 		</dict>
@@ -2456,7 +2465,7 @@
 			<key>lastKnownFileType</key>
 			<string>sourcecode.swift</string>
 			<key>path</key>
-			<string>Sources/LegadoApp/Services/BaiduOfflineTTS.swift</string>
+			<string>Sources/JuyueApp/Services/BaiduOfflineTTS.swift</string>
 			<key>sourceTree</key>
 			<string>&lt;group&gt;</string>
 		</dict>
@@ -2474,7 +2483,7 @@
 			<key>lastKnownFileType</key>
 			<string>sourcecode.swift</string>
 			<key>path</key>
-			<string>Sources/LegadoApp/Services/BaiduCredentials.swift</string>
+			<string>Sources/JuyueApp/Services/BaiduCredentials.swift</string>
 			<key>sourceTree</key>
 			<string>&lt;group&gt;</string>
 		</dict>
@@ -2492,7 +2501,7 @@
 			<key>lastKnownFileType</key>
 			<string>sourcecode.swift</string>
 			<key>path</key>
-			<string>Sources/LegadoApp/Services/BundledTTSEngine.swift</string>
+			<string>Sources/JuyueApp/Services/BundledTTSEngine.swift</string>
 			<key>sourceTree</key>
 			<string>&lt;group&gt;</string>
 		</dict>
@@ -2510,7 +2519,7 @@
 			<key>lastKnownFileType</key>
 			<string>sourcecode.swift</string>
 			<key>path</key>
-			<string>Sources/LegadoApp/Services/BaiduBundleShim.swift</string>
+			<string>Sources/JuyueApp/Services/BaiduBundleShim.swift</string>
 			<key>sourceTree</key>
 			<string>&lt;group&gt;</string>
 		</dict>
@@ -2540,265 +2549,59 @@
 			<key>shellPath</key>
 			<string>/bin/sh</string>
 			<key>shellScript</key>
-			<string>echo &quot;[BaiduTTS] copying&quot;; if [ &quot;$CONFIGURATION&quot; != &quot;AppStore&quot; ] &amp;&amp; [ -d &quot;$SRCROOT/Sources/LegadoApp/Resources/BaiduTTS&quot; ]; then mkdir -p &quot;$TARGET_BUILD_DIR/$UNLOCALIZED_RESOURCES_FOLDER_PATH/BaiduTTS&quot;; cp -R &quot;$SRCROOT/Sources/LegadoApp/Resources/BaiduTTS/.&quot; &quot;$TARGET_BUILD_DIR/$UNLOCALIZED_RESOURCES_FOLDER_PATH/BaiduTTS/&quot;; echo &quot;[BaiduTTS] done $(ls &quot;$TARGET_BUILD_DIR/$UNLOCALIZED_RESOURCES_FOLDER_PATH/BaiduTTS&quot; | wc -l) files&quot;; fi</string>
+			<string>echo &quot;[BaiduTTS] copying&quot;; if [ &quot;$CONFIGURATION&quot; != &quot;AppStore&quot; ] &amp;&amp; [ -d &quot;$SRCROOT/Sources/JuyueApp/Resources/BaiduTTS&quot; ]; then mkdir -p &quot;$TARGET_BUILD_DIR/$UNLOCALIZED_RESOURCES_FOLDER_PATH/BaiduTTS&quot;; cp -R &quot;$SRCROOT/Sources/JuyueApp/Resources/BaiduTTS/.&quot; &quot;$TARGET_BUILD_DIR/$UNLOCALIZED_RESOURCES_FOLDER_PATH/BaiduTTS/&quot;; echo &quot;[BaiduTTS] done $(ls &quot;$TARGET_BUILD_DIR/$UNLOCALIZED_RESOURCES_FOLDER_PATH/BaiduTTS&quot; | wc -l) files&quot;; fi</string>
 		</dict>
-		<key>C0DE00000000000000000002</key>
+		<key>ABF1937CE1B48AA780D1705F</key>
+		<dict>
+			<key>fileRef</key>
+			<string>2A07CA412B51936E3A4F483F</string>
+			<key>isa</key>
+			<string>PBXBuildFile</string>
+		</dict>
+		<key>2A07CA412B51936E3A4F483F</key>
 		<dict>
 			<key>isa</key>
 			<string>PBXFileReference</string>
 			<key>lastKnownFileType</key>
 			<string>sourcecode.swift</string>
 			<key>path</key>
-			<string>Tests/LegadoUITests/BookshelfSmokeTests.swift</string>
+			<string>Sources/JuyueCore/Service/ReaderPaginationPlanner.swift</string>
 			<key>sourceTree</key>
 			<string>&lt;group&gt;</string>
 		</dict>
-		<key>C0DE00000000000000000003</key>
-		<dict>
-			<key>isa</key>
-			<string>PBXBuildFile</string>
-			<key>fileRef</key>
-			<string>C0DE00000000000000000002</string>
-		</dict>
-		<key>C0DE00000000000000000001</key>
-		<dict>
-			<key>isa</key>
-			<string>PBXGroup</string>
-			<key>children</key>
-			<array>
-				<string>C0DE00000000000000000002</string>
-			</array>
-			<key>name</key>
-			<string>LegadoUITests</string>
-			<key>sourceTree</key>
-			<string>&lt;group&gt;</string>
-		</dict>
-		<key>C0DE00000000000000000010</key>
-		<dict>
-			<key>explicitFileType</key>
-			<string>wrapper.cfbundle</string>
-			<key>includeInIndex</key>
-			<string>0</string>
-			<key>isa</key>
-			<string>PBXFileReference</string>
-			<key>path</key>
-			<string>LegadoUITests.xctest</string>
-			<key>sourceTree</key>
-			<string>BUILT_PRODUCTS_DIR</string>
-		</dict>
-		<key>C0DE00000000000000000040</key>
-		<dict>
-			<key>isa</key>
-			<string>PBXSourcesBuildPhase</string>
-			<key>buildActionMask</key>
-			<string>2147483647</string>
-			<key>files</key>
-			<array>
-				<string>C0DE00000000000000000003</string>
-			</array>
-			<key>runOnlyForDeploymentPostprocessing</key>
-			<string>0</string>
-		</dict>
-		<key>C0DE00000000000000000041</key>
-		<dict>
-			<key>isa</key>
-			<string>PBXFrameworksBuildPhase</string>
-			<key>buildActionMask</key>
-			<string>2147483647</string>
-			<key>files</key>
-			<array/>
-			<key>runOnlyForDeploymentPostprocessing</key>
-			<string>0</string>
-		</dict>
-		<key>C0DE00000000000000000042</key>
-		<dict>
-			<key>isa</key>
-			<string>PBXResourcesBuildPhase</string>
-			<key>buildActionMask</key>
-			<string>2147483647</string>
-			<key>files</key>
-			<array/>
-			<key>runOnlyForDeploymentPostprocessing</key>
-			<string>0</string>
-		</dict>
-		<key>C0DE00000000000000000030</key>
-		<dict>
-			<key>isa</key>
-			<string>PBXContainerItemProxy</string>
-			<key>containerPortal</key>
-			<string>83273B710FAA8AB95BEAE14F</string>
-			<key>proxyType</key>
-			<string>1</string>
-			<key>remoteGlobalIDString</key>
-			<string>6AA38DB9F09E8937A03A7462</string>
-			<key>remoteInfo</key>
-			<string>LegadoApp</string>
-		</dict>
-		<key>C0DE00000000000000000031</key>
-		<dict>
-			<key>isa</key>
-			<string>PBXTargetDependency</string>
-			<key>target</key>
-			<string>6AA38DB9F09E8937A03A7462</string>
-			<key>targetProxy</key>
-			<string>C0DE00000000000000000030</string>
-		</dict>
-		<key>C0DE00000000000000000051</key>
-		<dict>
-			<key>isa</key>
-			<string>XCBuildConfiguration</string>
-			<key>name</key>
-			<string>Debug</string>
-			<key>buildSettings</key>
-			<dict>
-				<key>CODE_SIGN_STYLE</key>
-				<string>Automatic</string>
-				<key>CURRENT_PROJECT_VERSION</key>
-				<string>5.1.11</string>
-				<key>DEVELOPMENT_TEAM</key>
-				<string></string>
-				<key>GENERATE_INFOPLIST_FILE</key>
-				<string>YES</string>
-				<key>LD_RUNPATH_SEARCH_PATHS</key>
-				<string>$(inherited) @executable_path/Frameworks @loader_path/Frameworks</string>
-				<key>MARKETING_VERSION</key>
-				<string>5.1.11</string>
-				<key>PRODUCT_BUNDLE_IDENTIFIER</key>
-				<string>com.factorcitrus.juyue.uitests</string>
-				<key>PRODUCT_NAME</key>
-				<string>$(TARGET_NAME)</string>
-				<key>SWIFT_VERSION</key>
-				<string>5.0</string>
-				<key>TARGETED_DEVICE_FAMILY</key>
-				<string>1,2</string>
-				<key>TEST_TARGET_NAME</key>
-				<string>LegadoApp</string>
-			</dict>
-		</dict>
-		<key>C0DE00000000000000000052</key>
-		<dict>
-			<key>isa</key>
-			<string>XCBuildConfiguration</string>
-			<key>name</key>
-			<string>Release</string>
-			<key>buildSettings</key>
-			<dict>
-				<key>CODE_SIGN_STYLE</key>
-				<string>Automatic</string>
-				<key>CURRENT_PROJECT_VERSION</key>
-				<string>5.1.11</string>
-				<key>DEVELOPMENT_TEAM</key>
-				<string></string>
-				<key>GENERATE_INFOPLIST_FILE</key>
-				<string>YES</string>
-				<key>LD_RUNPATH_SEARCH_PATHS</key>
-				<string>$(inherited) @executable_path/Frameworks @loader_path/Frameworks</string>
-				<key>MARKETING_VERSION</key>
-				<string>5.1.11</string>
-				<key>PRODUCT_BUNDLE_IDENTIFIER</key>
-				<string>com.factorcitrus.juyue.uitests</string>
-				<key>PRODUCT_NAME</key>
-				<string>$(TARGET_NAME)</string>
-				<key>SWIFT_VERSION</key>
-				<string>5.0</string>
-				<key>TARGETED_DEVICE_FAMILY</key>
-				<string>1,2</string>
-				<key>TEST_TARGET_NAME</key>
-				<string>LegadoApp</string>
-			</dict>
-		</dict>
-		<key>C0DE00000000000000000050</key>
-		<dict>
-			<key>isa</key>
-			<string>XCConfigurationList</string>
-			<key>buildConfigurations</key>
-			<array>
-				<string>C0DE00000000000000000051</string>
-				<string>C0DE00000000000000000052</string>
-			</array>
-			<key>defaultConfigurationIsVisible</key>
-			<string>0</string>
-			<key>defaultConfigurationName</key>
-			<string>Release</string>
-		</dict>
-		<key>C0DE00000000000000000020</key>
-		<dict>
-			<key>isa</key>
-			<string>PBXNativeTarget</string>
-			<key>buildConfigurationList</key>
-			<string>C0DE00000000000000000050</string>
-			<key>buildPhases</key>
-			<array>
-				<string>C0DE00000000000000000040</string>
-				<string>C0DE00000000000000000041</string>
-				<string>C0DE00000000000000000042</string>
-			</array>
-			<key>buildRules</key>
-			<array/>
-			<key>dependencies</key>
-			<array>
-				<string>C0DE00000000000000000031</string>
-			</array>
-			<key>name</key>
-			<string>LegadoUITests</string>
-			<key>productName</key>
-			<string>LegadoUITests</string>
-			<key>productReference</key>
-			<string>C0DE00000000000000000010</string>
-			<key>productType</key>
-			<string>com.apple.product-type.bundle.ui-testing</string>
-		</dict>
-		<key>1A5AC0FF8BEC7C1DAF0F2DA6</key>
+		<key>A806F10C8A7C1E5D5AADAF99</key>
 		<dict>
 			<key>fileRef</key>
-			<string>1A0DF2CA4C8FA38F9642B346</string>
+			<string>D006E85B12098EE3491401B9</string>
 			<key>isa</key>
 			<string>PBXBuildFile</string>
 		</dict>
-		<key>1A0DF2CA4C8FA38F9642B346</key>
+		<key>D006E85B12098EE3491401B9</key>
 		<dict>
 			<key>isa</key>
 			<string>PBXFileReference</string>
 			<key>lastKnownFileType</key>
 			<string>sourcecode.swift</string>
 			<key>path</key>
-			<string>Sources/LegadoCore/Service/ReaderPaginationPlanner.swift</string>
+			<string>Sources/JuyueCore/Service/DebouncedPersistenceWriter.swift</string>
 			<key>sourceTree</key>
 			<string>&lt;group&gt;</string>
 		</dict>
-		<key>38DC4ACB069A20E6FCFCE9FF</key>
+		<key>20D2ED206A462DF998AB950C</key>
 		<dict>
 			<key>fileRef</key>
-			<string>DFE3471D376FF9D7CBC8B0BB</string>
+			<string>EA41A568140CAC528D204205</string>
 			<key>isa</key>
 			<string>PBXBuildFile</string>
 		</dict>
-		<key>DFE3471D376FF9D7CBC8B0BB</key>
+		<key>EA41A568140CAC528D204205</key>
 		<dict>
 			<key>isa</key>
 			<string>PBXFileReference</string>
 			<key>lastKnownFileType</key>
 			<string>sourcecode.swift</string>
 			<key>path</key>
-			<string>Sources/LegadoCore/Service/DebouncedPersistenceWriter.swift</string>
-			<key>sourceTree</key>
-			<string>&lt;group&gt;</string>
-		</dict>
-		<key>D90900D2E44AB751DEAF1DA8</key>
-		<dict>
-			<key>fileRef</key>
-			<string>54C4E1B0C1B4A264EA12124F</string>
-			<key>isa</key>
-			<string>PBXBuildFile</string>
-		</dict>
-		<key>54C4E1B0C1B4A264EA12124F</key>
-		<dict>
-			<key>isa</key>
-			<string>PBXFileReference</string>
-			<key>lastKnownFileType</key>
-			<string>sourcecode.swift</string>
-			<key>path</key>
-			<string>Sources/LegadoApp/Views/Reader/ReaderPaginator.swift</string>
+			<string>Sources/JuyueApp/Views/Reader/ReaderPaginator.swift</string>
 			<key>sourceTree</key>
 			<string>&lt;group&gt;</string>
 		</dict>

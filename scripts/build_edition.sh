@@ -10,7 +10,7 @@ OUT="$ROOT/build"
 DESTINATION="${DESTINATION:-generic/platform=iOS}"
 
 case "$MODE" in
-  sideload) scheme="LegadoApp";   configuration="Release" ;;
+  sideload) scheme="JuyueApp";   configuration="Release" ;;
   appstore) scheme="JuyueReader"; configuration="AppStore" ;;
   *) echo "usage: $0 sideload|appstore [archive|build]" >&2; exit 2 ;;
 esac

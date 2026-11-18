@@ -1,13 +1,21 @@
 name: Build & Release
 
 on:
-  # 只允许手动触发：GitHub → Actions → Build & Release → Run workflow。
-  # 不跟随 push。发版是一个对外分发动作，必须由人主动确认；
-  # 改一行源码就自动往外扔一个安装包，出了事没人来得及叫停。
+  push:
+    branches:
+      - main
+    paths:
+      - 'VERSION'
+      - 'CHANGELOG.md'
+      - 'Sources/**'
+      - 'Juyue.xcodeproj/**'
+      - 'Package.swift'
+      # 改发布流程本身也得跑一遍，不然 workflow 的修补要等下次改源码才验证得到
+      - '.github/workflows/release.yml'
   workflow_dispatch:
 
 concurrency:
-  group: legado-release-main
+  group: juyue-release-main
   cancel-in-progress: false
 
 jobs:
@@ -52,10 +60,10 @@ jobs:
             echo "VERSION 格式错误：$TAG"
             exit 1
           }
-          # 工程里有两个 target：LegadoApp（侧载，版本跟 VERSION 走）和
+          # 工程里有两个 target：JuyueApp（侧载，版本跟 VERSION 走）和
           # JuyueReader（商店版，独立排 1.x）。全局 grep 会把两者混在一起，
-          # 这里只读 LegadoApp 的 Release 配置。
-          SETTINGS=$(xcodebuild -project Juyue.xcodeproj -target LegadoApp -configuration Release -showBuildSettings 2>/dev/null)
+          # 这里只读 JuyueApp 的 Release 配置。
+          SETTINGS=$(xcodebuild -project Juyue.xcodeproj -target JuyueApp -configuration Release -showBuildSettings 2>/dev/null)
           MARKETING=$(echo "$SETTINGS" | sed -n 's/^ *MARKETING_VERSION = //p' | sort -u)
           BUILD=$(echo "$SETTINGS" | sed -n 's/^ *CURRENT_PROJECT_VERSION = //p' | sort -u)
           echo "MARKETING_VERSION=$MARKETING"
@@ -96,7 +104,7 @@ jobs:
         run: |
           # 音库目录也在 .gitignore 里（37MB），工程把它当资源目录，补个空目录免得报
           # "No such file or directory"。没有音库时 App 会退回系统语音。
-          mkdir -p Sources/LegadoApp/Resources/BaiduTTS
+          mkdir -p Sources/JuyueApp/Resources/BaiduTTS
           # 工程直接链了百度 SDK 的静态库和桥接头，CI 没有这两样：
           # 桥接头给空文件（配合下面的 SWIFT_OBJC_BRIDGING_HEADER="" 更保险），
           # 静态库给一个空归档占位——NO_BAIDU_TTS 已经把用到符号的代码摘掉了。
@@ -145,10 +153,10 @@ jobs:
           PLIST
           done
           xcodebuild -project Juyue.xcodeproj \
-            -scheme LegadoApp \
+            -scheme JuyueApp \
             -configuration Release \
             -destination 'generic/platform=iOS' \
-            -archivePath build/LegadoApp.xcarchive \
+            -archivePath build/JuyueApp.xcarchive \
             -derivedDataPath build/DerivedData \
             archive \
             CODE_SIGNING_ALLOWED=NO \
@@ -159,7 +167,7 @@ jobs:
 
       - name: Package IPA
         run: |
-          APP=build/LegadoApp.xcarchive/Products/Applications/LegadoApp.app
+          APP=build/JuyueApp.xcarchive/Products/Applications/JuyueApp.app
           BUILT=$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" "$APP/Info.plist")
           echo "包内版本号: $BUILT"
           [ "$BUILT" = "$VERSION_NO_V" ] || {
@@ -168,14 +176,14 @@ jobs:
           }
           mkdir -p build/Payload
           cp -R "$APP" build/Payload/
-          (cd build && zip -qr "Legado-${TAG}.ipa" Payload)
-          ls -lh "build/Legado-${TAG}.ipa"
+          (cd build && zip -qr "Juyue-${TAG}.ipa" Payload)
+          ls -lh "build/Juyue-${TAG}.ipa"
 
       - name: Upload IPA Artifact
         uses: actions/upload-artifact@v5
         with:
-          name: Legado-${{ env.TAG }}-ipa
-          path: build/Legado-*.ipa
+          name: Juyue-${{ env.TAG }}-ipa
+          path: build/Juyue-*.ipa
 
       - name: Extract Release Notes
         run: |
@@ -198,7 +206,7 @@ jobs:
             fi
             echo
             echo "#### 📱 安装说明"
-            echo "下载下方的 \`Legado-*.ipa\` 附件，侧载安装：**TrollStore**（巨魔，推荐）/ AltStore / SideStore / Sideloadly / 爱思助手。"
+            echo "下载下方的 \`Juyue-*.ipa\` 附件，侧载安装：**TrollStore**（巨魔，推荐）/ AltStore / SideStore / Sideloadly / 爱思助手。"
             echo "> CI 构建不含百度语音 SDK，只有系统语音与 HTTP 语音源。"
           } > build/RELEASE_NOTES.md
           cat build/RELEASE_NOTES.md
@@ -207,8 +215,8 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          OLD="Legado-${TAG#v}.ipa"
-          if [ "$OLD" != "Legado-${TAG}.ipa" ] && gh release view "$TAG" >/dev/null 2>&1; then
+          OLD="Juyue-${TAG#v}.ipa"
+          if [ "$OLD" != "Juyue-${TAG}.ipa" ] && gh release view "$TAG" >/dev/null 2>&1; then
             gh release delete-asset "$TAG" "$OLD" --yes || true
           fi
 
@@ -222,5 +230,5 @@ jobs:
           draft: false
           overwrite_files: true
           fail_on_unmatched_files: true
-          files: build/Legado-*.ipa
+          files: build/Juyue-*.ipa
           body_path: build/RELEASE_NOTES.md

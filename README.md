@@ -1,4 +1,4 @@
-# 橘阅 Juyue
+# 橘阅 Juyue (开源阅读 iOS 版)
 
 [![iOS](https://img.shields.io/badge/Platform-iOS%2015.0%2B-blue.svg)](https://developer.apple.com/ios/)
 [![Swift](https://img.shields.io/badge/Swift-5.0%2B-orange.svg)](https://swift.org)
@@ -6,9 +6,7 @@
 [![Release](https://img.shields.io/github/v/release/FactorCitrus/Juyue?label=Release&color=green)](https://github.com/FactorCitrus/Juyue/releases)
 [![License](https://img.shields.io/badge/License-GPLv3-lightgrey.svg)](LICENSE)
 
-> **橘阅（Juyue）** 是一个用 SwiftUI 和 Swift 编写的开源阅读器，兼容 Android 端 **Legado（开源阅读 3.0）** 的书源规则和 WebDAV 同步格式。
-
-> **与上游的关系**：本项目依 GPL-3.0 在 `SeitoMoyi/Legado-iOS` 基础上继续开发。上游 `gedoor/legado` 作者已就与其相关的行为承担相应法律责任、停止维护并发布停止侵权公告；本项目与其**无隶属、代理或合作关系**，不承继其任何行为，也不附带任何书源。
+> **橘阅（Juyue）** 是一个用 SwiftUI 和 Swift 编写的开源阅读器，兼容 Android 端 **阅读 3.0** 的书源规则和 WebDAV 同步格式。
 
 ## Fork 与品牌
 
@@ -43,7 +41,7 @@
 
 **WebDAV**
 
-- 备份格式与 Android Legado 一致：`backup${yyyy-MM-dd}-${deviceName}.zip`。
+- 备份格式与 Android 阅读一致：`backup${yyyy-MM-dd}-${deviceName}.zip`。
 - 备份包含书籍元数据和阅读进度（`durChapterIndex`、`durChapterPos`、`durChapterTime`）。
 - 可设置设备名称，区分不同设备的备份。
 - 可列出 WebDAV 上的历史备份并选择恢复；也能从本地文件导入 `backup*.zip`。
@@ -59,7 +57,7 @@
 - **换源检索**：候选列表支持「书名 / 作者 / 书名+作者」三种匹配口径，可改关键词重搜，也能按书源名或分组限定范围。
 - **书封来源**：详情页可手填地址、**从相册选图**（存沙盒 `Documents/Covers/`）、或**从书源挑图**（拿书名去启用的源搜一圈，封面排成网格点选）。
 - **多角色朗读**：听书可按「旁白 / 对话 / 关键词」切段，逐段换音色（系统语音或百度在线发音人），角色表在听书设置里维护。
-- **阅读订阅源**：兼容安卓版 Legado 的 `RssSource` 订阅源格式，可粘贴 JSON、从网址或文件导入 `rssSources.json`；没写规则的源自动按标准 RSS/Atom 解析。
+- **阅读订阅源**：兼容安卓版阅读的 `RssSource` 订阅源格式，可粘贴 JSON、从网址或文件导入 `rssSources.json`；没写规则的源自动按标准 RSS/Atom 解析。
 - **替换净化**：正文入库前按规则替换，支持全局规则与单书规则两栏，编辑页带试跑框，正则写错只跳过那一条。
 - **阅读页工具**：底部新增「刷新」（丢缓存重抓本章）与「更多」菜单（刷新本章 / 刷新目录 / 替换净化 / 听书设置 / 清缓存重抓）。
 
@@ -70,12 +68,12 @@
 ```text
 Juyue/
 ├── Sources/
-│   ├── LegadoCore/               # 独立核心框架（跨平台纯 Swift 逻辑）
+│   ├── JuyueCore/               # 独立核心框架（跨平台纯 Swift 逻辑）
 │   │   ├── Engine/               # 规则引擎（JSEngine, RuleAnalyzer, RuleTokenizer）
 │   │   ├── Models/               # 数据模型（Book, BookSource, RuleModels）
 │   │   ├── Service/              # 核心服务（NetworkClient, BookSearchService, WebDAVService, EpubParser...）
 │   │   └── Utils/                # 工具库（CryptoUtils, JSONPath）
-│   └── LegadoApp/                # SwiftUI 交互层与应用入口
+│   └── JuyueApp/                # SwiftUI 交互层与应用入口
 │       ├── Services/             # 状态容器（BookStore, SearchViewModel, AudioBookService）
 │       ├── Theme/                # 阅读主题与排版配置（ReaderConfig）
 │       └── Views/                # 界面视图
@@ -118,9 +116,8 @@ Juyue/
 
 ## GitHub Actions 持续集成与发布
 
-项目配置了 GitHub Actions 工作流：
-- **构建与测试**：推送 `main` 会触发 `gpl-audit`，跑许可证与合规检查。
-- **发版**：打包发布**只能手动触发**——Actions → `Build & Release` → `Run workflow`。发版是对外分发动作，不跟随 push 自动发生。
+项目配置了自动化的 GitHub Actions 工作流：
+- **推送主分支 `main`** 会自动触发构建与测试，编译打包未签名 `Juyue-v*.ipa`，并**自动发布到 GitHub Releases** 供侧载安装。
 - **支持的侧载方式 (Sideloading)**：
   - **TrollStore**（巨魔商店，推荐，免越狱免证书签名，永久有效）
   - **AltStore / SideStore**（个人免费证书签名）
@@ -130,12 +127,12 @@ Juyue/
 
 ## 语音合成凭据（百度语音）
 
-仓库**不内置**任何百度语音凭据，也不含百度离线音库与 SDK，所以公开版本里只有「系统语音」和「HTTP 语音源」两种，百度音色要自己配。
+公开版**不内置**任何百度语音凭据，也不含百度离线音库与 SDK，所以只有「系统语音」和「HTTP 语音源」两种，百度音色要自己配。本地侧载版内置一套默认凭据，可在同一页修改或恢复包内默认值。
 
 ### 一、在线发音人（走网络配置最省事）
 
 1. 登录百度智能云，进「语音技术 → 语音合成」，建一个应用，拿到 **APP ID**、**API Key**、**Secret Key**。
-2. 在 App 里填：`设置 → 听书 → 百度语音授权`。
+2. 在 App 里填：`听书设置 → 内置离线 → 授权详情 → 编辑凭据`。
 
 ### 二、离线音库（断网可用，要多两样：序列号 + 音库文件）
 
@@ -143,7 +140,7 @@ Juyue/
 2. 下载百度离线语音合成 SDK 的 iOS 包，里面的资源目录就是音库，常见文件名 `duxiaomei.dat`、`duxiaoyu.dat`、`text_v6.dat`。
 3. 把音库放进工程：
    ```
-   Sources/LegadoApp/Resources/BaiduTTS/
+   Sources/JuyueApp/Resources/BaiduTTS/
    ```
    三个 `.dat` 都要放；缺哪个，对应音色就是哑的。
 4. 自编译还得带 SDK 本体（只用 GitHub 上的 ipa 不用管这步）：
@@ -154,7 +151,7 @@ Juyue/
      └── BaiduSpeech-Bridging-Header.h     # 桥接头
    ```
    这两个目录都在 `.gitignore` 里，得自己放。
-5. 在 App 里填：`设置 → 听书 → 百度语音授权` —— **APP ID（离线用）** 和 **离线序列号**（一行一条，一个 APP ID 可能配多条）。保存后重启 App 生效。
+5. 在 App 里填：`听书设置 → 内置离线 → 授权详情 → 编辑凭据` —— **APP ID（离线用）**、**授权包名**（控制台登记的那个，默认 `com.factorcitrus.juyue`）和 **离线序列号**（一行一条，一个 APP ID 可能配多条）。保存后会自动重跑授权自检；改包名要重启 App 再生效。
 6. 首次激活要联网：SDK 拿「APP ID + 序列号」换授权文件，换到之后就能断网用。换设备或刷机后要重来一次。
 
 ### 三、常见问题
@@ -167,26 +164,22 @@ Juyue/
 
 ## 开源许可证
 
-本项目基于 [GPLv3](LICENSE) 许可证开源。遵循与原版 Legado 相同的开源精神。
+本项目基于 [GPLv3](LICENSE) 许可证开源。遵循与原版阅读相同的开源精神。
 
-## 内容来源、使用边界与免责声明
+## 使用前必读 & 免责声明
 
-橘阅是一个**规则解析引擎**，不是内容平台。它没有内容服务器，不采集、不存储、不缓存、不转码、不转发票任何作品正文；所有请求都由用户自行导入的规则直接发往第三方站点，返回结果只存在于用户本机。
-
-1. **不内置任何书源**：仓库、Release 安装包与 CI 产物都不预置书源，也不附带任何指向具体站点的规则文件、订阅地址或书源合集。书源由使用者自行编写、自行导入、自行承担相应责任。
-2. **不推荐、不背书、不认证任何第三方书源**：本项目不运营书源目录，不提供聚合订阅地址，不以任何官方名义发布、转发、评测或整理书源。第三方以本项目名义传播的书源，与本项目及作者无关。
-3. **不提供、不协助获取未经授权的内容**：本项目不授予任何作品的版权或访问权。使用者不得利用本软件绕过付费、登录、访问控制、数字版权保护或其他技术措施，不得用于传播侵权内容。请优先使用正版渠道及已获授权的公开内容。
-4. **不带百度语音**：GitHub 上的构建不含百度语音 SDK 与音库（那部分不可再分发），只有系统语音与 HTTP 语音源；需要百度音色的请自行申请凭据并在「听书设置 → 百度语音授权」里填写。
-5. **只能侧载安装**：未签名 ipa，用 TrollStore / AltStore / SideStore / Sideloadly / 爱思助手之类安装，不要指望上架 App Store。
-6. **授权 GPL-3.0**：本项目基于上游 `SeitoMoyi/Legado-iOS`（GPL-3.0）继续开发，分发必须附带源码并保持 GPL-3.0。
-7. **投诉即处理**：权利人认为本仓库内任何文件侵犯其合法权利，请按 [NOTICE-IP.md](NOTICE-IP.md) 提交材料。我们承诺收到完整材料后 24 小时内回执、72 小时内完成核查，并视情况采取删除、替换或停止分发等措施，结果书面告知并留档。
-8. 一句话：本软件等同于一个可自定义规则的浏览器，规则指向哪里、指向的内容是否合法，完全由使用者自行决定并负责。
+1. **不内置任何书源**：仓库与安装包都不带书源，书籍解析规则完全由使用者自行导入并负责。
+2. **不带百度语音**：GitHub 上的构建不含百度语音 SDK 与音库（那部分不可再分发），只有系统语音与 HTTP 语音源；需要百度音色的请自行申请凭据并在「听书设置 → 百度语音授权」里填写。
+3. **只能侧载安装**：未签名 ipa，用 TrollStore / AltStore / SideStore / Sideloadly / 爱思助手之类安装，不要指望上架 App Store。
+4. **授权 GPL-3.0**：本项目基于上游 `SeitoMoyi/Legado-iOS`（GPL-3.0）继续开发，分发必须附带源码并保持 GPL-3.0。
+5. 本软件（橘阅）只是一个解析工具，本身并不提供任何内容，没有自己的服务器，配置和显示内容完全由用户决定，和本软件无关，您可以完全把它理解成一个定制版的浏览器。
 
 ## 反馈渠道
 
 遇到 bug、想要新功能，或者只是想说点什么，都可以直接找我：
 
 - **邮箱**：**Deathandfly@outlook.com** —— 本人亲收，最直接
+- **QQ 群**：**1128675417**
 - **GitHub Issues**：https://github.com/FactorCitrus/Juyue/issues
 - 装了 App 的也可以从「设置 → 关于」点进 GitHub 仓库
 
@@ -194,16 +187,17 @@ Juyue/
 
 ## 支持项目
 
-如果橘阅对你有帮助，最直接的支持方式是：
+如果橘阅对你有帮助，欢迎自愿赞助，支持项目持续维护与开发。
 
-- 在仓库点个 star，让需要的人搜得到；
-- 遇到 bug 提 Issue，附上版本号、机型和复现步骤；
-- 想改什么就提 PR，文档和代码一样欢迎。
-
-本项目**不设赞赏码，不接受任何形式的赞助或打赏**，也不销售任何内容、书源、会员或代充服务。
-
-## 关于社区
-
-本项目不设官方群组、频道或公众号。所有讨论统一走 [GitHub Issues](https://github.com/FactorCitrus/Juyue/issues)，邮箱只用于私密事项与知识产权投诉。
-
-任何以「橘阅官方」名义建立的群、频道、公众号或书源合集，均与本项目无关；请勿在其中发布、转发或索取任何书源。发现冒名请通过上述渠道告知。
+赞助完全自愿，不影响软件使用，也不影响用户依据 GPL-3.0 许可证享有的权利。
+请我喝茶🍵
+<table>
+  <tr>
+    <td align="center"><strong>微信赞赏</strong></td>
+    <td align="center"><strong>支付宝赞赏</strong></td>
+  </tr>
+  <tr>
+    <td align="center"><img src="sponsors/wechat.png" width="200" alt="微信赞赏码"></td>
+  </tr>
+</table>
+感谢支持开源项目！

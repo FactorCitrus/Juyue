@@ -12,20 +12,20 @@
 
 ## 2. 协议与格式
 
-- 书源规则（Legado BookSource JSON）：属**兼容实现**，未复制其规则引擎源码。
-  仓库**不预置任何书源**：`Sources/LegadoApp/Resources/bookSources.json` 为空数组 `[]`。
+- 书源规则（阅读 BookSource JSON）：属**兼容实现**，未复制其规则引擎源码。
+  仓库**不预置任何书源**：`Sources/JuyueApp/Resources/bookSources.json` 为空数组 `[]`。
   书源由使用者自行导入，其来源合法性与再分发许可由使用者自行确认。
 
 ## 3. 第三方代码
 
 | 组件 | 授权 | 来源 | 位置 |
 |---|---|---|---|
-| Moveable 0.53.0 | MIT | https://github.com/daybrush/moveable | `Sources/LegadoApp/Resources/ChapterTitleDesigner/moveable.min.js`（文件头已保留版权与许可声明） |
+| Moveable 0.53.0 | MIT | https://github.com/daybrush/moveable | `Sources/JuyueApp/Resources/ChapterTitleDesigner/moveable.min.js`（文件头已保留版权与许可声明） |
 | ZIPFoundation | MIT | https://github.com/weichsel/ZIPFoundation.git | SwiftPM 依赖 |
 | SwiftSoup | MIT | https://github.com/scinfu/SwiftSoup.git | SwiftPM 依赖 |
 | sherpa-onnx v1.13.4 | Apache-2.0 | https://github.com/k2-fsa/sherpa-onnx | `Vendor/sherpa-onnx/sherpa-onnx.xcframework`（静态库，含 iOS 设备与模拟器切片） |
 | ONNX Runtime 1.27.0 | MIT | https://github.com/microsoft/onnxruntime | `Vendor/sherpa-onnx/onnxruntime.xcframework` |
-| VITS/piper 中文声 `zh_CN-huayan-medium` | **Unknown（待确认）** | https://github.com/PlayVoice/HuaYan_TTS | `Sources/LegadoApp/Resources/TTSModel/huayan/`（61MB onnx + 18MB espeak-ng-data） |
+| VITS/piper 中文声 `zh_CN-huayan-medium` | **Unknown（待确认）** | https://github.com/PlayVoice/HuaYan_TTS | `Sources/JuyueApp/Resources/TTSModel/huayan/`（61MB onnx + 18MB espeak-ng-data） |
 
 ### 3.1 离线语音包的授权待办
 
@@ -36,15 +36,15 @@
 
 ## 4. 设计参考（非代码复制，待确认）
 
-- **栖阅**：`Sources/LegadoApp/Theme/ReaderConfig.swift` 里的设置项结构与排版参数以它为参照，
+- **栖阅**：`Sources/JuyueApp/Theme/ReaderConfig.swift` 里的设置项结构与排版参数以它为参照，
   注释已逐条标明（`ReaderQuickSettingsPanelKind`、`reader.css` 的 `--reader-align`、`ReadingSettings` 的下划线参数等）。
-- **待确认**：`Sources/LegadoApp/Resources/ChapterTitleDesigner/`（`index.html` / `designer.js` / `designer.css`）
+- **待确认**：`Sources/JuyueApp/Resources/ChapterTitleDesigner/`（`index.html` / `designer.js` / `designer.css`）
   是否为栖阅产物的移植。若来自栖阅，按栖阅的授权处理；无授权则需重写。
 
 ## 5. SDK 与商用授权（与开源授权无关）
 
 - **百度离线语音合成 SDK**：`Vendor/BaiduSpeech`（未纳入 git），商用需向百度申请授权。
-- **百度音库**：`Sources/LegadoApp/Resources/BaiduTTS/`（未纳入 git），授权同上。
+- **百度音库**：`Sources/JuyueApp/Resources/BaiduTTS/`（未纳入 git），授权同上。
 
 ## 6. 上游代码相似度实测（2026-10-25）
 
@@ -55,11 +55,11 @@
 $ python3 scripts/gpl_audit.py --repo app/Juyue --top 5
 baseline d21903c | files compared 32 | surviving upstream lines 8026
  upstream   lines   ratio  file
-     1709    9793   17.5%  Sources/LegadoApp/Views/Reader/ReaderView.swift
-      492    1227   40.1%  Sources/LegadoApp/Views/BookDetailView.swift
-      469    1475   31.8%  Sources/LegadoApp/Services/BookStore.swift
-      397     482   82.4%  Sources/LegadoCore/Engine/RuleAnalyzer.swift
-      202     205   98.5%  Sources/LegadoApp/Views/ExploreBookListView.swift
+     1709    9793   17.5%  Sources/JuyueApp/Views/Reader/ReaderView.swift
+      492    1227   40.1%  Sources/JuyueApp/Views/BookDetailView.swift
+      469    1475   31.8%  Sources/JuyueApp/Services/BookStore.swift
+      397     482   82.4%  Sources/JuyueCore/Engine/RuleAnalyzer.swift
+      202     205   98.5%  Sources/JuyueApp/Views/ExploreBookListView.swift
 ```
 
 **结论：本仓库仍是上游的衍生作品，不是独立实现。** 存活 8026 行，逐文件清单与清账进度见

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""把 Sources/**/*.swift 同步进 Juyue.xcodeproj 的 LegadoApp target。
+"""把 Sources/**/*.swift 同步进 Juyue.xcodeproj 的 JuyueApp target。
 
 工程用的是显式文件列表（PBXFileReference + PBXBuildFile + PBXSourcesBuildPhase），
 不是 SPM 的 glob，所以新增源文件必须同时挂四处，否则编译到引用处才报
@@ -16,7 +16,7 @@ import sys
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 PBX = ROOT / "Juyue.xcodeproj" / "project.pbxproj"
-ANCHOR_FILE_REF = "7560F3034B738FD64AA2D8E9"  # Sources/LegadoApp/LegadoApp.swift
+ANCHOR_FILE_REF = "7560F3034B738FD64AA2D8E9"  # Sources/JuyueApp/JuyueApp.swift
 
 
 def stable_id(seed: str, taken: set) -> str:
@@ -71,7 +71,7 @@ def main() -> int:
     assert m, "PBXSourcesBuildPhase files array not found"
     text = text[: m.end(2)] + "".join(f"\t\t\t\t<string>{i}</string>\n" for i, _ in builds) + text[m.end(2):]
 
-    # 3. 主 group children：只改含 LegadoApp.swift 的那个数组
+    # 3. 主 group children：只改含 JuyueApp.swift 的那个数组
     gpat = re.compile(r"(<key>children</key>\n\t\t\t<array>\n)((?:[^\n]*\n)*?)(\t\t\t</array>)")
     done = False
     for gm in gpat.finditer(text):
