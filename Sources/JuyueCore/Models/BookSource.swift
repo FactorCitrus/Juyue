@@ -77,6 +77,11 @@ public struct BookSource: Codable, Identifiable, Equatable {
     /// 选源排序：权重高的先试，权重相同按已知响应时间短的先试。
     /// 未测过响应时间的源排在已测过的后面，但仍可被选中。
     public static func selectionOrder(_ lhs: BookSource, _ rhs: BookSource) -> Bool {
+        // 置顶源用 customOrder < 0 标记，必须排最前；置顶之间的相对顺序沿用下面的规则。
+        let lp = (lhs.customOrder ?? 0) < 0
+        let rp = (rhs.customOrder ?? 0) < 0
+        if lp != rp { return lp }
+
         let lw = lhs.weight ?? 0
         let rw = rhs.weight ?? 0
         if lw != rw { return lw > rw }
@@ -307,5 +312,17 @@ public struct BookSource: Codable, Identifiable, Equatable {
             }
         }
         return nil
+    }
+}
+
+public extension BookSource {
+    /// 安卓阅读导出的书源文件既可能是数组，也可能只有一个对象。
+    /// 先按数组解，失败再按单对象解并包成数组。
+    static func decodeList(from data: Data) throws -> [BookSource] {
+        let decoder = JSONDecoder()
+        if let list = try? decoder.decode([BookSource].self, from: data) {
+            return list
+        }
+        return [try decoder.decode(BookSource.self, from: data)]
     }
 }

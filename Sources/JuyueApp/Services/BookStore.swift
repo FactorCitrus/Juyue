@@ -28,6 +28,12 @@ public class BookStore: ObservableObject {
 
     private var pendingRespondTimeWrite: DispatchWorkItem?
     private var chapterMemory: [String: [BookChapter]] = [:]
+    /// 阅读进度这种高频改动走防抖；结构变化（增删书、换源、导入）仍然立刻写。
+    private let shelfWriter = DebouncedPersistenceWriter<[Book]>(
+        queue: DispatchQueue(label: "juyue.bookshelf.persist", qos: .utility),
+        encode: { books in try? JSONEncoder().encode(books) },
+        sink: { data in UserDefaults.standard.set(data, forKey: Keys.books) }
+    )
 
     public init() {
         JuyueStorageMigration.runIfNeeded()
@@ -486,7 +492,15 @@ public class BookStore: ObservableObject {
     public func saveBookshelf() { persistShelf() }
 
     private func persistSources() { Persisted.write(sources, key: Keys.sources) }
-    private func persistShelf() { Persisted.write(bookshelf, key: Keys.books) }
+
+    /// 结构变化（增删书、换源、导入、恢复）立刻写盘，并作废挂起的旧快照。
+    private func persistShelf() { shelfWriter.writeNow(bookshelf) }
+
+    /// 阅读进度这类高频变化只标脏，静默 0.8 秒后合并写一次。
+    private func scheduleShelfPersist() { shelfWriter.schedule(bookshelf, delay: 0.8) }
+
+    /// 进后台 / 退出阅读 / 退出 App：把还没落盘的进度立刻写完。
+    public func flushShelf() { shelfWriter.flush() }
 
     // MARK: - WebDAV 恢复
 
@@ -538,6 +552,25 @@ public class BookStore: ObservableObject {
         }
 
         return (newBooks, newSources)
+    }
+
+    /// 离线包导入：书与目录落地，正文/书评/封面已由 OfflineBookShare 写回缓存
+    @discardableResult
+    public func importOfflineBook(_ book: Book, chapters: [BookChapter]) -> Bool {
+        var incoming = book
+        incoming.origin = "local"
+        incoming.totalChapterNum = chapters.count
+
+        if let index = bookshelf.firstIndex(where: { $0.bookUrl == incoming.bookUrl }) {
+            bookshelf[index] = mergingProgress(from: incoming, over: bookshelf[index])
+            bookshelf[index].totalChapterNum = chapters.count
+        } else {
+            bookshelf.append(incoming)
+        }
+        // 本地书的目录键就是 bookUrl，阅读页打开时直接用这份，不必联网
+        saveChapters(chapters, for: incoming.bookUrl)
+        persistShelf()
+        return true
     }
 
     private func mergingProgress(from backup: Book, over local: Book) -> Book {
@@ -663,14 +696,31 @@ public class BookStore: ObservableObject {
         }
 
         if target.bookUrl != oldBook.bookUrl {
-            bookshelf.removeAll { $0.bookUrl == oldBook.bookUrl }
-            chapterMemory.removeValue(forKey: oldBook.bookUrl)
+            // 目录地址属于旧源：沿用它会让换源后的目录和正文继续从旧站抓。
+            if target.tocUrl == oldBook.tocUrl {
+                target.tocUrl = ""
+            }
+            target.totalChapterNum = 0
+        }
+
+        guard let oldIndex = bookshelf.firstIndex(where: { $0.bookUrl == oldBook.bookUrl }) else {
+            // 未上架的书换源只用于阅读，不能被顺带写进书架。
+            if target.bookUrl != oldBook.bookUrl {
+                discardChapterCache(for: oldBook.bookUrl)
+            }
+            return target
+        }
+
+        if target.bookUrl != oldBook.bookUrl {
+            bookshelf.remove(at: oldIndex)
+            discardChapterCache(for: oldBook.bookUrl)
         }
 
         if let index = bookshelf.firstIndex(where: { $0.bookUrl == target.bookUrl }) {
             bookshelf[index] = target
         } else {
-            bookshelf.insert(target, at: 0)
+            // 旧书在书架时放回它原来的位置，别因为换源就顶到最前面。
+            bookshelf.insert(target, at: min(oldIndex, bookshelf.count))
         }
         persistShelf()
         return target
@@ -685,7 +735,7 @@ public class BookStore: ObservableObject {
         bookshelf[index].durChapterTitle = chapterTitle
         bookshelf[index].durChapterTime = stamp
         bookshelf[index].lastCheckTime = stamp
-        persistShelf()
+        scheduleShelfPersist()
 
         // 本地进度已经写盘；WebDAV 只是副本，没配就跳过，失败也不回滚。
         let snapshot = bookshelf[index]
@@ -747,7 +797,7 @@ public class BookStore: ObservableObject {
 
     public func planImportSources(json: String) throws -> [SourceImportEntry] {
         guard let data = json.data(using: .utf8) else { return [] }
-        let incomingList = try JSONDecoder().decode([BookSource].self, from: data)
+        let incomingList = try BookSource.decodeList(from: data)
 
         var seen = Set<String>()
         var plan: [SourceImportEntry] = []
@@ -817,7 +867,7 @@ public class BookStore: ObservableObject {
 
     public func importSources(json: String) throws -> Int {
         guard let data = json.data(using: .utf8) else { return 0 }
-        let incomingList = try JSONDecoder().decode([BookSource].self, from: data)
+        let incomingList = try BookSource.decodeList(from: data)
 
         var byURL: [String: Int] = [:]
         var byName: [String: Int] = [:]
@@ -1106,6 +1156,18 @@ public class BookStore: ObservableObject {
         documentsFolder.appendingPathComponent("chapters_\(CryptoUtils.md5(bookUrl)).json")
     }
 
+    /// 换源 / 删书时把旧 bookUrl 的内存和磁盘目录缓存一起丢掉，否则每次换源都留一份。
+    /// 目录缓存键是「bookUrl#书源」，所以要把这条书的所有源都扫掉。
+    private func discardChapterCache(for bookUrl: String) {
+        let keys = Set([bookUrl]).union(
+            chapterMemory.keys.filter { $0 == bookUrl || $0.hasPrefix(bookUrl + "#") }
+        )
+        for key in keys {
+            chapterMemory.removeValue(forKey: key)
+            try? FileManager.default.removeItem(at: chapterCacheURL(for: key))
+        }
+    }
+
     public func saveChapters(_ chapters: [BookChapter], for bookUrl: String) {
         chapterMemory[bookUrl] = chapters
         let encoded = try? JSONEncoder().encode(chapters)
@@ -1148,6 +1210,14 @@ public class BookStore: ObservableObject {
 
     public func importEpub(from fileUrl: URL) throws -> Book {
         let package = try EpubParser.shared.parse(epubUrl: fileUrl)
+        saveChapters(package.chapters, for: package.book.bookUrl)
+        insertOrReplace(package.book)
+        return package.book
+    }
+
+    /// MOBI/AZW3、FB2、UMD 走同一套：解析器负责拆章落盘，这里只管入库。
+    public func importLocalBook(from fileUrl: URL) throws -> Book {
+        let package = try LocalBookParser.shared.parse(url: fileUrl)
         saveChapters(package.chapters, for: package.book.bookUrl)
         insertOrReplace(package.book)
         return package.book
@@ -1255,6 +1325,8 @@ public class BookStore: ObservableObject {
             return try comicImport(from: fileUrl)
         case "pdf":
             return try pdfImport(from: fileUrl)
+        case "mobi", "azw", "azw3", "prc", "fb2", "umd":
+            return try importLocalBook(from: fileUrl)
         default:
             return try epubImport(from: fileUrl)
         }
@@ -1443,53 +1515,71 @@ public final class ChapterDownloadManager: ObservableObject {
         jobs.insert(job, at: 0)
 
         workers[jobID] = Task { [weak self] in
-            for index in indices {
-                guard let self else { return }
+            // 一轮抓完把失败的再试一次；已缓存的章节自然跳过，所以重开任务就是断点续下
+            var queue = indices
+            var round = 0
+            while !queue.isEmpty && round < 2 {
+                var retry: [Int] = []
+                for index in queue {
+                    guard let self else { return }
 
-                while true {
-                    guard let current = await self.state(of: jobID) else { return }
-                    switch current {
-                    case .cancelled:
-                        return
-                    case .paused:
-                        try? await Task.sleep(nanoseconds: 300_000_000)
-                        continue
-                    case .running:
+                    while true {
+                        guard let current = await self.state(of: jobID) else { return }
+                        switch current {
+                        case .cancelled:
+                            return
+                        case .paused:
+                            try? await Task.sleep(nanoseconds: 300_000_000)
+                            continue
+                        case .running:
+                            break
+                        }
                         break
                     }
-                    break
-                }
 
-                guard index >= 0, index < chapters.count else { continue }
-                let chapter = chapters[index]
+                    guard index >= 0, index < chapters.count else { continue }
+                    let chapter = chapters[index]
 
-                if BookContentService.shared.hasCachedChapter(bookUrl: book.bookUrl, chapterIndex: chapter.index) {
-                    if ReviewCache.enabled,
-                       let cached = BookContentService.shared.getCachedChapterContent(
-                           bookUrl: book.bookUrl,
-                           chapterIndex: chapter.index
-                       ) {
-                        await ReviewCache.prefetchComments(inContent: cached)
-                    }
-                    await self.increment(jobID, finished: 1)
-                } else {
-                    await self.setChapter(jobID, chapter.title)
-                    do {
-                        let content = try await BookContentService.shared.fetchChapterContent(
-                            chapter: chapter,
-                            source: source,
-                            book: book
-                        )
-                        if ReviewCache.enabled, !content.isEmpty {
-                            await ReviewCache.prefetchComments(inContent: content)
+                    if BookContentService.shared.hasCachedChapter(bookUrl: book.bookUrl, chapterIndex: chapter.index) {
+                        if ReviewCache.enabled,
+                           let cached = BookContentService.shared.getCachedChapterContent(
+                               bookUrl: book.bookUrl,
+                               chapterIndex: chapter.index
+                           ) {
+                            await ReviewCache.prefetchComments(inContent: cached)
                         }
                         await self.increment(jobID, finished: 1)
-                    } catch {
-                        await self.increment(jobID, failed: 1)
+                    } else {
+                        await self.setChapter(jobID, chapter.title)
+                        do {
+                            let content = try await BookContentService.shared.fetchChapterContent(
+                                chapter: chapter,
+                                source: source,
+                                book: book
+                            )
+                            if ReviewCache.enabled, !content.isEmpty {
+                                await ReviewCache.prefetchComments(inContent: content)
+                            }
+                            await self.increment(jobID, finished: 1)
+                        } catch {
+                            retry.append(index)
+                        }
                     }
+
+                    try? await Task.sleep(nanoseconds: 120_000_000)
                 }
 
-                try? await Task.sleep(nanoseconds: 120_000_000)
+                // 还有下一轮就先把这些留在队列里重试，最后一轮仍失败才计入失败数
+                if !retry.isEmpty && round == 0 {
+                    queue = retry
+                    round += 1
+                    try? await Task.sleep(nanoseconds: 500_000_000)
+                    continue
+                }
+                for _ in retry {
+                    await self?.increment(jobID, failed: 1)
+                }
+                queue = []
             }
             await self?.complete(jobID)
         }
@@ -1539,8 +1629,176 @@ public final class ChapterDownloadManager: ObservableObject {
         workers[id] = nil
     }
 
+    /// 对齐安卓：暂停的任务也算已结束，清理时一并移除，并停掉还在睡眠的 worker。
     public func clearFinished() {
-        jobs.removeAll { !$0.isRunning }
+        for job in jobs where !job.isRunning || job.isPaused {
+            workers[job.id]?.cancel()
+            workers[job.id] = nil
+        }
+        jobs.removeAll { !$0.isRunning || $0.isPaused }
+    }
+}
+
+// MARK: - 离线书导出/导入
+
+/// 离线包清单：书籍元数据 + 完整目录 + 正文/书评文件列表
+public struct OfflineBookManifest: Codable {
+    public var version: Int
+    public var book: Book
+    public var chapters: [BookChapter]
+    public var reviewFiles: [String]
+    public var coverFile: String?
+
+    public init(version: Int, book: Book, chapters: [BookChapter], reviewFiles: [String], coverFile: String?) {
+        self.version = version
+        self.book = book
+        self.chapters = chapters
+        self.reviewFiles = reviewFiles
+        self.coverFile = coverFile
+    }
+}
+
+public enum OfflineBookShare {
+    public static let fileExtension = "jybook"
+
+    public enum ShareError: LocalizedError {
+        case unreadable
+        case badManifest
+
+        public var errorDescription: String? {
+            switch self {
+            case .unreadable: return "离线包无法读取"
+            case .badManifest: return "离线包缺少清单文件"
+            }
+        }
+    }
+
+    /// 打包已缓存的正文、书评与封面，返回可直接分享的 zip 文件
+    public static func export(book: Book, chapters: [BookChapter]) throws -> URL {
+        let fm = FileManager.default
+        let staging = fm.temporaryDirectory.appendingPathComponent("OfflineExport-\(UUID().uuidString)", isDirectory: true)
+        let chaptersDir = staging.appendingPathComponent("chapters", isDirectory: true)
+        let reviewsDir = staging.appendingPathComponent("reviews", isDirectory: true)
+        try fm.createDirectory(at: chaptersDir, withIntermediateDirectories: true)
+        try fm.createDirectory(at: reviewsDir, withIntermediateDirectories: true)
+
+        var reviewNames = Set<String>()
+        for chapter in chapters {
+            guard let content = BookContentService.shared.getCachedChapterContent(
+                bookUrl: book.bookUrl,
+                chapterIndex: chapter.index
+            ), !content.isEmpty else { continue }
+            try content.write(
+                to: chaptersDir.appendingPathComponent("\(chapter.index).txt"),
+                atomically: true,
+                encoding: .utf8
+            )
+
+            guard ReviewCache.enabled else { continue }
+            for target in ReviewCache.commentTargets(inContent: content, limit: 80) {
+                guard let api = ReviewCache.apiURL(fromRaw: target.raw, mode: target.mode),
+                      let data = ReviewCache.load(for: api) else { continue }
+                let name = CryptoUtils.md5(api.absoluteString) + ".json"
+                guard reviewNames.insert(name).inserted else { continue }
+                try? data.write(to: reviewsDir.appendingPathComponent(name), options: .atomic)
+            }
+        }
+
+        var coverFile: String?
+        if let cover = book.coverUrl, let cached = BookCoverStorage.cachedFileURL(for: cover),
+           fm.fileExists(atPath: cached.path) {
+            let target = staging.appendingPathComponent("cover.img")
+            if (try? fm.copyItem(at: cached, to: target)) != nil { coverFile = "cover.img" }
+        }
+
+        let manifest = OfflineBookManifest(
+            version: 1,
+            book: book,
+            chapters: chapters,
+            reviewFiles: reviewNames.sorted(),
+            coverFile: coverFile
+        )
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        try encoder.encode(manifest).write(to: staging.appendingPathComponent("manifest.json"), options: .atomic)
+
+        let safeName = book.name.replacingOccurrences(of: "/", with: "_")
+        let target = fm.temporaryDirectory.appendingPathComponent("\(safeName).\(fileExtension)")
+        try? fm.removeItem(at: target)
+        let archive = try Archive(url: target, accessMode: .create)
+        try addContents(of: staging, to: archive, prefix: "")
+        try? fm.removeItem(at: staging)
+        return target
+    }
+
+    /// 解包并把正文、书评、封面写回各自的缓存位置；书本身按本地书返回
+    public static func unpack(at archiveURL: URL) throws -> OfflineBookManifest {
+        let fm = FileManager.default
+        let work = fm.temporaryDirectory.appendingPathComponent("OfflineImport-\(UUID().uuidString)", isDirectory: true)
+        try fm.createDirectory(at: work, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: work) }
+
+        guard let archive = Archive(url: archiveURL, accessMode: .read) else { throw ShareError.unreadable }
+        for entry in archive {
+            try archive.extract(entry, to: work.appendingPathComponent(entry.path))
+        }
+
+        let manifestURL = work.appendingPathComponent("manifest.json")
+        guard let data = try? Data(contentsOf: manifestURL),
+              let manifest = try? JSONDecoder().decode(OfflineBookManifest.self, from: data) else {
+            throw ShareError.badManifest
+        }
+
+        let chaptersDir = work.appendingPathComponent("chapters", isDirectory: true)
+        if let files = try? fm.contentsOfDirectory(at: chaptersDir, includingPropertiesForKeys: nil) {
+            for file in files where file.pathExtension == "txt" {
+                guard let index = Int(file.deletingPathExtension().lastPathComponent),
+                      let content = try? String(contentsOf: file, encoding: .utf8) else { continue }
+                BookContentService.shared.saveCachedChapterContent(
+                    bookUrl: manifest.book.bookUrl,
+                    chapterIndex: index,
+                    content: content
+                )
+            }
+        }
+
+        let reviewsDir = work.appendingPathComponent("reviews", isDirectory: true)
+        for name in manifest.reviewFiles {
+            guard let review = try? Data(contentsOf: reviewsDir.appendingPathComponent(name)) else { continue }
+            ReviewCache.restoreFile(named: name, data: review)
+        }
+
+        if let coverFile = manifest.coverFile,
+           let cover = manifest.book.coverUrl,
+           let cached = BookCoverStorage.cachedFileURL(for: cover) {
+            let folder = BookCoverStorage.directory()
+            try? fm.createDirectory(at: folder, withIntermediateDirectories: true)
+            try? fm.removeItem(at: cached)
+            try? fm.copyItem(at: work.appendingPathComponent(coverFile), to: cached)
+        }
+
+        var imported = manifest.book
+        // 导入的书不依赖书源：目录与正文都走离线缓存
+        imported.origin = "local"
+        return OfflineBookManifest(
+            version: manifest.version,
+            book: imported,
+            chapters: manifest.chapters,
+            reviewFiles: manifest.reviewFiles,
+            coverFile: manifest.coverFile
+        )
+    }
+
+    private static func addContents(of directory: URL, to archive: Archive, prefix: String) throws {
+        let fm = FileManager.default
+        guard let enumerator = fm.enumerator(at: directory, includingPropertiesForKeys: [.isDirectoryKey]) else { return }
+        for case let item as URL in enumerator {
+            let isDirectory = (try? item.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) ?? false
+            guard !isDirectory else { continue }
+            let relative = String(item.path.dropFirst(directory.path.count + 1))
+            let name = prefix.isEmpty ? relative : "\(prefix)/\(relative)"
+            try archive.addEntry(with: name, relativeTo: directory, compressionMethod: .deflate)
+        }
     }
 }
 
@@ -1785,6 +2043,11 @@ public enum ReviewCache {
 
     public static func clearAll() {
         try? FileManager.default.removeItem(at: root)
+    }
+
+    /// 离线包导入：文件名就是 md5(apiURL)，直接写回缓存目录
+    public static func restoreFile(named name: String, data: Data) {
+        try? data.write(to: root.appendingPathComponent(name), options: .atomic)
     }
 
     public static func apiURL(fromRaw raw: String, mode: String = "chapter") -> URL? {

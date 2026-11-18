@@ -21,6 +21,7 @@ private struct SheetNavigation<Content: View>: View {
 
     var body: some View {
         NavigationView { content() }
+            .stackNavigationStyle()
     }
 }
 
@@ -254,6 +255,8 @@ public struct SourceManagerView: View {
         .listStyle(.inset)
         #endif
         .appThemedList()
+        .frame(maxWidth: 900)
+        .frame(maxWidth: .infinity)
         .navigationTitle("书源管理")
         .toolbar { toolbarContent }
         .sheet(isPresented: $state.importSheetVisible, onDismiss: resetConsent) {
@@ -747,6 +750,10 @@ private struct SourceRow: View {
         source.loginUi != nil || source.loginUrl != nil
     }
 
+    private var schemeBadge: String? {
+        BookSourceSchemeClassifier.unsupportedBadge(for: source)
+    }
+
     var body: some View {
         HStack(alignment: .top, spacing: 10) {
             VStack(alignment: .leading, spacing: 5) {
@@ -758,6 +765,15 @@ private struct SourceRow: View {
                 }
                 Text(source.bookSourceUrl).font(.caption)
                     .foregroundColor(theme.palette.secondaryInk).lineLimit(1)
+                if let schemeBadge {
+                    Text(schemeBadge)
+                        .font(.caption2)
+                        .padding(.horizontal, 5)
+                        .padding(.vertical, 1)
+                        .background(theme.palette.warning.opacity(0.15))
+                        .foregroundColor(theme.palette.warning)
+                        .cornerRadius(4)
+                }
                 if let group = source.bookSourceGroup, !group.isEmpty {
                     Text(group)
                         .font(.caption2)

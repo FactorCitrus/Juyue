@@ -12,6 +12,31 @@ public final class RuleAnalyzer {
     public let baseUrl: String?
     public let jsEngine: JSEngine
 
+    /// 把规则结果压成一行字符串。JS 侧可能回对象、数组、数字、布尔，
+    /// 直接 `"\(value)"` 会把 Swift 的字典描述（`[AnyHashable("toString"): …]`）
+    /// 原样印到书页上，所以统一按 JS 的 toString 语义收口。
+    public static func scalarText(_ value: Any?) -> String {
+        guard let value else { return "" }
+        switch value {
+        case let text as String:
+            return text
+        case let number as NSNumber:
+            // true/false 桥成 NSNumber 后 stringValue 是 "1"/"0"，JS 里是 "true"/"false"。
+            if CFGetTypeID(number) == CFBooleanGetTypeID() {
+                return number.boolValue ? "true" : "false"
+            }
+            return number.stringValue
+        case is NSNull:
+            return ""
+        case let list as [Any]:
+            return list.map { scalarText($0) }.joined(separator: ",")
+        case is [String: Any], is [AnyHashable: Any]:
+            return "[object Object]"
+        default:
+            return "\(value)"
+        }
+    }
+
     /// init 时判定的内容形态。之后所有取数都按这个分支走，不再每次试探类型。
     private enum Payload {
         case json(Any)
@@ -81,7 +106,7 @@ public final class RuleAnalyzer {
             return urlString
         }
         let trimmed = urlString.trimmingCharacters(in: .whitespacesAndNewlines)
-        if trimmed.hasPrefix("http://") || trimmed.hasPrefix("https://") {
+        if trimmed.hasPrefix("http://") || trimmed.hasPrefix("https://") || trimmed.lowercased().hasPrefix("data:") {
             return trimmed
         }
         guard let resolved = URL(string: trimmed, relativeTo: baseObject) else {
@@ -123,14 +148,27 @@ public final class RuleAnalyzer {
 
         let jsNamespaces = ["java.", "source.", "book."]
         if jsNamespaces.contains(where: { expression.hasPrefix($0) }) {
-            guard let value = jsEngine.evalRule(script: expression, result: content) else { return "" }
+            guard let value = evalRule(script: expression, result: content) else { return "" }
             return "\(value)"
         }
 
-        return getString(expression)
+        let selected = getString(expression)
+        if !selected.isEmpty { return selected }
+        // 订阅源 sortUrl 会调 jsLib 里的函数（如 bhost()），选择器取不到值时按脚本求值。
+        if expression.contains("(") {
+            guard let value = evalRule(script: expression, result: content) else { return "" }
+            return "\(value)"
+        }
+        return selected
     }
 
     // MARK: - JS 规则拆解
+
+    /// 每次求值前把 `src` 绑成当前被分析的源码，目录地址规则要靠它取 mid。
+    private func evalRule(script: String, result: Any?) -> Any? {
+        jsEngine.setSourceText((content as? String) ?? "")
+        return jsEngine.evalRule(script: script, result: result)
+    }
 
     /// `<js>…</js>` 或 `@js:…` 的三段式拆法：标记前的规则、脚本本身、标记后的残留规则。
     ///
@@ -160,6 +198,36 @@ public final class RuleAnalyzer {
 
     // MARK: - 单值求值
 
+    /// 按顶层 `||` 拆备用规则；引号与括号里的 `||`（JSONPath 过滤器）不算分隔符。
+    private func alternatives(of rule: String) -> [String] {
+        var out: [String] = []
+        var start = rule.startIndex
+        var depth = 0
+        var quote: Character?
+        var index = start
+
+        while index < rule.endIndex {
+            let char = rule[index]
+            if let open = quote {
+                if char == open { quote = nil }
+            } else if char == "'" || char == "\"" {
+                quote = char
+            } else if char == "[" || char == "(" {
+                depth += 1
+            } else if char == "]" || char == ")" {
+                depth = max(0, depth - 1)
+            } else if depth == 0, rule[index...].hasPrefix("||") {
+                out.append(String(rule[start..<index]))
+                index = rule.index(index, offsetBy: 2)
+                start = index
+                continue
+            }
+            index = rule.index(after: index)
+        }
+        out.append(String(rule[start...]))
+        return out
+    }
+
     public func getString(_ rule: String?, isUrl: Bool = false) -> String {
         guard let raw = rule?.trimmingCharacters(in: .whitespacesAndNewlines), raw.isEmpty == false else {
             return ""
@@ -175,6 +243,15 @@ public final class RuleAnalyzer {
 
         if raw.contains("{{"), raw.contains("}}") {
             let expanded = evaluateTemplate(raw)
+            // 模板只是预处理：替换完可能还剩 `<js>`、`||` 这些步骤，必须继续走完整条链路。
+            // 章节地址规则常写成 `<js>…{{$..id}}…</js>`，就地返回会把规则原文当 URL 用。
+            if expanded != raw {
+                // 展开后可能已经是一条普通文本（`{{$.name}}` → `源A`），
+                // 再按规则解析会得到空串，所以取不到时才退回展开结果本身。
+                let rest = getString(expanded, isUrl: isUrl)
+                if !rest.isEmpty { return rest }
+                return isUrl ? resolveUrl(expanded) : expanded
+            }
             return isUrl ? resolveUrl(expanded) : expanded
         }
 
@@ -186,19 +263,19 @@ public final class RuleAnalyzer {
                 let prefixed = getString(javascript.prefix)
                 target = prefixed.isEmpty ? content : prefixed
             }
-            let evaluated = jsEngine.evalRule(script: javascript.script, result: target)
+            let evaluated = evalRule(script: javascript.script, result: target)
 
             if let suffix = javascript.suffix, suffix.isEmpty == false {
                 let nested = RuleAnalyzer(content: evaluated ?? "", baseUrl: baseUrl, jsEngine: jsEngine)
                 return nested.getString(suffix, isUrl: isUrl)
             }
 
-            let text = evaluated.map { "\($0)" } ?? ""
+            let text = RuleAnalyzer.scalarText(evaluated)
             return isUrl ? resolveUrl(text) : text
         }
 
         if raw.contains("||") {
-            for option in raw.components(separatedBy: "||") {
+            for option in alternatives(of: raw) {
                 let candidate = getString(option.trimmingCharacters(in: .whitespacesAndNewlines), isUrl: isUrl)
                 if candidate.isEmpty == false { return candidate }
             }
@@ -216,6 +293,19 @@ public final class RuleAnalyzer {
     }
 
     // MARK: - 列表求值
+
+    /// 行字段值本身可能写成 `@js:…` / `<js>…</js>`（洛娅橙用这种写法把行数据编码成
+    /// `data:` 地址）。规则没写 JS、值里带了才需要再求值一次，`result` 保留当前行。
+    public func resolveLazyJavaScript(_ value: String, isUrl: Bool = false) -> String {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        let resolved: String
+        if trimmed.hasPrefix("@js:") || (trimmed.contains("<js>") && trimmed.contains("</js>")) {
+            resolved = getString(trimmed)
+        } else {
+            resolved = value
+        }
+        return isUrl ? resolveUrl(resolved) : resolved
+    }
 
     public func getStringList(_ rule: String?, isUrl: Bool = false) -> [String] {
         guard let raw = rule?.trimmingCharacters(in: .whitespacesAndNewlines), raw.isEmpty == false else {
@@ -262,7 +352,7 @@ public final class RuleAnalyzer {
             script = String(rule[start..<end])
         }
 
-        let evaluated = jsEngine.evalRule(script: script, result: content)
+        let evaluated = evalRule(script: script, result: content)
         if let array = evaluated as? [Any] {
             return array.map { isUrl ? resolveUrl("\($0)") : "\($0)" }
         }
@@ -308,7 +398,7 @@ public final class RuleAnalyzer {
                     withTemplate: replacement
                 )
             case .js(let script):
-                if let output = jsEngine.evalRule(script: script, result: text) {
+                if let output = evalRule(script: script, result: text) {
                     text = "\(output)"
                 }
             default:
@@ -366,7 +456,7 @@ public final class RuleAnalyzer {
                 target = prefixed.isEmpty ? content : prefixed
             }
 
-            guard let evaluated = jsEngine.evalRule(script: javascript.script, result: target) else {
+            guard let evaluated = evalRule(script: javascript.script, result: target) else {
                 return []
             }
             if let text = evaluated as? String, let array = RuleAnalyzer.elementsFromJSONText(text) {
@@ -376,11 +466,27 @@ public final class RuleAnalyzer {
             return elements(from: evaluated)
         }
 
+        if raw.contains("||") {
+            for option in alternatives(of: raw) {
+                let trimmed = option.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard trimmed.isEmpty == false else { continue }
+                let items = getElements(trimmed)
+                if items.isEmpty == false { return items }
+            }
+            return []
+        }
+
         if let json = jsonRoot {
             for candidate in [raw, "$." + raw] {
                 guard let hit = JSONPath.evaluate(path: candidate, json: json) else { continue }
                 if let array = hit as? [Any] { return array }
                 if let dict = hit as? [String: Any] { return [dict] }
+            }
+            // 与 getStringList 一致：章节列表也常被包在 `{"code":200,"data":{…}}` 里，
+            // 规则却直接写 `.chapters[*]`，根路径落空时往 data / result 再探一层。
+            if let dict = json as? [String: Any] {
+                let wrapped = wrappedValues(from: raw, container: dict)
+                if !wrapped.isEmpty { return wrapped }
             }
         }
 
@@ -476,6 +582,10 @@ public final class RuleAnalyzer {
             return (try? element.text()) ?? ""
         case "html":
             return (try? element.html()) ?? ""
+        case "outerhtml":
+            return (try? element.outerHtml()) ?? ""
+        case "owntext":
+            return (try? element.ownText()) ?? ""
         case "href", "src":
             return try? element.attr(attribute)
         default:

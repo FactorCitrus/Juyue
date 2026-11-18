@@ -77,6 +77,8 @@ public struct SearchBookView: View {
                 onSelect: { detailTarget = $0 }
             )
         }
+        .frame(maxWidth: 860)
+        .frame(maxWidth: .infinity)
         .navigationTitle("聚合搜索")
         #if os(iOS)
         .navigationBarTitleDisplayMode(.inline)
@@ -822,12 +824,13 @@ private struct ResultCover: View {
             if let raw = item.coverUrl, let url = URL(string: raw) {
                 AsyncImage(url: url) { phase in
                     if case .success(let image) = phase {
-                        image.resizable().scaledToFill()
+                        image.resizable().scaledToFit()
                     } else {
                         placeholder
                     }
                 }
                 .frame(width: 52, height: 72)
+                .background(theme.palette.elevated)
                 .cornerRadius(6)
                 .clipped()
             } else {
@@ -957,6 +960,7 @@ struct SearchSourcePickerSheet: View {
             }
             .safeAreaInset(edge: .bottom) { bottomBar }
         }
+            .stackNavigationStyle()
     }
 
     private var bottomBar: some View {

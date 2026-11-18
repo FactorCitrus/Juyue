@@ -32,3 +32,6 @@ Icon
 # 备份在 ~/Projects/legado-binaries-20261013.tar.gz
 Vendor/
 Sources/JuyueApp/Resources/BaiduTTS/
+
+# 会话现场备份（*.bak-日期-时刻）
+*.bak-*

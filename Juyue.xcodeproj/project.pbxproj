@@ -10,6 +10,132 @@
 	<string>54</string>
 	<key>objects</key>
 	<dict>
+		<key>343FA247ECC118255BE63383</key>
+		<dict>
+			<key>isa</key>
+			<string>PBXFileReference</string>
+			<key>lastKnownFileType</key>
+			<string>sourcecode.swift</string>
+			<key>path</key>
+			<string>Sources/JuyueCore/Service/BookSourceScheme.swift</string>
+			<key>sourceTree</key>
+			<string>&lt;group&gt;</string>
+		</dict>
+		<key>77D6A5280B589A4E7D459C97</key>
+		<dict>
+			<key>fileRef</key>
+			<string>343FA247ECC118255BE63383</string>
+			<key>isa</key>
+			<string>PBXBuildFile</string>
+		</dict>
+		<key>B6346D9B1BBA06ECDA676D77</key>
+		<dict>
+			<key>isa</key>
+			<string>PBXFileReference</string>
+			<key>lastKnownFileType</key>
+			<string>sourcecode.swift</string>
+			<key>path</key>
+			<string>Sources/JuyueCore/Service/ContentRuleSupport.swift</string>
+			<key>sourceTree</key>
+			<string>&lt;group&gt;</string>
+		</dict>
+		<key>13330F47AB1C2B66F1939AB4</key>
+		<dict>
+			<key>fileRef</key>
+			<string>B6346D9B1BBA06ECDA676D77</string>
+			<key>isa</key>
+			<string>PBXBuildFile</string>
+		</dict>
+		<key>21F67CDA0CE6D9B1E758E8A3</key>
+		<dict>
+			<key>isa</key>
+			<string>PBXFileReference</string>
+			<key>lastKnownFileType</key>
+			<string>sourcecode.swift</string>
+			<key>path</key>
+			<string>Sources/JuyueCore/Engine/JsoupShim.swift</string>
+			<key>sourceTree</key>
+			<string>&lt;group&gt;</string>
+		</dict>
+		<key>A16002044DC1C482BCD08A62</key>
+		<dict>
+			<key>fileRef</key>
+			<string>21F67CDA0CE6D9B1E758E8A3</string>
+			<key>isa</key>
+			<string>PBXBuildFile</string>
+		</dict>
+		<key>F11E5EC3680C892116B635A1</key>
+		<dict>
+			<key>isa</key>
+			<string>PBXFileReference</string>
+			<key>lastKnownFileType</key>
+			<string>sourcecode.swift</string>
+			<key>path</key>
+			<string>Sources/JuyueApp/Services/HeadlessWebViewFetcher.swift</string>
+			<key>sourceTree</key>
+			<string>&lt;group&gt;</string>
+		</dict>
+		<key>36FD717EC9CBC8E2E37D8362</key>
+		<dict>
+			<key>isa</key>
+			<string>PBXFileReference</string>
+			<key>lastKnownFileType</key>
+			<string>sourcecode.swift</string>
+			<key>path</key>
+			<string>Sources/JuyueCore/Engine/HeadlessWebView.swift</string>
+			<key>sourceTree</key>
+			<string>&lt;group&gt;</string>
+		</dict>
+		<key>B25572F4B3B6430967DDDCE1</key>
+		<dict>
+			<key>fileRef</key>
+			<string>F11E5EC3680C892116B635A1</string>
+			<key>isa</key>
+			<string>PBXBuildFile</string>
+		</dict>
+		<key>E2D3BDC151153C17717C3F39</key>
+		<dict>
+			<key>fileRef</key>
+			<string>36FD717EC9CBC8E2E37D8362</string>
+			<key>isa</key>
+			<string>PBXBuildFile</string>
+		</dict>
+		<key>BF13A777ECE6B0B901E3BF48</key>
+		<dict>
+			<key>isa</key>
+			<string>PBXFileReference</string>
+			<key>lastKnownFileType</key>
+			<string>sourcecode.swift</string>
+			<key>path</key>
+			<string>Sources/JuyueCore/Service/SourceSwitchResultOrdering.swift</string>
+			<key>sourceTree</key>
+			<string>&lt;group&gt;</string>
+		</dict>
+		<key>4C6AB9EDF6E46839068BB96D</key>
+		<dict>
+			<key>fileRef</key>
+			<string>BF13A777ECE6B0B901E3BF48</string>
+			<key>isa</key>
+			<string>PBXBuildFile</string>
+		</dict>
+		<key>C4618578A13D5E32DAB541F4</key>
+		<dict>
+			<key>isa</key>
+			<string>PBXFileReference</string>
+			<key>lastKnownFileType</key>
+			<string>sourcecode.swift</string>
+			<key>path</key>
+			<string>Sources/JuyueCore/Service/ImportAssetSupport.swift</string>
+			<key>sourceTree</key>
+			<string>&lt;group&gt;</string>
+		</dict>
+		<key>D5A768EAB299CF5A13659525</key>
+		<dict>
+			<key>fileRef</key>
+			<string>C4618578A13D5E32DAB541F4</string>
+			<key>isa</key>
+			<string>PBXBuildFile</string>
+		</dict>
 		<key>A8F5F8ECA9D62A048F60F94E</key>
 		<dict>
 			<key>isa</key>
@@ -630,7 +756,7 @@
 				<key>CODE_SIGN_STYLE</key>
 				<string>Automatic</string>
 				<key>CURRENT_PROJECT_VERSION</key>
-				<string>5.0.23</string>
+				<string>5.1.12</string>
 				<key>DEVELOPMENT_TEAM</key>
 				<string></string>
 				<key>ENABLE_PREVIEWS</key>
@@ -652,7 +778,7 @@
 				<key>LD_RUNPATH_SEARCH_PATHS</key>
 				<string>$(inherited) @executable_path/Frameworks</string>
 				<key>MARKETING_VERSION</key>
-				<string>5.0.23</string>
+				<string>5.1.12</string>
 				<key>PRODUCT_BUNDLE_IDENTIFIER</key>
 				<string>com.factorcitrus.juyue</string>
 				<key>PRODUCT_NAME</key>
@@ -926,6 +1052,16 @@
 				<string>D490C1B48204AFC3A8C09FB5</string>
 				<string>C9A65C4EBBE51CD4295A8CA7</string>
 				<string>A8F5F8ECA9D62A048F60F94E</string>
+				<string>C4618578A13D5E32DAB541F4</string>
+				<string>BF13A777ECE6B0B901E3BF48</string>
+				<string>F11E5EC3680C892116B635A1</string>
+				<string>36FD717EC9CBC8E2E37D8362</string>
+				<string>21F67CDA0CE6D9B1E758E8A3</string>
+				<string>B6346D9B1BBA06ECDA676D77</string>
+				<string>343FA247ECC118255BE63383</string>
+				<string>2A07CA412B51936E3A4F483F</string>
+				<string>D006E85B12098EE3491401B9</string>
+				<string>EA41A568140CAC528D204205</string>
 			</array>
 			<key>isa</key>
 			<string>PBXGroup</string>
@@ -1139,6 +1275,7 @@
 				<string>AA11BB22CC33DD44EE55FFAC</string>
 				<string>AA11BB22CC33DD44EE55FFAE</string>
 				<string>AA11BB22CC33DD44EE55FFB1</string>
+				<string>AA11BB22CC33DD44EE55FFB3</string>
 				<string>8B84D7F338D473FCF8456CF4</string>
 				<string>8E7D37EBCCCFCC8C6BD79009</string>
 				<string>2EECD649955D8AFCBE7650CD</string>
@@ -1149,6 +1286,16 @@
 				<string>BD0200000000000000BF11E06</string>
 				<string>BD0200000000000000BF11E08</string>
 				<string>8F6BCC61265FF30753A48F99</string>
+				<string>D5A768EAB299CF5A13659525</string>
+				<string>4C6AB9EDF6E46839068BB96D</string>
+				<string>B25572F4B3B6430967DDDCE1</string>
+				<string>E2D3BDC151153C17717C3F39</string>
+				<string>A16002044DC1C482BCD08A62</string>
+				<string>13330F47AB1C2B66F1939AB4</string>
+				<string>77D6A5280B589A4E7D459C97</string>
+				<string>ABF1937CE1B48AA780D1705F</string>
+				<string>A806F10C8A7C1E5D5AADAF99</string>
+				<string>20D2ED206A462DF998AB950C</string>
 			</array>
 			<key>isa</key>
 			<string>PBXSourcesBuildPhase</string>
@@ -1393,6 +1540,24 @@
 		<dict>
 			<key>fileRef</key>
 			<string>AA11BB22CC33DD44EE55FFB0</string>
+			<key>isa</key>
+			<string>PBXBuildFile</string>
+		</dict>
+		<key>AA11BB22CC33DD44EE55FFB2</key>
+		<dict>
+			<key>isa</key>
+			<string>PBXFileReference</string>
+			<key>lastKnownFileType</key>
+			<string>sourcecode.swift</string>
+			<key>path</key>
+			<string>Sources/JuyueApp/Views/SubscribeWebReaderView.swift</string>
+			<key>sourceTree</key>
+			<string>&lt;group&gt;</string>
+		</dict>
+		<key>AA11BB22CC33DD44EE55FFB3</key>
+		<dict>
+			<key>fileRef</key>
+			<string>AA11BB22CC33DD44EE55FFB2</string>
 			<key>isa</key>
 			<string>PBXBuildFile</string>
 		</dict>
@@ -1723,7 +1888,7 @@
 				<key>CODE_SIGN_STYLE</key>
 				<string>Automatic</string>
 				<key>CURRENT_PROJECT_VERSION</key>
-				<string>5.0.23</string>
+				<string>5.1.12</string>
 				<key>DEVELOPMENT_TEAM</key>
 				<string></string>
 				<key>ENABLE_PREVIEWS</key>
@@ -1745,7 +1910,7 @@
 				<key>LD_RUNPATH_SEARCH_PATHS</key>
 				<string>$(inherited) @executable_path/Frameworks</string>
 				<key>MARKETING_VERSION</key>
-				<string>5.0.23</string>
+				<string>5.1.12</string>
 				<key>PRODUCT_BUNDLE_IDENTIFIER</key>
 				<string>com.factorcitrus.juyue</string>
 				<key>PRODUCT_NAME</key>
@@ -1804,7 +1969,7 @@
 				<key>CODE_SIGN_STYLE</key>
 				<string>Automatic</string>
 				<key>CURRENT_PROJECT_VERSION</key>
-				<string>5.0.23</string>
+				<string>5.1.12</string>
 				<key>DEVELOPMENT_TEAM</key>
 				<string></string>
 				<key>ENABLE_PREVIEWS</key>
@@ -1828,7 +1993,7 @@
 				<key>LD_RUNPATH_SEARCH_PATHS</key>
 				<string>$(inherited) @executable_path/Frameworks</string>
 				<key>MARKETING_VERSION</key>
-				<string>5.0.23</string>
+				<string>5.1.12</string>
 				<key>PRODUCT_BUNDLE_IDENTIFIER</key>
 				<string>com.factorcitrus.juyue.reader</string>
 				<key>PRODUCT_NAME</key>
@@ -2385,6 +2550,60 @@
 			<string>/bin/sh</string>
 			<key>shellScript</key>
 			<string>echo &quot;[BaiduTTS] copying&quot;; if [ &quot;$CONFIGURATION&quot; != &quot;AppStore&quot; ] &amp;&amp; [ -d &quot;$SRCROOT/Sources/JuyueApp/Resources/BaiduTTS&quot; ]; then mkdir -p &quot;$TARGET_BUILD_DIR/$UNLOCALIZED_RESOURCES_FOLDER_PATH/BaiduTTS&quot;; cp -R &quot;$SRCROOT/Sources/JuyueApp/Resources/BaiduTTS/.&quot; &quot;$TARGET_BUILD_DIR/$UNLOCALIZED_RESOURCES_FOLDER_PATH/BaiduTTS/&quot;; echo &quot;[BaiduTTS] done $(ls &quot;$TARGET_BUILD_DIR/$UNLOCALIZED_RESOURCES_FOLDER_PATH/BaiduTTS&quot; | wc -l) files&quot;; fi</string>
+		</dict>
+		<key>ABF1937CE1B48AA780D1705F</key>
+		<dict>
+			<key>fileRef</key>
+			<string>2A07CA412B51936E3A4F483F</string>
+			<key>isa</key>
+			<string>PBXBuildFile</string>
+		</dict>
+		<key>2A07CA412B51936E3A4F483F</key>
+		<dict>
+			<key>isa</key>
+			<string>PBXFileReference</string>
+			<key>lastKnownFileType</key>
+			<string>sourcecode.swift</string>
+			<key>path</key>
+			<string>Sources/JuyueCore/Service/ReaderPaginationPlanner.swift</string>
+			<key>sourceTree</key>
+			<string>&lt;group&gt;</string>
+		</dict>
+		<key>A806F10C8A7C1E5D5AADAF99</key>
+		<dict>
+			<key>fileRef</key>
+			<string>D006E85B12098EE3491401B9</string>
+			<key>isa</key>
+			<string>PBXBuildFile</string>
+		</dict>
+		<key>D006E85B12098EE3491401B9</key>
+		<dict>
+			<key>isa</key>
+			<string>PBXFileReference</string>
+			<key>lastKnownFileType</key>
+			<string>sourcecode.swift</string>
+			<key>path</key>
+			<string>Sources/JuyueCore/Service/DebouncedPersistenceWriter.swift</string>
+			<key>sourceTree</key>
+			<string>&lt;group&gt;</string>
+		</dict>
+		<key>20D2ED206A462DF998AB950C</key>
+		<dict>
+			<key>fileRef</key>
+			<string>EA41A568140CAC528D204205</string>
+			<key>isa</key>
+			<string>PBXBuildFile</string>
+		</dict>
+		<key>EA41A568140CAC528D204205</key>
+		<dict>
+			<key>isa</key>
+			<string>PBXFileReference</string>
+			<key>lastKnownFileType</key>
+			<string>sourcecode.swift</string>
+			<key>path</key>
+			<string>Sources/JuyueApp/Views/Reader/ReaderPaginator.swift</string>
+			<key>sourceTree</key>
+			<string>&lt;group&gt;</string>
 		</dict>
 	</dict>
 	<key>rootObject</key>

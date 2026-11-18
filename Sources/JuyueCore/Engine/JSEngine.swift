@@ -5,6 +5,7 @@ import CommonCrypto
 
 @objc public protocol JavaShimProtocol: JSExport {
     func ajax(_ url: String) -> String
+    func ajaxAll(_ urls: JSValue) -> JSValue
     func connect(_ url: String) -> JSValue
     func connect(_ url: String, _ header: String) -> JSValue
     func post(_ url: String, _ body: String, _ header: JSValue) -> JSValue
@@ -13,9 +14,17 @@ import CommonCrypto
     func md5Encode(_ str: String) -> String
     func base64Encode(_ str: String) -> String
     func base64Decode(_ str: String) -> String
+    func base64DecodeToByteArray(_ str: String) -> JSValue
+    func encodeURI(_ str: String) -> String
+    func t2s(_ str: String) -> String
     func timeFormat(_ timestamp: JSValue) -> String
+    func timeFormatUTC(_ timestamp: JSValue, _ format: String, _ timeZoneOffset: JSValue) -> String
+    func messageDigest(_ algorithm: String, _ parts: JSValue) -> JSValue
+    func stringToBytes(_ str: String) -> JSValue
     func getString(_ path: String) -> String
     func jsonPath(_ json: String, _ path: String) -> JSValue
+    func getElements(_ html: JSValue, _ rule: JSValue) -> JSValue
+    func getElement(_ rule: String) -> JSValue
     func toast(_ message: String)
     func longToast(_ message: String)
     func log(_ message: JSValue)
@@ -25,6 +34,7 @@ import CommonCrypto
     func getCookie(_ url: String) -> String
     func refreshExplore()
     func hexDecodeToString(_ hex: String) -> String
+    func htmlFormat(_ html: String) -> String
     func base64EncodeBytes(_ bytes: JSValue) -> String
     func sleepMs(_ ms: JSValue)
     func createSymmetricCrypto(_ transformation: String, _ key: String) -> JSValue
@@ -58,6 +68,9 @@ public final class ScriptBrowser {
     /// 脚本里的同步请求也要吃书源的 concurrentRate。
     var rateKey: String?
     var rateLimit: SourceRateLimit?
+    /// `java.getElements(html, rule)` 要按当前书源规则解析。
+    var bookSource: BookSource?
+    var baseUrl: String?
 
     public init(context: JSContext?) {
         self.jsContext = context
@@ -85,6 +98,25 @@ public final class ScriptBrowser {
             return ""
         }
         return perform(request)?.bodyString ?? ""
+    }
+
+    /// `java.ajaxAll(urls)`：按顺序同步请求，回响应对象数组。
+    /// 脚本里常见的用法是拿一批章节接口的 JSON，数量上限 20，避免一条规则把脚本卡死。
+    public func ajaxAll(_ urls: JSValue) -> JSValue {
+        guard let ctx = jsContext else {
+            return JSValue(undefinedIn: JSContext())
+        }
+        let array = JSValue(newArrayIn: ctx) ?? JSValue(nullIn: ctx)
+        guard let raw = urls.toArray() else { return array ?? JSValue(nullIn: ctx) }
+
+        var index = 0
+        for item in raw {
+            guard index < 20 else { break }
+            guard let url = item as? String, !url.isEmpty else { continue }
+            array?.setValue(connect(url), at: index)
+            index += 1
+        }
+        return array ?? JSValue(nullIn: ctx)
     }
 
     public func connect(_ url: String) -> JSValue {
@@ -156,6 +188,40 @@ public final class ScriptBrowser {
         return dict.mapValues { "\($0)" }
     }
 
+    /// `Jsoup.connect(...).get()` 的取数：沿用书源请求头、Cookie 与限速。
+    func fetchHTML(
+        url: String,
+        headers: [String: String],
+        method: String,
+        body: String?
+    ) -> (String, Int) {
+        var fields = headers
+        if fields.keys.first(where: { $0.caseInsensitiveCompare("Cookie") == .orderedSame }) == nil {
+            let cookies = CookieJar.shared.cookieString(for: url)
+            if !cookies.isEmpty { fields["Cookie"] = cookies }
+        }
+        guard let parsed = NetworkClient.parseJuyueUrl(url) else {
+            return ("", 0)
+        }
+
+        // defaultHeader 遇到含 "=" 的值会整段当成 Cookie，书源头必须直接并入。
+        var merged = parsed.headers
+        for (name, value) in fields {
+            merged[name] = value
+        }
+
+        let upper = method.uppercased()
+        let request = NetworkClient.ParsedRequest(
+            url: parsed.url,
+            method: upper,
+            headers: merged,
+            body: upper == "POST" ? (body ?? "").data(using: .utf8) : nil,
+            usesWebView: parsed.usesWebView
+        )
+        let response = perform(request)
+        return (response?.bodyString ?? "", response?.statusCode ?? 0)
+    }
+
     // MARK: - 脚本缓存
 
     public func get(_ key: String) -> String? {
@@ -225,6 +291,30 @@ public final class ScriptBrowser {
             cursor = end
         }
         return String(decoding: bytes, as: UTF8.self)
+    }
+
+    /// 安卓 `java.htmlFormat`：去注释、脚本、样式与标签，压成单行纯文本。
+    public func htmlFormat(_ html: String) -> String {
+        var text = html
+        for pattern in [
+            "(?is)<!--[\\s\\S]*?-->",
+            "(?is)<(script|style)[^>]*>[\\s\\S]*?</\\1>",
+            "(?is)<[^>]*>"
+        ] {
+            guard let regex = try? NSRegularExpression(pattern: pattern) else { continue }
+            text = regex.stringByReplacingMatches(
+                in: text,
+                range: NSRange(location: 0, length: (text as NSString).length),
+                withTemplate: ""
+            )
+        }
+        text = text.replacingOccurrences(of: "&nbsp;", with: " ")
+        guard let whitespace = try? NSRegularExpression(pattern: "\\s+") else { return text }
+        return whitespace.stringByReplacingMatches(
+            in: text,
+            range: NSRange(location: 0, length: (text as NSString).length),
+            withTemplate: " "
+        ).trimmingCharacters(in: .whitespaces)
     }
 
     // MARK: - Rhino / Java 互操作
@@ -378,6 +468,71 @@ public final class ScriptBrowser {
         CryptoUtils.base64Decode(str)
     }
 
+    /// `java.base64DecodeToByteArray(str)`：解出来直接给字节数组，脚本可以再喂给解密。
+    public func base64DecodeToByteArray(_ str: String) -> JSValue {
+        let ctx: JSContext = jsContext ?? JSContext()
+        let cleaned = str.trimmingCharacters(in: .whitespacesAndNewlines)
+        let data = Data(base64Encoded: cleaned, options: [.ignoreUnknownCharacters]) ?? Data()
+        return ScriptObjectFactory.byteArray([UInt8](data), in: ctx)
+    }
+
+    /// JavaScript `encodeURI` 语义：保留 URL 保留字符，其余按 UTF-8 百分号编码，空格为 `%20`。
+    public func encodeURI(_ str: String) -> String {
+        let allowed = CharacterSet(
+            charactersIn: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_.!~*'();/?:@&=+$,#"
+        )
+        return str.addingPercentEncoding(withAllowedCharacters: allowed) ?? str
+    }
+
+    /// `java.t2s(str)`：繁体转简体。书源在分类名、书名上用它统一字形。
+    public func t2s(_ str: String) -> String {
+        let mutable = NSMutableString(string: str)
+        CFStringTransform(mutable, nil, "Hant-Hans" as CFString, false)
+        return mutable as String
+    }
+
+    /// `java.timeFormatUTC(t, format, offset)`：按指定时区格式化，offset 是小时数，缺省 UTC。
+    /// 与 Legado 一致，入参按毫秒时间戳解释；format 缺省时沿用 `timeFormat` 的默认格式。
+    public func timeFormatUTC(_ timestamp: JSValue, _ format: String, _ timeZoneOffset: JSValue) -> String {
+        var milliseconds = timestamp.toNumber()?.doubleValue ?? 0
+        if milliseconds == 0, let text = timestamp.toString(), let parsed = Double(text) {
+            milliseconds = parsed
+        }
+        guard milliseconds >= 0 else { return "" }
+
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        // 番茄系源会传 8 表示东八区；没有第三参时保持 UTC。
+        let hours = timeZoneOffset.toNumber()?.intValue ?? 0
+        formatter.timeZone = TimeZone(secondsFromGMT: hours * 3600) ?? TimeZone(secondsFromGMT: 0)
+        formatter.dateFormat = format.isEmpty ? "yyyy-MM-dd HH:mm" : format
+        return formatter.string(from: Date(timeIntervalSince1970: milliseconds / 1000))
+    }
+
+    /// `Packages.java.security.MessageDigest` 的原生摘要实现。
+    /// `parts` 是脚本 `update()` 攒下的字节数组列表，按顺序拼起来再算。
+    public func messageDigest(_ algorithm: String, _ parts: JSValue) -> JSValue {
+        let ctx: JSContext = jsContext ?? JSContext()
+        var input: [UInt8] = []
+        if let array = parts.toArray() {
+            for item in array {
+                input.append(contentsOf: ScriptDigest.bytes(from: item))
+            }
+        } else {
+            input.append(contentsOf: ScriptCrypto.bytes(from: parts))
+        }
+
+        guard let digest = ScriptDigest.value(algorithm: algorithm, input: input) else {
+            return ScriptObjectFactory.byteArray([], in: ctx)
+        }
+        return ScriptObjectFactory.byteArray(digest, in: ctx)
+    }
+
+    public func stringToBytes(_ str: String) -> JSValue {
+        let ctx: JSContext = jsContext ?? JSContext()
+        return ScriptObjectFactory.byteArray([UInt8](str.utf8), in: ctx)
+    }
+
     public func timeFormat(_ timestamp: JSValue) -> String {
         var seconds = timestamp.toNumber()?.doubleValue ?? 0
         if seconds == 0, let text = timestamp.toString(), let parsed = Double(text) {
@@ -427,6 +582,105 @@ public final class ScriptBrowser {
             return JSValue(nullIn: ctx)
         }
         return JSValue(object: result, in: ctx) ?? JSValue(nullIn: ctx)
+    }
+
+    /// `java.getElements(html, rule)`：按当前书源的规则语法解析 HTML，
+    /// 返回与 `org.jsoup` wrapper 同一套方法的集合对象。
+    ///
+    /// 书源里更常见的是单参数写法 `java.getElements(rule)`：Rhino 把 `java`
+    /// 绑到当前 AnalyzeRule，规则作用在正在解析的 `result` 上。这里两种都支持。
+    public func getElements(_ html: JSValue, _ rule: JSValue) -> JSValue {
+        let ctx: JSContext = jsContext ?? JSContext()
+        let hasRule = !(rule.isUndefined || rule.isNull)
+        let htmlText: String
+        let ruleText: String
+        if hasRule {
+            htmlText = Self.jsoupText(html)
+            ruleText = Self.jsoupText(rule)
+        } else {
+            htmlText = currentResultText()
+            ruleText = Self.jsoupText(html)
+        }
+        let trimmed = Self.normalizeJsoupIndexRule(
+            ruleText.trimmingCharacters(in: .whitespacesAndNewlines)
+        )
+
+        if trimmed.isEmpty {
+            return JsoupShim.document(html: htmlText, baseUri: baseUrl ?? "", in: ctx)
+        }
+
+        let analyzer = RuleAnalyzer(content: htmlText, baseUrl: baseUrl, bookSource: bookSource)
+        let elements = Elements()
+        for item in analyzer.getElements(trimmed) {
+            if let element = item as? Element { elements.add(element) }
+        }
+        return JsoupShim.wrapper(elements, in: ctx)
+    }
+
+    /// 单参数 `java.getElement(rule)`：规则作用在当前脚本的 `result` 上。
+    /// 洛娅橙这类订阅源用它把 JSON 结果转成条目集合，没有这个方法脚本直接报错。
+    public func getElement(_ rule: String) -> JSValue {
+        let ctx: JSContext = jsContext ?? JSContext()
+        let trimmed = rule.trimmingCharacters(in: .whitespacesAndNewlines)
+        let text = currentResultText()
+
+        if trimmed.hasPrefix("$") {
+            guard let data = text.data(using: .utf8),
+                  let object = try? JSONSerialization.jsonObject(with: data),
+                  let hit = JSONPath.evaluate(path: trimmed, json: object) else {
+                return JSValue(newArrayIn: ctx)
+            }
+            return JSValue(object: hit, in: ctx) ?? JSValue(newArrayIn: ctx)
+        }
+
+        let analyzer = RuleAnalyzer(content: text, baseUrl: baseUrl, bookSource: bookSource)
+        let elements = Elements()
+        for item in analyzer.getElements(trimmed) {
+            if let element = item as? Element { elements.add(element) }
+        }
+        return JsoupShim.wrapper(elements, in: ctx)
+    }
+
+    /// 单参数 `java.getElements(rule)` 的输入：当前脚本里的 `result`。
+    private func currentResultText() -> String {
+        guard let ctx = jsContext,
+              let value = ctx.objectForKeyedSubscript("result"),
+              !value.isUndefined, !value.isNull else {
+            return ""
+        }
+        if value.isArray, let array = value.toArray(),
+           let data = try? JSONSerialization.data(withJSONObject: array),
+           let text = String(data: data, encoding: .utf8) {
+            return text
+        }
+        if value.isObject, !value.isArray, let dict = value.toDictionary(),
+           let data = try? JSONSerialization.data(withJSONObject: dict),
+           let text = String(data: data, encoding: .utf8) {
+            return text
+        }
+        return value.toString() ?? ""
+    }
+
+    private static func jsoupText(_ value: JSValue) -> String {
+        value.isUndefined || value.isNull ? "" : (value.toString() ?? "")
+    }
+
+    /// Legado 的索引写法 `dd!-1` 等价于 `dd.-1`，RuleAnalyzer 只认后者。
+    private static func normalizeJsoupIndexRule(_ rule: String) -> String {
+        let attributes: Set<String> = ["text", "textnodes", "html", "href", "src", "title", "content"]
+        return rule.components(separatedBy: "@").map { part in
+            let token = part.trimmingCharacters(in: .whitespaces)
+            guard let marker = token.range(of: "!", options: .backwards) else { return part }
+            let base = String(token[..<marker.lowerBound])
+            let index = String(token[marker.upperBound...])
+            guard !base.isEmpty,
+                  Int(index) != nil,
+                  !attributes.contains(base.lowercased()),
+                  !base.hasPrefix("attr(") else {
+                return part
+            }
+            return "\(base).\(index)"
+        }.joined(separator: "@")
     }
 }
 
@@ -558,6 +812,37 @@ private enum ScriptCrypto {
     }
 }
 
+// MARK: - 摘要
+
+private enum ScriptDigest {
+    static func value(algorithm: String, input: [UInt8]) -> [UInt8]? {
+        switch algorithm.uppercased().replacingOccurrences(of: "_", with: "-") {
+        case "MD5":
+            var digest = [UInt8](repeating: 0, count: Int(CC_MD5_DIGEST_LENGTH))
+            CC_MD5(input, CC_LONG(input.count), &digest)
+            return digest
+        case "SHA1", "SHA-1":
+            var digest = [UInt8](repeating: 0, count: Int(CC_SHA1_DIGEST_LENGTH))
+            CC_SHA1(input, CC_LONG(input.count), &digest)
+            return digest
+        case "SHA256", "SHA-256":
+            var digest = [UInt8](repeating: 0, count: Int(CC_SHA256_DIGEST_LENGTH))
+            CC_SHA256(input, CC_LONG(input.count), &digest)
+            return digest
+        default:
+            return nil
+        }
+    }
+
+    static func bytes(from value: Any) -> [UInt8] {
+        if let js = value as? JSValue { return ScriptCrypto.bytes(from: js) }
+        if let text = value as? String { return [UInt8](text.utf8) }
+        if let number = value as? NSNumber { return [UInt8(truncatingIfNeeded: number.intValue)] }
+        if let array = value as? [Any] { return array.flatMap { bytes(from: $0) } }
+        return []
+    }
+}
+
 public class JSEngine {
     public let context: JSContext
     private let javaShim: JavaShim
@@ -578,6 +863,8 @@ public class JSEngine {
 
         javaShim.rateKey = bookSource?.bookSourceUrl
         javaShim.rateLimit = bookSource?.rateLimit
+        javaShim.bookSource = bookSource
+        javaShim.baseUrl = baseUrl
         if let milliseconds = bookSource?.respondTime, milliseconds > 0 {
             javaShim.respondTimeout = min(180, max(10, TimeInterval(milliseconds) / 1000))
         }
@@ -596,6 +883,12 @@ public class JSEngine {
 
     // MARK: - 环境
 
+    /// 规则 JS 里的 `src` 是被分析的页面源码（Legado 的 AnalyzeRule.evalJS 同样绑定），
+    /// 目录地址规则常写 `src.match(/data-mid="(\\d+)"/)`。
+    public func setSourceText(_ text: String) {
+        context.setObject(text, forKeyedSubscript: "src" as NSString)
+    }
+
     private func installExceptionHandler() {
         context.exceptionHandler = { [weak self] _, exception in
             let message = exception?.toString() ?? "unknown error"
@@ -605,6 +898,23 @@ public class JSEngine {
             print("[JSEngine Error] \(message)")
             #endif
         }
+    }
+
+    /// 订阅源规则脚本要读 `source.sortUrl`（洛娅橙的 jsLib 会拿它取版本号），
+    /// BookSource 模型里没有这个字段，由调用方在创建引擎后补进去。
+    func setSourceValue(_ key: String, _ value: String) {
+        guard let source = context.objectForKeyedSubscript("source" as NSString) else { return }
+        source.setObject(value, forKeyedSubscript: key as NSString)
+    }
+
+    /// 订阅源的 ruleContent 脚本要读 `rssArticle.title` / `rssArticle.sort`
+    /// （洛娅橙拿它判断当前打开的是哪一篇），Legado 的环境里有这个全局。
+    public func setRssArticle(_ fields: [String: String]) {
+        guard let article = JSValue(newObjectIn: context) else { return }
+        for (key, value) in fields {
+            article.setObject(value, forKeyedSubscript: key as NSString)
+        }
+        context.setObject(article, forKeyedSubscript: "rssArticle" as NSString)
     }
 
     private func installJavaShim() {
@@ -743,6 +1053,18 @@ public class JSEngine {
     private func installRuntimePolyfills() {
         context.evaluateScript(Self.compatibilityRuntime)
         context.evaluateScript(Self.javaRuntime)
+        installJsoupShim()
+        context.exception = nil
+    }
+
+    /// 全局 `org.jsoup`：Android 书源里最常见的 HTML 解析写法。
+    private func installJsoupShim() {
+        let fetch: JsoupShim.Fetcher = { [weak javaShim] url, headers, method, body in
+            javaShim?.fetchHTML(url: url, headers: headers, method: method, body: body) ?? ("", 0)
+        }
+        JsoupShim.install(context: context, fetch: fetch)
+        // Rhino 的包对象写法 `Packages.org.jsoup.Jsoup` 也要能落到同一个实现。
+        context.evaluateScript("if (typeof Packages === 'object' && Packages) { Packages.org = org; }")
         context.exception = nil
     }
 
@@ -772,12 +1094,46 @@ public class JSEngine {
     """
 
     private static let javaRuntime = """
-    var JavaImporter = function(){ return { importClass: function(){}, importPackage: function(){} }; };
+    var JavaImporter = function(){
+      var merged = { importClass: function(){}, importPackage: function(){} };
+      for (var i = 0; i < arguments.length; i++) {
+        var pkg = arguments[i];
+        if (!pkg || typeof pkg !== 'object') continue;
+        for (var key in pkg) { merged[key] = pkg[key]; }
+      }
+      return merged;
+    };
     var importClass = function(){};
     var importPackage = function(){};
+    // 订阅源 ruleContent 会直接把 `${toastjs}` 插进生成的 HTML，Legado 内置了这个提示函数。
+    var toastjs = "function showToast(message){ java.toast(String(message)); }";
     var Packages = {
       android: { util: { Base64: { encodeToString: function(bytes, flags){ return java.base64EncodeBytes(bytes); } } } },
-      java: { lang: { Thread: { sleep: function(ms){ java.sleepMs(ms); } } } },
+      java: {
+        lang: {
+          Thread: { sleep: function(ms){ java.sleepMs(ms); } },
+          String: function(value){
+            return { getBytes: function(){ return java.stringToBytes(String(value)); } };
+          }
+        },
+        security: {
+          MessageDigest: {
+            getInstance: function(algorithm){
+              var parts = [];
+              var add = function(bytes){
+                if (bytes !== undefined && bytes !== null) parts.push(bytes);
+              };
+              return {
+                update: function(bytes){ add(bytes); },
+                digest: function(bytes){
+                  add(bytes);
+                  return java.messageDigest(String(algorithm), parts);
+                }
+              };
+            }
+          }
+        }
+      },
       io: { legato: { kazusa: { utils: { TimeoutCancellationException: function(message){ this.message = message; this.name = 'TimeoutCancellationException'; } } } } }
     };
     var com = {
@@ -792,6 +1148,10 @@ public class JSEngine {
         }
       }
     };
+    // Rhino 里 `java.lang` / `java.security` 是包对象；书源两种写法都用，
+    // 这里把同一套实现挂到 java 对象上，避免 `java.security.MessageDigest` 报 undefined。
+    java.lang = Packages.java.lang;
+    java.security = Packages.java.security;
     if (!java.refreshExplore) { java.refreshExplore = function(){}; }
     var cache = {
       put: function(key, value){ java.put(String(key), String(value)); },
@@ -805,6 +1165,47 @@ public class JSEngine {
         return isNaN(n) ? 0 : n;
       }
     };
+    // Legado 的 source.get / java.ajax 回的是 java.lang.String，脚本会对结果调 `.length()`
+    // （洛娅橙 ruleContent 拿它判断缓存长度）。原生 JS 字符串的 length 是数字，
+    // 直接调用抛 TypeError，这里按 Java String 的形态包一层。
+    var __javaString = function(v){
+      var raw = (v === undefined || v === null) ? '' : String(v);
+      var o = Object.create(String.prototype);
+      o.toString = function(){ return raw; };
+      o.valueOf = function(){ return raw; };
+      Object.defineProperty(o, 'length', { get: function(){ return function(){ return raw.length; }; } });
+      return o;
+    };
+    if (typeof source !== 'undefined' && source && typeof source.get === 'function') {
+      var __sourceGet = source.get;
+      source.get = function(key){ return __javaString(__sourceGet.call(source, String(key))); };
+    }
+    if (typeof java !== 'undefined' && typeof java.ajax === 'function') {
+      var __javaAjax = java.ajax;
+      // 安卓的 java.ajax(url, header) 带请求头；原生垫片只有单参版，这里转发给 connect。
+      java.ajax = function(url, header){
+        if (arguments.length > 1 && header !== undefined && header !== null) {
+          try {
+            var text = (typeof header === 'string') ? header : JSON.stringify(header);
+            var reply = java.connect(String(url), text);
+            var body = (reply && typeof reply.body === 'function') ? reply.body() : '';
+            return __javaString(body);
+          } catch (e) {}
+        }
+        return __javaString(__javaAjax.call(java, String(url)));
+      };
+    }
+    if (typeof java !== 'undefined' && typeof java.get === 'function') {
+      var __javaGet = java.get;
+      // 安卓的 java.get(key, defaultValue) 有默认值重载。
+      java.get = function(key, defaultValue){
+        var value = __javaGet.call(java, String(key));
+        if (value === undefined || value === null || value === '') {
+          return defaultValue === undefined ? '' : defaultValue;
+        }
+        return value;
+      };
+    }
     """
 
     // MARK: - 书对象状态
@@ -864,9 +1265,30 @@ public class JSEngine {
         if value.isString { return value.toString() }
         if value.isNumber { return value.toNumber() }
         if value.isBoolean { return value.toBool() }
+        // `java.getElements(...)` 的返回值是包装对象，先还原成节点数组。
+        if let elements = JsoupShim.elements(from: value) { return elements }
         if value.isArray { return value.toArray() }
-        if value.isObject { return value.toDictionary() }
+        if value.isObject {
+            // `java.ajax` / `java.post` 回的是模拟 java.lang.String 的对象，
+            // 脚本把它的返回值一路传下来时（`result` 就是这个对象），
+            // toDictionary 只会得到 {toString: fn, valueOf: fn}，拼进 URL 就是 [object Object]。
+            if let text = Self.javaStringPayload(value, context: context) { return text }
+            return value.toDictionary()
+        }
         return value.toObject()
+    }
+
+    /// 只有 toString / valueOf、没有可枚举字段的对象，按「Java 字符串」还原。
+    /// 判据两条一起用：JSON.stringify 出 `{}`，且 toString 不是 `[object Object]`。
+    /// 空对象 `{}` 也会 stringify 成 `{}`，靠第二条排除。
+    private static func javaStringPayload(_ value: JSValue, context: JSContext) -> String? {
+        guard value.isObject else { return nil }
+        let text = value.toString() ?? ""
+        guard !text.isEmpty, text != "[object Object]" else { return nil }
+        guard let json = context.objectForKeyedSubscript("JSON"),
+              let stringified = json.invokeMethod("stringify", withArguments: [value]),
+              stringified.toString() == "{}" else { return nil }
+        return text
     }
 
     public func renderTemplate(_ text: String, variables: [String: Any] = [:]) -> String {
@@ -888,7 +1310,7 @@ public class JSEngine {
         for match in matches.reversed() {
             let expression = source.substring(with: match.range(at: 1))
                 .trimmingCharacters(in: .whitespacesAndNewlines)
-            let rendered = eval(script: expression).map { "\($0)" } ?? ""
+            let rendered = RuleAnalyzer.scalarText(eval(script: expression))
             output = (output as NSString).replacingCharacters(in: match.range, with: rendered)
         }
         return output

@@ -209,3 +209,17 @@ final class BookSourceImportTests: XCTestCase {
         XCTAssertNil(engine.lastError, engine.lastError ?? "")
     }
 }
+
+extension BookSourceImportTests {
+    /// 安卓阅读导出的书源文件也可能只有一个对象，不能只认数组。
+    func testDecodeSingleObjectSourceList() throws {
+        let json = #"{"bookSourceUrl":"https://single.example","bookSourceName":"单个书源"}"#
+        let sources = try BookSource.decodeList(from: Data(json.utf8))
+        XCTAssertEqual(sources.count, 1)
+        XCTAssertEqual(sources.first?.bookSourceName, "单个书源")
+
+        let array = try BookSource.decodeList(from: Data("[\(json)]".utf8))
+        XCTAssertEqual(array.count, 1)
+        XCTAssertEqual(array.first?.bookSourceUrl, "https://single.example")
+    }
+}

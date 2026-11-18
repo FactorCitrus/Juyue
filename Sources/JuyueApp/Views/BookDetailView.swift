@@ -12,8 +12,7 @@ import PhotosUI
 public struct BookDetailView: View {
     @ObservedObject private var store = BookStore.shared
 
-    private let sourceOverride: BookSource?
-
+    @State private var sourceOverride: BookSource?
     @State private var snapshot: Book
     @State private var toc: [BookChapter] = []
     @State private var loadingDetail = false
@@ -35,7 +34,7 @@ public struct BookDetailView: View {
         book: Book,
         source: BookSource? = nil
     ) {
-        self.sourceOverride = source
+        self._sourceOverride = State(initialValue: source)
         self._snapshot = State(initialValue: book)
         self._readingIndex = State(initialValue: book.durChapterIndex)
     }
@@ -70,7 +69,11 @@ public struct BookDetailView: View {
     }
 
     private var activeSource: BookSource? {
-        sourceOverride ?? store.findSource(for: snapshot)
+        // override 只在它仍对应当前书籍来源时有效；换源后 origin 已变，回落到 store 查新源。
+        if let override = sourceOverride, override.bookSourceUrl == snapshot.origin {
+            return override
+        }
+        return store.findSource(for: snapshot)
     }
 
     private var mediaKind: BookSource.Kind {
@@ -175,6 +178,8 @@ public struct BookDetailView: View {
 
             Spacer(minLength: 24)
         }
+        .frame(maxWidth: 760)
+        .frame(maxWidth: .infinity)
     }
 
     @ToolbarContentBuilder
@@ -199,6 +204,9 @@ public struct BookDetailView: View {
                 Button { enqueueRemaining() } label: {
                     Label("缓存未读章节", systemImage: "arrow.down.to.line")
                 }
+                Button { exportOfflinePackage() } label: {
+                    Label("导出离线包", systemImage: "square.and.arrow.up")
+                }
                 Button { beginEditing() } label: {
                     Label("编辑书名 / 作者 / 封面", systemImage: "pencil")
                 }
@@ -220,7 +228,7 @@ public struct BookDetailView: View {
     }
 
     private var sourceSheet: some View {
-        SourceSwitchSheet(book: snapshot, currentSourceUrl: sourceOverride?.bookSourceUrl) { newSource, candidate in
+        SourceSwitchSheet(book: snapshot, currentSourceUrl: activeSource?.bookSourceUrl) { newSource, candidate in
             switchSource(to: newSource, candidate: candidate)
         }
     }
@@ -258,7 +266,7 @@ public struct BookDetailView: View {
 
     private var readerLayer: some View {
         let active = onShelf ? shelfSnapshot : snapshot
-        let resolved = sourceOverride ?? store.findSource(for: active)
+        let resolved = activeSource
         let list = toc.isEmpty
             ? [BookChapter(
                 bookUrl: active.bookUrl,
@@ -287,6 +295,7 @@ public struct BookDetailView: View {
                 }
             }
         }
+            .stackNavigationStyle()
     }
 
     private func beginEditing() {
@@ -315,6 +324,30 @@ public struct BookDetailView: View {
     private func refreshDetail() async {
         await loadDetailIfNeeded()
         presentAlert("目录与详情已刷新")
+    }
+
+    /// 把已缓存的正文、书评与封面打成一个离线包，走系统分享
+    private func exportOfflinePackage() {
+        guard !toc.isEmpty else {
+            presentAlert("目录还没加载，先刷新目录再导出")
+            return
+        }
+        do {
+            let url = try OfflineBookShare.export(book: snapshot, chapters: toc)
+            #if canImport(UIKit)
+            let controller = UIActivityViewController(activityItems: [url], applicationActivities: nil)
+            if let scene = UIApplication.shared.connectedScenes
+                .compactMap({ $0 as? UIWindowScene })
+                .first(where: { $0.activationState == .foregroundActive }),
+               let root = scene.windows.first(where: { $0.isKeyWindow })?.rootViewController {
+                root.present(controller, animated: true)
+            }
+            #elseif canImport(AppKit)
+            NSWorkspace.shared.open(url)
+            #endif
+        } catch {
+            presentAlert("导出失败：\(error.localizedDescription)")
+        }
     }
 
     private func enqueueAll() {
@@ -349,6 +382,7 @@ public struct BookDetailView: View {
         if let cover = candidate.coverUrl, !cover.isEmpty { moved.coverUrl = cover }
 
         snapshot = store.changeBookSource(from: snapshot, to: moved)
+        sourceOverride = newSource
         toc = []
         Task { await loadDetailIfNeeded() }
     }
@@ -808,6 +842,8 @@ private struct DetailActionBar: View {
             .buttonStyle(PlainButtonStyle())
         }
         .padding(.horizontal).padding(.vertical, 10)
+        .frame(maxWidth: 620)
+        .frame(maxWidth: .infinity)
         .background(theme.palette.surface)
         .overlay(alignment: .top) {
             if theme.isClassTrial {
@@ -982,6 +1018,7 @@ struct BookCoverPickerSheet: View {
             }
             .task { await probeCovers() }
         }
+            .stackNavigationStyle()
     }
 
     @ViewBuilder
@@ -1149,36 +1186,77 @@ struct BookCoverImage: View {
         Group {
             if let localImage {
                 render(localImage)
-            } else if let remote = urlString.flatMap(URL.init(string:)) {
-                AsyncImage(url: remote) { phase in
-                    switch phase {
-                    case .success(let image):
-                        render(image)
-                    case .failure:
-                        placeholder.onAppear { onFailure?() }
-                    default:
-                        placeholder
-                    }
-                }
             } else {
                 placeholder
             }
         }
         .task(id: urlString) {
-            localImage = Self.readLocalImage(urlString)
+            await loadImage()
+        }
+    }
+
+    /// 本地路径直接读；远程封面命中磁盘缓存就直接用，否则下载后落盘，下次不再请求
+    private func loadImage() async {
+        guard let urlString, !urlString.isEmpty else {
+            localImage = nil
+            return
+        }
+        if let image = Self.readLocalImage(urlString) {
+            localImage = image
+            return
+        }
+        guard let remote = URL(string: urlString),
+              let scheme = remote.scheme?.lowercased(),
+              scheme == "http" || scheme == "https" else {
+            localImage = nil
+            return
+        }
+        if let cached = BookCoverStorage.cachedFileURL(for: urlString),
+           let image = Self.readLocalImage(cached.path) {
+            localImage = image
+            return
+        }
+        localImage = nil
+        do {
+            let (data, response) = try await URLSession.shared.data(from: remote)
+            if let http = response as? HTTPURLResponse, !(200..<300).contains(http.statusCode) {
+                onFailure?()
+                return
+            }
+            guard let image = Self.decodedImage(data) else {
+                onFailure?()
+                return
+            }
+            BookCoverStorage.saveCached(data, for: urlString)
+            localImage = image
+        } catch {
+            onFailure?()
         }
     }
 
     @ViewBuilder
     private func render(_ image: Image) -> some View {
         if contentMode == .fill {
-            Color.clear
-                .overlay {
+            // 整张封面完整显示：同图模糊放大做背景，避免留白难看，也不再裁掉上下或左右
+            // 背景层尺寸必须定死：只给 maxWidth 时 scaledToFill 会把 ZStack 撑到图片自身比例，
+            // 上层 scaledToFit 跟着铺满整个盒子，再被外层裁掉，封面就成了中心裁切
+            GeometryReader { proxy in
+                let size = proxy.size
+                ZStack {
+                    theme.palette.elevated
                     image
                         .resizable()
                         .scaledToFill()
+                        .frame(width: size.width, height: size.height)
+                        .blur(radius: 16)
+                        .opacity(0.32)
+                        .clipped()
+                    image
+                        .resizable()
+                        .scaledToFit()
+                        .frame(width: size.width, height: size.height)
                 }
-                .clipped()
+            }
         } else {
             image
                 .resizable()
@@ -1230,6 +1308,18 @@ struct BookCoverImage: View {
         return nil
         #endif
     }
+
+    private static func decodedImage(_ data: Data) -> Image? {
+        #if os(iOS)
+        guard let image = UIImage(data: data) else { return nil }
+        return Image(uiImage: image)
+        #elseif os(macOS)
+        guard let image = NSImage(data: data) else { return nil }
+        return Image(nsImage: image)
+        #else
+        return nil
+        #endif
+    }
 }
 
 // MARK: - 封面存储与候选
@@ -1247,6 +1337,23 @@ enum BookCoverStorage {
         let target = folder.appendingPathComponent(UUID().uuidString + ".jpg")
         guard (try? data.write(to: target, options: .atomic)) != nil else { return nil }
         return target.absoluteString
+    }
+
+    /// 远程封面按 URL 的稳定哈希落盘，重启进程也能命中
+    static func cachedFileURL(for remoteURL: String) -> URL? {
+        guard !remoteURL.isEmpty else { return nil }
+        var hash: UInt64 = 5381
+        for byte in remoteURL.utf8 {
+            hash = (hash &* 33) &+ UInt64(byte)
+        }
+        let name = String(hash, radix: 16) + "-" + String(remoteURL.utf8.count, radix: 16) + ".img"
+        return directory().appendingPathComponent(name)
+    }
+
+    static func saveCached(_ data: Data, for remoteURL: String) {
+        guard let target = cachedFileURL(for: remoteURL) else { return }
+        try? FileManager.default.createDirectory(at: directory(), withIntermediateDirectories: true)
+        try? data.write(to: target, options: .atomic)
     }
 }
 
@@ -1342,6 +1449,7 @@ struct BookInfoEditSheet: View {
                 }
             }
         }
+            .stackNavigationStyle()
     }
 
     @ViewBuilder

@@ -18,12 +18,19 @@ public struct RuleStep: Equatable {
 public class RuleTokenizer {
 
     private static let attributeNames: Set<String> = [
-        "text", "textnodes", "html", "href", "src", "title", "content"
+        "text", "textnodes", "html", "href", "src", "title", "content",
+        "owntext", "outerhtml"
     ]
 
     public static func parse(_ rawRule: String) -> [RuleStep] {
         var working = rawRule.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !working.isEmpty else { return [] }
+
+        // 安卓 Legado 支持 `@css:` 显式声明；不剥掉时首个 token 会在 "@" 处切成空串，
+        // 剩下的 `css:.entry` 当选择器用，整条规则命中 0。
+        if working.hasPrefix("@css:") {
+            working = String(working.dropFirst(5))
+        }
 
         let regex = extractRegex(&working)
         let script = extractScript(&working)

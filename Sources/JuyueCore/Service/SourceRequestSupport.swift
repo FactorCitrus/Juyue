@@ -65,7 +65,23 @@ public enum SourceRequestSupport {
     /// `header` / `loginHeader` 里可以嵌 `<js>...</js>` 或 `@js:`，先跑脚本再当 header 用。
     /// 脚本报错或返回空时保留原值，不把请求打瘫。
     public static func resolvedHeader(for source: BookSource) -> String? {
-        guard let raw = source.loginHeader ?? source.header,
+        let base = evaluateHeader(source.header, source: source)
+        let login = evaluateHeader(source.loginHeader, source: source)
+        switch (base, login) {
+        case (nil, nil):
+            return nil
+        case (let value?, nil):
+            return value
+        case (nil, let value?):
+            return value
+        case (let base?, let login?):
+            // 只取 loginHeader 会把 `header` 里的 Referer 整条丢掉，正文与图片请求会被防盗链挡掉。
+            return mergeHeaders(base: base, login: login)
+        }
+    }
+
+    private static func evaluateHeader(_ rawHeader: String?, source: BookSource) -> String? {
+        guard let raw = rawHeader,
               !raw.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             return nil
         }
@@ -78,6 +94,23 @@ public enum SourceRequestSupport {
             return evaluated
         }
         return raw
+    }
+
+    /// loginHeader 同名键覆盖 header，其余键两边都保留。
+    private static func mergeHeaders(base: String, login: String) -> String {
+        guard let baseData = base.data(using: .utf8),
+              let loginData = login.data(using: .utf8),
+              let baseDict = try? JSONSerialization.jsonObject(with: baseData) as? [String: Any],
+              let loginDict = try? JSONSerialization.jsonObject(with: loginData) as? [String: Any] else {
+            return login
+        }
+        var merged = baseDict
+        for (key, value) in loginDict { merged[key] = value }
+        guard let out = try? JSONSerialization.data(withJSONObject: merged, options: [.sortedKeys]),
+              let text = String(data: out, encoding: .utf8) else {
+            return login
+        }
+        return text
     }
 
     /// 把书源 header 拆成请求头字典，供图片加载与 AVPlayer 使用。

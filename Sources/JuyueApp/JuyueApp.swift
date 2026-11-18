@@ -18,6 +18,7 @@ public struct JuyueApp: App {
     @StateObject private var scriptBrowser = ScriptBrowserPresenter.shared
     @StateObject private var toastPresenter = ToastPresenter.shared
     @StateObject private var themeManager = AppThemeManager.shared
+    @StateObject private var inboundImports = InboundImportCenter.shared
     @Environment(\.scenePhase) private var scenePhase
     @AppStorage("juyue_app_theme") private var appTheme: String = "system"
 
@@ -48,10 +49,14 @@ public struct JuyueApp: App {
     public init() {
         JuyueStorageMigration.runIfNeeded()
         AppLog.install()
+        // 书源里的 webView / webJs 走无声 WKWebView，Core 只认这个运行时注入的实现。
+        HeadlessWebViewFetcher.install()
         // 启动这一条带齐环境：出问题先把这份头几行发过来，机型、系统、剩余空间、
         // 当前挂在哪个引擎和语音源，四样都在里面，不用再问一轮。
         AppLog.write("[启动] \(Self.deviceModel) · iOS \(ProcessInfo.processInfo.operatingSystemVersionString) · 可用 \(Self.freeDiskGB)GB · 引擎=\(TTSEngineChoice.current.rawValue) 源=\(TTSEngineChoice.current == .http ? (TTSourceSelection.activeId.map(String.init) ?? "-") : "不使用") · uptime=\(Int(ProcessInfo.processInfo.systemUptime / 60))m")
         preloadDefaultSources()
+        // 全局净化规则要在第一次抓取前推进 Core，也顺带跑完旧规则的迁移
+        _ = ReplaceRuleStore.shared
         // 导入过的自定义字体要在用之前注册进进程，否则 CoreText 认不出来
         CustomFontService.shared.loadAll()
         // 模拟器验收用：灌一份真机备份，省得每次手点文件选择器
@@ -249,37 +254,46 @@ public struct JuyueApp: App {
             rootContent
                 .onChange(of: scenePhase) { phase in
                     AppLog.write("[生命周期] \(phase)")
+                    // 进后台 / 退出前把防抖中的阅读进度写盘，别等系统把进程收走
+                    if phase != .active {
+                        BookStore.shared.flushShelf()
+                    }
                 }
         }
     }
 
     @ViewBuilder
     private var rootContent: some View {
-        #if os(iOS)
-        // scriptBrowser 不参与布局了：网页现在由 ScriptBrowserWindow 单独开窗显示。
-        // 保留这一行是因为脚本浏览器的 present 回调挂在它自己的 init 里，取一次 shared
-        // 才能保证脚本还没弹过网页时宿主就已经接好。
-        AppThemeRoot(themeManager: themeManager, appearanceSetting: appTheme) {
-            MainTabView()
-                // 钩子挂在环境注入的内层：sheet 只会继承挂载点上方的环境，
-                // 放到主题环境外面就拿不到主题了。
-                .modifier(DebugTTSLauncher())
-                .task {
-                    #if !NO_BAIDU_TTS
-                    BaiduOfflineTTS.probeIfNeeded()
-                    #endif
-                }
-                .environmentObject(bookStore)
-                .environmentObject(themeManager)
+        Group {
+            #if os(iOS)
+            // scriptBrowser 不参与布局了：网页现在由 ScriptBrowserWindow 单独开窗显示。
+            // 保留这一行是因为脚本浏览器的 present 回调挂在它自己的 init 里，取一次 shared
+            // 才能保证脚本还没弹过网页时宿主就已经接好。
+            AppThemeRoot(themeManager: themeManager, appearanceSetting: appTheme) {
+                MainTabView()
+                    // 钩子挂在环境注入的内层：sheet 只会继承挂载点上方的环境，
+                    // 放到主题环境外面就拿不到主题了。
+                    .modifier(DebugTTSLauncher())
+                    .task {
+                        #if !NO_BAIDU_TTS
+                        BaiduOfflineTTS.probeIfNeeded()
+                        #endif
+                    }
+                    .environmentObject(bookStore)
+                    .environmentObject(themeManager)
+            }
+            #else
+            AppThemeRoot(themeManager: themeManager, appearanceSetting: appTheme) {
+                MainTabView()
+                    .modifier(DebugTTSLauncher())
+                    .environmentObject(bookStore)
+                    .environmentObject(themeManager)
+            }
+            #endif
         }
-        #else
-        AppThemeRoot(themeManager: themeManager, appearanceSetting: appTheme) {
-            MainTabView()
-                .modifier(DebugTTSLauncher())
-                .environmentObject(bookStore)
-                .environmentObject(themeManager)
-        }
-        #endif
+        // 浏览器/源仓网页里点「一键导入」唤起本 App 时，从这条冷启动/跨 App 入口进来。
+        .onOpenURL { inboundImports.handle($0) }
+        .modifier(InboundImportHandler(center: inboundImports))
     }
 
     private func preloadDefaultSources() {
@@ -315,6 +329,7 @@ private struct DebugTTSLauncher: ViewModifier {
         content.sheet(isPresented: $isPresented) {
             switch openTarget {
             case "sources": NavigationView { TTSourceManagerView() }
+                .stackNavigationStyle()
             default: TTSSettingsSheet()
             }
         }
@@ -579,6 +594,7 @@ struct ScriptBrowserSheet: View {
                     }
                 }
         }
+            .stackNavigationStyle()
         .onAppear {
             webView.navigationDelegate = loader
             load(request.url)
@@ -737,6 +753,90 @@ final class ScriptBrowserWindow {
     }
 }
 #endif
+
+/// 系统（浏览器、源仓网页）唤起的 `legado://import/...` 导入入口。
+/// App 内的网页阅读器走各自视图的确认流程，这里负责冷启动和跨 App 唤起。
+@MainActor
+final class InboundImportCenter: ObservableObject {
+    static let shared = InboundImportCenter()
+
+    @Published var pendingLink: URL?
+    @Published var downloadedFile: DownloadedImportFile?
+    @Published var message: String?
+
+    private init() {}
+
+    func handle(_ url: URL) {
+        guard SourceDeepLinkParser.parse(url) != nil else {
+            message = "暂不支持这个导入链接：\(url.absoluteString)"
+            return
+        }
+        pendingLink = url
+    }
+
+    func confirm() {
+        guard let raw = pendingLink, let link = SourceDeepLinkParser.parse(raw) else { return }
+        pendingLink = nil
+        Task { @MainActor in
+            do {
+                if let route = link.route {
+                    message = try await RemoteSourceImporter.importSource(
+                        route: route,
+                        sourceURL: link.sourceURL.absoluteString,
+                        referer: nil,
+                        requestWithoutUA: link.requestWithoutUA
+                    )
+                } else {
+                    // 认不出类型就下载下来，交给导入面板按内容判定。
+                    downloadedFile = try await ImportDownloader.download(
+                        url: link.sourceURL,
+                        referer: nil,
+                        displayName: link.sourceURL.host ?? "书源",
+                        requestWithoutUA: link.requestWithoutUA
+                    )
+                }
+            } catch {
+                message = "导入失败：\(error.localizedDescription)"
+            }
+        }
+    }
+}
+
+private struct InboundImportHandler: ViewModifier {
+    @ObservedObject var center: InboundImportCenter
+
+    private var title: String {
+        center.pendingLink.flatMap(SourceDeepLinkParser.parse)?.title ?? "导入？"
+    }
+
+    func body(content: Content) -> some View {
+        content
+            .confirmationDialog(
+                title,
+                isPresented: Binding(
+                    get: { center.pendingLink != nil },
+                    set: { if !$0 { center.pendingLink = nil } }
+                ),
+                titleVisibility: .visible
+            ) {
+                Button("导入") { center.confirm() }
+                Button("取消", role: .cancel) { center.pendingLink = nil }
+            } message: {
+                Text(center.pendingLink?.absoluteString ?? "")
+            }
+            .sheet(item: $center.downloadedFile) { file in
+                DownloadedImportSheet(sourceName: "导入", file: file) { center.message = $0 }
+            }
+            .alert("导入", isPresented: Binding(
+                get: { center.message != nil },
+                set: { if !$0 { center.message = nil } }
+            )) {
+                Button("好", role: .cancel) {}
+            } message: {
+                Text(center.message ?? "")
+            }
+    }
+}
 
 /// 主题环境注入层。
 ///

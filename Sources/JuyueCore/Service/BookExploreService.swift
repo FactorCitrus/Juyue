@@ -111,7 +111,7 @@ public class BookExploreService {
 
         guard let request = NetworkClient.parseJuyueUrl(
             address,
-            defaultHeader: source.loginHeader ?? source.header,
+            defaultHeader: SourceRequestSupport.resolvedHeader(for: source),
             baseUrl: source.bookSourceUrl
         ) else {
             throw NSError(domain: "Juyue", code: -1, userInfo: [

@@ -1,4 +1,7 @@
 import SwiftUI
+#if canImport(JuyueCore)
+import JuyueCore
+#endif
 #if canImport(UIKit)
 import UIKit
 #endif
@@ -366,6 +369,16 @@ private struct AppThemedListModifier: ViewModifier {
 }
 
 extension View {
+    /// iPad 上把 NavigationView 固定成 push 栈；StackNavigationViewStyle 在 macOS 上不存在。
+    @ViewBuilder
+    func stackNavigationStyle() -> some View {
+        #if os(iOS)
+        navigationViewStyle(.stack)
+        #else
+        self
+        #endif
+    }
+
     func appThemedList() -> some View {
         modifier(AppThemedListModifier())
     }
@@ -1156,6 +1169,9 @@ public enum ReaderBarContent: String, CaseIterable, Identifiable {
     case batteryBar = "电量条"
     case chapterCount = "共 N 章"
     case chaptersShort = "N 章"
+    case chapterWordCount = "本章字数"
+    case pageWordCount = "本页字数"
+    case bookWordCount = "全书字数"
     case elapsedReadingTime = "阅读时长"
     case remainingReadingTime = "剩余时间"
     case userText = "自定义"
@@ -1170,6 +1186,38 @@ public enum ReaderBarContent: String, CaseIterable, Identifiable {
         default:
             return false
         }
+    }
+
+    /// 选择器分组：一屏 24 个芯片太密，按类别分开找起来快
+    public var group: ReaderBarGroup {
+        switch self {
+        case .none, .bookName, .chapterTitle, .shortChapterTitle, .chapterCount, .chaptersShort,
+             .chapterWordCount, .pageWordCount, .bookWordCount:
+            return .book
+        case .progress, .pageInfo, .pagePercent, .pageNumberLabel, .bookPercent, .bookPercentBar:
+            return .progress
+        case .time, .clockWithSeconds, .date, .weekday, .userDate,
+             .elapsedReadingTime, .remainingReadingTime:
+            return .time
+        case .batteryLevel, .batteryIcon, .batteryGlyphWithPercent, .batteryBar:
+            return .device
+        case .userText:
+            return .custom
+        }
+    }
+}
+
+public enum ReaderBarGroup: String, CaseIterable, Identifiable {
+    case book = "书籍"
+    case progress = "进度"
+    case time = "时间"
+    case device = "设备"
+    case custom = "自定义"
+
+    public var id: String { rawValue }
+
+    public var items: [ReaderBarContent] {
+        ReaderBarContent.allCases.filter { $0.group == self }
     }
 }
 
@@ -1222,11 +1270,48 @@ public class ReaderConfig: ObservableObject {
     private static let defaults = UserDefaults.standard
 
     // MARK: - 字号与行距
-    @Published public var fontSize: CGFloat = 18.0 { didSet { persist(fontSize, "reader_font_size") } }
+    @Published public var fontSize: CGFloat = 18.0 {
+        didSet {
+            persist(fontSize, "reader_font_size")
+            // 行距、段距按比例跟着字号走，否则字号调大后行距/段距在视觉上会越来越紧
+            if oldValue > 0, oldValue != fontSize {
+                if lineSpacing > 0 {
+                    lineSpacing = lineSpacing * fontSize / oldValue
+                }
+                if paragraphSpacing > 0 {
+                    paragraphSpacing = min(30, paragraphSpacing * fontSize / oldValue)
+                }
+            }
+        }
+    }
     @Published public var lineSpacing: CGFloat = 8.0 { didSet { persist(lineSpacing, "reader_line_spacing") } }
+
+    /// 行高相对字号的倍数，只用于界面换算。实际行高仍是 fontSize * 1.25 + lineSpacing，
+    /// 排版口径不动，旧配置也就无需迁移。
+    public var lineHeightMultiple: CGFloat {
+        guard fontSize > 0 else { return 1.25 }
+        return 1.25 + lineSpacing / fontSize
+    }
+
+    public func setLineHeightMultiple(_ multiple: CGFloat) {
+        let clamped = min(max(multiple, 1.3), 2.4)
+        lineSpacing = min(max((clamped - 1.25) * fontSize, 0), 40)
+    }
     /// 阅读页「下载缓存」一次往后缓存多少章
     @Published public var cachedChapterCount: Int = 20 {
         didSet { Self.defaults.set(cachedChapterCount, forKey: "reader_cached_chapters") }
+    }
+    /// 下载缓存是否一次下完整本书（忽略章数上限）
+    @Published public var cachedAllChapters: Bool = false {
+        didSet { Self.defaults.set(cachedAllChapters, forKey: "reader_cached_all_chapters") }
+    }
+    /// 实验：音量上/下键翻页。实现见 ReaderView 的 VolumeKeyPagerBridge。
+    @Published public var volumeKeyPaging: Bool = false {
+        didSet { Self.defaults.set(volumeKeyPaging, forKey: "reader_volume_key_paging") }
+    }
+    /// 音量键方向反转：默认音量上加页、下减页，打开后对调。
+    @Published public var volumeKeyReversed: Bool = false {
+        didSet { Self.defaults.set(volumeKeyReversed, forKey: "reader_volume_key_reversed") }
     }
 
     // MARK: - 排版
@@ -1259,6 +1344,14 @@ public class ReaderConfig: ObservableObject {
     /// 页眉/页脚离屏幕边缘的距离
     @Published public var headerOffset: CGFloat = 0.0 { didSet { persist(headerOffset, "reader_header_offset") } }
     @Published public var footerOffset: CGFloat = 0.0 { didSet { persist(footerOffset, "reader_footer_offset") } }
+    /// 页眉页脚电量图标的自绘样式（ReaderBatteryIconStyle 的 rawValue）
+    @Published public var batteryIconStyle: Int = ReaderBatteryIconStyle.classic.rawValue {
+        didSet { Self.defaults.set(batteryIconStyle, forKey: "reader_battery_icon_style") }
+    }
+
+    public var batteryIconStyleValue: ReaderBatteryIconStyle {
+        ReaderBatteryIconStyle(rawValue: batteryIconStyle) ?? .classic
+    }
 
     /// 页眉那一行离屏幕上沿的实际距离，0 = 贴屏幕上沿（顶到灵动岛那条上面）
     public var headerGap: CGFloat { max(0, headerOffset) }
@@ -1288,7 +1381,7 @@ public class ReaderConfig: ObservableObject {
     /// 上下边距
     @Published public var verticalPadding: CGFloat = 24.0 { didSet { persist(verticalPadding, "reader_vertical_padding") } }
     /// 首行缩进，按字数算
-    @Published public var firstLineIndent: CGFloat = 0 { didSet { persist(firstLineIndent, "reader_first_line_indent") } }
+    @Published public var firstLineIndent: CGFloat = 2 { didSet { persist(firstLineIndent, "reader_first_line_indent") } }
     /// 正文加粗
     @Published public var boldText: Bool = false { didSet { Self.defaults.set(boldText, forKey: "reader_bold_text") } }
     /// 正文字体（PostScript 名）
@@ -1458,6 +1551,32 @@ public class ReaderConfig: ObservableObject {
         didSet { Self.defaults.set(smartParagraphs, forKey: "reader_smart_paragraphs") }
     }
 
+    /// 自动分段时先合并硬换行：只对整章没有空行分隔的正文生效，
+    /// 免得把已经分好段的书再搅一遍。
+    @Published public var autoParagraphMerge: Bool = true {
+        didSet { Self.defaults.set(autoParagraphMerge, forKey: "reader_auto_paragraph_merge") }
+    }
+
+    /// 自动分段的目标段长（字）
+    @Published public var paragraphTargetLength: Int = 100 {
+        didSet { Self.defaults.set(paragraphTargetLength, forKey: "reader_paragraph_target_length") }
+    }
+
+    /// 插图显示模式：0 适应宽度 / 1 原始尺寸 / 2 铺满宽度
+    @Published public var imageDisplayMode: Int = 0 {
+        didSet { Self.defaults.set(imageDisplayMode, forKey: "reader_image_display_mode") }
+    }
+
+    /// 插图最大宽度（占正文宽度的百分比）
+    @Published public var imageMaxWidthPercent: CGFloat = 100 {
+        didSet { Self.defaults.set(Double(imageMaxWidthPercent), forKey: "reader_image_max_width_percent") }
+    }
+
+    /// 漫画/PDF 自动裁掉四周白边
+    @Published public var comicTrimBorders: Bool = false {
+        didSet { Self.defaults.set(comicTrimBorders, forKey: "reader_comic_trim_borders") }
+    }
+
     /// 标点禁则：行首不出现句读/收尾类标点，行尾不出现开引号、开括号。
     /// 按页翻走 CoreText 断行，连续模式走 TextKit 的 word joiner，两套都听这个开关
     @Published public var punctuationKinsoku: Bool = true {
@@ -1505,6 +1624,12 @@ public class ReaderConfig: ObservableObject {
         public var chapterBottomSpacing: Double?
         public var backgroundImageEnabled: Bool?
         public var backgroundImagePath: String?
+        // 页脚栏内容与偏移同样要进快照，否则按书布局/备份恢复会把新设置冲掉
+        public var footerOffset: Double?
+        public var batteryIconStyle: Int?
+        public var footerLeft: [String]?
+        public var footerCenter: [String]?
+        public var footerRight: [String]?
     }
 
     public var layoutSnapshot: LayoutSnapshot {
@@ -1541,7 +1666,12 @@ public class ReaderConfig: ObservableObject {
             chapterTopSpacing: Double(chapterTopSpacing),
             chapterBottomSpacing: Double(chapterBottomSpacing),
             backgroundImageEnabled: backgroundImageEnabled,
-            backgroundImagePath: backgroundImagePath
+            backgroundImagePath: backgroundImagePath,
+            footerOffset: Double(footerOffset),
+            batteryIconStyle: batteryIconStyle,
+            footerLeft: footerLeft.map { $0.rawValue },
+            footerCenter: footerCenter.map { $0.rawValue },
+            footerRight: footerRight.map { $0.rawValue }
         )
     }
 
@@ -1579,6 +1709,17 @@ public class ReaderConfig: ObservableObject {
         chapterBottomSpacing = CGFloat(snapshot.chapterBottomSpacing ?? 36)
         backgroundImageEnabled = snapshot.backgroundImageEnabled ?? false
         backgroundImagePath = snapshot.backgroundImagePath ?? ""
+        if let v = snapshot.footerOffset { footerOffset = CGFloat(v) }
+        if let v = snapshot.batteryIconStyle { batteryIconStyle = v }
+        if let v = snapshot.footerLeft {
+            footerLeft = v.compactMap { ReaderBarContent(rawValue: $0) }.filter { $0 != .none }
+        }
+        if let v = snapshot.footerCenter {
+            footerCenter = v.compactMap { ReaderBarContent(rawValue: $0) }.filter { $0 != .none }
+        }
+        if let v = snapshot.footerRight {
+            footerRight = v.compactMap { ReaderBarContent(rawValue: $0) }.filter { $0 != .none }
+        }
     }
 
     /// 按书存排版，key 用书的 URL 的哈希
@@ -1625,17 +1766,11 @@ public class ReaderConfig: ObservableObject {
         return custom
     }
 
-    /// 阅读页真正使用的纸色与墨色。定制界面主题接管时用主题配色，
-    /// 跟顶栏、设置面板保持一致；标准主题仍按阅读主题和自定义配色走。
-    public var pageBackgroundColor: Color {
-        let appTheme = AppThemeManager.shared.theme
-        return appTheme.overridesReaderAppearance ? appTheme.palette.background : backgroundColor
-    }
+    /// 阅读页真正使用的纸色与墨色。显式开了「自定义颜色」就以用户选择为准，
+    /// 否则跟随阅读主题；界面主题只决定阅读页以外的外观。
+    public var pageBackgroundColor: Color { backgroundColor }
 
-    public var pageTextColor: Color {
-        let appTheme = AppThemeManager.shared.theme
-        return appTheme.overridesReaderAppearance ? appTheme.palette.ink : textColor
-    }
+    public var pageTextColor: Color { textColor }
 
     public init() {
         let d = Self.defaults
@@ -1648,6 +1783,9 @@ public class ReaderConfig: ObservableObject {
         if d.object(forKey: "reader_font_size") != nil { fontSize = CGFloat(d.double(forKey: "reader_font_size")) }
         if d.object(forKey: "reader_line_spacing") != nil { lineSpacing = CGFloat(d.double(forKey: "reader_line_spacing")) }
         if d.object(forKey: "reader_cached_chapters") != nil { cachedChapterCount = d.integer(forKey: "reader_cached_chapters") }
+        if d.object(forKey: "reader_cached_all_chapters") != nil { cachedAllChapters = d.bool(forKey: "reader_cached_all_chapters") }
+        if d.object(forKey: "reader_volume_key_paging") != nil { volumeKeyPaging = d.bool(forKey: "reader_volume_key_paging") }
+        if d.object(forKey: "reader_volume_key_reversed") != nil { volumeKeyReversed = d.bool(forKey: "reader_volume_key_reversed") }
         if d.object(forKey: "reader_letter_spacing") != nil { letterSpacing = CGFloat(d.double(forKey: "reader_letter_spacing")) }
         if d.object(forKey: "reader_paragraph_spacing") != nil { paragraphSpacing = CGFloat(d.double(forKey: "reader_paragraph_spacing")) }
         if d.object(forKey: "reader_justify_last_page") != nil { justifyLastPage = d.bool(forKey: "reader_justify_last_page") }
@@ -1710,7 +1848,19 @@ public class ReaderConfig: ObservableObject {
         footerCenter = Self.loadBar("reader_footer_center", fallback: footerCenter)
         footerRight = Self.loadBar("reader_footer_right", fallback: footerRight)
         if d.object(forKey: "reader_bar_divider") != nil { barDivider = d.bool(forKey: "reader_bar_divider") }
+        if d.object(forKey: "reader_battery_icon_style") != nil {
+            batteryIconStyle = min(max(0, d.integer(forKey: "reader_battery_icon_style")), ReaderBatteryIconStyle.allCases.count - 1)
+        }
         if d.object(forKey: "reader_smart_paragraphs") != nil { smartParagraphs = d.bool(forKey: "reader_smart_paragraphs") }
+        if d.object(forKey: "reader_auto_paragraph_merge") != nil { autoParagraphMerge = d.bool(forKey: "reader_auto_paragraph_merge") }
+        if d.object(forKey: "reader_paragraph_target_length") != nil {
+            paragraphTargetLength = min(max(40, d.integer(forKey: "reader_paragraph_target_length")), 200)
+        }
+        if d.object(forKey: "reader_image_display_mode") != nil { imageDisplayMode = d.integer(forKey: "reader_image_display_mode") }
+        if d.object(forKey: "reader_image_max_width_percent") != nil {
+            imageMaxWidthPercent = CGFloat(min(max(30, d.double(forKey: "reader_image_max_width_percent")), 100))
+        }
+        if d.object(forKey: "reader_comic_trim_borders") != nil { comicTrimBorders = d.bool(forKey: "reader_comic_trim_borders") }
         if d.object(forKey: "reader_punctuation_kinsoku") != nil { punctuationKinsoku = d.bool(forKey: "reader_punctuation_kinsoku") }
         if d.object(forKey: "reader_shared_layout") != nil { sharedLayout = d.bool(forKey: "reader_shared_layout") }
         if d.object(forKey: "reader_custom_colors") != nil { useCustomColors = d.bool(forKey: "reader_custom_colors") }
@@ -1825,12 +1975,16 @@ public struct ReaderBarContext {
     public var shortTitleLength: Int = 6
     public var customDatePattern: String = "M月d日"
     public var customBarText: String = ""
+    /// 字数字符口径（不含空白）；0 表示还不知道，显示为空
+    public var chapterCharCount: Int = 0
+    public var pageCharCount: Int = 0
+    public var bookCharCount: Int = 0
 
     public init() {}
 }
 
 public enum ReaderBarBattery {
-    /// 设备电量 0...1，拿不到返回 nil
+    /// 设备电量 0...1，拿不到返回 nil（模拟器固定返回 -1）
     public static func level() -> Double? {
         #if canImport(UIKit)
         let device = UIDevice.current
@@ -1840,6 +1994,202 @@ public enum ReaderBarBattery {
         #else
         return nil
         #endif
+    }
+
+    /// 是否正在充电，取不到监测状态时当作没充电
+    public static var isCharging: Bool {
+        #if canImport(UIKit)
+        let device = UIDevice.current
+        if !device.isBatteryMonitoringEnabled { device.isBatteryMonitoringEnabled = true }
+        return device.batteryState == .charging
+        #else
+        return false
+        #endif
+    }
+
+    /// 页脚文字用；拿不到电量时给占位符，别让整栏空掉
+    public static var percentText: String {
+        guard let level = level() else { return "--" }
+        return "\(Int((level * 100).rounded()))%"
+    }
+}
+
+/// 页眉页脚电量图标可选的几种自绘样式。
+public enum ReaderBatteryIconStyle: Int, CaseIterable, Identifiable {
+    case classic = 0
+    case rounded = 1
+    case segmented = 2
+    case vertical = 3
+
+    public var id: Int { rawValue }
+
+    public var title: String {
+        switch self {
+        case .classic: return "细线"
+        case .rounded: return "圆润"
+        case .segmented: return "分段"
+        case .vertical: return "竖立"
+        }
+    }
+}
+
+/// 页眉页脚的电量图形：外壳 + 正极凸点 + 按电量填充。
+/// 系统 `battery.25` 这类符号在小字号下笔画太细，和本应用自绘的描边风格不搭。
+struct ReaderBatteryGlyph: View {
+    let level: Double?
+    var charging: Bool = false
+    var tint: Color
+    var style: ReaderBatteryIconStyle = .classic
+
+    private var clamped: Double { min(1, max(0, level ?? 0)) }
+
+    private var fillColor: Color {
+        guard let level else { return tint.opacity(0.35) }
+        if charging { return .green }
+        if level <= 0.2 { return .red }
+        if level <= 0.35 { return .orange }
+        return tint
+    }
+
+    var body: some View {
+        Group {
+            switch style {
+            case .classic: classicBody
+            case .rounded: roundedBody
+            case .segmented: segmentedBody
+            case .vertical: verticalBody
+            }
+        }
+        .accessibilityLabel(level.map { "电量 \(Int(($0 * 100).rounded()))%" } ?? "电量未知")
+    }
+
+    /// 细线：17×9 薄描边，填充条按比例伸长，接近系统电量符号的比例
+    private var classicBody: some View {
+        HStack(spacing: 1.5) {
+            ZStack(alignment: .leading) {
+                RoundedRectangle(cornerRadius: 2, style: .continuous)
+                    .strokeBorder(tint.opacity(level == nil ? 0.5 : 0.75), lineWidth: 1)
+                if charging {
+                    Image(systemName: "bolt.fill")
+                        .font(.system(size: 6.5, weight: .bold))
+                        .foregroundColor(fillColor)
+                        .frame(maxWidth: .infinity)
+                } else if level != nil {
+                    RoundedRectangle(cornerRadius: 1, style: .continuous)
+                        .fill(fillColor)
+                        .frame(width: max(1.5, 13.5 * CGFloat(clamped)), height: 5.5)
+                        .offset(x: 1.75)
+                } else {
+                    RoundedRectangle(cornerRadius: 1, style: .continuous)
+                        .fill(tint.opacity(0.3))
+                        .frame(width: 6, height: 1.5)
+                        .offset(x: 1.75)
+                }
+            }
+            .frame(width: 17, height: 9)
+            RoundedRectangle(cornerRadius: 0.6, style: .continuous)
+                .fill(tint.opacity(level == nil ? 0.5 : 0.75))
+                .frame(width: 1.5, height: 3.5)
+        }
+    }
+
+    /// 圆润：18×10 厚一点的圆角外壳，填充条贴着内边
+    private var roundedBody: some View {
+        HStack(spacing: 1.4) {
+            ZStack(alignment: .leading) {
+                RoundedRectangle(cornerRadius: 2.6, style: .continuous)
+                    .strokeBorder(tint.opacity(level == nil ? 0.45 : 0.8), lineWidth: 1)
+                if charging {
+                    Image(systemName: "bolt.fill")
+                        .font(.system(size: 7.5, weight: .bold))
+                        .foregroundColor(fillColor)
+                        .frame(maxWidth: .infinity)
+                } else if let level {
+                    GeometryReader { geo in
+                        RoundedRectangle(cornerRadius: 1.4, style: .continuous)
+                            .fill(fillColor)
+                            .frame(width: max(2, (geo.size.width - 3) * CGFloat(min(1, max(0, level)))))
+                            .padding(.vertical, 1.5)
+                            .padding(.leading, 1.5)
+                    }
+                } else {
+                    RoundedRectangle(cornerRadius: 1, style: .continuous)
+                        .fill(tint.opacity(0.3))
+                        .frame(width: 7, height: 1.5)
+                        .padding(.leading, 3)
+                }
+            }
+            .frame(width: 18, height: 10)
+            RoundedRectangle(cornerRadius: 0.7, style: .continuous)
+                .fill(tint.opacity(level == nil ? 0.45 : 0.8))
+                .frame(width: 1.6, height: 4)
+        }
+    }
+
+    /// 分段：外壳里分四格，按电量点亮，像老式电量格子
+    private var segmentedBody: some View {
+        HStack(spacing: 1.4) {
+            ZStack {
+                RoundedRectangle(cornerRadius: 2.2, style: .continuous)
+                    .strokeBorder(tint.opacity(level == nil ? 0.45 : 0.8), lineWidth: 1)
+                if charging {
+                    Image(systemName: "bolt.fill")
+                        .font(.system(size: 7.5, weight: .bold))
+                        .foregroundColor(fillColor)
+                } else if level != nil {
+                    HStack(spacing: 1) {
+                        ForEach(0..<4, id: \.self) { index in
+                            RoundedRectangle(cornerRadius: 0.8, style: .continuous)
+                                .fill(index < litSegments ? fillColor : tint.opacity(0.14))
+                                .frame(width: 2.7, height: 5.6)
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.leading, 1.7)
+                } else {
+                    RoundedRectangle(cornerRadius: 1, style: .continuous)
+                        .fill(tint.opacity(0.3))
+                        .frame(width: 7, height: 1.5)
+                }
+            }
+            .frame(width: 18, height: 10)
+            RoundedRectangle(cornerRadius: 0.7, style: .continuous)
+                .fill(tint.opacity(level == nil ? 0.45 : 0.8))
+                .frame(width: 1.6, height: 4)
+        }
+    }
+
+    private var litSegments: Int {
+        min(4, Int((clamped * 4).rounded(.up)))
+    }
+
+    /// 竖立：正极朝上的立式电池，填充从底部往上涨
+    private var verticalBody: some View {
+        VStack(spacing: 1) {
+            RoundedRectangle(cornerRadius: 0.5, style: .continuous)
+                .fill(tint.opacity(level == nil ? 0.45 : 0.8))
+                .frame(width: 3.6, height: 1.3)
+            ZStack(alignment: .bottom) {
+                RoundedRectangle(cornerRadius: 2, style: .continuous)
+                    .strokeBorder(tint.opacity(level == nil ? 0.5 : 0.8), lineWidth: 1)
+                if charging {
+                    Image(systemName: "bolt.fill")
+                        .font(.system(size: 6.5, weight: .bold))
+                        .foregroundColor(fillColor)
+                } else if level != nil {
+                    RoundedRectangle(cornerRadius: 1, style: .continuous)
+                        .fill(fillColor)
+                        .frame(width: 4.6, height: max(1.5, 9.4 * CGFloat(clamped)))
+                        .padding(.bottom, 1.5)
+                } else {
+                    RoundedRectangle(cornerRadius: 1, style: .continuous)
+                        .fill(tint.opacity(0.3))
+                        .frame(width: 4.6, height: 1.5)
+                        .padding(.bottom, 4)
+                }
+            }
+            .frame(width: 7.6, height: 13)
+        }
     }
 }
 
@@ -1907,12 +2257,17 @@ public func readerBarText(_ content: ReaderBarContent, _ ctx: ReaderBarContext) 
     case .userDate:
         return readerBarClock(ctx.customDatePattern)
     case .batteryLevel, .batteryGlyphWithPercent:
-        guard let level = ReaderBarBattery.level() else { return "" }
-        return "\(Int((level * 100).rounded()))%"
+        return ReaderBarBattery.percentText
     case .chapterCount:
         return ctx.chapterCount > 0 ? "共 \(ctx.chapterCount) 章" : ""
     case .chaptersShort:
         return ctx.chapterCount > 0 ? "\(ctx.chapterCount)章" : ""
+    case .chapterWordCount:
+        return ctx.chapterCharCount > 0 ? "\(ctx.chapterCharCount) 字" : ""
+    case .pageWordCount:
+        return ctx.pageCharCount > 0 ? "\(ctx.pageCharCount) 字" : ""
+    case .bookWordCount:
+        return ctx.bookCharCount > 0 ? "\(ctx.bookCharCount) 字" : ""
     case .elapsedReadingTime:
         guard let start = ctx.sessionStart else { return "" }
         return barDurationText(Date().timeIntervalSince(start))
@@ -2006,6 +2361,8 @@ public struct ReplaceRule: Codable, Identifiable, Equatable {
     /// 只跑这一条：编辑页试跑和批量净化都走它
     public func apply(to text: String) -> String {
         guard enabled, !pattern.isEmpty else { return text }
+        // 安卓的 @js: 替换要由 JS 引擎执行，当模板套用只会把脚本源码写进正文
+        guard !replacement.trimmingCharacters(in: .whitespacesAndNewlines).hasPrefix("@js:") else { return text }
         if isRegex {
             guard let regex = try? NSRegularExpression(pattern: pattern) else { return text }
             let range = NSRange(location: 0, length: (text as NSString).length)
@@ -2023,19 +2380,112 @@ public final class ReplaceRuleStore: ObservableObject {
     }
 
     private let key = "reader_replace_rules_v1"
+    private let migrationKey = "reader_replace_rules_migrated_v1"
+    private let builtinMigrationKey = "reader_replace_rules_builtin_v1"
+
+    /// 首次启动写入的「基础净化」规则，之后跟普通规则一样可编辑、可关闭、可删除
+    private static let builtinRules: [ReplaceRule] = [
+        ReplaceRule(
+            name: "基础净化 · 去掉行首行尾空白",
+            pattern: "(?m)^[\\t \u{00A0}\u{3000}]+|[\\t \u{00A0}\u{3000}]+$",
+            replacement: ""
+        ),
+        ReplaceRule(
+            name: "基础净化 · 合并连续空行",
+            pattern: "(?:\\r?\\n){3,}",
+            replacement: "\n\n"
+        ),
+        ReplaceRule(
+            name: "基础净化 · 去掉不可见字符",
+            pattern: "[\u{200B}-\u{200F}\u{FEFF}]",
+            replacement: ""
+        ),
+        ReplaceRule(
+            name: "基础净化 · 去掉网址",
+            pattern: "(?i)(?:https?://|www\\.)[\\w\\-._~:/?#\\[\\]@!$&'()*+,;=%]+",
+            replacement: ""
+        ),
+        ReplaceRule(
+            name: "基础净化 · 去掉广告行",
+            pattern: "(?m)^[^\\n]*(?:求月票|求推荐票|求收藏|求订阅|投推荐票|本站域名|最新网址|首发地址|无弹窗|手机用户请|正在手打中|请稍等片刻|本章未完|点击下一页|加入书签)[^\\n]*\\n?",
+            replacement: ""
+        ),
+        ReplaceRule(
+            name: "基础净化 · 去掉分隔线",
+            pattern: "(?m)^[\\t ]*[*＊=_＝—－-]{3,}[\\t ]*\\n?",
+            replacement: ""
+        ),
+        ReplaceRule(
+            name: "基础净化 · 合并重复标点",
+            pattern: "([。！？!?])\\1{2,}",
+            replacement: "$1"
+        )
+    ]
 
     private init() {
+        var list: [ReplaceRule] = []
         if let data = UserDefaults.standard.data(forKey: key),
-           let list = try? JSONDecoder().decode([ReplaceRule].self, from: data) {
-            rules = list
-        } else {
-            rules = []
+           let decoded = try? JSONDecoder().decode([ReplaceRule].self, from: data) {
+            list = decoded
         }
+        // 旧版「替换净化」的规则存在 TextPurifier 里，第一次启动并过来，之后只留一份
+        if !UserDefaults.standard.bool(forKey: migrationKey) {
+            for legacy in TextPurifier.shared.rules {
+                let exists = list.contains {
+                    $0.pattern == legacy.pattern
+                        && $0.replacement == legacy.replacement
+                        && $0.isRegex == legacy.isRegex
+                }
+                if !exists {
+                    list.append(ReplaceRule(
+                        name: legacy.name,
+                        pattern: legacy.pattern,
+                        replacement: legacy.replacement,
+                        isRegex: legacy.isRegex,
+                        enabled: legacy.enabled,
+                        bookUrl: nil
+                    ))
+                }
+            }
+            UserDefaults.standard.set(true, forKey: migrationKey)
+        }
+        // 基础净化只播种一次：用户删掉/改掉的不会被重新塞回来
+        if !UserDefaults.standard.bool(forKey: builtinMigrationKey) {
+            for builtin in Self.builtinRules {
+                let exists = list.contains {
+                    $0.name == builtin.name && $0.pattern == builtin.pattern
+                }
+                if !exists { list.append(builtin) }
+            }
+            UserDefaults.standard.set(true, forKey: builtinMigrationKey)
+        }
+        // 早期版本把安卓的 @js: 规则原样存了下来，启用后正文会被脚本源码灌爆，先停用
+        for index in list.indices where list[index].enabled
+            && list[index].replacement.trimmingCharacters(in: .whitespacesAndNewlines).hasPrefix("@js:") {
+            list[index].enabled = false
+        }
+        rules = list
+        // 初始化里的赋值不触发 didSet，停用结果要自己落盘
+        save()
     }
 
     private func save() {
         if let data = try? JSONEncoder().encode(rules) {
             UserDefaults.standard.set(data, forKey: key)
+        }
+        pushGlobalRulesToPurifier()
+    }
+
+    /// 章节抓取在 Core 层，只能看到同步过去的全局规则；本书规则由阅读界面套用。
+    private func pushGlobalRulesToPurifier() {
+        TextPurifier.shared.rules = rules.filter(\.isGlobal).map {
+            ReplacementRule(
+                name: $0.name,
+                pattern: $0.pattern,
+                replacement: $0.replacement,
+                isRegex: $0.isRegex,
+                enabled: $0.enabled
+            )
         }
     }
 
@@ -2071,6 +2521,11 @@ extension ReaderConfig {
         justifyLastPage = true
         barDivider = false
         smartParagraphs = true
+        autoParagraphMerge = true
+        paragraphTargetLength = 100
+        imageDisplayMode = 0
+        imageMaxWidthPercent = 100
+        comicTrimBorders = false
         punctuationKinsoku = true
         titleAlignment = .center
         headerLeft = [.bookName]
@@ -2079,5 +2534,37 @@ extension ReaderConfig {
         footerLeft = [.chapterTitle]
         footerCenter = []
         footerRight = [.pageInfo]
+    }
+
+    /// 现成的排版风格，一键套用字号、行距、段距、缩进和左右边距
+    public enum LayoutPreset: String, CaseIterable, Identifiable {
+        case publication = "出版物"
+        case webNovel = "网文"
+        case compact = "紧凑"
+        case large = "大字"
+        public var id: String { rawValue }
+    }
+
+    public func applyLayoutPreset(_ preset: LayoutPreset) {
+        switch preset {
+        case .publication:
+            applyLayout(fontSize: 18, lineHeight: 1.8, paragraphSpacing: 8, indent: 2, sidePadding: 20)
+        case .webNovel:
+            applyLayout(fontSize: 18, lineHeight: 1.65, paragraphSpacing: 12, indent: 2, sidePadding: 16)
+        case .compact:
+            applyLayout(fontSize: 16, lineHeight: 1.5, paragraphSpacing: 8, indent: 2, sidePadding: 14)
+        case .large:
+            applyLayout(fontSize: 22, lineHeight: 1.8, paragraphSpacing: 16, indent: 2, sidePadding: 16)
+        }
+    }
+
+    /// 段距按 18 号字基准换算，换成别的字号时视觉比例保持不变
+    private func applyLayout(fontSize size: CGFloat, lineHeight: CGFloat, paragraphSpacing spacing: CGFloat, indent: CGFloat, sidePadding: CGFloat) {
+        fontSize = size
+        setLineHeightMultiple(lineHeight)
+        paragraphSpacing = min(max(spacing * size / 18, 0), 30)
+        firstLineIndent = indent
+        paddingLeft = sidePadding
+        paddingRight = sidePadding
     }
 }

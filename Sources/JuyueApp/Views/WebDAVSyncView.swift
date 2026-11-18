@@ -322,6 +322,7 @@ public struct WebDAVSyncView: View {
                 }
             }
         }
+            .stackNavigationStyle()
     }
 
     private func backupRow(_ backup: RemoteBackupInfo) -> some View {

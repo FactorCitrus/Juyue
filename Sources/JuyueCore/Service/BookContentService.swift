@@ -22,7 +22,7 @@ public class BookContentService {
         try await SourceLoginService.shared.requireLoginIfNeeded(source: source)
 
         let target = book.tocUrl.isEmpty ? book.bookUrl : book.tocUrl
-        let header = ScriptSnippet.resolveHeader(source.loginHeader ?? source.header, source: source)
+        let header = SourceRequestSupport.resolvedHeader(for: source)
 
         JuyueLog.log("[BookDetail] [\(source.bookSourceName)] 抓详情与目录 host=\(URL(string: target)?.host ?? "-")")
 
@@ -37,6 +37,20 @@ public class BookContentService {
             )
         } catch ContentError.invalidURL {
             return (book, [])
+        } catch {
+            // 目录地址可能属于旧源或已失效：退回书页地址再抓一次。
+            if !book.tocUrl.isEmpty, book.tocUrl != book.bookUrl {
+                var fallback = book
+                fallback.tocUrl = ""
+                return try await fetchBookDetail(
+                    book: fallback,
+                    source: source,
+                    onProgress: onProgress,
+                    diagnostics: diagnostics,
+                    includeChapters: includeChapters
+                )
+            }
+            throw error
         }
 
         let documentAnalyzer = RuleAnalyzer(
@@ -72,6 +86,21 @@ public class BookContentService {
         var updated = book
         if includeChapters {
             updated.totalChapterNum = chapters.count
+        }
+
+        // 目录页抓得到但一条章节都没有，同样按「旧目录地址失效」处理。
+        if includeChapters, chapters.isEmpty, !book.tocUrl.isEmpty, book.tocUrl != book.bookUrl {
+            var fallback = book
+            fallback.tocUrl = ""
+            if let retried = try? await fetchBookDetail(
+                book: fallback,
+                source: source,
+                onProgress: onProgress,
+                diagnostics: diagnostics,
+                includeChapters: true
+            ), !retried.chapters.isEmpty {
+                return retried
+            }
         }
 
         DiagnosticHub.emit(SourceRequestDiagnostic(
@@ -244,7 +273,7 @@ public class BookContentService {
         try await SourceLoginService.shared.requireLoginIfNeeded(source: source)
 
         let target = resolvedChapterURL(chapter: chapter)
-        let header = ScriptSnippet.resolveHeader(source.loginHeader ?? source.header, source: source)
+        let header = SourceRequestSupport.resolvedHeader(for: source)
 
         JuyueLog.log("[Content] [\(source.bookSourceName)] 抓正文 第 \(chapter.index + 1) 章 host=\(URL(string: target)?.host ?? "-")")
 
@@ -255,6 +284,7 @@ public class BookContentService {
                 chapterIndex: chapter.index,
                 book: book,
                 source: source,
+                contentRule: contentRule,
                 header: header,
                 diagnostics: diagnostics
             )
@@ -274,17 +304,32 @@ public class BookContentService {
             jsEngine: page.engine
         )
 
-        var text = analyzer.getString(contentRule.content)
-        text = Self.preserveReviewMarkers(text)
+        let nextRule = contentRule.nextContentUrl?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
 
-        if let replaceRegex = contentRule.replaceRegex, !replaceRegex.isEmpty {
-            text = RegexReplacement.apply(replaceRegex, to: text)
-        }
-
-        text = Self.cleanHtml(text, baseUrl: page.baseURL)
-
-        if book?.useReplaceRule != false {
-            text = TextPurifier.shared.apply(text)
+        let text: String
+        if nextRule.isEmpty {
+            text = assembleSinglePage(
+                analyzer: analyzer,
+                contentRule: contentRule,
+                baseURL: page.baseURL,
+                extractedText: page.extractedText,
+                book: book
+            )
+        } else {
+            text = await assemblePaginatedContent(
+                firstAnalyzer: analyzer,
+                firstBaseURL: page.baseURL,
+                firstExtractedText: page.extractedText,
+                initialURL: target,
+                chapter: chapter,
+                contentRule: contentRule,
+                nextRule: nextRule,
+                source: source,
+                header: header,
+                book: book,
+                diagnostics: diagnostics
+            )
         }
 
         if !text.isEmpty {
@@ -303,6 +348,227 @@ public class BookContentService {
         ), to: diagnostics)
 
         return text
+    }
+
+    // MARK: 正文拼页
+
+    // 测试需要直接验证 payAction / callBackJs / imageStyle 不进入正文变换链，
+    // 所以保持 internal 而不是 private。
+    func assembleSinglePage(
+        analyzer: RuleAnalyzer,
+        contentRule: ContentRule,
+        baseURL: String,
+        extractedText: String? = nil,
+        book: Book?
+    ) -> String {
+        var text = extractedText ?? ContentRuleExtractor.text(from: analyzer, rule: contentRule)
+        text = Self.preserveReviewMarkers(text)
+
+        if let replaceRegex = contentRule.replaceRegex, !replaceRegex.isEmpty {
+            text = RegexReplacement.apply(replaceRegex, to: text)
+        }
+
+        text = Self.cleanHtml(text, baseUrl: baseURL)
+
+        if book?.useReplaceRule != false {
+            text = TextPurifier.shared.apply(text)
+        }
+        return text
+    }
+
+    /// 按 `nextContentUrl` 逐页取正文并拼接。
+    ///
+    /// 页数上限、URL 去重和整体 deadline 都在这里兜住：中途失败、超时或被取消时
+    /// 返回已经拿到的页，而不是让整章失败。替换净化等全部拼完再跑一次，避免每页
+    /// 重复套规则（水印类规则重复执行会把正文一起吃掉）。
+    private func assemblePaginatedContent(
+        firstAnalyzer: RuleAnalyzer,
+        firstBaseURL: String,
+        firstExtractedText: String?,
+        initialURL: String,
+        chapter: BookChapter,
+        contentRule: ContentRule,
+        nextRule: String,
+        source: BookSource,
+        header: String?,
+        book: Book?,
+        diagnostics: ((SourceRequestDiagnostic) -> Void)?
+    ) async -> String {
+        var segments: [String] = []
+        let firstSegment = cleanPage(
+            firstAnalyzer,
+            rule: contentRule,
+            baseURL: firstBaseURL,
+            extractedText: firstExtractedText
+        )
+        if !firstSegment.isEmpty { segments.append(firstSegment) }
+
+        var currentAnalyzer = firstAnalyzer
+        var currentBaseURL = firstBaseURL
+        var visited: Set<String> = [firstBaseURL, initialURL]
+        var fetched = 1
+        let deadline = Date().addingTimeInterval(ContentPagination.totalDeadline)
+
+        pagination: while fetched < ContentPagination.pageLimit {
+            if Task.isCancelled { break }
+            let candidates = BookContentService.extractURLs(
+                from: currentAnalyzer,
+                rule: nextRule,
+                baseUrl: currentBaseURL
+            )
+            let pending = ContentPagination.nextURLs(
+                candidates: candidates,
+                visited: visited,
+                fetchedCount: fetched
+            )
+            guard !pending.isEmpty else { break }
+
+            for url in pending {
+                if Task.isCancelled { break pagination }
+                guard fetched < ContentPagination.pageLimit else { break pagination }
+
+                let remaining = ContentPagination.remaining(deadline)
+                guard remaining > 0 else {
+                    JuyueLog.log("[Content] [\(source.bookSourceName)] 分页超时，返回已抓 \(fetched) 页")
+                    break pagination
+                }
+
+                visited.insert(url)
+                guard let next = await fetchContentPage(
+                    url: url,
+                    chapter: chapter,
+                    source: source,
+                    contentRule: contentRule,
+                    header: header,
+                    book: book,
+                    timeout: remaining,
+                    diagnostics: diagnostics
+                ) else {
+                    JuyueLog.log("[Content] [\(source.bookSourceName)] 分页抓取失败，返回已抓 \(fetched) 页")
+                    break pagination
+                }
+
+                fetched += 1
+                let segment = cleanPage(
+                    next.analyzer,
+                    rule: contentRule,
+                    baseURL: next.baseURL,
+                    extractedText: next.extractedText
+                )
+                if !segment.isEmpty { segments.append(segment) }
+                currentAnalyzer = next.analyzer
+                currentBaseURL = next.baseURL
+            }
+        }
+
+        if fetched > 1 {
+            JuyueLog.log("[Content] [\(source.bookSourceName)] 正文分页 \(fetched) 页 / \(segments.count) 段")
+        }
+
+        var text = segments.joined(separator: "\n\n")
+        if book?.useReplaceRule != false {
+            text = TextPurifier.shared.apply(text)
+        }
+        return text
+    }
+
+    private struct PaginatedPage {
+        let analyzer: RuleAnalyzer
+        let baseURL: String
+        let extractedText: String?
+
+        init(analyzer: RuleAnalyzer, baseURL: String, extractedText: String? = nil) {
+            self.analyzer = analyzer
+            self.baseURL = baseURL
+            self.extractedText = extractedText
+        }
+    }
+
+    private func fetchContentPage(
+        url: String,
+        chapter: BookChapter,
+        source: BookSource,
+        contentRule: ContentRule,
+        header: String?,
+        book: Book?,
+        timeout: TimeInterval,
+        diagnostics: ((SourceRequestDiagnostic) -> Void)?
+    ) async -> PaginatedPage? {
+        let body: String
+        let baseURL: String
+        let engine: JSEngine
+        var extractedText: String?
+
+        if let packed = NetworkClient.dataURLPayload(url) {
+            body = packed
+            baseURL = url
+            engine = JSEngine(bookSource: source, baseUrl: url, book: book)
+        } else {
+            guard let request = NetworkClient.parseJuyueUrl(
+                url,
+                defaultHeader: header,
+                baseUrl: source.bookSourceUrl
+            ) else {
+                return nil
+            }
+            if let page = await ContentWebJs.payload(
+                request: request,
+                rule: contentRule,
+                timeout: min(timeout, ContentWebJs.defaultTimeout),
+                source: source,
+                book: book
+            ) {
+                body = page.body
+                baseURL = page.baseURL
+                engine = page.engine
+                extractedText = page.extractedText
+            } else {
+                guard let reply = try? await ContentRequest.perform(
+                    request,
+                    source: source,
+                    step: "正文分页",
+                    diagnostics: diagnostics,
+                    timeout: timeout
+                ) else {
+                    return nil
+                }
+                body = reply.bodyString
+                baseURL = request.url.absoluteString
+                engine = JSEngine(bookSource: source, baseUrl: baseURL, book: book)
+            }
+        }
+
+        engine.context.setObject(
+            ["index": chapter.index, "title": chapter.title, "url": url],
+            forKeyedSubscript: "chapter" as NSString
+        )
+        return PaginatedPage(
+            analyzer: RuleAnalyzer(
+                content: body,
+                baseUrl: baseURL,
+                bookSource: source,
+                jsEngine: engine
+            ),
+            baseURL: baseURL,
+            extractedText: extractedText
+        )
+    }
+
+    /// 单页正文清洗：只做页面自己的事，替换净化留给拼接后的整段。
+    private func cleanPage(
+        _ analyzer: RuleAnalyzer,
+        rule: ContentRule,
+        baseURL: String,
+        extractedText: String? = nil
+    ) -> String {
+        var text = extractedText ?? ContentRuleExtractor.text(from: analyzer, rule: rule)
+        text = Self.preserveReviewMarkers(text)
+
+        if let replaceRegex = rule.replaceRegex, !replaceRegex.isEmpty {
+            text = RegexReplacement.apply(replaceRegex, to: text)
+        }
+
+        return Self.cleanHtml(text, baseUrl: baseURL)
     }
 
     private func resolvedChapterURL(chapter: BookChapter) -> String {
@@ -357,13 +623,27 @@ public class BookContentService {
     }
 
     public func clearAllChapterCaches() {
-        try? FileManager.default.removeItem(at: ChapterCache.root)
+        try? FileManager.default.removeItem(at: ChapterCache.allRoot)
     }
 
     public func hasCachedChapter(bookUrl: String, chapterIndex: Int) -> Bool {
         FileManager.default.fileExists(
             atPath: chapterCacheFile(bookUrl: bookUrl, chapterIndex: chapterIndex).path
         )
+    }
+
+    /// 只扫本地缓存统计字数，不发网络请求；没缓存的章节不返回。
+    /// 不建目录、不碰章节模型，适合丢到后台队列跑。
+    public static func cachedChapterWordCounts(bookUrl: String, indices: [Int]) -> [Int: Int] {
+        let folder = ChapterCache.root
+            .appendingPathComponent(CryptoUtils.md5(bookUrl), isDirectory: true)
+        var counts: [Int: Int] = [:]
+        for index in indices {
+            let file = folder.appendingPathComponent("\(index).txt")
+            guard let content = try? String(contentsOf: file, encoding: .utf8) else { continue }
+            counts[index] = ChapterWordCounter.count(content)
+        }
+        return counts
     }
 
     private var preDownloadTask: Task<Void, Never>?
@@ -451,7 +731,7 @@ private enum DetailPage {
 
             if let initRule = source.ruleBookInfo?.initRule, !initRule.isEmpty,
                let result = engine.eval(script: JSEngine.unwrapJsScript(initRule), result: packed) {
-                detail = result as? String ?? "\(result)"
+                detail = RuleAnalyzer.scalarText(result)
             }
             if let error = engine.lastError {
                 JuyueLog.log("[BookDetail] ⚠️ [\(source.bookSourceName)] 详情 init 脚本报错：\(error)")
@@ -467,6 +747,22 @@ private enum DetailPage {
             ), to: diagnostics)
 
             return Payload(body: detail, baseURL: target, engine: engine, tocContent: packed)
+        }
+
+        if let scheme = NetworkClient.unsupportedScheme(in: target) {
+            let error = UnsupportedBookSourceSchemeError(
+                scheme: scheme,
+                sourceName: source.bookSourceName
+            )
+            JuyueLog.log("[BookDetail] ❌ [\(source.bookSourceName)] 自定义协议 \(scheme) 不支持")
+            DiagnosticHub.emit(SourceRequestDiagnostic(
+                step: "详情",
+                sourceName: source.bookSourceName,
+                url: target,
+                failureKind: DiagnosticFailure.classify(error),
+                note: error.localizedDescription
+            ), to: diagnostics)
+            throw error
         }
 
         guard let request = NetworkClient.parseJuyueUrl(
@@ -485,11 +781,39 @@ private enum DetailPage {
             diagnostics: diagnostics
         )
         let engine = JSEngine(bookSource: source, baseUrl: request.url.absoluteString, book: book)
+        // 书源的目录地址规则（ruleBookInfo.tocUrl）常在书页脚本里取 mid、吐出真正的目录接口；
+        // 不执行它，目录只能退化成在书页 HTML 里找章节，接口型源会一章都取不到。
+        var tocBody = reply.bodyString
+        if let tocRule = source.ruleBookInfo?.tocUrl?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !tocRule.isEmpty {
+            let analyzer = RuleAnalyzer(
+                content: reply.bodyString,
+                baseUrl: request.url.absoluteString,
+                bookSource: source,
+                jsEngine: engine
+            )
+            let resolved = analyzer.getString(tocRule, isUrl: true)
+            if !resolved.isEmpty, resolved != request.url.absoluteString,
+               let tocRequest = NetworkClient.parseJuyueUrl(
+                    resolved,
+                    defaultHeader: header,
+                    baseUrl: source.bookSourceUrl
+               ),
+               let tocReply = try? await ContentRequest.perform(
+                    tocRequest,
+                    source: source,
+                    step: "目录",
+                    diagnostics: diagnostics
+               ) {
+                tocBody = tocReply.bodyString
+            }
+        }
+
         return Payload(
             body: reply.bodyString,
             baseURL: request.url.absoluteString,
             engine: engine,
-            tocContent: reply.bodyString
+            tocContent: tocBody
         )
     }
 }
@@ -499,6 +823,15 @@ private enum ContentPage {
         let body: String
         let baseURL: String
         let engine: JSEngine
+        /// `webJs` 返回的非空结果；为空时正文仍走页面 HTML 上的原规则。
+        let extractedText: String?
+
+        init(body: String, baseURL: String, engine: JSEngine, extractedText: String? = nil) {
+            self.body = body
+            self.baseURL = baseURL
+            self.engine = engine
+            self.extractedText = extractedText
+        }
     }
 
     static func make(
@@ -506,6 +839,7 @@ private enum ContentPage {
         chapterIndex: Int,
         book: Book?,
         source: BookSource,
+        contentRule: ContentRule,
         header: String?,
         diagnostics: ((SourceRequestDiagnostic) -> Void)?
     ) async throws -> Payload {
@@ -517,6 +851,22 @@ private enum ContentPage {
             )
         }
 
+        if let scheme = NetworkClient.unsupportedScheme(in: target) {
+            let error = UnsupportedBookSourceSchemeError(
+                scheme: scheme,
+                sourceName: source.bookSourceName
+            )
+            JuyueLog.log("[Content] ❌ [\(source.bookSourceName)] 自定义协议 \(scheme) 不支持 第 \(chapterIndex + 1) 章")
+            DiagnosticHub.emit(SourceRequestDiagnostic(
+                step: "正文",
+                sourceName: source.bookSourceName,
+                url: target,
+                failureKind: DiagnosticFailure.classify(error),
+                note: error.localizedDescription
+            ), to: diagnostics)
+            throw error
+        }
+
         guard let request = NetworkClient.parseJuyueUrl(
             target,
             defaultHeader: header,
@@ -524,6 +874,16 @@ private enum ContentPage {
         ) else {
             JuyueLog.log("[Content] ❌ [\(source.bookSourceName)] 正文 URL 解析失败 第 \(chapterIndex + 1) 章 host=\(URL(string: target)?.host ?? "-")")
             throw ContentError.invalidURL
+        }
+
+        if let page = await ContentWebJs.payload(
+            request: request,
+            rule: contentRule,
+            timeout: ContentWebJs.defaultTimeout,
+            source: source,
+            book: book
+        ) {
+            return page
         }
 
         let reply = try await ContentRequest.perform(
@@ -540,8 +900,88 @@ private enum ContentPage {
     }
 }
 
-private enum ContentError: Error {
+/// `ContentRule.webJs`：用无声网页打开正文页，在 `didFinish` 后执行脚本。
+///
+/// 脚本返回非空文本时优先采用；返回空则保留渲染后的 HTML，交给原 `content` 规则。
+/// 抓取器未安装、加载失败或超时都返回 nil，由调用方回退普通请求，不让整章失败。
+private enum ContentWebJs {
+    static let defaultTimeout: TimeInterval = 20
+
+    static func payload(
+        request: NetworkClient.ParsedRequest,
+        rule: ContentRule,
+        timeout: TimeInterval,
+        source: BookSource,
+        book: Book?
+    ) async -> ContentPage.Payload? {
+        guard let script = rule.webJs?.trimmingCharacters(in: .whitespacesAndNewlines) else {
+            return nil
+        }
+        let sourceRegex = rule.sourceRegex?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let shouldSniff = !sourceRegex.isEmpty
+        // `sourceRegex` 只在 WebView 加载正文页时才有意义；没有 webJs 时，
+        // 只有 URL 明确要求走 WebView 才进来，避免把普通请求也拉去渲染。
+        guard !script.isEmpty || (shouldSniff && request.usesWebView) else {
+            return nil
+        }
+        guard HeadlessWebView.shared.loader != nil else {
+            JuyueLog.log("[Content] [\(source.bookSourceName)] webJs 需要无声网页，当前未安装，改用普通抓取")
+            return nil
+        }
+
+        await SourceRateLimiter.shared.acquire(key: source.bookSourceUrl, limit: source.rateLimit)
+        let js = script.isEmpty ? nil : JSEngine.unwrapJsScript(script)
+        do {
+            let result = try await NetworkClient.shared.headlessFetch(
+                parsed: request,
+                javaScript: js,
+                timeout: timeout,
+                capturesResourceURLs: shouldSniff
+            )
+            let baseURL = result.finalURL.absoluteString
+            if shouldSniff,
+               let matched = SourceURLSniffer.firstMatch(in: result.resourceURLs, pattern: sourceRegex) {
+                JuyueLog.log("[Content] [\(source.bookSourceName)] sourceRegex 命中资源 URL")
+                return ContentPage.Payload(
+                    body: matched,
+                    baseURL: baseURL,
+                    engine: JSEngine(bookSource: source, baseUrl: baseURL, book: book),
+                    extractedText: nil
+                )
+            }
+            if shouldSniff {
+                JuyueLog.log("[Content] [\(source.bookSourceName)] sourceRegex 未命中，按页面 HTML 处理")
+            }
+            let extracted = WebJsContent.text(from: result.javaScriptResult)
+            if extracted == nil,
+               result.html.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                JuyueLog.log("[Content] [\(source.bookSourceName)] webJs 结果与页面 HTML 都为空，改用普通抓取")
+                return nil
+            }
+            JuyueLog.log(
+                "[Content] [\(source.bookSourceName)] webJs 命中 "
+                    + (extracted == nil ? "空结果，用页面 HTML" : "\(extracted?.count ?? 0) 字")
+            )
+            return ContentPage.Payload(
+                body: result.html,
+                baseURL: baseURL,
+                engine: JSEngine(bookSource: source, baseUrl: baseURL, book: book),
+                extractedText: extracted
+            )
+        } catch {
+            JuyueLog.log("[Content] [\(source.bookSourceName)] webJs 失败，回退普通抓取：\(error.localizedDescription)")
+            return nil
+        }
+    }
+}
+
+private enum ContentError: Error, LocalizedError {
     case invalidURL
+
+    var errorDescription: String? {
+        "书源返回的请求地址无法解析"
+    }
 }
 
 private enum ContentRequest {
@@ -549,14 +989,15 @@ private enum ContentRequest {
         _ request: NetworkClient.ParsedRequest,
         source: BookSource,
         step: String,
-        diagnostics: ((SourceRequestDiagnostic) -> Void)?
+        diagnostics: ((SourceRequestDiagnostic) -> Void)?,
+        timeout: TimeInterval? = nil
     ) async throws -> NetworkResponse {
         let started = Date()
         let reply: NetworkResponse
         do {
             reply = try await NetworkClient.shared.request(
                 parsed: request,
-                timeout: nil,
+                timeout: timeout,
                 rateKey: source.bookSourceUrl,
                 rateLimit: source.rateLimit
             )
@@ -862,12 +1303,61 @@ private enum LocalChapterLoader {
     }
 }
 
+// MARK: - 正文规则与分页规划
+
+enum ContentRuleExtractor {
+    /// `content` 取不到正文时回退 `subContent`；两者都空才算空。
+    static func text(from analyzer: RuleAnalyzer, rule: ContentRule) -> String {
+        let primary = analyzer.getString(rule.content)
+        if !primary.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return primary
+        }
+        return analyzer.getString(rule.subContent)
+    }
+}
+
+/// 正文分页的纯逻辑：去重、页数上限、整体 deadline 判定。
+enum ContentPagination {
+    static let pageLimit = 10
+    static let totalDeadline: TimeInterval = 30
+
+    static func nextURLs(
+        candidates: [String],
+        visited: Set<String>,
+        fetchedCount: Int,
+        limit: Int = pageLimit
+    ) -> [String] {
+        guard fetchedCount < limit else { return [] }
+        var seen = visited
+        var urls: [String] = []
+        for raw in candidates {
+            let address = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !address.isEmpty, !seen.contains(address) else { continue }
+            seen.insert(address)
+            urls.append(address)
+            if fetchedCount + urls.count >= limit { break }
+        }
+        return urls
+    }
+
+    static func remaining(_ deadline: Date, now: Date = Date()) -> TimeInterval {
+        max(0, deadline.timeIntervalSince(now))
+    }
+}
+
 // MARK: - 章节缓存
 
 private enum ChapterCache {
-    static var root: URL {
+    /// 正文清洗规则变了就换命名空间：老版本缓存下来的脏正文否则会一直被读出来。
+    static let namespace = "v2"
+
+    static var allRoot: URL {
         FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("ChapterCache", isDirectory: true)
+    }
+
+    static var root: URL {
+        allRoot.appendingPathComponent(namespace, isDirectory: true)
     }
 
     static func directory(for bookUrl: String) -> URL {
@@ -1077,7 +1567,23 @@ private final class HTMLCleaner {
     }
 
     private func performClean(_ raw: String, baseUrl: String?) -> String {
-        var text = replaceImages(in: raw, baseUrl: baseUrl)
+        // 视频标签在纯文本里没法显示，换成 [video:url] 标记，由订阅正文那层换成播放器
+        var text = replaceVideos(in: raw, baseUrl: baseUrl)
+        text = replaceImages(in: text, baseUrl: baseUrl)
+        text = replaceImportAnchors(in: text)
+        // 成对标签里的脚本/样式不能只删标签：`@html` 类正文规则会把整段 JS 留在正文里。
+        text = text.replacingOccurrences(
+            of: "(?is)<script\\b[^>]*>.*?</script\\s*>", with: "", options: .regularExpression
+        )
+        text = text.replacingOccurrences(
+            of: "(?is)<style\\b[^>]*>.*?</style\\s*>", with: "", options: .regularExpression
+        )
+        text = text.replacingOccurrences(
+            of: "(?is)<noscript\\b[^>]*>.*?</noscript\\s*>", with: "", options: .regularExpression
+        )
+        text = text.replacingOccurrences(
+            of: "(?s)<!--.*?-->", with: "", options: .regularExpression
+        )
         text = text.replacingOccurrences(of: "(?i)<br\\s*/?>", with: "\n", options: .regularExpression)
         text = text.replacingOccurrences(of: "(?i)</p>", with: "\n\n", options: .regularExpression)
         text = text.replacingOccurrences(of: "(?i)<p[^>]*>", with: "", options: .regularExpression)
@@ -1106,6 +1612,31 @@ private final class HTMLCleaner {
             let tag = source.substring(with: match.range)
             guard let image = imageSource(from: tag, baseUrl: baseUrl), !image.isEmpty else { continue }
             text = (text as NSString).replacingCharacters(in: match.range, with: "\n\n[image:\(image)]\n\n")
+        }
+        return text
+    }
+
+    /// 导入类深链只写在 `href` 里（`legado://import/httpTTS?src=…`），剥标签后会整个丢失，
+    /// 正文里只剩不可点的「一键导入」。转成 `[文字](地址)`，由正文视图还原成可点按钮。
+    private func replaceImportAnchors(in raw: String) -> String {
+        guard let regex = try? NSRegularExpression(
+            pattern: "(?is)<a\\b[^>]*href\\s*=\\s*[\"']([^\"']+)[\"'][^>]*>(.*?)</a\\s*>"
+        ) else {
+            return raw
+        }
+        let source = raw as NSString
+        var text = raw
+        for match in regex.matches(in: raw, range: NSRange(location: 0, length: source.length)).reversed() {
+            let href = source.substring(with: match.range(at: 1))
+            let lower = href.lowercased()
+            guard lower.hasPrefix("legado://") || lower.hasPrefix("yuedu://") || lower.hasPrefix("juyue://") else {
+                continue
+            }
+            let label = source.substring(with: match.range(at: 2))
+                .replacingOccurrences(of: "<[^>]+>", with: "", options: .regularExpression)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !label.isEmpty else { continue }
+            text = (text as NSString).replacingCharacters(in: match.range, with: "[\(label)](\(href))")
         }
         return text
     }
@@ -1149,6 +1680,57 @@ private final class HTMLCleaner {
             .split(whereSeparator: { $0 == " " || $0 == "\t" || $0 == "\n" })
             .first.map(String.init) ?? firstEntry
         return token.isEmpty ? nil : token
+    }
+
+    private func replaceVideos(in raw: String, baseUrl: String?) -> String {
+        var text = raw
+        if let videoRegex = try? NSRegularExpression(pattern: "(?is)<video\\b[^>]*>.*?</video\\s*>") {
+            let nsText = text as NSString
+            for match in videoRegex.matches(in: text, range: NSRange(location: 0, length: nsText.length)).reversed() {
+                let tag = nsText.substring(with: match.range)
+                let src = extractVideoSrc(from: tag, baseUrl: baseUrl)
+                let replacement = src.map { "\n\n[video:\($0)]\n\n" } ?? "\n\n"
+                text = (text as NSString).replacingCharacters(in: match.range, with: replacement)
+            }
+        }
+        // <video> 里没写 src、只写了 <source>，或者散落在外面的 <source>：按扩展名认视频
+        if let sourceRegex = try? NSRegularExpression(pattern: "(?i)<source\\b[^>]*>") {
+            let nsText = text as NSString
+            for match in sourceRegex.matches(in: text, range: NSRange(location: 0, length: nsText.length)).reversed() {
+                let tag = nsText.substring(with: match.range)
+                guard let src = extractVideoSrc(from: tag, baseUrl: baseUrl),
+                      tag.lowercased().contains("video/") || looksLikeVideo(src) else { continue }
+                text = (text as NSString).replacingCharacters(in: match.range, with: "\n\n[video:\(src)]\n\n")
+            }
+        }
+        return text
+    }
+
+    private func extractVideoSrc(from tag: String, baseUrl: String?) -> String? {
+        for attribute in ["src", "data-src"] {
+            guard let found = capture(in: tag, attribute: attribute) else { continue }
+            let cleaned = found.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !cleaned.isEmpty, !cleaned.hasPrefix("data:") else { continue }
+            return resolveMediaURL(cleaned, baseUrl: baseUrl)
+        }
+        return nil
+    }
+
+    private func looksLikeVideo(_ url: String) -> Bool {
+        let lower = url.lowercased()
+        return [".m3u8", ".mp4", ".m4v", ".mov", ".webm", ".flv", ".mpd"]
+            .contains { lower.contains($0) }
+    }
+
+    /// 图片和视频共用：绝对地址原样返回，`//` 补协议，相对地址按页面地址补全。
+    private func resolveMediaURL(_ raw: String, baseUrl: String?) -> String {
+        if raw.hasPrefix("http://") || raw.hasPrefix("https://") { return raw }
+        if raw.hasPrefix("//") { return "https:" + raw }
+        guard let base = baseUrl, let baseObj = URL(string: base) else { return raw }
+        if raw.hasPrefix("/") {
+            return "\(baseObj.scheme ?? "https")://\(baseObj.host ?? "")" + raw
+        }
+        return baseObj.deletingLastPathComponent().appendingPathComponent(raw).absoluteString
     }
 
     private func isPlaceholder(_ source: String) -> Bool {
@@ -1257,6 +1839,7 @@ public final class TextPurifier: ObservableObject {
     }
 
     private func apply(_ rule: ReplacementRule, to text: String) -> String {
+        guard !rule.replacement.trimmingCharacters(in: .whitespacesAndNewlines).hasPrefix("@js:") else { return text }
         guard rule.isRegex else {
             return text.replacingOccurrences(of: rule.pattern, with: rule.replacement)
         }
@@ -1314,6 +1897,8 @@ public struct SubscribeSource: Codable, Identifiable, Equatable {
     public var cacheFirst: Bool?
     public var enableJs: Bool?
     public var loadWithBaseUrl: Bool?
+    /// 证书链不完整的站点（ExHentai 等）显式要求放宽 TLS 校验。
+    public var allowInsecureTLS: Bool?
     public var searchUrl: String?
 
     public init(
@@ -1416,19 +2001,40 @@ public struct SubscribeArticle: Identifiable, Equatable {
     public var date: String?
     public var summary: String?
     public var imageUrl: String?
+    /// 安卓 `RssArticle.type`：0 普通、2 视频。原样带出来给阅读页判断。
+    public var type: Int?
 
     public init(
         title: String,
         link: String,
         date: String? = nil,
         summary: String? = nil,
-        imageUrl: String? = nil
+        imageUrl: String? = nil,
+        type: Int? = nil
     ) {
         self.title = title
         self.link = link
         self.date = date
         self.summary = summary
         self.imageUrl = imageUrl
+        self.type = type
+    }
+}
+
+/// 订阅正文抓取结果：正文 + 基准地址 + 取图片/视频要带的请求头。
+public struct SubscribeFetchedContent {
+    public var text: String
+    public var baseURL: String
+    public var headers: [String: String]
+    /// 规则产物是可直接渲染的网页（播放器、交互页）时留一份原始 HTML，
+    /// 阅读页拿它进 WKWebView；纯文本源为 nil，继续走原生排版。
+    public var html: String?
+
+    public init(text: String, baseURL: String, headers: [String: String], html: String? = nil) {
+        self.text = text
+        self.baseURL = baseURL
+        self.headers = headers
+        self.html = html
     }
 }
 
@@ -1453,13 +2059,28 @@ public enum SubscribeSourceService {
                 header: header
             )
         } catch SubscribeError.invalidURL {
-            return ([], nil)
+            throw SubscribeFetchFailure(message: "订阅源地址无法解析：\(target)")
         } catch SubscribeError.badStatus {
-            return ([], nil)
+            throw SubscribeFetchFailure(message: "请求被站点拒绝（非 2xx/3xx）：\(target)")
         }
         JuyueLog.log("[订阅源] \(source.sourceName) 抓取 host=\(URL(string: target)?.host ?? "-") 字节=\(fetched.body.count)")
+        if fetched.body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+           !target.lowercased().hasPrefix("data:") {
+            // 安卓 RssParserByRule 遇到空 body 同样直接报错，只是它显示的是通用文案。
+            throw SubscribeFetchFailure(
+                message: "\(source.sourceName) 的上游返回空内容（0 字节），接口可能已失效或被区域限制：\(target)"
+            )
+        }
 
-        guard let listRule = source.ruleArticles, !listRule.isEmpty else {
+        var listRule = source.ruleArticles?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        // 安卓 RssParserByRule：规则以 `-` 开头表示整表倒序。
+        var reverseList = false
+        if listRule.hasPrefix("-") {
+            reverseList = true
+            listRule = String(listRule.dropFirst())
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        guard !listRule.isEmpty else {
             let items = try await RSSService.shared.fetchFeed(url: target, sourceName: source.sourceName)
             let articles = items.map {
                 SubscribeArticle(
@@ -1474,48 +2095,97 @@ public enum SubscribeSourceService {
         }
 
         let context = source.ruleContext(jsLib: jsLib)
-        let engine = JSEngine(bookSource: context, baseUrl: fetched.baseURL)
-        let analyzer = RuleAnalyzer(
-            content: fetched.body,
-            baseUrl: fetched.baseURL,
+        var pageBody = fetched.body
+        var pageBase = fetched.baseURL
+        var engine = JSEngine(bookSource: context, baseUrl: pageBase)
+        engine.setSourceValue("sortUrl", source.sortUrl ?? "")
+        var analyzer = RuleAnalyzer(
+            content: pageBody,
+            baseUrl: pageBase,
             bookSource: context,
             jsEngine: engine
         )
-        let elements = analyzer.getElements(listRule)
+        var elements = analyzer.getElements(listRule)
+
+        // 静态抓取命中 0 时交给无声网页再试一次（原版 webView:true 的源全靠这一步）。
+        if elements.isEmpty,
+           let rendered = try? await headlessDocument(target: target, source: source, header: header) {
+            JuyueLog.log("[订阅源] \(source.sourceName) 规则命中 0，改用无声网页重抓")
+            pageBody = rendered.body
+            pageBase = rendered.baseURL
+            engine = JSEngine(bookSource: context, baseUrl: pageBase)
+            engine.setSourceValue("sortUrl", source.sortUrl ?? "")
+            analyzer = RuleAnalyzer(
+                content: pageBody,
+                baseUrl: pageBase,
+                bookSource: context,
+                jsEngine: engine
+            )
+            elements = analyzer.getElements(listRule)
+        }
         JuyueLog.log("[订阅源] \(source.sourceName) 规则 \(listRule) 命中=\(elements.count)")
 
         let articles = elements.compactMap { element -> SubscribeArticle? in
             let row = RuleAnalyzer(
                 content: element,
-                baseUrl: fetched.baseURL,
+                baseUrl: pageBase,
                 bookSource: context,
                 jsEngine: engine
             )
             let title = row.getString(source.ruleTitle)
-            let link = row.getString(source.ruleLink, isUrl: true)
+            let link = stripLineOptions(
+                row.resolveLazyJavaScript(row.getString(source.ruleLink), isUrl: true)
+            )
             guard !title.isEmpty || !link.isEmpty else { return nil }
 
             let date = row.getString(source.rulePubDate)
-            let summary = row.getString(source.ruleDescription)
-            let image = row.getString(source.ruleImage, isUrl: true)
+            var summary = row.getString(source.ruleDescription)
+            if summary.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+               let html = element as? String {
+                // 没配描述规则时安卓留空、阅读时再抓正文；列表里先拿条目自身的文字顶上，
+                // 比空白行更有信息量，也不额外发请求。
+                summary = String(BookContentService.cleanHtml(html).prefix(120))
+            }
+            let image = row.resolveLazyJavaScript(row.getString(source.ruleImage), isUrl: true)
             return SubscribeArticle(
                 title: title.isEmpty ? link : title,
                 link: link,
                 date: date.isEmpty ? nil : date,
                 summary: summary.isEmpty ? nil : BookContentService.cleanHtml(summary),
-                imageUrl: image.isEmpty ? nil : image
+                imageUrl: image.isEmpty ? nil : image,
+                type: source.type
             )
         }
 
         var nextPage: String?
-        if let nextRule = source.ruleNextPage, !nextRule.isEmpty {
-            let value = analyzer.getString(nextRule, isUrl: true)
-            if !value.isEmpty { nextPage = value }
+        if let nextRule = source.ruleNextPage?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !nextRule.isEmpty {
+            if nextRule.uppercased() == "PAGE" {
+                // 安卓：`PAGE` 不是规则，直接用当前页地址再翻一次。
+                nextPage = target
+            } else {
+                let rawValue = analyzer.getString(nextRule)
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                if !rawValue.isEmpty {
+                    if rawValue.allSatisfy({ $0.isASCII && $0.isNumber }) {
+                        // 规则只回页码（源仓的 `page` 字段）时把当前地址的页码 +1，
+                        // 直接当网址会把 "1" 拼成 `…/1` 这种假地址。
+                        nextPage = bumpPage(in: target, from: Int(rawValue) ?? 1)
+                    } else {
+                        nextPage = analyzer.getString(nextRule, isUrl: true)
+                    }
+                }
+            }
         }
-        return (articles, nextPage)
+        return (reverseList ? Array(articles.reversed()) : articles, nextPage)
     }
 
     public static func fetchSortUrls(source: SubscribeSource) async -> [(name: String, url: String)] {
+        await sortEntries(source: source).map { (name: $0.name, url: $0.url) }
+    }
+
+    /// 分类行语法：`名称::地址`，地址尾部可带 `,{"webView": true}` 这类选项。
+    static func sortEntries(source: SubscribeSource) async -> [(name: String, url: String, webView: Bool)] {
         guard let raw = source.sortUrl?.trimmingCharacters(in: .whitespacesAndNewlines),
               !raw.isEmpty else {
             return []
@@ -1531,55 +2201,291 @@ public enum SubscribeSourceService {
             text = raw
         }
 
-        var rows: [(String, String)] = []
+        let jsLib = await resolvedJsLib(source.jsLib)
+        let context = source.ruleContext(jsLib: jsLib)
+        let engine = JSEngine(bookSource: context, baseUrl: source.sourceUrl)
+        let analyzer = RuleAnalyzer(
+            content: "",
+            baseUrl: source.sourceUrl,
+            bookSource: context,
+            jsEngine: engine
+        )
+
+        var rows: [(String, String, Bool)] = []
         for line in text.components(separatedBy: .newlines) {
-            let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+            var trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !trimmed.isEmpty else { continue }
+
+            var webView = false
+            if let optionRange = trimmed.range(of: #",\s*\{.*\}\s*$"#, options: .regularExpression),
+               let data = trimmed[optionRange].dropFirst().data(using: .utf8),
+               let options = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+                webView = (options["webView"] as? Bool) ?? false
+                trimmed.removeSubrange(optionRange)
+            }
 
             let fields = trimmed.components(separatedBy: "::")
             let name = fields.count > 1 ? fields[0] : trimmed
             var address = fields.count > 1 ? fields[1] : trimmed
+            address = expandFunctionTemplates(address, analyzer: analyzer)
 
             if address.hasPrefix("/"), let base = URL(string: source.sourceUrl),
                let resolved = URL(string: address, relativeTo: base) {
                 address = resolved.absoluteString
             }
             guard !address.isEmpty else { continue }
-            rows.append((name, address))
+            rows.append((name, address, webView))
         }
         return rows
     }
 
+    /// 分类行/链接尾部残留的 `,{"webView": true}` 选项不是地址的一部分。
+    /// data: 地址尾部的 `,{…}` 是聚合源打包的载荷，要保留。
+    private static func stripLineOptions(_ value: String) -> String {
+        guard !value.lowercased().hasPrefix("data:"),
+              let range = value.range(of: #",\s*\{.*\}\s*$"#, options: .regularExpression) else {
+            return value
+        }
+        return String(value[..<range.lowerBound])
+    }
+
+    /// 只展开 `{{bhost()}}` 这类函数模板，`{{page}}` 留给翻页逻辑。
+    private static func expandFunctionTemplates(_ template: String, analyzer: RuleAnalyzer) -> String {
+        guard let pattern = try? NSRegularExpression(
+            pattern: #"\{\{([^{}]*\([^{}]*\)[^{}]*)\}\}"#
+        ) else {
+            return template
+        }
+        let source = template as NSString
+        let matches = pattern.matches(in: template, range: NSRange(location: 0, length: source.length))
+        guard !matches.isEmpty else { return template }
+
+        var output = template
+        for match in matches.reversed() {
+            let expression = source.substring(with: match.range(at: 1))
+            let value = analyzer.evaluateTemplate("{{\(expression)}}")
+            output = (output as NSString).replacingCharacters(in: match.range, with: value)
+        }
+        return output
+    }
+
+    /// 抓正文：有 ruleContent 就按规则取，取不到就把整页按纯文本给出去
     public static func fetchContent(article: SubscribeArticle, source: SubscribeSource) async throws -> String {
+        try await fetchContentDetail(article: article, source: source).text
+    }
+
+    /// 抓正文，连同基准地址和请求头一起带出去。
+    /// 正文里的图片、视频要按同一套 header 去取，站点的反盗链才过得去。
+    public static func fetchContentDetail(
+        article: SubscribeArticle,
+        source: SubscribeSource
+    ) async throws -> SubscribeFetchedContent {
         let jsLib = await resolvedJsLib(source.jsLib)
         let header = await resolvedHeader(source: source, jsLib: jsLib)
-        guard !article.link.isEmpty,
-              let request = NetworkClient.parseJuyueUrl(
-                article.link,
-                defaultHeader: header,
-                baseUrl: source.sourceUrl
-              ) else {
-            return ""
-        }
+        let mediaHeaders = mediaRequestHeaders(source: source, header: header, referer: article.link)
+        var link = stripLineOptions(
+            article.link.trimmingCharacters(in: .whitespacesAndNewlines)
+        )
+        guard !link.isEmpty else { return SubscribeFetchedContent(text: "", baseURL: article.link, headers: mediaHeaders) }
 
-        let reply = try await NetworkClient.shared.request(parsed: request)
-        guard (200..<400).contains(reply.statusCode) else { return "" }
-
-        let base = request.url.absoluteString
-        if let rule = source.ruleContent, !rule.isEmpty {
+        // 行值里残留的 `@js:` / `<js>` 链接（洛娅橙用它拼 data: 地址）先求值一次。
+        if let script = ScriptSnippet.body(in: link) {
             let context = source.ruleContext(jsLib: jsLib)
-            let analyzer = RuleAnalyzer(
-                content: reply.bodyString,
-                baseUrl: base,
-                bookSource: context,
-                jsEngine: JSEngine(bookSource: context, baseUrl: base)
-            )
-            let extracted = BookContentService.cleanHtml(analyzer.getString(rule), baseUrl: base)
-            if !extracted.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                return extracted
+            let engine = JSEngine(bookSource: context, baseUrl: source.sourceUrl)
+            if let value = engine.eval(script: script, result: link) as? String,
+               !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                link = value
             }
         }
-        return BookContentService.cleanHtml(reply.bodyString, baseUrl: base)
+
+        let body: String
+        let base: String
+        if let packed = NetworkClient.dataURLPayload(link) {
+            body = packed
+            base = link
+        } else if link.lowercased().hasPrefix("data:") {
+            // 与列表抓取一致：解不出载荷的 data: 地址是拿 baseUrl 传参的写法，不发请求。
+            body = ""
+            base = link
+        } else {
+            guard let request = NetworkClient.parseJuyueUrl(
+                link,
+                defaultHeader: header,
+                baseUrl: source.sourceUrl,
+                insecureTLS: source.allowInsecureTLS ?? false
+            ) else {
+                return SubscribeFetchedContent(text: "", baseURL: link, headers: mediaHeaders)
+            }
+            let reply = try await NetworkClient.shared.request(parsed: request)
+            guard (200..<400).contains(reply.statusCode) else {
+                return SubscribeFetchedContent(text: "", baseURL: request.url.absoluteString, headers: mediaHeaders)
+            }
+            body = reply.bodyString
+            base = request.url.absoluteString
+        }
+
+        var bestText = ""
+        var ruleOutput = ""
+        if let rule = source.ruleContent, !rule.isEmpty {
+            let analyzer = subscribeAnalyzer(
+                article: article,
+                source: source,
+                jsLib: jsLib,
+                content: body,
+                base: base
+            )
+            ruleOutput = analyzer.getString(rule)
+            bestText = BookContentService.cleanHtml(ruleOutput, baseUrl: base)
+        }
+        var bestBase = base
+        if bestText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            ruleOutput = body
+            bestText = BookContentService.cleanHtml(body, baseUrl: base)
+        }
+
+        // 正文由页面脚本渲染时（源仓、洛娅橙这类），静态抓取只剩标题，
+        // 交给无声网页渲染后再跑一次规则，取更长的那份。
+        if bestText.trimmingCharacters(in: .whitespacesAndNewlines).count < 80,
+           let rendered = try? await headlessDocument(target: link, source: source, header: header) {
+            let renderAnalyzer = subscribeAnalyzer(
+                article: article,
+                source: source,
+                jsLib: jsLib,
+                content: rendered.body,
+                base: rendered.baseURL
+            )
+            var renderedText = ""
+            var renderedRaw = ""
+            if let rule = source.ruleContent, !rule.isEmpty {
+                renderedRaw = renderAnalyzer.getString(rule)
+                renderedText = BookContentService.cleanHtml(
+                    renderedRaw,
+                    baseUrl: rendered.baseURL
+                )
+            }
+            if renderedText.trimmingCharacters(in: .whitespacesAndNewlines).count < bestText.count {
+                renderedRaw = rendered.body
+                renderedText = BookContentService.cleanHtml(rendered.body, baseUrl: rendered.baseURL)
+            }
+            if renderedText.count > bestText.count {
+                JuyueLog.log("[订阅源] \(source.sourceName) 正文改用无声网页渲染 长度=\(renderedText.count)")
+                bestText = renderedText
+                ruleOutput = renderedRaw
+                bestBase = rendered.baseURL
+            }
+        }
+        let html = looksLikeInteractiveHTML(ruleOutput) ? ruleOutput : nil
+        return SubscribeFetchedContent(
+            text: bestText,
+            baseURL: bestBase,
+            headers: mediaHeaders,
+            html: html
+        )
+    }
+
+    /// 交互式网页（视频播放器、需要页面脚本出内容）才交给 WKWebView；
+    /// 普通正文片段继续走原生排版，免得把纯文本源也变成网页。
+    static func looksLikeInteractiveHTML(_ text: String) -> Bool {
+        let lower = text.lowercased()
+        guard lower.contains("<") else { return false }
+        if lower.contains("<!doctype") || lower.contains("<html") { return true }
+        return lower.contains("<video") || lower.contains("<iframe") || lower.contains("<canvas")
+    }
+
+    private static func subscribeAnalyzer(
+        article: SubscribeArticle,
+        source: SubscribeSource,
+        jsLib: String?,
+        content: String,
+        base: String
+    ) -> RuleAnalyzer {
+        let context = source.ruleContext(jsLib: jsLib)
+        let engine = JSEngine(bookSource: context, baseUrl: base)
+        engine.setRssArticle([
+            "title": article.title,
+            "link": article.link,
+            "date": article.date ?? "",
+            // 安卓 RssArticle 的原名是 pubDate；date 留着兼容既有脚本。
+            "pubDate": article.date ?? "",
+            "description": article.summary ?? "",
+            "image": article.imageUrl ?? "",
+            "sort": source.sourceName,
+            "origin": source.sourceName,
+            "group": source.sourceGroup ?? "",
+            "type": "\(source.type ?? 0)",
+            "order": "0",
+            "read": "false",
+            "variable": ""
+        ])
+        return RuleAnalyzer(
+            content: content,
+            baseUrl: base,
+            bookSource: context,
+            jsEngine: engine
+        )
+    }
+
+    /// 用无声网页渲染页面；没有实现时返回 nil，调用方保持原结果。
+    private static func headlessDocument(
+        target: String,
+        source: SubscribeSource,
+        header: String?
+    ) async throws -> FetchedDocument? {
+        guard HeadlessWebView.shared.loader != nil,
+              !target.lowercased().hasPrefix("data:"),
+              let request = NetworkClient.parseJuyueUrl(
+                  target,
+                  defaultHeader: header,
+                  baseUrl: source.sourceUrl,
+                  insecureTLS: source.allowInsecureTLS ?? false
+              ) else {
+            return nil
+        }
+        let result = try await NetworkClient.shared.headlessFetch(parsed: request)
+        return FetchedDocument(body: result.html, baseURL: result.finalURL.absoluteString)
+    }
+
+    /// 图片/视频请求复用的头：来源 header + Referer + 默认 UA。
+    /// 反盗链站点主要看 Referer，缺了它图全是 403。
+    public static func mediaRequestHeaders(
+        source: SubscribeSource,
+        header: String?,
+        referer: String?
+    ) -> [String: String] {
+        var result = headerFields(from: header)
+        if result.isEmpty { result = source.staticRequestHeaders }
+        let hasReferer = result.keys.contains { $0.lowercased() == "referer" }
+        if !hasReferer, let referer, !referer.isEmpty {
+            result["Referer"] = referer
+        }
+        if result.keys.allSatisfy({ $0.lowercased() != "user-agent" }) {
+            result["User-Agent"] = NetworkClient.defaultUserAgent
+        }
+        return result
+    }
+
+    /// header 既可能是 JSON 对象，也可能是每行 `Name: value`。
+    static func headerFields(from raw: String?) -> [String: String] {
+        guard let raw = raw?.trimmingCharacters(in: .whitespacesAndNewlines), !raw.isEmpty else {
+            return [:]
+        }
+        if raw.hasPrefix("{"),
+           let data = raw.data(using: .utf8),
+           let dict = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+            return dict.reduce(into: [:]) { result, item in
+                result[item.key] = String(describing: item.value)
+            }
+        }
+        var result: [String: String] = [:]
+        for line in raw.components(separatedBy: .newlines) {
+            let parts = line.split(separator: ":", maxSplits: 1).map {
+                $0.trimmingCharacters(in: .whitespaces)
+            }
+            if parts.count == 2, !parts[0].isEmpty {
+                result[parts[0]] = parts[1]
+            }
+        }
+        return result
     }
 
     public static func decodeSources(from json: String) throws -> [SubscribeSource] {
@@ -1618,6 +2524,32 @@ public enum SubscribeSourceService {
             .replacingOccurrences(of: "{{searchKey}}", with: "")
     }
 
+    /// 规则只回了页码时，把当前地址里的页码改成下一页。
+    static func bumpPage(in target: String, from page: Int) -> String? {
+        let next = String(page + 1)
+        if target.contains("{{page}}") {
+            return target.replacingOccurrences(of: "{{page}}", with: next)
+        }
+        if let range = target.range(of: "%7B%7Bpage%7D%7D", options: .caseInsensitive) {
+            return target.replacingCharacters(in: range, with: next)
+        }
+        let patterns = [
+            "(?i)([?&](?:page|p|pageNum|pageNo)=)(\\d+)",
+            "(?i)(/page/)(\\d+)"
+        ]
+        let source = target as NSString
+        for pattern in patterns {
+            guard let regex = try? NSRegularExpression(pattern: pattern),
+                  let match = regex.firstMatch(
+                      in: target,
+                      range: NSRange(location: 0, length: source.length)
+                  ),
+                  match.numberOfRanges > 2 else { continue }
+            return source.replacingCharacters(in: match.range(at: 2), with: next)
+        }
+        return nil
+    }
+
     private static func fetchDocument(
         target: String,
         source: SubscribeSource,
@@ -1626,11 +2558,17 @@ public enum SubscribeSourceService {
         if let packed = NetworkClient.dataURLPayload(target) {
             return FetchedDocument(body: packed, baseURL: target)
         }
+        if target.lowercased().hasPrefix("data:") {
+            // 解不出载荷的 `data:;base64,<占位>,<扩展>` 是源作者拿 baseUrl 传参的写法，
+            // 不能真发请求；正文留空，规则脚本按 baseUrl 分支走。
+            return FetchedDocument(body: "", baseURL: target)
+        }
 
         guard let request = NetworkClient.parseJuyueUrl(
             target,
             defaultHeader: header,
-            baseUrl: source.sourceUrl
+            baseUrl: source.sourceUrl,
+            insecureTLS: source.allowInsecureTLS ?? false
         ) else {
             throw SubscribeError.invalidURL
         }
@@ -1685,6 +2623,17 @@ public enum SubscribeSourceService {
         case invalidURL
         case badStatus
     }
+}
+
+/// 抓取失败时带一句能直接展示给用户的话，界面不再笼统报「没抓到条目」。
+public struct SubscribeFetchFailure: LocalizedError {
+    public let message: String
+
+    public init(message: String) {
+        self.message = message
+    }
+
+    public var errorDescription: String? { message }
 }
 
 // MARK: - RSS / Atom
@@ -1936,7 +2885,8 @@ public final class OPDSService {
             url: request.url,
             method: request.method,
             headers: headers,
-            body: request.body
+            body: request.body,
+            usesWebView: request.usesWebView
         )
     }
 }

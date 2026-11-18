@@ -8,6 +8,86 @@ import PhotosUI
 #if canImport(JuyueCore)
 import JuyueCore
 #endif
+#if os(iOS)
+import MediaPlayer
+#endif
+
+#if os(iOS)
+/// 实验：iOS 的音量键不产生按键事件，只能挂一个隐藏的 MPVolumeView 并 KVO 系统音量。
+/// 每次按完把音量拨回中位：上下都还有余量，也不会把系统音量提示条弹出来。
+private struct VolumeKeyPagerBridge: UIViewRepresentable {
+    let enabled: Bool
+    let onForward: () -> Void
+    let onBackward: () -> Void
+
+    func makeCoordinator() -> Coordinator { Coordinator() }
+
+    func makeUIView(context: Context) -> UIView {
+        let container = UIView(frame: CGRect(x: 0, y: 0, width: 1, height: 1))
+        container.isUserInteractionEnabled = false
+        container.alpha = 0.001
+        let volumeView = MPVolumeView(frame: CGRect(x: -2000, y: -2000, width: 1, height: 1))
+        volumeView.showsRouteButton = false
+        container.addSubview(volumeView)
+        context.coordinator.attach(volumeView: volumeView)
+        return container
+    }
+
+    func updateUIView(_ uiView: UIView, context: Context) {
+        context.coordinator.bridge = self
+    }
+
+    final class Coordinator {
+        var bridge: VolumeKeyPagerBridge?
+        private var slider: UISlider?
+        private var observation: NSKeyValueObservation?
+        private var lastVolume: Float = 0.5
+        private var resetting = false
+        private var lastFire = Date.distantPast
+
+        func attach(volumeView: MPVolumeView) {
+            slider = volumeView.subviews.compactMap { $0 as? UISlider }.first
+            let session = AVAudioSession.sharedInstance()
+            lastVolume = session.outputVolume
+            observation = session.observe(\.outputVolume, options: [.new]) { [weak self] session, change in
+                guard let self, let volume = change.newValue else { return }
+                DispatchQueue.main.async { self.handle(volume, session: session) }
+            }
+        }
+
+        private func handle(_ volume: Float, session: AVAudioSession) {
+            guard let bridge, bridge.enabled, !resetting else {
+                lastVolume = volume
+                return
+            }
+            let delta = volume - lastVolume
+            lastVolume = volume
+            guard abs(delta) > 0.001 else { return }
+            let now = Date()
+            guard now.timeIntervalSince(lastFire) > 0.25 else {
+                resetToMid()
+                return
+            }
+            lastFire = now
+            if delta > 0 { bridge.onForward() } else { bridge.onBackward() }
+            resetToMid()
+        }
+
+        private func resetToMid() {
+            guard let slider else { return }
+            resetting = true
+            slider.value = 0.5
+            lastVolume = AVAudioSession.sharedInstance().outputVolume
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in
+                self?.resetting = false
+                self?.lastVolume = AVAudioSession.sharedInstance().outputVolume
+            }
+        }
+
+        deinit { observation?.invalidate() }
+    }
+}
+#endif
 
 /// 阅读背景图读一次盘就缓存住：正文每次重绘都去读文件会卡。
 /// 页眉页脚选内容的芯片网格。
@@ -146,6 +226,7 @@ struct ReaderBarPickerRow: View {
     let tint: Color
 
     @State private var expanded = false
+    @State private var draggingItem: ReaderBarContent?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -165,9 +246,79 @@ struct ReaderBarPickerRow: View {
                 .foregroundColor(tint.opacity(0.8))
             }
             if expanded {
-                ReaderBarItemGrid(selection: $selection, items: ReaderBarContent.allCases, tint: tint)
+                if !selection.isEmpty {
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 6) {
+                            ForEach(selection, id: \.self) { item in
+                                Text(item.rawValue)
+                                    .font(.system(size: 11, weight: .medium))
+                                    .lineLimit(1)
+                                    .padding(.horizontal, 8)
+                                    .padding(.vertical, 5)
+                                    .background(
+                                        RoundedRectangle(cornerRadius: 5)
+                                            .fill(tint.opacity(0.18))
+                                    )
+                                    .overlay(
+                                        RoundedRectangle(cornerRadius: 5)
+                                            .stroke(tint.opacity(0.4), lineWidth: 1)
+                                    )
+                                    .foregroundColor(tint)
+                                    .onDrag {
+                                        draggingItem = item
+                                        return NSItemProvider(object: item.rawValue as NSString)
+                                    }
+                                    .onDrop(
+                                        of: [.text],
+                                        delegate: ReaderBarDropDelegate(
+                                            item: item,
+                                            items: $selection,
+                                            dragging: $draggingItem
+                                        )
+                                    )
+                            }
+                        }
+                        .padding(.vertical, 2)
+                    }
+                    Text("已选项可长按拖动排序，顺序就是显示顺序。")
+                        .font(.system(size: 10))
+                        .foregroundColor(tint.opacity(0.45))
+                }
+                ForEach(ReaderBarGroup.allCases) { group in
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(group.rawValue)
+                            .font(.system(size: 10, weight: .semibold))
+                            .foregroundColor(tint.opacity(0.5))
+                        ReaderBarItemGrid(selection: $selection, items: group.items, tint: tint)
+                    }
+                }
             }
         }
+    }
+}
+
+private struct ReaderBarDropDelegate: DropDelegate {
+    let item: ReaderBarContent
+    @Binding var items: [ReaderBarContent]
+    @Binding var dragging: ReaderBarContent?
+
+    func dropEntered(info: DropInfo) {
+        guard let dragging,
+              dragging != item,
+              let from = items.firstIndex(of: dragging),
+              let to = items.firstIndex(of: item) else { return }
+        withAnimation(.easeInOut(duration: 0.15)) {
+            items.move(fromOffsets: IndexSet(integer: from), toOffset: to > from ? to + 1 : to)
+        }
+    }
+
+    func dropUpdated(info: DropInfo) -> DropProposal? {
+        DropProposal(operation: .move)
+    }
+
+    func performDrop(info: DropInfo) -> Bool {
+        dragging = nil
+        return true
     }
 }
 
@@ -225,6 +376,360 @@ public struct ReaderBarItemGrid: View {
             selection.remove(at: index)
         } else {
             selection.append(item)
+        }
+    }
+}
+
+/// 页眉页脚独立设置页：上半屏是实景预览，下半屏分组调参数。
+/// 原来的折叠块里既看不到页脚效果，6 栏芯片又挤成一团。
+struct HeaderFooterSettingsSheet: View {
+    @ObservedObject var config: ReaderConfig
+    let context: ReaderBarContext
+    @Environment(\.dismiss) private var dismiss
+
+    private var accent: Color { config.theme.accentColor }
+    private var ink: Color { config.pageTextColor }
+
+    var body: some View {
+        NavigationView {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 18) {
+                    previewCard
+                    barSection(
+                        title: "页眉",
+                        enabled: $config.headerEnabled,
+                        offsetTitle: "距顶",
+                        offset: $config.headerOffset,
+                        range: 0...160,
+                        hint: "0 = 贴屏幕上沿（跟灵动岛同高），62 是灵动岛下面。",
+                        left: $config.headerLeft,
+                        center: $config.headerCenter,
+                        right: $config.headerRight
+                    )
+                    barSection(
+                        title: "页脚",
+                        enabled: $config.footerEnabled,
+                        offsetTitle: "距底",
+                        offset: $config.footerOffset,
+                        range: 0...120,
+                        hint: "0 = 贴屏幕最下面，34 是 Home 指示条上面。",
+                        left: $config.footerLeft,
+                        center: $config.footerCenter,
+                        right: $config.footerRight
+                    )
+                    displaySection
+                }
+                .padding(EdgeInsets(top: 12, leading: 16, bottom: 28, trailing: 16))
+            }
+            .background(config.pageBackgroundColor.ignoresSafeArea())
+            .navigationTitle("页眉页脚")
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("完成") { dismiss() }
+                }
+            }
+        }
+        #if os(iOS)
+        .navigationViewStyle(.stack)
+        #endif
+    }
+
+    // MARK: 实景预览
+
+    private var previewCard: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text("实景预览")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundColor(ink.opacity(0.85))
+                Spacer()
+                Text("11 pt · 按真实偏移绘制")
+                    .font(.system(size: 10))
+                    .foregroundColor(ink.opacity(0.45))
+            }
+            GeometryReader { geo in
+                let height = geo.size.height
+                ZStack(alignment: .topLeading) {
+                    RoundedRectangle(cornerRadius: 14)
+                        .fill(config.pageBackgroundColor)
+                    // 正文示意
+                    VStack(alignment: .leading, spacing: 7) {
+                        ForEach(0..<7, id: \.self) { index in
+                            Capsule()
+                                .fill(ink.opacity(0.10))
+                                .frame(
+                                    width: geo.size.width * (index == 6 ? 0.45 : 0.72),
+                                    height: 5
+                                )
+                        }
+                    }
+                    .padding(.horizontal, 30)
+                    .padding(.top, 54)
+                    if config.headerEnabled {
+                        barPreview(
+                            left: config.headerLeft,
+                            center: config.headerCenter,
+                            right: config.headerRight
+                        )
+                        .frame(width: geo.size.width)
+                        .offset(y: min(max(config.headerOffset, 0), height - 60))
+                    }
+                    if config.footerEnabled {
+                        barPreview(
+                            left: config.footerLeft,
+                            center: config.footerCenter,
+                            right: config.footerRight
+                        )
+                        .frame(width: geo.size.width)
+                        .offset(y: max(0, height - 34 - config.footerOffset - 18))
+                    }
+                    Capsule()
+                        .fill(ink.opacity(0.25))
+                        .frame(width: 96, height: 4)
+                        .frame(width: geo.size.width)
+                        .offset(y: height - 12)
+                }
+                .clipShape(RoundedRectangle(cornerRadius: 14))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 14)
+                        .stroke(ink.opacity(0.15), lineWidth: 0.5)
+                )
+            }
+            .frame(height: 260)
+            Text("预览里的章节、页码、电量都取当前阅读状态；快捷栏出现时上下两条会被盖住。")
+                .font(.system(size: 10))
+                .foregroundColor(ink.opacity(0.45))
+        }
+        .padding(12)
+        .background(
+            RoundedRectangle(cornerRadius: 14)
+                .fill(ink.opacity(0.05))
+        )
+    }
+
+    private func barPreview(
+        left: [ReaderBarContent],
+        center: [ReaderBarContent],
+        right: [ReaderBarContent]
+    ) -> some View {
+        VStack(spacing: 0) {
+            if config.barDivider {
+                Rectangle()
+                    .fill(ink.opacity(0.12))
+                    .frame(height: 0.5)
+            }
+            HStack(spacing: 8) {
+                previewSlot(left, alignment: .leading)
+                previewSlot(center, alignment: .center)
+                previewSlot(right, alignment: .trailing)
+            }
+            .font(.system(size: 11))
+            .foregroundColor(ink.opacity(0.8))
+            .padding(.horizontal, 16)
+            .frame(height: 18)
+        }
+        .background(
+            config.backgroundImageEnabled ? Color.clear : config.pageBackgroundColor
+        )
+    }
+
+    @ViewBuilder
+    private func previewSlot(_ contents: [ReaderBarContent], alignment: Alignment) -> some View {
+        let items = contents.filter { $0 != .none }
+        if items.count == 1, let only = items.first {
+            previewSlotView(only, alignment: alignment, fills: true)
+        } else {
+            HStack(spacing: 6) {
+                ForEach(Array(items.enumerated()), id: \.offset) { _, item in
+                    previewSlotView(item, alignment: alignment, fills: false)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: alignment)
+        }
+    }
+
+    @ViewBuilder
+    private func previewSlotView(_ item: ReaderBarContent, alignment: Alignment, fills: Bool) -> some View {
+        switch item {
+        case .bookPercentBar:
+            previewTrack(fraction: context.bookProgress, alignment: alignment, fills: fills)
+        case .batteryBar:
+            previewTrack(fraction: ReaderBarBattery.level() ?? 0.6, alignment: alignment, fills: fills)
+        case .batteryIcon:
+            previewBattery(showNumber: false, alignment: alignment, fills: fills)
+        case .batteryGlyphWithPercent:
+            previewBattery(showNumber: true, alignment: alignment, fills: fills)
+        default:
+            Text(readerBarText(item, previewContext))
+                .lineLimit(1)
+                .truncationMode(.tail)
+        }
+    }
+
+    /// 预览里的字数用样例值：刚打开书时还没有真实数字，空着看不出效果
+    private var previewContext: ReaderBarContext {
+        var ctx = context
+        if ctx.chapterCharCount <= 0 { ctx.chapterCharCount = 3_240 }
+        if ctx.pageCharCount <= 0 { ctx.pageCharCount = 560 }
+        if ctx.bookCharCount <= 0 { ctx.bookCharCount = 1_286_000 }
+        return ctx
+    }
+
+    private func previewTrack(fraction: Double, alignment: Alignment, fills: Bool) -> some View {
+        GeometryReader { geo in
+            ZStack(alignment: .leading) {
+                Capsule().fill(ink.opacity(0.18))
+                Capsule()
+                    .fill(ink.opacity(0.65))
+                    .frame(width: geo.size.width * CGFloat(max(0, min(1, fraction))))
+            }
+        }
+        .frame(height: 3)
+        .frame(width: fills ? nil : 44)
+        .frame(maxWidth: fills ? .infinity : nil, alignment: alignment)
+    }
+
+    private func previewBattery(showNumber: Bool, alignment: Alignment, fills: Bool) -> some View {
+        HStack(spacing: 3) {
+            ReaderBatteryGlyph(level: 0.75, tint: ink, style: config.batteryIconStyleValue)
+            if showNumber {
+                Text("75%")
+            }
+        }
+        .frame(maxWidth: fills ? .infinity : nil, alignment: alignment)
+    }
+
+    // MARK: 设置项
+
+    private func barSection(
+        title: String,
+        enabled: Binding<Bool>,
+        offsetTitle: String,
+        offset: Binding<CGFloat>,
+        range: ClosedRange<CGFloat>,
+        hint: String,
+        left: Binding<[ReaderBarContent]>,
+        center: Binding<[ReaderBarContent]>,
+        right: Binding<[ReaderBarContent]>
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            sectionLabel(title)
+            Toggle(isOn: enabled) { settingLabel("显示\(title)") }
+                .toggleStyle(.switch)
+            if enabled.wrappedValue {
+                sliderRow(offsetTitle, value: offset, range: range)
+                Text(hint)
+                    .font(.system(size: 10))
+                    .foregroundColor(ink.opacity(0.5))
+                ReaderBarPickerRow(title: "左", selection: left, tint: ink)
+                ReaderBarPickerRow(title: "中", selection: center, tint: ink)
+                ReaderBarPickerRow(title: "右", selection: right, tint: ink)
+            }
+        }
+    }
+
+    private var displaySection: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            sectionLabel("显示")
+            Toggle(isOn: $config.barDivider) { settingLabel("显示分隔线") }
+                .toggleStyle(.switch)
+            batteryStyleRow
+            sliderRow("短标题", value: shortTitleBinding, range: 2...12, suffix: " 字")
+            HStack(spacing: 8) {
+                settingLabel("日期格式")
+                TextField("M月d日", text: $config.customDatePattern)
+                    .textFieldStyle(.roundedBorder)
+                    .font(.system(size: 12))
+            }
+            HStack(spacing: 8) {
+                settingLabel("自定义栏")
+                TextField("这一栏要显示的字", text: $config.customBarText)
+                    .textFieldStyle(.roundedBorder)
+                    .font(.system(size: 12))
+            }
+        }
+    }
+
+    /// 电量图标样式：每个选项直接画出该样式的样子，选哪款一眼可见
+    private var batteryStyleRow: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            settingLabel("电量图标")
+            HStack(spacing: 6) {
+                ForEach(ReaderBatteryIconStyle.allCases) { style in
+                    let selected = config.batteryIconStyleValue == style
+                    Button {
+                        config.batteryIconStyle = style.rawValue
+                    } label: {
+                        HStack(spacing: 4) {
+                            ReaderBatteryGlyph(level: 0.75, tint: ink, style: style)
+                            Text(style.title)
+                                .font(.system(size: 11, weight: .medium))
+                                .foregroundColor(ink.opacity(selected ? 0.85 : 0.55))
+                        }
+                        .padding(.horizontal, 7)
+                        .padding(.vertical, 5)
+                        .background(
+                            RoundedRectangle(cornerRadius: 7, style: .continuous)
+                                .fill(ink.opacity(selected ? 0.12 : 0.045))
+                        )
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 7, style: .continuous)
+                                .strokeBorder(accent.opacity(selected ? 0.65 : 0), lineWidth: 1)
+                        )
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+        }
+    }
+
+    private var shortTitleBinding: Binding<CGFloat> {
+        Binding(
+            get: { CGFloat(config.shortTitleLength) },
+            set: { config.shortTitleLength = Int($0.rounded()) }
+        )
+    }
+
+    private func sectionLabel(_ text: String) -> some View {
+        Text(text)
+            .font(.system(size: 12, weight: .semibold))
+            .foregroundColor(accent)
+    }
+
+    private func settingLabel(_ text: String) -> some View {
+        Text(text)
+            .font(.system(size: 12, weight: .medium))
+            .foregroundColor(ink.opacity(0.7))
+    }
+
+    private func sliderRow(
+        _ title: String,
+        value: Binding<CGFloat>,
+        range: ClosedRange<CGFloat>,
+        suffix: String = " pt"
+    ) -> some View {
+        HStack(spacing: 10) {
+            Text(title)
+                .font(.system(size: 11, weight: .medium))
+                .foregroundColor(ink.opacity(0.68))
+                .lineLimit(1)
+                .frame(width: 56, alignment: .leading)
+            Slider(
+                value: Binding(
+                    get: { min(max(value.wrappedValue, range.lowerBound), range.upperBound) },
+                    set: { value.wrappedValue = min(max($0, range.lowerBound), range.upperBound) }
+                ),
+                in: range,
+                step: 2
+            )
+            .tint(accent)
+            Text("\(Int(value.wrappedValue.rounded()))\(suffix)")
+                .font(.system(size: 10, weight: .semibold, design: .rounded))
+                .foregroundColor(accent)
+                .frame(width: 52, alignment: .trailing)
+                .padding(.vertical, 2)
+                .padding(.horizontal, 6)
+                .background(Capsule().fill(accent.opacity(0.14)))
         }
     }
 }
@@ -579,7 +1084,7 @@ public struct ReaderCharAnnotation: Equatable {
     }
 }
 
-public struct ContentBlock: Identifiable {
+public struct ContentBlock: Identifiable, Equatable, Sendable {
     public let id: Int
     public let isImage: Bool
     public let text: String
@@ -592,6 +1097,12 @@ public struct ContentBlock: Identifiable {
     public var commentCount: Int = 0
     /// 段评 / 本章说的源站地址
     public var commentURL: String? = nil
+    /// 图注：跟普通正文区分开，按小一号、居中、次要色画
+    public var isCaption: Bool = false
+    /// 插图宽高比（宽 / 高）。分页估算和渲染共用；nil 表示未知，按 4:3 估
+    public var imageAspectRatio: CGFloat? = nil
+    /// 插图原图宽度换算成 pt，用来复现「不超过原尺寸」的显示宽度；0 表示未知
+    public var imageNaturalWidth: CGFloat = 0
 }
 
 public struct LoadedChapter: Identifiable {
@@ -1710,6 +2221,14 @@ public struct ReaderView: View {
     /// 换源失败要能退回原来的书源，不然会卡在错误页出不来。
     @State private var previousBook: Book?
     @State private var previousSource: BookSource?
+    /// 换源后首次拿到新目录时，用旧章节定位；正文成功读出后才连同回退状态一起清掉。
+    @State private var sourceSwitchPosition: SourceSwitchPosition?
+
+    private struct SourceSwitchPosition {
+        let title: String?
+        let index: Int
+        let count: Int
+    }
 
     private var activeBook: Book { switchedBook ?? book }
 
@@ -1762,6 +2281,28 @@ public struct ReaderView: View {
         return BookStore.shared.findSource(for: activeBook)
     }
 
+    /// 书源正文规则里的图片显示样式；未知值和 "0" 都按默认样式处理。
+    private var chapterImageStyle: ContentImageStyle {
+        ContentImageStyle(raw: effectiveSource?.ruleContent?.imageStyle)
+    }
+
+    private var sourceImageDecode: String? {
+        effectiveSource?.ruleContent?.imageDecode
+    }
+
+    /// `callBackJs` 是事件回调，不是正文后处理；这里只派发阅读开始 / 结束，
+    /// 书架增删和按钮类事件尚未接入。异常在 Core 里吞掉，不影响阅读。
+    private func fireSourceEvent(_ event: String) {
+        guard let source = effectiveSource else { return }
+        let book = activeBook
+        let chapter = currentLoadedChapter?.chapter
+            ?? loadedChapters.first?.chapter
+            ?? chapters.first
+        Task.detached(priority: .utility) {
+            SourceEventCallback.fire(event: event, source: source, book: book, chapter: chapter)
+        }
+    }
+
     @State private var chapters: [BookChapter] = []
     @State private var currentChapterIndex: Int = 0
     @State private var loadedChapters: [LoadedChapter] = []
@@ -1779,6 +2320,9 @@ public struct ReaderView: View {
     /// 长按选中段落之后这段时间里，松手不再当点击处理
     @State private var tapSuppressor = ReaderTapSuppressor()
     @State private var chapterCache: [Int: LoadedChapter] = [:]
+    /// 本地章节缓存扫出来的字数；没读过、也没缓存的章节不在里面
+    @State private var cachedChapterWordCounts: [Int: Int] = [:]
+    @State private var wordCountSaveTask: Task<Void, Never>? = nil
     @State private var readerContainerSize: CGSize = CGSize(width: 390, height: 700)
     /// 设备安全区实际数值：按页翻的时候整页是贴到屏幕物理边缘的，页眉页脚得自己把这段让出来
     @State private var safeInsets: EdgeInsets = EdgeInsets()
@@ -1809,6 +2353,7 @@ public struct ReaderView: View {
     @State private var showSearch: Bool = false
     @State private var showTTSSettings: Bool = false
     @State private var showBookInfo: Bool = false
+    @State private var showHeaderFooterSettings: Bool = false
     @State private var showSourceSwitch: Bool = false
     @State private var showControls: Bool = false
     /// 滚动模式的当前偏移（顶部继续下拉才加书签，靠它判断「在顶部」）
@@ -1893,7 +2438,6 @@ public struct ReaderView: View {
     @State private var showReadingPanel = false
     @State private var replaceInput = ""
     @State private var showAggregateSearch = false
-    @State private var showBackgroundImagePicker: Bool = false
     #if os(iOS)
     /// 正文背景图：iOS 16 起从相册选（用 Any 存，避开 PhotosPickerItem 的可用性限制）
     @State private var backgroundPhotoItem: Any?
@@ -1909,6 +2453,11 @@ public struct ReaderView: View {
     /// 换章进行中：期间拦掉重复的翻页触发，免得拿旧章的页数推进
     @State private var isSwitchingChapter = false
     @State private var paginationTask: Task<Void, Never>?
+    /// 后台分页任务；布局连续变化时旧任务取消，旧结果用 generation 再挡一次
+    @State private var repaginationTask: Task<Void, Never>?
+    @State private var paginationGeneration: Int = 0
+    /// 布局版本 + 每章分页版本：排版一变，只排当前章和邻居，其余记为脏
+    @State private var paginationTracker = PaginationLayoutTracker()
     @State private var showTitleDesigner = false
     @State private var showReplaceRules = false
     /// 下载缓存这类「做完了」的提示，别用 errorMessage（那是错误页的开关）
@@ -2286,6 +2835,7 @@ public struct ReaderView: View {
         }
         // 下拉背景挂在布局外：正文往下走时它不动，也不会改变正文的尺寸与安全区口径。
         .background(pullBackgroundLayer)
+        .background(volumeKeyPagerLayer)
         .overlay(alignment: .topTrailing) { bookmarkRibbonOverlay }
         .overlay(alignment: .top) { bookmarkHintOverlay }
         .overlay(alignment: .bottom) { listeningBallLayer }
@@ -2317,7 +2867,7 @@ public struct ReaderView: View {
                     Button {
                         downloadCachedChapters()
                     } label: {
-                        Label("下载缓存（\(readerConfig.cachedChapterCount) 章）", systemImage: "arrow.down.circle")
+                        Label("下载缓存（\(defaultCacheLabel)）", systemImage: "arrow.down.circle")
                     }
                     Button {
                         showReplaceRules = true
@@ -2384,6 +2934,12 @@ public struct ReaderView: View {
                 sourceName: effectiveSource?.bookSourceName ?? activeBook.originName
             )
         }
+        .sheet(isPresented: $showHeaderFooterSettings) {
+            HeaderFooterSettingsSheet(
+                config: readerConfig,
+                context: barContext
+            )
+        }
         .sheet(isPresented: $showBookmarks) {
             bookmarksSheet
         }
@@ -2420,6 +2976,7 @@ public struct ReaderView: View {
             NavigationView {
                 SearchBookView()
             }
+                .stackNavigationStyle()
         }
         .alert("替换这一段", isPresented: $showReplaceInput) {
             TextField("替换成（留空 = 删除）", text: $replaceInput)
@@ -2434,9 +2991,13 @@ public struct ReaderView: View {
         }
         .onAppear { readingTickStart = Date() }
         .onAppear { loadReaderAssets() }
+        .onAppear { fireSourceEvent(SourceEventCallback.startRead) }
+        .onDisappear { fireSourceEvent(SourceEventCallback.endRead) }
         .onDisappear { flushReadingTime() }
         .onDisappear {
+            cancelPaginationWork()
             saveCurrentProgress()
+            BookStore.shared.flushShelf()
             readerConfig.saveLayout(for: activeBook.bookUrl)
             audioService.stop()
         }
@@ -2446,13 +3007,8 @@ public struct ReaderView: View {
         // 字号/行距/段间距/边距/页眉页脚一改，一页能装多少行就变了，必须重排，
         // 旧分页的行数未更新时，页面下半部分会空着
         .onChange(of: layoutSignature) { _ in
-            // 拉滑杆会连着触发很多次，稍微等一下再重排，别每帧都排一遍
-            paginationTask?.cancel()
-            paginationTask = Task { @MainActor in
-                try? await Task.sleep(nanoseconds: 250_000_000)
-                guard !Task.isCancelled else { return }
-                recomputePagination()
-            }
+            // 拉滑杆会连着触发很多次：版本立刻推进，重排本身防抖
+            scheduleLayoutRepagination()
         }
         // 亮度：盖一层黑，不动系统亮度
         .overlay {
@@ -2539,6 +3095,13 @@ public struct ReaderView: View {
         return nil
     }
 
+    private func presentBackgroundImagePicker() {
+        SystemDocumentPicker.present(contentTypes: [.image]) { urls in
+            guard let url = urls.first else { return }
+            importBackgroundImage(from: url)
+        }
+    }
+
     /// 选择器给的 URL 出沙箱就失效，必须拷进 App 自己的目录再记路径。
     private func importBackgroundImage(from url: URL) {
         let scoped = url.startAccessingSecurityScopedResource()
@@ -2566,7 +3129,7 @@ public struct ReaderView: View {
     /// 两条路径的间距口径一致，切换设计不应该跳版。
     @ViewBuilder
     private func chapterTitleView(chapterIndex: Int, title: String) -> some View {
-        let width = max(120, readerContainerSize.width - readerConfig.paddingLeft - readerConfig.paddingRight)
+        let width = max(120, readerContainerSize.width - contentPaddingLeft - contentPaddingRight)
         if readerConfig.hasDesignedChapterTitle {
             ChapterTitleHTMLView(
                 htmlTemplate: readerConfig.chapterTitleHTMLTemplate,
@@ -2575,8 +3138,8 @@ public struct ReaderView: View {
                 chapterTitle: title,
                 chapterNumber: "第 \(chapterIndex + 1) 章"
             )
-            .padding(.leading, readerConfig.paddingLeft)
-            .padding(.trailing, readerConfig.paddingRight)
+            .padding(.leading, contentPaddingLeft)
+            .padding(.trailing, contentPaddingRight)
             .padding(.top, readerConfig.chapterTopSpacing)
             .padding(.bottom, readerConfig.chapterTitleSpacing)
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -2584,8 +3147,8 @@ public struct ReaderView: View {
             Text(title)
                 .font(.system(size: readerConfig.fontSize * readerConfig.chapterTitleScale, weight: .semibold))
                 .foregroundColor(chromeInk)
-                .padding(.leading, readerConfig.paddingLeft)
-                .padding(.trailing, readerConfig.paddingRight)
+                .padding(.leading, contentPaddingLeft)
+                .padding(.trailing, contentPaddingRight)
                 .padding(.top, readerConfig.chapterTopSpacing)
                 .padding(.bottom, readerConfig.chapterTitleSpacing)
         }
@@ -2755,8 +3318,8 @@ public struct ReaderView: View {
                         .frame(height: 0.5)
                 }
             }
-            .padding(.leading, readerConfig.paddingLeft)
-            .padding(.trailing, readerConfig.paddingRight)
+            .padding(.leading, contentPaddingLeft)
+            .padding(.trailing, contentPaddingRight)
             .padding(.vertical, 4)
         }
     }
@@ -2834,7 +3397,26 @@ public struct ReaderView: View {
 
         Group {
             if block.isImage, let urlStr = block.imageUrl {
-                ChapterImageView(urlString: urlStr, referer: effectiveSource?.bookSourceUrl)
+                ChapterImageView(
+                    urlString: urlStr,
+                    referer: effectiveSource?.bookSourceUrl,
+                    imageStyle: chapterImageStyle,
+                    imageDecode: sourceImageDecode,
+                    source: effectiveSource,
+                    baseUrl: chapter.chapter.url
+                )
+                    .id("block_\(chapterIndex)_\(block.id)")
+                    .background(
+                        BlockFrameReader(chapterIndex: chapterIndex, blockId: block.id)
+                    )
+            } else if block.isCaption {
+                Text(block.text)
+                    .font(.system(size: max(11, readerConfig.fontSize * 0.78)))
+                    .foregroundColor(readerConfig.pageTextColor.opacity(0.55))
+                    .multilineTextAlignment(.center)
+                    .frame(maxWidth: .infinity, alignment: .center)
+                    .padding(.horizontal, 28)
+                    .padding(.bottom, 12)
                     .id("block_\(chapterIndex)_\(block.id)")
                     .background(
                         BlockFrameReader(chapterIndex: chapterIndex, blockId: block.id)
@@ -2892,8 +3474,8 @@ public struct ReaderView: View {
                     )
             }
         }
-        .padding(.leading, readerConfig.paddingLeft)
-        .padding(.trailing, readerConfig.paddingRight)
+        .padding(.leading, contentPaddingLeft)
+        .padding(.trailing, contentPaddingRight)
         .padding(.bottom, readerConfig.paragraphSpacing)
     }
 
@@ -2951,7 +3533,7 @@ public struct ReaderView: View {
 
     private var estimatedCharsPerLine: Int {
         let width = max(240, readerContainerSize.width)
-        let usable = max(200, width - 40)
+        let usable = max(200, width - contentPaddingLeft - contentPaddingRight)
         return max(10, Int(usable / readerConfig.fontSize))
     }
 
@@ -3053,6 +3635,9 @@ public struct ReaderView: View {
                     : nil,
                 chapterTitleScale: readerConfig.chapterTitleScale,
                 shortTitleLength: readerConfig.shortTitleLength,
+                imageStyle: chapterImageStyle,
+                imageDecode: sourceImageDecode,
+                source: effectiveSource,
                 onSelectParagraph: { page, line, offset in
                     selectCharacters(atLine: line, charOffset: offset, in: page)
                 },
@@ -3069,8 +3654,8 @@ public struct ReaderView: View {
                 titleProjectJSON: readerConfig.chapterTitleProjectJSON,
                 paddingTop: readerConfig.paddingTop,
                 paddingBottom: readerConfig.paddingBottom,
-                paddingLeft: readerConfig.paddingLeft,
-                paddingRight: readerConfig.paddingRight,
+                paddingLeft: contentPaddingLeft,
+                paddingRight: contentPaddingRight,
                 headerOffset: readerConfig.headerOffset,
                 footerOffset: readerConfig.footerOffset,
                 titleAlignment: readerConfig.titleAlignment,
@@ -3082,9 +3667,14 @@ public struct ReaderView: View {
                 topInset: screenTopInset,
                 bottomInset: screenBottomInset,
                 bookName: activeBook.name,
-                chapterTitleText: (!chapters.isEmpty && currentChapterIndex < chapters.count) ? chapters[currentChapterIndex].title : "",
-                chapterIndex: currentChapterIndex,
+                // 换章加载的空窗里 pages 还是旧章的，页眉页脚也得跟屏幕上那一章走，
+                // 否则会短暂出现「新章标题 + 旧章正文 + 第 1 页」
+                chapterTitleText: currentLoadedChapter?.chapter.title
+                    ?? ((!chapters.isEmpty && currentChapterIndex < chapters.count) ? chapters[currentChapterIndex].title : ""),
+                chapterIndex: currentLoadedChapter?.chapter.index ?? currentChapterIndex,
                 chapterCount: chapters.count,
+                chapterCharCount: pagerChapterCharCount,
+                bookCharCount: knownBookCharCount,
                 startIndex: currentPageIndex,
                 onIndexChange: { newIndex in
                     currentPageIndex = newIndex
@@ -3139,6 +3729,123 @@ public struct ReaderView: View {
         #endif
     }
 
+    /// 图文同页：文字段继续用 CoreTextPageView，插图按分页器算好的尺寸嵌在中间。
+    /// 每段各自处理长按选字，选区不会跨过图片，跟原来「一页只有字」的映射口径一致。
+    @ViewBuilder
+    private func inlineSegmentedPage(
+        pageBlocks: [ContentBlock],
+        usableWidth: CGFloat,
+        contentHeight: CGFloat
+    ) -> some View {
+        let segments = ReaderPageSegment.split(pageBlocks)
+        let effectiveLineHeight = readerConfig.fontSize * 1.25 + readerConfig.lineSpacing
+        let layout = makePaginationLayout(version: paginationTracker.layoutVersion)
+        let pageHeight = ReaderPaginator.calculateLayoutMetrics(title: nil, layout: layout).pageHeight
+        let commentMap = Dictionary(uniqueKeysWithValues:
+            (currentLoadedChapter?.blocks ?? []).compactMap { block -> (Int, (count: Int, url: String))? in
+                guard block.commentCount > 0, let url = block.commentURL else { return nil }
+                return (block.id, (block.commentCount, url))
+            }
+        )
+
+        VStack(alignment: .leading, spacing: 0) {
+            ForEach(segments) { segment in
+                switch segment.kind {
+                case .image:
+                    if let block = segment.blocks.first, let urlStr = block.imageUrl {
+                        let size = ReaderPaginator.imageDisplaySize(
+                            for: block,
+                            usableWidth: usableWidth,
+                            maxImageHeight: pageHeight,
+                            displayMode: readerConfig.imageDisplayMode,
+                            maxWidthPercent: readerConfig.imageMaxWidthPercent,
+                            styleFullWidth: chapterImageStyle == .full || chapterImageStyle == .single,
+                            styleSmall: chapterImageStyle == .text
+                        )
+                        ChapterImageView(
+                            urlString: urlStr,
+                            referer: effectiveSource?.bookSourceUrl,
+                            imageStyle: chapterImageStyle,
+                            imageDecode: sourceImageDecode,
+                            source: effectiveSource,
+                            baseUrl: currentLoadedChapter?.chapter.url,
+                            forcedSize: size
+                        )
+                    }
+                case .review:
+                    if let block = segment.blocks.first {
+                        GodReviewCardView(
+                            text: block.text,
+                            imageURL: block.imageUrl,
+                            referer: effectiveSource?.bookSourceUrl,
+                            accent: nierPalette.accent,
+                            textColor: nierPalette.ink,
+                            onAccentColor: nierPalette.background,
+                            alignment: reviewCardStyle.alignment
+                        ) {
+                            if let url = block.commentURL {
+                                directCommentTarget = ReviewTarget(url: url, title: "段评")
+                            }
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                case .text:
+                    let lines = segment.blocks.map { $0.text }
+                    let isParagraphEnd = segment.blocks.map { $0.imageUrl == "p_end" }
+                    let segmentHeight = ReaderPageSegment.textHeight(
+                        segment.blocks,
+                        lineHeight: effectiveLineHeight,
+                        paragraphSpacing: readerConfig.paragraphSpacing
+                    )
+                    CoreTextPageView(
+                        lines: lines,
+                        isParagraphEnd: isParagraphEnd,
+                        fontSize: readerConfig.fontSize,
+                        lineSpacing: readerConfig.lineSpacing,
+                        textColor: readerConfig.pageTextColor,
+                        width: usableWidth,
+                        height: segmentHeight,
+                        letterSpacing: readerConfig.letterSpacing,
+                        paragraphSpacing: readerConfig.paragraphSpacing,
+                        firstLineIndent: readerConfig.firstLineIndent,
+                        weightLevel: readerConfig.weightLevel,
+                        chineseConversion: readerConfig.chineseConversion,
+                        fontPostScriptName: readerConfig.font.postScriptName,
+                        boldPostScriptName: readerConfig.font.boldPostScriptName,
+                        textAlignment: readerConfig.textAlignment,
+                        underlineEnabled: readerConfig.underlineEnabled,
+                        underlineColor: readerConfig.underlineColor,
+                        paragraphSeparatorLines: readerConfig.paragraphSeparatorLines,
+                        paragraphSeparatorColor: readerConfig.paragraphSeparatorColor,
+                        lineBlockIds: segment.blocks.map(\.id),
+                        lineParagraphIds: segment.blocks.map(\.paragraphId),
+                        lineCharStarts: segment.blocks.map(\.charStart),
+                        selectedRange: selectedBlockRange,
+                        charSelection: charSelection,
+                        charAnnotations: charAnnotationRangesForCurrentChapter,
+                        annotationRanges: annotationRangesForCurrentChapter,
+                        onLongPressLine: { line, charOffset in
+                            selectCharacters(atLine: line, charOffset: charOffset, in: segment.blocks)
+                        },
+                        readingBlockId: readingParagraphOrdinal,
+                        readingTintColor: readingTint,
+                        commentMap: commentMap,
+                        pageBackgroundColor: readerConfig.pageBackgroundColor,
+                        reviewAccentColor: nierPalette.accent,
+                        reviewStyle: reviewCardStyle,
+                        reviewURLs: reviewURLMap,
+                        onCommentTap: { url in
+                            directCommentTarget = ReviewTarget(url: url, title: "段评")
+                        }
+                    )
+                    .frame(width: usableWidth, height: segmentHeight, alignment: .topLeading)
+                }
+            }
+            Spacer(minLength: 0)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+    }
+
     // MARK: - Mode 2: Page by Page (左右翻页)
     private var pageLoadingPlaceholder: some View {
         VStack {
@@ -3171,7 +3878,14 @@ public struct ReaderView: View {
         }
 
         // Page Content
-        if let block = pageBlocks.first, block.commentCount == -2 {
+        if pageBlocks.contains(where: { $0.isImage }) {
+            // 一页里图和字混排：按「文字段 / 图 / 文字段」竖着接起来
+            inlineSegmentedPage(
+                pageBlocks: pageBlocks,
+                usableWidth: usableWidth,
+                contentHeight: contentHeight
+            )
+        } else if let block = pageBlocks.first, block.commentCount == -2 {
             GodReviewCardView(
                 text: block.text,
                 imageURL: block.imageUrl,
@@ -3186,8 +3900,6 @@ public struct ReaderView: View {
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
-        } else if pageBlocks.first?.isImage == true, let urlStr = pageBlocks.first?.imageUrl {
-            ChapterImageView(urlString: urlStr, referer: effectiveSource?.bookSourceUrl)
         } else {
             let lines = pageTextLines(from: pageBlocks)
             let isParagraphEnd = pageParagraphEndFlags(from: pageBlocks)
@@ -3197,7 +3909,10 @@ public struct ReaderView: View {
             let paragraphCount = CGFloat(isParagraphEnd.filter { $0 }.count - trailingSpacing)
             // 一页排不满时把剩下的高度匀进段间距，正文才会贴到页脚
             let titleReserved = currentPageIndex == 0
-                ? estimatedTitleHeight(currentLoadedChapter?.chapter.title ?? "")
+                ? ReaderPaginator.estimatedTitleHeight(
+                    currentLoadedChapter?.chapter.title ?? "",
+                    layout: makePaginationLayout(version: paginationTracker.layoutVersion)
+                )
                 : 0
             let filledBase = CGFloat(lines.count) * effectiveLineHeight
             // 余量要把段间距本身先扣掉再匀，否则整页会超出可用高度
@@ -3264,8 +3979,8 @@ public struct ReaderView: View {
 
         Spacer(minLength: 0)
         }
-        .padding(.leading, readerConfig.paddingLeft)
-        .padding(.trailing, readerConfig.paddingRight)
+        .padding(.leading, contentPaddingLeft)
+        .padding(.trailing, contentPaddingRight)
         .padding(.top, readerConfig.paddingTop)
         .padding(.bottom, readerConfig.paddingBottom)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
@@ -3280,7 +3995,7 @@ public struct ReaderView: View {
                     pageLoadingPlaceholder
                 } else {
                     let pageBlocks = pages[currentPageIndex]
-                    let usableWidth = max(200, readerContainerSize.width - readerConfig.paddingLeft - readerConfig.paddingRight)
+                    let usableWidth = max(200, readerContainerSize.width - contentPaddingLeft - contentPaddingRight)
 
                     // GeometryReader 是贪高的：不把正文这块钉死高度，它会吃掉整页，
                     // 把 19pt 的页脚挤出可视区
@@ -3461,9 +4176,27 @@ public struct ReaderView: View {
 
         DispatchQueue.main.async {
             self.readerContainerSize = size
-            self.recomputePagination()
+            self.scheduleLayoutRepagination()
         }
     }
+
+    /// 正文最大行宽：按字号折算成约 40 字一行。iPhone 宽度本来就够不到，
+    /// iPad 横屏和分屏的宽窗口靠它收窄，行不会一路铺到屏幕两边。
+    private var readerContentMaxWidth: CGFloat {
+        min(760, max(360, readerConfig.fontSize * 40))
+    }
+
+    /// 为了守住最大行宽，在用户边距之外补出的左右对称留白。
+    /// 分页、渲染、滚动三条链路都用这一份值，断行和绘制才不会两套口径。
+    private var readerSideInset: CGFloat {
+        let containerWidth = readerContainerSize.width
+        guard containerWidth > 0 else { return 0 }
+        let horizontalPadding = readerConfig.paddingLeft + readerConfig.paddingRight
+        return max(0, (containerWidth - horizontalPadding - readerContentMaxWidth) / 2)
+    }
+
+    private var contentPaddingLeft: CGFloat { readerConfig.paddingLeft + readerSideInset }
+    private var contentPaddingRight: CGFloat { readerConfig.paddingRight + readerSideInset }
 
     /// 当前页第一段的 block id：页首可能是图片、热评卡片，跳过去找第一段能读的。
     /// 分页里的块是「行」——id 是行号（10000 起），paragraphId 才是正文段号；
@@ -3610,13 +4343,15 @@ public struct ReaderView: View {
                 book: activeBook
             ) else { return }
             let blocks = parseContentBlocks(from: content)
+            let layout = makePaginationLayout(version: paginationTracker.layoutVersion)
             let loaded = LoadedChapter(
                 chapter: chapter,
                 content: content,
                 blocks: blocks,
-                pages: paginate(blocks: blocks, title: chapter.title)
+                pages: ReaderPaginator.paginate(blocks: blocks, title: chapter.title, layout: layout)
             )
             self.chapterCache[target] = loaded
+            self.paginationTracker.markPaginated(target, version: layout.version)
         }
     }
 
@@ -3649,7 +4384,7 @@ public struct ReaderView: View {
     private func attachFollowingChapter(after index: Int, initial: LoadedChapter) async {
         let next = index + 1
         if let cached = chapterCache[next] {
-            loadedChapters = [initial, cached]
+            loadedChapters = [initial, repaginatedIfNeeded(cached)]
             return
         }
 
@@ -3830,6 +4565,8 @@ public struct ReaderView: View {
             VStack(spacing: 0) {
                 Spacer()
                 readingSettingsCard
+                    // 大屏上限宽居中：滑轨不会拉成一米长，面板也不贴满两边
+                    .frame(maxWidth: 620)
             }
             .ignoresSafeArea(edges: .bottom)
             .transition(.asymmetric(
@@ -3893,13 +4630,15 @@ public struct ReaderView: View {
                     Label("清除本书缓存", systemImage: "trash")
                 }
                 Menu {
+                    Button("全书（共 \(chapters.count) 章）") { downloadCachedChapters(all: true) }
+                    Divider()
                     ForEach([10, 20, 30, 50, 100], id: \.self) { n in
                         Button("往后 \(n) 章") { downloadCachedChapters(span: n) }
                     }
                     Divider()
-                    Button("用设置里的默认（\(readerConfig.cachedChapterCount) 章）") { downloadCachedChapters() }
+                    Button("用设置里的默认（\(defaultCacheLabel)）") { downloadCachedChapters() }
                 } label: {
-                    Label("下载缓存（当前 \(readerConfig.cachedChapterCount) 章）", systemImage: "arrow.down.circle")
+                    Label("下载缓存（当前 \(defaultCacheLabel)）", systemImage: "arrow.down.circle")
                 }
                 Button {
                     showReplaceRules = true
@@ -4033,6 +4772,8 @@ public struct ReaderView: View {
         .padding(.horizontal, 20)
         .padding(.top, 14)
         .padding(.bottom, 10)
+        .frame(maxWidth: 700)
+        .frame(maxWidth: .infinity)
         .background(
             chromeBackground
                 .opacity(0.97)
@@ -4131,13 +4872,13 @@ public struct ReaderView: View {
     private func statusSlotView(_ content: ReaderBarContent, alignment: Alignment, fills: Bool) -> some View {
         switch content {
         case .bookPercentBar:
-            statusBar(fraction: bookProgressFraction, alignment: alignment)
+            statusBar(fraction: bookProgressFraction, alignment: alignment, fills: fills)
         case .batteryBar:
-            statusBar(fraction: ReaderBarBattery.level() ?? 0, alignment: alignment)
+            statusBar(fraction: ReaderBarBattery.level() ?? 0, alignment: alignment, fills: fills)
         case .batteryIcon:
-            batterySlot(showNumber: false, alignment: alignment)
+            batterySlot(showNumber: false, alignment: alignment, fills: fills)
         case .batteryGlyphWithPercent:
-            batterySlot(showNumber: true, alignment: alignment)
+            batterySlot(showNumber: true, alignment: alignment, fills: fills)
         default:
             Text(statusText(content))
                 .lineLimit(1)
@@ -4148,7 +4889,7 @@ public struct ReaderView: View {
     }
 
     /// 总进度条 / 电量条这类细长条
-    private func statusBar(fraction: Double, alignment: Alignment) -> some View {
+    private func statusBar(fraction: Double, alignment: Alignment, fills: Bool) -> some View {
         GeometryReader { geo in
             ZStack(alignment: .leading) {
                 Capsule().fill(readerConfig.pageTextColor.opacity(0.18))
@@ -4158,30 +4899,25 @@ public struct ReaderView: View {
             }
         }
         .frame(height: 3)
-        .frame(maxWidth: .infinity, alignment: alignment)
+        // 同一栏里还有别的组件时给条固定宽度，否则它会独占整栏把文字挤到边上
+        .frame(width: fills ? nil : 44)
+        .frame(maxWidth: fills ? .infinity : nil, alignment: alignment)
     }
 
     @ViewBuilder
-    private func batterySlot(showNumber: Bool, alignment: Alignment) -> some View {
+    private func batterySlot(showNumber: Bool, alignment: Alignment, fills: Bool) -> some View {
         HStack(spacing: 3) {
-            Image(systemName: batterySymbolName)
-                .font(.system(size: 11))
-            if showNumber, let level = ReaderBarBattery.level() {
-                Text("\(Int((level * 100).rounded()))%")
+            ReaderBatteryGlyph(
+                level: ReaderBarBattery.level(),
+                charging: ReaderBarBattery.isCharging,
+                tint: readerConfig.pageTextColor,
+                style: readerConfig.batteryIconStyleValue
+            )
+            if showNumber {
+                Text(ReaderBarBattery.percentText)
             }
         }
-        .frame(maxWidth: .infinity, alignment: alignment)
-    }
-
-    private var batterySymbolName: String {
-        guard let level = ReaderBarBattery.level() else { return "battery.0" }
-        switch level {
-        case ..<0.13: return "battery.0"
-        case ..<0.38: return "battery.25"
-        case ..<0.63: return "battery.50"
-        case ..<0.88: return "battery.75"
-        default: return "battery.100"
-        }
+        .frame(maxWidth: fills ? .infinity : nil, alignment: alignment)
     }
 
     private func statusText(_ content: ReaderBarContent) -> String {
@@ -4205,7 +4941,102 @@ public struct ReaderView: View {
         ctx.shortTitleLength = readerConfig.shortTitleLength
         ctx.customDatePattern = readerConfig.customDatePattern
         ctx.customBarText = readerConfig.customBarText
+        ctx.chapterCharCount = currentChapterCharCount
+        ctx.pageCharCount = currentPageCharCount
+        ctx.bookCharCount = knownBookCharCount
         return ctx
+    }
+
+    /// 仿真翻页的页脚字数：换章加载空窗里 pages 仍是旧章的，别先报新章字数
+    private var pagerChapterCharCount: Int {
+        if let loaded = currentLoadedChapter, loaded.chapter.index != currentChapterIndex {
+            return loaded.chapter.wordCount ?? ChapterWordCounter.count(loaded.content)
+        }
+        return currentChapterCharCount
+    }
+
+    /// 本章字数：优先用抓正文时回写的值，没读到就现数当前加载的正文
+    private var currentChapterCharCount: Int {
+        if chapters.indices.contains(currentChapterIndex),
+           let count = chapters[currentChapterIndex].wordCount {
+            return count
+        }
+        if let loaded = currentLoadedChapter {
+            return ChapterWordCounter.count(loaded.content)
+        }
+        return cachedChapterWordCounts[currentChapterIndex] ?? 0
+    }
+
+    /// 本页字数：翻页模式只数当前页文字；滚动模式没有「页」，退回本章字数
+    private var currentPageCharCount: Int {
+        guard let cur = currentLoadedChapter else { return 0 }
+        guard readerConfig.pageMode.isPaged, cur.pages.indices.contains(currentPageIndex) else {
+            return currentChapterCharCount
+        }
+        return charCount(of: cur.pages[currentPageIndex])
+    }
+
+    private var knownBookCharCount: Int {
+        chapters.reduce(0) { total, chapter in
+            total + (chapter.wordCount ?? cachedChapterWordCounts[chapter.index] ?? 0)
+        }
+    }
+
+    private func charCount(of blocks: [ContentBlock]) -> Int {
+        blocks.reduce(0) { total, block in
+            total + (block.isImage ? 0 : ChapterWordCounter.count(block.text))
+        }
+    }
+
+    /// 正文到手就把字数写回章节目录，页眉和目录下次直接用
+    private func recordWordCount(_ content: String, for index: Int) {
+        guard chapters.indices.contains(index) else { return }
+        let count = ChapterWordCounter.count(content)
+        guard chapters[index].wordCount != count else { return }
+        chapters[index].wordCount = count
+        cachedChapterWordCounts[index] = count
+        scheduleWordCountSave()
+    }
+
+    /// 连续抓相邻章节时不要每次都整份目录落盘，攒一下再写
+    private func scheduleWordCountSave() {
+        wordCountSaveTask?.cancel()
+        let key = activeBook.origin == "local" ? activeBook.bookUrl : tocCacheKey(source: effectiveSource)
+        let snapshot = chapters
+        wordCountSaveTask = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 1_500_000_000)
+            guard !Task.isCancelled else { return }
+            BookStore.shared.saveChapters(snapshot, for: key)
+        }
+    }
+
+    /// 打开书和打开目录时扫一遍本地缓存，后台算，不阻塞列表
+    private func refreshCachedChapterWordCounts() {
+        guard !chapters.isEmpty else { return }
+        let bookUrl = activeBook.bookUrl
+        let indices = chapters.map(\.index)
+        Task { @MainActor in
+            let counts = await Task.detached(priority: .utility) {
+                BookContentService.cachedChapterWordCounts(bookUrl: bookUrl, indices: indices)
+            }.value
+            guard !counts.isEmpty else { return }
+            cachedChapterWordCounts.merge(counts) { _, new in new }
+        }
+    }
+
+    /// 目录行尾的字数；没读过也没缓存的章节显示「—」
+    private func tocWordCountText(for chapter: BookChapter) -> String {
+        guard let count = tocWordCount(for: chapter) else { return "—" }
+        return "\(count) 字"
+    }
+
+    private func tocWordCount(for chapter: BookChapter) -> Int? {
+        if let count = chapter.wordCount { return count }
+        if let count = cachedChapterWordCounts[chapter.index] { return count }
+        if let loaded = chapterCache[chapter.index] ?? loadedChapters.first(where: { $0.chapter.index == chapter.index }) {
+            return ChapterWordCounter.count(loaded.content)
+        }
+        return nil
     }
 
     /// 全书进度：章号 + 章内位置，比「按章」的百分比细一档
@@ -4321,6 +5152,7 @@ public struct ReaderView: View {
     }
 
     private func turnToChapter(_ index: Int) {
+        cancelPaginationWork()
         // 换章也要走同一段动画事务，否则带 .id 的页面插入/移除不成对，
         // 旧页会留在屏幕上叠着新页（看着就像没翻过去）
         withAnimation(pageTurnAnimation) {
@@ -4376,7 +5208,9 @@ public struct ReaderView: View {
     }
 
     private func resetPageState() {
-        currentPageIndex = 0
+        // 不归零 currentPageIndex：正文要等下一跳才到，先归零会让 pager 拿旧章的页
+        // 配第 0 页重画一帧，看着就是「刚翻过去又自己翻回第一页」。
+        // 目标页码由 loadInitialChapter 落地时统一写。
         currentReadingBlockId = 0
         scrollSessionId = UUID()
     }
@@ -4384,6 +5218,7 @@ public struct ReaderView: View {
     private func jumpToChapter(_ targetIndex: Int, toEnd: Bool = false, forceResumeReading: Bool = false) {
         AppLog.write("[阅读] 换章 → 第 \(targetIndex + 1) 章 / 共 \(chapters.count) 章")
         guard targetIndex >= 0 && targetIndex < chapters.count else { return }
+        cancelPaginationWork()
         // 换章这一步会 stop()：原本在念的得记着，换完接着念，不然用户只看到声音没了
         let wasReading = audioService.isPlaying || audioService.isPaused
         audioService.stop()
@@ -4462,7 +5297,9 @@ public struct ReaderView: View {
     }
 
     private func handlePageModeChange(to newMode: PageMode) {
-        guard let chapter = currentLoadedChapter else { return }
+        guard let current = currentLoadedChapter else { return }
+        // 连续模式下不做分页，切回按页翻之前先把脏章补排，否则会按旧页数定位
+        let chapter = newMode.isPaged ? repaginatedIfNeeded(current) : current
 
         if newMode.isPaged {
             let consumed = offset(atBlock: currentReadingBlockId, in: chapter)
@@ -4558,6 +5395,14 @@ public struct ReaderView: View {
         AppLog.write("[阅读] 开始更换书源")
         previousBook = activeBook
         previousSource = effectiveSource
+        let oldTitle: String? = chapters.indices.contains(currentChapterIndex)
+            ? chapters[currentChapterIndex].title
+            : activeBook.durChapterTitle
+        sourceSwitchPosition = SourceSwitchPosition(
+            title: oldTitle,
+            index: currentChapterIndex,
+            count: chapters.count
+        )
         let newBook = Book(
             bookUrl: candidate.bookUrl,
             name: candidate.name,
@@ -4574,6 +5419,7 @@ public struct ReaderView: View {
         switchedSource = newSource
         chapters = []
         chapterCache.removeAll()
+        paginationTracker.forgetAll()
         loadedChapters = []
         currentChapterIndex = applied.durChapterIndex
         isLoadingInitial = true
@@ -4590,9 +5436,11 @@ public struct ReaderView: View {
         switchedSource = previousSource
         previousBook = nil
         previousSource = nil
+        sourceSwitchPosition = nil
         BookStore.shared.changeBookSource(from: current, to: target)
         chapters = []
         chapterCache.removeAll()
+        paginationTracker.forgetAll()
         loadedChapters = []
         currentChapterIndex = target.durChapterIndex
         isLoadingInitial = true
@@ -4637,61 +5485,103 @@ public struct ReaderView: View {
 
     private var tocSheet: some View {
         NavigationView {
-            List(tocFilteredChapters) { chapter in
-                Button {
-                    showTOC = false
-                    jumpToChapter(chapter.index)
-                } label: {
-                    tocRow(chapter)
-                }
-            }
-            .appThemedList()
-            .overlay {
-                if tocFilteredChapters.isEmpty {
-                    Text(tocSearchText.isEmpty ? "目录为空" : "没有匹配的章节")
-                        .font(.system(size: 13))
-                        .foregroundColor(theme.palette.secondaryInk)
-                }
-            }
-            #if os(iOS)
-            .searchable(
-                text: $tocSearchText,
-                placement: .navigationBarDrawer(displayMode: .always),
-                prompt: "搜索章节"
-            )
-            #else
-            .searchable(text: $tocSearchText, prompt: "搜索章节")
-            #endif
-            .navigationTitle(
-                tocSearchText.isEmpty
-                    ? "目录 (\(chapters.count)章)"
-                    : "目录 · \(tocFilteredChapters.count)/\(chapters.count)"
-            )
-            #if os(iOS)
-            .navigationBarTitleDisplayMode(.inline)
-            #endif
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button {
-                        tocReversed.toggle()
-                    } label: {
-                        Image(systemName: tocReversed ? "arrow.down.to.line" : "arrow.up.to.line")
+            ScrollViewReader { proxy in
+                List {
+                    ForEach(tocFilteredChapters) { ch in
+                        Button(action: {
+                            showTOC = false
+                            jumpToChapter(ch.index)
+                        }) {
+                            HStack {
+                                Text(ch.title)
+                                    .foregroundColor(ch.index == currentChapterIndex ? theme.palette.accent : theme.palette.ink)
+                                Spacer()
+                                Text(tocWordCountText(for: ch))
+                                    .font(.system(size: 11))
+                                    .foregroundColor(theme.palette.secondaryInk)
+                                    .monospacedDigit()
+                                if ch.index == currentChapterIndex {
+                                    Image(systemName: "checkmark")
+                                        .foregroundColor(theme.palette.accent)
+                                }
+                            }
+                        }
+                        .id(ch.index)
                     }
-                    .accessibilityLabel(tocReversed ? "倒序：开" : "倒序：关")
                 }
-                ToolbarItem(placement: .primaryAction) {
-                    Button {
-                        Task { await refreshChapterList() }
-                    } label: {
-                        Image(systemName: "arrow.clockwise")
+                .appThemedList()
+                .overlay {
+                    if tocFilteredChapters.isEmpty {
+                        Text(tocSearchText.isEmpty ? "目录为空" : "没有匹配的章节")
+                            .font(.system(size: 13))
+                            .foregroundColor(theme.palette.secondaryInk)
                     }
-                    .accessibilityLabel("刷新目录")
                 }
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("关闭") { showTOC = false }
+                // 打开目录时停在正在读的章节；搜索过滤时不动，免得列表跳动
+                .task {
+                    refreshCachedChapterWordCounts()
+                    guard tocSearchText.isEmpty, chapters.contains(where: { $0.index == currentChapterIndex }) else { return }
+                    // 等 List 量完首屏行高再滚，否则 scrollTo 没有目标位置
+                    try? await Task.sleep(nanoseconds: 80_000_000)
+                    proxy.scrollTo(currentChapterIndex, anchor: .center)
+                }
+                #if os(iOS)
+                .searchable(
+                    text: $tocSearchText,
+                    placement: .navigationBarDrawer(displayMode: .always),
+                    prompt: "搜索章节"
+                )
+                #else
+                .searchable(text: $tocSearchText, prompt: "搜索章节")
+                #endif
+                .navigationTitle(
+                    tocSearchText.isEmpty
+                        ? "目录 (\(chapters.count)章)"
+                        : "目录 · \(tocFilteredChapters.count)/\(chapters.count)"
+                )
+                #if os(iOS)
+                .navigationBarTitleDisplayMode(.inline)
+                #endif
+                .toolbar {
+                    ToolbarItem(placement: .cancellationAction) {
+                        Button {
+                            tocReversed.toggle()
+                        } label: {
+                            Image(systemName: tocReversed ? "arrow.down.to.line" : "arrow.up.to.line")
+                        }
+                        .accessibilityLabel(tocReversed ? "倒序：开" : "倒序：关")
+                    }
+                    ToolbarItem(placement: .primaryAction) {
+                        // 歌单式「跳转到正在播放」：搜索过滤时先清空再定位
+                        Button {
+                            if !tocSearchText.isEmpty { tocSearchText = "" }
+                            Task { @MainActor in
+                                try? await Task.sleep(nanoseconds: 80_000_000)
+                                withAnimation {
+                                    proxy.scrollTo(currentChapterIndex, anchor: .center)
+                                }
+                            }
+                        } label: {
+                            Image(systemName: "scope")
+                        }
+                        .accessibilityLabel("回到当前章节")
+                        .disabled(chapters.isEmpty || !chapters.contains(where: { $0.index == currentChapterIndex }))
+                    }
+                    ToolbarItem(placement: .primaryAction) {
+                        Button {
+                            Task { await refreshChapterList() }
+                        } label: {
+                            Image(systemName: "arrow.clockwise")
+                        }
+                        .accessibilityLabel("刷新目录")
+                    }
+                    ToolbarItem(placement: .confirmationAction) {
+                        Button("关闭") { showTOC = false }
+                    }
                 }
             }
         }
+            .stackNavigationStyle()
     }
 
     /// 书签 / 笔记：加、看、跳、删
@@ -4814,6 +5704,7 @@ public struct ReaderView: View {
                 }
             }
         }
+            .stackNavigationStyle()
     }
 
     /// 排序 / 类型菜单
@@ -5037,12 +5928,18 @@ public struct ReaderView: View {
     #if os(iOS)
     private func charHandle(at point: CGPoint, isStart: Bool) -> some View {
         ZStack {
-            Circle()
-                .fill(Color.accentColor)
-                .frame(width: 16, height: 16)
-                .overlay(Circle().stroke(Color.white, lineWidth: 2))
-                .shadow(color: .black.opacity(0.25), radius: 3, y: 1)
-            // 触摸区比看得见的圆大一圈，手指才好按住
+            // 细杆 + 小圆头，半透明：只占一条线宽，不再用实心大圆压住正文
+            VStack(spacing: 0) {
+                if isStart {
+                    handleKnob
+                    handleStem
+                } else {
+                    handleStem
+                    handleKnob
+                }
+            }
+            .offset(y: isStart ? 10 : -10)
+            // 触摸区比看得见的杆大一圈，手指才好按住
             Color.clear
                 .frame(width: 36, height: 36)
                 .contentShape(Circle())
@@ -5059,6 +5956,19 @@ public struct ReaderView: View {
                     updateCharSelection(isStart: isStart, at: value.location)
                 }
         )
+    }
+
+    private var handleKnob: some View {
+        Circle()
+            .fill(Color.accentColor.opacity(0.55))
+            .frame(width: 7, height: 7)
+            .overlay(Circle().stroke(Color.white.opacity(0.85), lineWidth: 1))
+    }
+
+    private var handleStem: some View {
+        Rectangle()
+            .fill(Color.accentColor.opacity(0.45))
+            .frame(width: 1.5, height: 13)
     }
     #endif
 
@@ -5909,7 +6819,7 @@ public struct ReaderView: View {
         #if os(iOS)
         guard let rect = scrollHitRegistry.rect(forBlockId: block.id, chapterIndex: chapterIndex) else { return nil }
         // registry 的 frame 含左右内边距，减掉才是正文的排版宽度
-        let width = rect.width - readerConfig.paddingLeft - readerConfig.paddingRight
+        let width = rect.width - contentPaddingLeft - contentPaddingRight
         guard width > 10 else { return nil }
         return ReaderScrollTextMetrics.Context(
             text: applyingKinsoku(block.text),
@@ -5917,7 +6827,7 @@ public struct ReaderView: View {
             lineSpacing: readerConfig.lineSpacing,
             kerning: readerConfig.letterSpacing,
             alignment: coreTextAlignment,
-            origin: CGPoint(x: rect.minX + readerConfig.paddingLeft, y: rect.minY),
+            origin: CGPoint(x: rect.minX + contentPaddingLeft, y: rect.minY),
             width: width
         )
         #else
@@ -6075,7 +6985,8 @@ public struct ReaderView: View {
             Rectangle()
                 .fill(readerHexColor(hit.color ?? "#2F7BF6").opacity(0.85))
                 .frame(height: 1.5)
-                .padding(.horizontal, readerConfig.paddingLeft)
+                .padding(.leading, contentPaddingLeft)
+                .padding(.trailing, contentPaddingRight)
         }
     }
 
@@ -6227,7 +7138,15 @@ public struct ReaderView: View {
             }
         }
         guard !from.isEmpty else { return }
-        bookmarkStore.addTextReplaceRule(bookUrl: activeBook.bookUrl, from: from, to: to)
+        // 气泡里的替换直接落成「替换净化」的本书规则，之后能在规则页看到、改、停用
+        ReplaceRuleStore.shared.rules.append(ReplaceRule(
+            name: "选字替换",
+            pattern: from,
+            replacement: to,
+            isRegex: false,
+            enabled: true,
+            bookUrl: activeBook.bookUrl
+        ))
         showReplaceInput = false
         clearParagraphSelection()
         _ = cur
@@ -6311,7 +7230,7 @@ public struct ReaderView: View {
     private var readerOverlayPresented: Bool {
         showBookmarks || showTOC || showSearch || showTTSSettings || showBookInfo
             || showSourceSwitch || showTitleDesigner || showReplaceRules
-            || showAggregateSearch || showBackgroundImagePicker || showReplaceInput
+            || showAggregateSearch || showReplaceInput
             || showComments || directCommentTarget != nil
     }
 
@@ -6412,6 +7331,20 @@ public struct ReaderView: View {
                 .ignoresSafeArea()
                 .allowsHitTesting(false)
         }
+        #endif
+    }
+
+    /// 实验：音量键翻页。TTS 播放时让出音量键，仍归系统调音量。
+    @ViewBuilder
+    private var volumeKeyPagerLayer: some View {
+        #if os(iOS)
+        VolumeKeyPagerBridge(
+            enabled: readerConfig.volumeKeyPaging && !audioService.hasReadingSession,
+            onForward: { turnPage(forward: !readerConfig.volumeKeyReversed) },
+            onBackward: { turnPage(forward: readerConfig.volumeKeyReversed) }
+        )
+        .frame(width: 1, height: 1)
+        .allowsHitTesting(false)
         #endif
     }
 
@@ -6989,14 +7922,24 @@ public struct ReaderView: View {
         return tocDisplayChapters.filter { $0.title.localizedCaseInsensitiveContains(query) }
     }
 
-    /// 下载缓存：从当前章往后缓存 N 章，N 在设置里调
-    private func downloadCachedChapters(span chosen: Int? = nil) {
+    private var defaultCacheLabel: String {
+        readerConfig.cachedAllChapters ? "全书" : "\(readerConfig.cachedChapterCount) 章"
+    }
+
+    /// 下载缓存：从当前章往后缓存 N 章或整本，N 在设置里调
+    private func downloadCachedChapters(span chosen: Int? = nil, all: Bool = false) {
         guard let source = effectiveSource, !chapters.isEmpty else { return }
         let start = max(0, currentChapterIndex)
-        let span = max(1, chosen ?? readerConfig.cachedChapterCount)
         // 当前选择记为默认值，与设置页显示一致
-        if let chosen { readerConfig.cachedChapterCount = chosen }
-        let end = min(chapters.count - 1, start + span - 1)
+        if all {
+            readerConfig.cachedAllChapters = true
+        } else if let chosen {
+            readerConfig.cachedAllChapters = false
+            readerConfig.cachedChapterCount = chosen
+        }
+        let useAll = all || (chosen == nil && readerConfig.cachedAllChapters)
+        let span = max(1, chosen ?? readerConfig.cachedChapterCount)
+        let end = useAll ? chapters.count - 1 : min(chapters.count - 1, start + span - 1)
         guard start <= end else { return }
         let indices = Array(start...end)
         _ = ChapterDownloadManager.shared.start(
@@ -7005,7 +7948,9 @@ public struct ReaderView: View {
             source: source,
             indices: indices
         )
-        downloadHint = "已加入下载队列：第 \(start + 1)–\(end + 1) 章（共 \(indices.count) 章）"
+        downloadHint = useAll
+            ? "已加入下载队列：第 \(start + 1)–\(end + 1) 章（全书共 \(indices.count) 章）"
+            : "已加入下载队列：第 \(start + 1)–\(end + 1) 章（共 \(indices.count) 章）"
         Task {
             try? await Task.sleep(nanoseconds: 2_500_000_000)
             await MainActor.run { downloadHint = nil }
@@ -7017,6 +7962,7 @@ public struct ReaderView: View {
         let index = currentChapterIndex
         let page = currentPageIndex
         chapterCache[index] = nil
+        paginationTracker.forget(index)
         audioService.stop()
         errorMessage = nil
         loadInitialChapter(at: index, targetPageIndex: page)
@@ -7030,6 +7976,7 @@ public struct ReaderView: View {
         let count = BookContentService.shared.getCacheCount(for: activeBook.bookUrl)
         BookContentService.shared.clearCache(for: activeBook.bookUrl)
         chapterCache.removeAll()
+        paginationTracker.forgetAll()
         loadedChapters = []
         audioService.stop()
         errorMessage = nil
@@ -7079,24 +8026,13 @@ public struct ReaderView: View {
         .padding(EdgeInsets(top: 14, leading: 18, bottom: max(16, safeInsets.bottom), trailing: 18))
         .modifier(ReaderSettingsCardChrome(
             radius: chromeRadius,
-            // 面板调半透明时不要毛玻璃，否则还是看不清底下的正文
-            fill: theme.overridesReaderAppearance
-                ? theme.palette.surface.opacity(panelSurfaceOpacity)
-                : readerConfig.pageBackgroundColor.opacity(effectivePanelLayerOpacity),
+            // 面板跟着阅读页纸色走，免得定制界面主题下叠出一块异色
+            fill: readerConfig.pageBackgroundColor.opacity(effectivePanelLayerOpacity),
             showsMaterial: effectivePanelOpacity >= 0.99 && theme.choice == .standard,
             ink: chromeInk,
             backdrop: chromeBackground,
             layerOpacity: effectivePanelLayerOpacity
         ))
-        .fileImporter(
-            isPresented: $showBackgroundImagePicker,
-            allowedContentTypes: [.image],
-            allowsMultipleSelection: false
-        ) { result in
-            if case .success(let urls) = result, let url = urls.first {
-                importBackgroundImage(from: url)
-            }
-        }
         .onAppear {
             AppLog.write("[阅读设置] 面板卡片已渲染 折叠=\(panelCollapsed)")
         }
@@ -7171,6 +8107,11 @@ public struct ReaderView: View {
                         summary: readerConfig.font.displayName
                     ) { typographySection }
                     CollapsibleSettingBlock(title: "正文排版", tint: readerConfig.pageTextColor) { bodyLayoutSection }
+                    CollapsibleSettingBlock(
+                        title: "插图",
+                        tint: readerConfig.pageTextColor,
+                        summary: imageDisplayModeName
+                    ) { imageSection }
                     underlineSection
                     CollapsibleSettingBlock(title: "页边距", tint: readerConfig.pageTextColor) { marginSection }
                     CollapsibleSettingBlock(title: "章节标题", tint: readerConfig.pageTextColor) { chapterTitleSection }
@@ -7399,7 +8340,7 @@ public struct ReaderView: View {
         HStack(spacing: 0) {
             statusMetric("字号", "\(safeInt(readerConfig.fontSize)) pt")
             statusMetricDivider
-            statusMetric("行距", "\(safeInt(readerConfig.lineSpacing)) pt")
+            statusMetric("行距", String(format: "%.1f×", Double(readerConfig.lineHeightMultiple)))
             statusMetricDivider
             statusMetric("主题", readerConfig.theme.rawValue)
             statusMetricDivider
@@ -7523,6 +8464,34 @@ public struct ReaderView: View {
                     .foregroundColor(readerConfig.pageTextColor.opacity(0.75))
             }
             .toggleStyle(.switch)
+
+            #if os(iOS)
+            Toggle(isOn: $readerConfig.volumeKeyPaging) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("音量键翻页（实验）")
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundColor(readerConfig.pageTextColor.opacity(0.75))
+                    Text("音量上加页、音量下减页；听书时音量键仍调音量。开启后音量会固定在中位。")
+                        .font(.system(size: 11))
+                        .foregroundColor(readerConfig.pageTextColor.opacity(0.5))
+                }
+            }
+            .toggleStyle(.switch)
+
+            if readerConfig.volumeKeyPaging {
+                Toggle(isOn: $readerConfig.volumeKeyReversed) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("音量键方向反转")
+                            .font(.system(size: 12, weight: .medium))
+                            .foregroundColor(readerConfig.pageTextColor.opacity(0.75))
+                        Text("打开后音量上减页、音量下加页。")
+                            .font(.system(size: 11))
+                            .foregroundColor(readerConfig.pageTextColor.opacity(0.5))
+                    }
+                }
+                .toggleStyle(.switch)
+            }
+            #endif
         }
     }
 
@@ -7602,7 +8571,24 @@ public struct ReaderView: View {
                 .lineLimit(2)
                 .padding(.vertical, 2)
 
+            HStack(spacing: 6) {
+                Text("预设")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundColor(readerConfig.pageTextColor.opacity(0.68))
+                    .frame(width: 48, alignment: .leading)
+                ForEach(ReaderConfig.LayoutPreset.allCases) { preset in
+                    reviewChip(preset.rawValue, selected: false) {
+                        readerConfig.applyLayoutPreset(preset)
+                    }
+                }
+                Spacer(minLength: 0)
+            }
+
             settingSlider("字间距", value: $readerConfig.letterSpacing, range: 0...4, step: 0.5)
+            settingSlider("行距", value: Binding(
+                get: { min(max(readerConfig.lineHeightMultiple, 1.3), 2.4) },
+                set: { readerConfig.setLineHeightMultiple($0) }
+            ), range: 1.3...2.4, step: 0.1, suffix: "×")
             settingSlider("段间距", value: $readerConfig.paragraphSpacing, range: 0...30, step: 1)
             HStack(spacing: 8) {
                 Toggle(isOn: $readerConfig.justifyLastPage) {
@@ -7686,6 +8672,48 @@ public struct ReaderView: View {
                 }
                 .pickerStyle(.segmented)
             }
+
+            Toggle(isOn: $readerConfig.smartParagraphs) {
+                Text("智能分段")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundColor(readerConfig.pageTextColor.opacity(0.7))
+            }
+            .toggleStyle(.switch)
+            Text("有的书源把整章塞成一行，中间不带空行。开着就按句末标点把这种长行切开，已经是正常段落的正文不动。")
+                .font(.system(size: 11))
+                .foregroundColor(readerConfig.pageTextColor.opacity(0.5))
+
+            Toggle(isOn: $readerConfig.autoParagraphMerge) {
+                Text("合并硬换行")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundColor(readerConfig.pageTextColor.opacity(0.7))
+            }
+            .toggleStyle(.switch)
+            Text("整章一个空行都没有时，先把被硬换行截断的行接回整段，再按下面的目标长度切。标题、图片行不并。")
+                .font(.system(size: 11))
+                .foregroundColor(readerConfig.pageTextColor.opacity(0.5))
+
+            HStack(spacing: 8) {
+                Text("目标段长")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundColor(readerConfig.pageTextColor.opacity(0.7))
+                Picker("目标段长", selection: $readerConfig.paragraphTargetLength) {
+                    ForEach([60, 80, 100, 120], id: \.self) { length in
+                        Text("\(length) 字").tag(length)
+                    }
+                }
+                .pickerStyle(.segmented)
+            }
+
+            Toggle(isOn: $readerConfig.punctuationKinsoku) {
+                Text("标点禁则")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundColor(readerConfig.pageTextColor.opacity(0.7))
+            }
+            .toggleStyle(.switch)
+            Text("按中文的规矩排：句号逗号这类标点不许落在行首，开引号、开括号不许留在行尾。按页翻和连续滚动都管用。")
+                .font(.system(size: 11))
+                .foregroundColor(readerConfig.pageTextColor.opacity(0.5))
         }
     }
 
@@ -7800,13 +8828,13 @@ public struct ReaderView: View {
                                 .foregroundColor(readerConfig.pageTextColor.opacity(0.8))
                         }
                     } else {
-                        Button("选择图片…") { showBackgroundImagePicker = true }
+                        Button("选择图片…") { presentBackgroundImagePicker() }
                             .font(.system(size: 12))
                             .buttonStyle(.plain)
                             .foregroundColor(readerConfig.pageTextColor.opacity(0.8))
                     }
                     #else
-                    Button("选择图片…") { showBackgroundImagePicker = true }
+                    Button("选择图片…") { presentBackgroundImagePicker() }
                         .font(.system(size: 12))
                         .buttonStyle(.plain)
                         .foregroundColor(readerConfig.pageTextColor.opacity(0.8))
@@ -7908,120 +8936,142 @@ public struct ReaderView: View {
         }
     }
 
-    // MARK: 页眉页脚
-    private var headerFooterSection: some View {
+    // MARK: 插图
+    private var imageDisplayModeName: String {
+        switch readerConfig.imageDisplayMode {
+        case 1: return "原始尺寸"
+        case 2: return "铺满屏幕"
+        default: return "自动适宽"
+        }
+    }
+
+    private var imageSection: some View {
         VStack(alignment: .leading, spacing: 10) {
             sectionDivider
-            sectionTitle("正文标题")
-
-            Picker("正文标题", selection: $readerConfig.titleAlignment) {
-                ForEach(ReaderTitleAlignment.allCases) { mode in
-                    Text(mode.rawValue).tag(mode)
-                }
-            }
-            .pickerStyle(.segmented)
-
-            sectionTitle("页眉页脚")
-                .padding(.top, 4)
-
-            Toggle(isOn: $readerConfig.sharedLayout) {
-                Text("共享布局")
-                    .font(.system(size: 12, weight: .medium))
-                    .foregroundColor(readerConfig.pageTextColor.opacity(0.7))
-            }
-            .toggleStyle(.switch)
 
             HStack(spacing: 8) {
-                Text("共享布局开着一套排版给所有书用；关掉后每本书各存一份。")
-                    .font(.system(size: 11))
-                    .foregroundColor(readerConfig.pageTextColor.opacity(0.5))
-                Spacer()
-                Button("信息") {
-                    showBookInfo = true
+                Text("显示模式")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundColor(readerConfig.pageTextColor.opacity(0.7))
+                Picker("显示模式", selection: $readerConfig.imageDisplayMode) {
+                    Text("自动").tag(0)
+                    Text("原始").tag(1)
+                    Text("铺满").tag(2)
                 }
-                .font(.system(size: 12, weight: .medium))
+                .pickerStyle(.segmented)
             }
-
-            Toggle(isOn: $readerConfig.headerEnabled) {
-                Text("页眉")
-                    .font(.system(size: 12, weight: .medium))
-                    .foregroundColor(readerConfig.pageTextColor.opacity(0.7))
-            }
-            .toggleStyle(.switch)
-            if readerConfig.headerEnabled {
-                settingSlider("距顶", value: $readerConfig.headerOffset, range: 0...160, step: 2)
-                Text("这一行离屏幕上沿多远。0 = 贴屏幕上沿（跟灵动岛同高），62 是灵动岛下面，越往上拉越贴顶。")
-                    .font(.system(size: 11))
-                    .foregroundColor(readerConfig.pageTextColor.opacity(0.5))
-                barContentRow("左", selection: $readerConfig.headerLeft)
-                barContentRow("中", selection: $readerConfig.headerCenter)
-                barContentRow("右", selection: $readerConfig.headerRight)
-            }
-
-            Toggle(isOn: $readerConfig.footerEnabled) {
-                Text("页脚")
-                    .font(.system(size: 12, weight: .medium))
-                    .foregroundColor(readerConfig.pageTextColor.opacity(0.7))
-            }
-            .toggleStyle(.switch)
-            if readerConfig.footerEnabled {
-                settingSlider("距底", value: $readerConfig.footerOffset, range: 0...120, step: 2)
-                Text("这一行离屏幕下沿多远。0 = 贴屏幕最下面，34 是 Home 指示条上面。")
-                    .font(.system(size: 11))
-                    .foregroundColor(readerConfig.pageTextColor.opacity(0.5))
-                barContentRow("左", selection: $readerConfig.footerLeft)
-                barContentRow("中", selection: $readerConfig.footerCenter)
-                barContentRow("右", selection: $readerConfig.footerRight)
-            }
-
-            Toggle(isOn: $readerConfig.barDivider) {
-                Text("显示分隔线")
-                    .font(.system(size: 12, weight: .medium))
-                    .foregroundColor(readerConfig.pageTextColor.opacity(0.7))
-            }
-            .toggleStyle(.switch)
-
-            Toggle(isOn: $readerConfig.smartParagraphs) {
-                Text("智能分段")
-                    .font(.system(size: 12, weight: .medium))
-                    .foregroundColor(readerConfig.pageTextColor.opacity(0.7))
-            }
-            .toggleStyle(.switch)
-            Text("有的书源把整章塞成一行，中间不带空行。开着就按句末标点把这种长行切开，已经是正常段落的正文不动。")
+            Text("自动：小图不放大、大图不超屏；原始：严格按图片像素尺寸；铺满：撑满正文宽度，漫画和 PDF 扫描页用这个。")
                 .font(.system(size: 11))
                 .foregroundColor(readerConfig.pageTextColor.opacity(0.5))
 
-            Toggle(isOn: $readerConfig.punctuationKinsoku) {
-                Text("标点禁则")
+            settingSlider(
+                "最大宽度",
+                value: $readerConfig.imageMaxWidthPercent,
+                range: 50...100,
+                step: 5,
+                suffix: "%"
+            )
+            Text("按正文可用宽度算。设 80% 就是插图最多占正文宽度的八成，留两成做左右留白。")
+                .font(.system(size: 11))
+                .foregroundColor(readerConfig.pageTextColor.opacity(0.5))
+
+            Toggle(isOn: $readerConfig.comicTrimBorders) {
+                Text("漫画 / PDF 裁白边")
                     .font(.system(size: 12, weight: .medium))
                     .foregroundColor(readerConfig.pageTextColor.opacity(0.7))
             }
             .toggleStyle(.switch)
-            Text("按中文的规矩排：句号逗号这类标点不许落在行首，开引号、开括号不许留在行尾。按页翻和连续滚动都管用。")
+            Text("扫描页四周的大块白边会在加载后自动裁掉。正文插图如果本身白底，别开，免得把画面裁掉。")
                 .font(.system(size: 11))
                 .foregroundColor(readerConfig.pageTextColor.opacity(0.5))
+        }
+    }
 
-            // 显示项自身的参数：短标题截几个字、自定义日期格式、自定义栏文字
-            settingSlider("短标题", value: shortTitleLengthBinding, range: 2...12, step: 1, suffix: " 字")
+    // MARK: 页眉页脚
+    private var headerFooterSection: some View {
+        CollapsibleSettingBlock(
+            title: "页眉页脚",
+            tint: readerConfig.pageTextColor,
+            summary: headerFooterSummary
+        ) {
+            VStack(alignment: .leading, spacing: 10) {
+                Picker("正文标题", selection: $readerConfig.titleAlignment) {
+                    ForEach(ReaderTitleAlignment.allCases) { mode in
+                        Text(mode.rawValue).tag(mode)
+                    }
+                }
+                .pickerStyle(.segmented)
 
-            HStack(spacing: 8) {
-                Text("日期格式")
+                Toggle(isOn: $readerConfig.sharedLayout) {
+                    Text("共享布局")
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundColor(readerConfig.pageTextColor.opacity(0.7))
+                }
+                .toggleStyle(.switch)
+
+                HStack(spacing: 8) {
+                    Text("共享布局开着一套排版给所有书用；关掉后每本书各存一份。")
+                        .font(.system(size: 11))
+                        .foregroundColor(readerConfig.pageTextColor.opacity(0.5))
+                    Spacer()
+                    Button("信息") {
+                        showBookInfo = true
+                    }
                     .font(.system(size: 12, weight: .medium))
-                    .foregroundColor(readerConfig.pageTextColor.opacity(0.7))
-                TextField("M月d日", text: $readerConfig.customDatePattern)
-                    .textFieldStyle(.roundedBorder)
-                    .font(.system(size: 12))
-            }
+                }
 
-            HStack(spacing: 8) {
-                Text("自定义栏")
+                Toggle(isOn: $readerConfig.headerEnabled) {
+                    Text("页眉")
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundColor(readerConfig.pageTextColor.opacity(0.7))
+                }
+                .toggleStyle(.switch)
+
+                Toggle(isOn: $readerConfig.footerEnabled) {
+                    Text("页脚")
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundColor(readerConfig.pageTextColor.opacity(0.7))
+                }
+                .toggleStyle(.switch)
+
+                Toggle(isOn: $readerConfig.barDivider) {
+                    Text("显示分隔线")
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundColor(readerConfig.pageTextColor.opacity(0.7))
+                }
+                .toggleStyle(.switch)
+
+                Button {
+                    showHeaderFooterSettings = true
+                } label: {
+                    HStack(spacing: 6) {
+                        Image(systemName: "rectangle.split.1x2")
+                        Text("打开页眉页脚设置")
+                        Spacer()
+                        Image(systemName: "chevron.right")
+                    }
                     .font(.system(size: 12, weight: .medium))
-                    .foregroundColor(readerConfig.pageTextColor.opacity(0.7))
-                TextField("这一栏要显示的字", text: $readerConfig.customBarText)
-                    .textFieldStyle(.roundedBorder)
-                    .font(.system(size: 12))
+                    .padding(.vertical, 8)
+                    .padding(.horizontal, 10)
+                    .background(
+                        RoundedRectangle(cornerRadius: 8)
+                            .fill(readerConfig.pageTextColor.opacity(0.08))
+                    )
+                }
+                .buttonStyle(.plain)
+                .foregroundColor(readerConfig.pageTextColor.opacity(0.8))
+
+                Text("独立页上半屏是实景预览，距顶/距底和左右中内容都在那里调。")
+                    .font(.system(size: 11))
+                    .foregroundColor(readerConfig.pageTextColor.opacity(0.5))
             }
         }
+    }
+
+    private var headerFooterSummary: String {
+        let header = readerConfig.headerEnabled ? "页眉开" : "页眉关"
+        let footer = readerConfig.footerEnabled ? "页脚开" : "页脚关"
+        return "\(header) · \(footer)"
     }
 
     private var shortTitleLengthBinding: Binding<CGFloat> {
@@ -8147,9 +9197,6 @@ public struct ReaderView: View {
                     set: { readerConfig.fontSize = min(max($0, 12), 32) }
                 ), in: 12...32, step: 1)
                     .tint(settingsAccent)
-                    .onChange(of: readerConfig.fontSize) { _ in
-                        recomputePagination()
-                    }
 
                 Text("A+")
                     .font(.system(size: 16, weight: .bold))
@@ -8239,12 +9286,10 @@ public struct ReaderView: View {
                     themeButton(for: t)
                 }
             }
-            if theme.overridesReaderAppearance {
-                Text("界面主题「\(theme.choice.title)」正在接管阅读配色；切回「标准」后可单独选择阅读主题。")
-                    .font(.system(size: 11))
-                    .foregroundColor(readerConfig.pageTextColor.opacity(0.55))
-                    .frame(maxWidth: .infinity, alignment: .leading)
-            }
+            Text("阅读主题决定阅读页配色；打开下方「自定义背景与文字颜色」则以你的配色为准。")
+                .font(.system(size: 11))
+                .foregroundColor(readerConfig.pageTextColor.opacity(0.55))
+                .frame(maxWidth: .infinity, alignment: .leading)
         }
         .onAppear { AppLog.write("[阅读设置] 主题区已渲染") }
     }
@@ -8307,9 +9352,23 @@ public struct ReaderView: View {
 
     private func openChapters(_ list: [BookChapter], log: String) {
         chapters = list
+        refreshCachedChapterWordCounts()
         AppLog.write("[阅读] \(log)，共 \(list.count) 章")
         currentChapterIndex = min(currentChapterIndex, max(0, list.count - 1))
         loadInitialChapter(at: currentChapterIndex)
+    }
+
+    /// 换源后首次进入新目录时按标题/进度定位；平常打开沿用上次的章节索引。
+    private func initialChapterIndex(in list: [BookChapter]) -> Int {
+        guard let pending = sourceSwitchPosition else {
+            return min(currentChapterIndex, max(0, list.count - 1))
+        }
+        return ChapterPositionMapper.resolve(
+            oldTitle: pending.title,
+            oldIndex: pending.index,
+            oldCount: pending.count,
+            newTitles: list.map(\.title)
+        )
     }
 
     private func loadTOCAndStart() async {
@@ -8332,6 +9391,7 @@ public struct ReaderView: View {
         // 再在后台静默刷新一次，有新章节就更新，不打断阅读。
         let cachedChapters = reindexedChapters(BookStore.shared.getChapters(for: tocCacheKey(source: source)))
         if !cachedChapters.isEmpty {
+            currentChapterIndex = initialChapterIndex(in: cachedChapters)
             openChapters(cachedChapters, log: "复用缓存目录")
             Task { await refreshTOCInBackground(source: source) }
             return
@@ -8350,6 +9410,7 @@ public struct ReaderView: View {
             self.loadingNote = "正在加载章节内容..."
             let list = reindexedChapters(fetchedChapters)
             self.chapters = list
+            refreshCachedChapterWordCounts()
             BookStore.shared.saveChapters(list, for: tocCacheKey(source: source))
             AppLog.write("[阅读] 打开网络书籍，共 \(list.count) 章")
             guard !list.isEmpty else {
@@ -8362,7 +9423,7 @@ public struct ReaderView: View {
                 self.failInitialLoad("目录为空：书源的目录规则没有匹配到章节，请检查「\(source.bookSourceName)」的目录规则。")
                 return
             }
-            currentChapterIndex = min(currentChapterIndex, max(0, list.count - 1))
+            currentChapterIndex = initialChapterIndex(in: list)
             loadInitialChapter(at: currentChapterIndex)
         } catch {
             AppLog.write("[阅读] 目录解析失败 error=\(error.localizedDescription)")
@@ -8384,7 +9445,14 @@ public struct ReaderView: View {
     private func refreshTOCInBackground(source: BookSource) async {
         guard let fetched = try? await BookContentService.shared.fetchChapterList(book: activeBook, source: source),
               !fetched.isEmpty else { return }
-        let list = reindexedChapters(fetched)
+        var list = fetched
+        for i in 0..<list.count { list[i].index = i }
+        // 刷新目录是整份替换的；同名章节的已有字数得捡回来，否则读过也全变「—」
+        for i in list.indices where list[i].wordCount == nil {
+            if chapters.indices.contains(i), chapters[i].title == list[i].title {
+                list[i].wordCount = chapters[i].wordCount
+            }
+        }
         await MainActor.run {
             BookStore.shared.saveChapters(list, for: tocCacheKey(source: source))
             guard list.count != chapters.count else { return }
@@ -8402,7 +9470,7 @@ public struct ReaderView: View {
     @MainActor
     private func getOrFetchChapter(at index: Int) async -> LoadedChapter? {
         guard chapters.indices.contains(index) else { return nil }
-        if let cached = chapterCache[index] { return cached }
+        if let cached = chapterCache[index] { return repaginatedIfNeeded(cached) }
 
         do {
             let loaded = try await resolvedChapter(at: index, source: effectiveSource, countStats: false)
@@ -8420,7 +9488,7 @@ public struct ReaderView: View {
         source: BookSource?,
         countStats: Bool
     ) async throws -> LoadedChapter {
-        if let cached = chapterCache[index] { return cached }
+        if let cached = chapterCache[index] { return repaginatedIfNeeded(cached) }
 
         let chapter = chapters[index]
         let content = applyingBookReplaceRules(
@@ -8430,14 +9498,17 @@ public struct ReaderView: View {
                 book: activeBook
             )
         )
+        recordWordCount(content, for: index)
         let blocks = parseContentBlocks(from: content)
+        let layout = makePaginationLayout(version: paginationTracker.layoutVersion)
         let loaded = LoadedChapter(
             chapter: chapter,
             content: content,
             blocks: blocks,
-            pages: paginate(blocks: blocks, title: chapter.title)
+            pages: ReaderPaginator.paginate(blocks: blocks, title: chapter.title, layout: layout)
         )
         chapterCache[index] = loaded
+        paginationTracker.markPaginated(index, version: layout.version)
         if countStats {
             ReadingStatsStore.shared.addReading(seconds: 0, characters: loaded.content.count, chapters: 1)
         }
@@ -8468,6 +9539,12 @@ public struct ReaderView: View {
         Task { @MainActor in
             do {
                 let loaded = try await self.resolvedChapter(at: index, source: source, countStats: true)
+
+                // 载入期间用户又换了章：这一份已经过时，落地会把屏幕和进度一起拽回去
+                guard self.currentChapterIndex == index else {
+                    AppLog.write("[阅读] 载入作废 · 第 \(index) 章（当前第 \(self.currentChapterIndex) 章）")
+                    return
+                }
 
                 self.currentChapterIndex = index
                 // 按页翻的模式不会走滚动那套触发点，不在这里补一次预取的话，
@@ -8520,6 +9597,13 @@ public struct ReaderView: View {
                 BookStore.shared.updateProgress(bookUrl: activeBook.bookUrl, chapterIndex: index, chapterTitle: loaded.chapter.title, chapterPos: currentPos)
                 self.preCacheNeighbors(around: index)
 
+                // 新源正文已读出，换源成功；回退入口收起，免得后续刷新失败又冒出「换回原书源」。
+                if self.previousBook != nil {
+                    self.previousBook = nil
+                    self.previousSource = nil
+                    self.sourceSwitchPosition = nil
+                }
+
                 self.setInitialScrollTarget(index: index, toEnd: scrollToTargetEnd)
             } catch {
                 AppLog.write("[阅读] 首章正文失败 第 \(index + 1) 章 error=\(error.localizedDescription)")
@@ -8558,7 +9642,7 @@ public struct ReaderView: View {
               !isLoadingNextChapter else { return }
 
         if let cached = chapterCache[target] {
-            loadedChapters.append(cached)
+            loadedChapters.append(repaginatedIfNeeded(cached))
             preCacheNeighbors(around: target)
             return
         }
@@ -8610,45 +9694,177 @@ public struct ReaderView: View {
             "\(readerConfig.chapterTitleSpacing)",
             "\(readerConfig.chapterBottomSpacing)",
             "\(readerConfig.smartParagraphs)",
+            "\(readerConfig.autoParagraphMerge)",
+            "\(readerConfig.paragraphTargetLength)",
             readerConfig.chineseConversion.rawValue,
             readerConfig.textAlignment.rawValue,
             readerConfig.pageMode.rawValue
         ].joined(separator: "|")
     }
 
-    private func recomputePagination() {
-        AppLog.write("[排版] 触发重排：当前第 \(currentChapterIndex + 1) 章")
-        let charPos = currentChapterCharOffset()
+    // MARK: - 分页（后台 + 按需）
 
-        // 分页是按当前排版算出来的，排版一变缓存里的页也是旧的，就地重排（别直接清空，
-        // 清空会把下一章的预取一起丢掉，换章就得现拉）
-        for (key, cached) in chapterCache {
+    /// 当前排版参数的快照。带着版本号一起丢给后台，算完回来先验版本。
+    private func makePaginationLayout(version: Int) -> ReaderPaginationLayout {
+        let font = readerConfig.font
+        return ReaderPaginationLayout(
+            version: version,
+            containerSize: readerContainerSize,
+            fontSize: readerConfig.fontSize,
+            lineSpacing: readerConfig.lineSpacing,
+            letterSpacing: readerConfig.letterSpacing,
+            firstLineIndent: readerConfig.firstLineIndent,
+            paragraphSpacing: readerConfig.paragraphSpacing,
+            reviewFontScale: readerConfig.reviewFontScale,
+            reviewInset: readerConfig.reviewInset,
+            weightLevel: readerConfig.weightLevel,
+            fontPostScriptName: font.postScriptName,
+            fontBoldPostScriptName: font.boldPostScriptName ?? "",
+            punctuationKinsoku: readerConfig.punctuationKinsoku,
+            headerEnabled: readerConfig.headerEnabled,
+            footerEnabled: readerConfig.footerEnabled,
+            headerOffset: readerConfig.headerOffset,
+            footerOffset: readerConfig.footerOffset,
+            paddingTop: readerConfig.paddingTop,
+            paddingBottom: readerConfig.paddingBottom,
+            paddingLeft: contentPaddingLeft,
+            paddingRight: contentPaddingRight,
+            chapterTitleScale: readerConfig.chapterTitleScale,
+            titleHidden: readerConfig.titleAlignment == .hidden,
+            imageDisplayMode: readerConfig.imageDisplayMode,
+            imageMaxWidthPercent: readerConfig.imageMaxWidthPercent,
+            imageStyleFullWidth: chapterImageStyle == .full || chapterImageStyle == .single,
+            imageStyleSmall: chapterImageStyle == .text
+        )
+    }
+
+    /// 切换章节、退出阅读：别再让旧布局的排版结果回来动界面。
+    private func cancelPaginationWork() {
+        paginationTask?.cancel()
+        repaginationTask?.cancel()
+        paginationGeneration &+= 1
+    }
+
+    /// 布局参数一变就立刻推进版本、把所有缓存页标脏；真正的 CoreText 重排等防抖结束再跑。
+    /// 即使防抖被换章 / 退出取消，脏标记也已经落下了，切回该章时会按需补排。
+    private func scheduleLayoutRepagination() {
+        paginationTracker.advanceLayout()
+        paginationGeneration &+= 1
+        paginationTask?.cancel()
+        paginationTask = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 250_000_000)
+            guard !Task.isCancelled else { return }
+            repaginateForCurrentLayout()
+        }
+    }
+
+    /// 排版参数变化：只立即重排当前章和预取邻居，其余缓存章节标脏、用到时再排。
+    private func repaginateForCurrentLayout() {
+        guard !loadedChapters.isEmpty || !chapterCache.isEmpty else { return }
+
+        let generation = paginationGeneration
+        let version = paginationTracker.layoutVersion
+        let layout = makePaginationLayout(version: version)
+
+        let available = Array(Set(chapterCache.keys).union(loadedChapters.map { $0.chapter.index }))
+        let targets = paginationTracker.repaginationPriority(
+            current: currentChapterIndex,
+            neighbors: [currentChapterIndex - 1, currentChapterIndex + 1],
+            available: available
+        )
+        let jobs: [RepaginationJob] = targets.compactMap { index in
+            guard let cached = chapterCache[index] else { return nil }
+            return RepaginationJob(index: index, blocks: cached.blocks, title: cached.chapter.title)
+        }
+        AppLog.write("[排版] 后台重排 v\(version)：第 \(jobs.map { $0.index + 1 }) 章 · 其余 \(max(0, chapterCache.count - jobs.count)) 章标脏")
+
+        repaginationTask?.cancel()
+        repaginationTask = Task { @MainActor in
+            let results = await Task.detached(priority: .userInitiated) { () -> [RepaginationResult] in
+                var results: [RepaginationResult] = []
+                for job in jobs {
+                    if Task.isCancelled { return results }
+                    let pages = ReaderPaginator.paginate(blocks: job.blocks, title: job.title, layout: layout)
+                    results.append(RepaginationResult(index: job.index, blockCount: job.blocks.count, pages: pages))
+                }
+                return results
+            }.value
+            guard !Task.isCancelled else { return }
+            self.applyRepagination(results, version: version, generation: generation)
+        }
+    }
+
+    private struct RepaginationJob: Sendable {
+        let index: Int
+        let blocks: [ContentBlock]
+        let title: String
+    }
+
+    private struct RepaginationResult: Sendable {
+        let index: Int
+        let blockCount: Int
+        let pages: [[ContentBlock]]
+    }
+
+    private func applyRepagination(_ results: [RepaginationResult], version: Int, generation: Int) {
+        // 拖滑杆时上一轮任务可能晚一步回来，generation / 版本对不上就整批丢掉
+        guard generation == paginationGeneration,
+              paginationTracker.acceptsResult(version: version) else { return }
+
+        // 后台算的这段时间用户可能又翻了几页：按应用前的字符偏移重新定位
+        let anchorIndex = currentChapterIndex
+        let anchorOffset = currentChapterCharOffset()
+        var touchedCurrent = false
+
+        for result in results {
+            guard let cached = chapterCache[result.index],
+                  cached.blocks.count == result.blockCount else { continue }
             var updated = cached
-            updated.pages = paginate(blocks: cached.blocks, title: cached.chapter.title)
-            chapterCache[key] = updated
+            updated.pages = result.pages
+            chapterCache[result.index] = updated
+            if let position = loadedChapters.firstIndex(where: { $0.chapter.index == result.index }) {
+                loadedChapters[position].pages = result.pages
+            }
+            paginationTracker.markPaginated(result.index, version: version)
+            if result.index == anchorIndex { touchedCurrent = true }
         }
 
-        for i in 0..<loadedChapters.count {
-            loadedChapters[i].pages = paginate(blocks: loadedChapters[i].blocks, title: loadedChapters[i].chapter.title)
-        }
-
-        if let chapter = currentLoadedChapter, !chapter.pages.isEmpty {
-            currentPageIndex = pageIndex(forCharacterOffset: charPos, in: chapter)
+        if touchedCurrent, let chapter = currentLoadedChapter, !chapter.pages.isEmpty {
+            currentPageIndex = pageIndex(forCharacterOffset: anchorOffset, in: chapter)
             updateReadingBlockIdFromCurrentPage()
         }
     }
 
+    /// 脏章真正被切换 / 预取到时再重排；只排这一章，代价和按需加载一章一致。
+    @discardableResult
+    private func repaginatedIfNeeded(_ chapter: LoadedChapter) -> LoadedChapter {
+        let version = paginationTracker.layoutVersion
+        guard paginationTracker.isDirty(chapter.chapter.index) else { return chapter }
+
+        let layout = makePaginationLayout(version: version)
+        var updated = chapter
+        updated.pages = ReaderPaginator.paginate(blocks: chapter.blocks, title: chapter.chapter.title, layout: layout)
+        chapterCache[chapter.chapter.index] = updated
+        if let position = loadedChapters.firstIndex(where: { $0.chapter.index == chapter.chapter.index }) {
+            loadedChapters[position].pages = updated.pages
+        }
+        paginationTracker.markPaginated(chapter.chapter.index, version: version)
+        AppLog.write("[排版] 按需重排 · 第 \(chapter.chapter.index + 1) 章")
+        return updated
+    }
+
     // MARK: - Paragraph and Page Parser
     /// 智能分段：只处理「特别长、又完全没有段落」的行（不少书源整章塞成一行）。
-    /// 按句末标点断句，再把断句拼回正常长度的段落；短行原样返回，不动已经分好段的正文。
+    /// 按句末标点断句，再把断句拼回目标长度的段落；短行原样返回，不动已经分好段的正文。
     private func smartParagraphSplit(_ line: String) -> [String] {
-        guard line.count > 120 else { return [line] }
+        let target = max(40, readerConfig.paragraphTargetLength)
+        guard line.count > max(120, target + 20) else { return [line] }
 
         var sentences: [String] = []
         var buffer = ""
         for ch in line {
             buffer.append(ch)
-            if "。！？…".contains(ch) {
+            if "。！？…；」』”".contains(ch) {
                 sentences.append(buffer)
                 buffer = ""
             }
@@ -8659,8 +9875,13 @@ public struct ReaderView: View {
         var paragraphs: [String] = []
         var current = ""
         for sentence in sentences {
+            // 对白单独成段：前面已经攒了半段叙述就先收掉，不把台词粘在叙述尾巴上
+            if (sentence.hasPrefix("“") || sentence.hasPrefix("「")), current.count >= 20 {
+                paragraphs.append(current)
+                current = ""
+            }
             current += sentence
-            if current.count >= 100 {
+            if current.count >= target {
                 paragraphs.append(current)
                 current = ""
             }
@@ -8669,22 +9890,187 @@ public struct ReaderView: View {
         return paragraphs
     }
 
+    /// 整章没有空行时，把硬换行接回段落；标题行、图片行各自断开。
+    private func mergedHardWrappedLines(_ lines: [String]) -> [String] {
+        var result: [String] = []
+        var buffer = ""
+        func flush() {
+            let text = buffer.trimmingCharacters(in: .whitespaces)
+            if !text.isEmpty { result.append(text) }
+            buffer = ""
+        }
+        for raw in lines {
+            let line = raw.trimmingCharacters(in: .whitespaces)
+            if line.isEmpty {
+                flush()
+                continue
+            }
+            if isStandaloneLine(line) {
+                flush()
+                result.append(line)
+                continue
+            }
+            if buffer.isEmpty {
+                buffer = line
+            } else if needsWordSpace(buffer.last, line.first) {
+                buffer += " " + line
+            } else {
+                buffer += line
+            }
+        }
+        flush()
+        return result
+    }
+
+    /// 章节标题、图片、评论标记不能并进正文段落
+    private func isStandaloneLine(_ line: String) -> Bool {
+        if line.contains("[image:") || line.contains("__IMG") { return true }
+        if line.hasPrefix("[") && line.hasSuffix("]") { return true }
+        guard line.count <= 30 else { return false }
+        let chapterMarks = ["章", "节", "卷", "回", "部", "篇", "集"]
+        if line.hasPrefix("第"), chapterMarks.contains(where: { line.contains($0) }) { return true }
+        let fixedTitles = ["序言", "序章", "前言", "序", "楔子", "引子", "后记", "尾声", "目录", "番外"]
+        if fixedTitles.contains(line) { return true }
+        if line.uppercased().hasPrefix("CHAPTER") { return true }
+        return false
+    }
+
+    private func needsWordSpace(_ last: Character?, _ first: Character?) -> Bool {
+        guard let last, let first else { return false }
+        let leftASCII = last.isASCII && (last.isLetter || last.isNumber)
+        let rightASCII = first.isASCII && (first.isLetter || first.isNumber)
+        return leftASCII && rightASCII
+    }
+
+    private func captionText(from line: String) -> String? {
+        guard line.hasPrefix("[caption:"), line.hasSuffix("]") else { return nil }
+        let inner = line.dropFirst("[caption:".count).dropLast()
+        let text = inner.trimmingCharacters(in: .whitespacesAndNewlines)
+        return text.isEmpty ? nil : text
+    }
+
+    /// 内置基础净化：书源常见的脏排版先在这里收拾掉，后面按行分段才不会整章粘成一段。
+    /// 只做确定性替换，不碰用户配置的替换规则。
+    private func sanitizedChapterBody(_ text: String) -> String {
+        var result = text
+        // 1. 「空格 + 连续 NBSP」是不少书源的段落分隔符；整章一行时它会被当成行内空白
+        result = result.replacingOccurrences(
+            of: "[ \\t\\x{3000}]*\\x{00A0}{2,}[ \\t\\x{3000}\\x{00A0}]*",
+            with: "\n\n",
+            options: .regularExpression
+        )
+        // 2. 连续全角空格同样按段落分隔处理
+        result = result.replacingOccurrences(
+            of: "[ \\t]*\\x{3000}{2,}[ \\t]*",
+            with: "\n\n",
+            options: .regularExpression
+        )
+        // 3. 句末标点后只留了一个空格：基本都是丢掉的段落分隔
+        result = result.replacingOccurrences(
+            of: "([。！？…；”])([ \\t]+)(?=[^“”「」『』（）()\\[\\]{}<>\\s])",
+            with: "$1\n\n",
+            options: .regularExpression
+        )
+        // 4. 标点旁的空格：句读前、开引号后、句末标点后的引号前
+        result = result.replacingOccurrences(
+            of: "[ \\t\\x{3000}]+(?=[。，、；：？！…）”」』》）])",
+            with: "",
+            options: .regularExpression
+        )
+        result = result.replacingOccurrences(
+            of: "(?<=[““‘「『（《])[ \\t\\x{3000}]+",
+            with: "",
+            options: .regularExpression
+        )
+        result = result.replacingOccurrences(
+            of: "(?<=[。，、；：？！…])[ \\t]+(?=“)",
+            with: "",
+            options: .regularExpression
+        )
+        // 5. 连续半角空格压成一个
+        result = result.replacingOccurrences(of: "[ ]{2,}", with: " ", options: .regularExpression)
+        return result
+    }
+
+    /// 有书源的弯引号开合是反的（” 当开号、“ 当合号）。
+    /// 按段内「开-合交替」重排；段首一定是开号、段尾一定是合号。
+    private func normalizedQuotes(_ paragraph: String) -> String {
+        guard !paragraph.contains("[image:"), !paragraph.hasPrefix("[caption:") else { return paragraph }
+        let chars = Array(paragraph)
+        let quoteIndices = chars.indices.filter { chars[$0] == "“" || chars[$0] == "”" }
+        guard !quoteIndices.isEmpty else { return paragraph }
+        var result = chars
+        for (order, index) in quoteIndices.enumerated() {
+            result[index] = order.isMultiple(of: 2) ? "“" : "”"
+        }
+        let trimmed = paragraph.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let first = trimmed.first, first == "“" || first == "”", let index = quoteIndices.first {
+            result[index] = "“"
+        }
+        if let last = trimmed.last, last == "“" || last == "”", let index = quoteIndices.last {
+            result[index] = "”"
+        }
+        return String(result)
+    }
+
+    /// 广告行：站点刷新提示、水印、纯符号分隔行
+    private func isJunkBodyLine(_ line: String) -> Bool {
+        if line.contains("[image:") || line.hasPrefix("[caption:") { return false }
+        let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return true }
+        if trimmed.count <= 60 {
+            let markers = [
+                "正在手打中", "请稍等片刻", "请重新刷新页面", "本章未完", "请点击下一页",
+                "手机用户请", "最新网址", "首发域名", "加入书签", "提醒你可以啦"
+            ]
+            if markers.contains(where: { trimmed.contains($0) }) { return true }
+        }
+        // 只剩半角符号的分隔行（. / ..... / -----）
+        let junkScalars = CharacterSet(charactersIn: ".-_=*~#+|")
+        if trimmed.unicodeScalars.allSatisfy({ junkScalars.contains($0) }) { return true }
+        return false
+    }
+
     private func parseContentBlocks(from raw: String) -> [ContentBlock] {
-        let text = ReplaceRuleStore.shared.apply(to: raw, bookUrl: activeBook.bookUrl)
+        let text = sanitizedChapterBody(ReplaceRuleStore.shared.apply(to: raw, bookUrl: activeBook.bookUrl))
         let imagePattern = try? NSRegularExpression(pattern: "\\[image:(.*?)\\]")
         var blocks: [ContentBlock] = []
         var nextId = 0
 
-        for line in text.components(separatedBy: "\n") {
+        let rawLines = text.components(separatedBy: "\n")
+        let hasBlankLine = rawLines.contains { $0.trimmingCharacters(in: .whitespaces).isEmpty }
+        let lines: [String]
+        if readerConfig.autoParagraphMerge, !hasBlankLine, rawLines.count > 1 {
+            lines = mergedHardWrappedLines(rawLines)
+        } else {
+            lines = rawLines
+        }
+
+        for line in lines {
             let marked = extractReviewMarkers(from: line)
-            let trimmed = marked.line.trimmingCharacters(in: .whitespacesAndNewlines)
+            var trimmed = marked.line.trimmingCharacters(in: .whitespacesAndNewlines)
             if trimmed.isEmpty {
                 attachReviewMarker(marked, from: blocks.count, blocks: &blocks)
                 nextId = (blocks.last?.id ?? nextId) + 1
                 continue
             }
+            if isJunkBodyLine(trimmed) {
+                attachReviewMarker(marked, from: blocks.count, blocks: &blocks)
+                nextId = (blocks.last?.id ?? nextId) + 1
+                continue
+            }
+            trimmed = normalizedQuotes(trimmed)
 
             let startIndex = blocks.count
+            if let caption = captionText(from: trimmed) {
+                blocks.append(
+                    ContentBlock(id: nextId, isImage: false, text: caption, imageUrl: nil, isCaption: true)
+                )
+                nextId += 1
+                attachReviewMarker(marked, from: startIndex, blocks: &blocks)
+                nextId = (blocks.last?.id ?? nextId) + 1
+                continue
+            }
             let consumedImages: Bool
             if let imagePattern {
                 consumedImages = appendImageAwareParagraph(
@@ -8732,7 +10118,7 @@ public struct ReaderView: View {
             if match.numberOfRanges > 1 {
                 let url = source.substring(with: match.range(at: 1))
                     .trimmingCharacters(in: .whitespaces)
-                blocks.append(ContentBlock(id: nextId, isImage: true, text: "", imageUrl: url))
+                blocks.append(makeImageBlock(id: nextId, url: url))
                 nextId += 1
             }
             cursor = match.range.location + match.range.length
@@ -8749,10 +10135,26 @@ public struct ReaderView: View {
 
     private func appendTextBlock(_ text: String, id: inout Int, into blocks: inout [ContentBlock]) {
         guard !text.isEmpty else { return }
-        let prefix = (text.hasPrefix("　") || text.hasPrefix("    ")) ? "" : "　　"
-        blocks.append(ContentBlock(id: id, isImage: false, text: prefix + text, imageUrl: nil, paragraphId: id))
+        // 首行缩进统一由渲染层的 firstLineIndent 负责，正文里不再预先补全角空格，否则会叠成双倍
+        blocks.append(ContentBlock(id: id, isImage: false, text: text, imageUrl: nil, paragraphId: id))
         id += 1
     }
+    /// 图片块带上宽高比：分页估算和渲染共用，图片才能和文字排在同一页
+    private func makeImageBlock(id: Int, url: String) -> ContentBlock {
+        let measured = ReaderImageMetrics.measure(
+            urlString: url,
+            cachedData: ChapterImageView.cachedImageData(for: url)
+        )
+        return ContentBlock(
+            id: id,
+            isImage: true,
+            text: "",
+            imageUrl: url,
+            imageAspectRatio: ReaderImageMetrics.aspectRatio(measured),
+            imageNaturalWidth: ReaderImageMetrics.pointsWidth(measured)
+        )
+    }
+
 
     /// 从一行里拆出段评 / 本章说哨兵，剩下才是正文。
     private func extractReviewMarkers(from line: String)
@@ -8854,113 +10256,6 @@ public struct ReaderView: View {
         )
     }
 
-    /// 一页能放多高（点）：先扣掉页眉页脚和上下边距。
-    /// 首页标题占的高度：按可用宽度估算折行行数，分页和渲染共用同一套算法
-    private func estimatedTitleHeight(_ title: String) -> CGFloat {
-        guard readerConfig.titleAlignment != .hidden else { return 0 }
-        let titleFontSize = readerConfig.fontSize * readerConfig.chapterTitleScale
-        let width = max(120, readerContainerSize.width - readerConfig.paddingLeft - readerConfig.paddingRight)
-        let charsPerLine = max(4, Int(width / (titleFontSize + readerConfig.letterSpacing)))
-        let lines = max(1, min(4, Int(ceil(Double(title.count) / Double(charsPerLine)))))
-        // 略放宽：估小了最后一行会被页脚裁掉
-        return titleFontSize * 1.45 * CGFloat(lines) + 12.0
-    }
-
-    /// 返回高度而非行数：段间距占位，按行数算会低估，
-    /// 超出预算的部分会压到页脚上。
-    private func calculateLayoutMetrics(title: String? = nil) -> (pageHeight: CGFloat, firstPageHeight: CGFloat) {
-        let height = max(400, readerContainerSize.height)
-
-        let barHeight: CGFloat = 19
-        let reserved = (readerConfig.headerEnabled ? barHeight : 0)
-            + (readerConfig.footerEnabled ? barHeight : 0)
-            + (readerConfig.headerEnabled ? readerConfig.headerOffset : 0)
-            + (readerConfig.footerEnabled ? readerConfig.footerOffset : 0)
-            + readerConfig.paddingTop
-            + readerConfig.paddingBottom
-        let usableHeight = max(200, height - reserved - 2)
-
-        // First page has chapter title (+ title padding)
-        let titleHeight = title.map { estimatedTitleHeight($0) } ?? estimatedTitleHeight("第 1 章")
-        let firstPageUsableHeight = max(100, usableHeight - titleHeight)
-
-        return (pageHeight: usableHeight, firstPageHeight: firstPageUsableHeight)
-    }
-
-    /// 把一段正文切成行。
-    ///
-    /// 这里必须跟 `CoreTextPageView` 用同一套字体和字距：换字体或把字距调大后，
-    /// 按默认苹方、不带字距切出来的行，画的时候会宽于量出来的宽度，整页就溢出/错位。
-    /// 热评段用比正文小一号的字，并且左右各留出卡片内边距，
-    /// 所以断行必须按「小字号 + 收窄宽度」来算，跟 draw 那边保持同一口径。
-    private func splitParagraphIntoLines(
-        text: String,
-        width: Double,
-        fontSizeOverride: CGFloat? = nil,
-        horizontalInset: Double = 0,
-        suppressFirstLineIndent: Bool = false
-    ) -> [(text: String, isParagraphEnd: Bool, charStart: Int)] {
-        let fontSize = fontSizeOverride ?? readerConfig.fontSize
-        let font = ReaderFontFactory.ctFont(
-            postScriptName: readerConfig.font.postScriptName,
-            boldPostScriptName: readerConfig.font.boldPostScriptName,
-            size: fontSize,
-            weightLevel: readerConfig.weightLevel
-        )
-        let attributes: [CFString: Any] = [
-            kCTFontAttributeName: font,
-            kCTKernAttributeName: readerConfig.letterSpacing
-        ]
-        guard let attrString = CFAttributedStringCreate(nil, text as CFString, attributes as CFDictionary) else {
-            return [(text, true, 0)]
-        }
-        let typesetter = CTTypesetterCreateWithAttributedString(attrString)
-        var start = 0
-        let textLen = CFStringGetLength(text as CFString)
-        var result: [(text: String, isParagraphEnd: Bool, charStart: Int)] = []
-        let nsStr = text as NSString
-        // 段首会补全角缩进，第一行要按缩进后的宽度切，否则首行一定超宽
-        let indentWidth = suppressFirstLineIndent
-            ? 0
-            : Double(readerConfig.firstLineIndent.rounded()) * Double(fontSize)
-        let textWidth = max(20, width - horizontalInset * 2)
-        var isFirstLine = true
-
-        while start < textLen {
-            let available = isFirstLine ? max(20, textWidth - indentWidth) : textWidth
-            var count = CTTypesetterSuggestLineBreak(typesetter, start, available)
-            if count <= 0 { break }
-            if readerConfig.punctuationKinsoku {
-                count = Self.applyLineBreakRules(nsStr: nsStr, start: start, count: count, textLen: textLen)
-            }
-            let sub = nsStr.substring(with: NSRange(location: start, length: count))
-            let isEnd = (start + count >= textLen)
-            result.append((sub, isEnd, start))
-            start += count
-            isFirstLine = false
-        }
-        return result
-    }
-
-    /// 标点禁则：行首不该出现句读/收尾类标点，行尾不该出现开引号、开括号。
-    /// 行首禁则按「标点挤压」处理：把标点拉到上一行，宽度交给两端对齐吸收；
-    /// 行尾禁则把该字符挪到下一行。CoreText 不做中文禁则，需要在这里补。
-    private static let forbiddenLineStart: Set<unichar> = {
-        var set = Set<unichar>()
-        for scalar in "。，、；：？！…～·）】》」』〉”’.，;:?!)]}%".unicodeScalars where scalar.value <= 0xFFFF {
-            set.insert(unichar(scalar.value))
-        }
-        return set
-    }()
-
-    private static let forbiddenLineEnd: Set<unichar> = {
-        var set = Set<unichar>()
-        for scalar in "（【《「『〈“‘([{".unicodeScalars where scalar.value <= 0xFFFF {
-            set.insert(unichar(scalar.value))
-        }
-        return set
-    }()
-
     /// 连续模式用的是 SwiftUI / TextKit 的断行，插不进 CoreText 那套禁则。
     /// 这里在「不该被换行切开」的位置插 U+2060（WORD JOINER）：TextKit 认这个字符，
     /// 句读标点就不会被甩到行首，开引号开括号也不会被留在行尾。
@@ -8977,153 +10272,46 @@ public struct ReaderView: View {
             out.append(ch)
             guard index + 1 < chars.count else { continue }
             let next = chars[index + 1]
-            if Self.isForbiddenLineStart(next) || Self.isForbiddenLineEnd(ch) {
+            if ReaderPaginator.isForbiddenLineStart(next) || ReaderPaginator.isForbiddenLineEnd(ch) {
                 out += joiner
             }
         }
         return out
     }
 
-    private static func isForbiddenLineStart(_ ch: Character) -> Bool {
-        guard let scalar = String(ch).unicodeScalars.first, scalar.value <= 0xFFFF else { return false }
-        return forbiddenLineStart.contains(unichar(scalar.value))
-    }
-
-    private static func isForbiddenLineEnd(_ ch: Character) -> Bool {
-        guard let scalar = String(ch).unicodeScalars.first, scalar.value <= 0xFFFF else { return false }
-        return forbiddenLineEnd.contains(unichar(scalar.value))
-    }
-
-    private static func applyLineBreakRules(nsStr: NSString, start: Int, count: Int, textLen: Int) -> Int {
-        var adjusted = count
-        // 行首禁则：后方紧跟句读类标点时拉到本行，一次最多两个
-        var pulled = 0
-        var next = start + count
-        while pulled < 2, next < textLen, forbiddenLineStart.contains(nsStr.character(at: next)) {
-            pulled += 1
-            next += 1
-        }
-        adjusted += pulled
-        // 行尾禁则：本行最后一个是开引号/开括号就把它推到下一行
-        if adjusted > 1, forbiddenLineEnd.contains(nsStr.character(at: start + adjusted - 1)) {
-            adjusted -= 1
-        }
-        return max(1, adjusted)
-    }
-
-    private typealias PageLine = (text: String, isParagraphEnd: Bool, charStart: Int, paragraphId: Int)
-
-    private func buildPageBlocks(from lines: [PageLine],
-                                 startingId: inout Int) -> [ContentBlock] {
-        var identifier = startingId
-        let blocks = lines.map { line -> ContentBlock in
-            defer { identifier += 1 }
-            return ContentBlock(
-                id: identifier,
-                isImage: false,
-                text: line.text,
-                imageUrl: line.isParagraphEnd ? "p_end" : nil,
-                paragraphId: line.paragraphId,
-                charStart: line.charStart
-            )
-        }
-        startingId = identifier
-        return blocks
-    }
-
-    private func paginate(blocks: [ContentBlock], title: String? = nil) -> [[ContentBlock]] {
-        let metrics = calculateLayoutMetrics(title: title)
-        let normalHeight = metrics.pageHeight
-        let firstPageHeight = metrics.firstPageHeight
-        let lineHeight = readerConfig.fontSize * 1.25 + readerConfig.lineSpacing
-        // 热评卡片：小一号字 + 两侧内边距，跟 CoreTextUIView.draw 的口径一致
-        let reviewScale = max(0.5, readerConfig.reviewFontScale)
-        let reviewInset = Double(max(0, readerConfig.reviewInset))
-        let reviewLineHeight = readerConfig.fontSize * reviewScale * 1.25 + readerConfig.lineSpacing
-        // 跟 CoreTextUIView.reviewBands 同一个口径：卡片上下各多出这段留白
-        let reviewPad = min(14, max(8, readerConfig.paragraphSpacing + 1))
-        // 断行的宽度必须和渲染时用的一致，不然一行排得比页宽，右边就被切掉
-        let usableWidth = Double(max(200, readerContainerSize.width - readerConfig.paddingLeft - readerConfig.paddingRight))
-
-        var pages: [[ContentBlock]] = []
-        var currentPageLines: [PageLine] = []
-        var currentPageHeight: CGFloat = 0
-        var maxHeightForCurrentPage = firstPageHeight
-        var blockIdCounter = 10000
-
-        for block in blocks {
-            if block.isImage {
-                if !currentPageLines.isEmpty {
-                    pages.append(buildPageBlocks(from: currentPageLines, startingId: &blockIdCounter))
-                    currentPageLines.removeAll(keepingCapacity: true)
-                }
-                pages.append([block])
-                currentPageHeight = 0
-                maxHeightForCurrentPage = normalHeight
-            } else {
-                let isReviewBlock = block.commentCount == -2
-                let pLines = splitParagraphIntoLines(
-                    text: block.text,
-                    width: usableWidth,
-                    fontSizeOverride: isReviewBlock ? readerConfig.fontSize * reviewScale : nil,
-                    horizontalInset: isReviewBlock ? reviewInset : 0,
-                    suppressFirstLineIndent: isReviewBlock
-                )
-                // 卡片整块留在同一页，不然框会从中间被页面切断
-                if isReviewBlock, !currentPageLines.isEmpty {
-                    let spacingBefore: CGFloat = currentPageLines.last?.isParagraphEnd == true
-                        ? readerConfig.paragraphSpacing : 0
-                    let topExtra: CGFloat = currentPageLines.isEmpty
-                        ? 0
-                        : max(0, reviewPad - spacingBefore)
-                    let bottomExtra = max(0, reviewPad - readerConfig.paragraphSpacing)
-                    let blockHeight = spacingBefore
-                        + CGFloat(pLines.count) * reviewLineHeight
-                        + readerConfig.paragraphSpacing
-                        + topExtra
-                        + bottomExtra
-                    if currentPageHeight + blockHeight > maxHeightForCurrentPage,
-                       blockHeight <= normalHeight {
-                        pages.append(buildPageBlocks(from: currentPageLines, startingId: &blockIdCounter))
-                        currentPageLines = []
-                        currentPageHeight = 0
-                        maxHeightForCurrentPage = normalHeight
-                    }
-                }
-                for lineInfo in pLines {
-                    let baseHeight = isReviewBlock ? reviewLineHeight : lineHeight
-                    let gap = currentPageLines.last?.isParagraphEnd == true
-                        ? readerConfig.paragraphSpacing
-                        : 0
-                    let advance = baseHeight + gap
-
-                    let overflows = !currentPageLines.isEmpty
-                        && currentPageHeight + advance > maxHeightForCurrentPage
-                    if overflows {
-                        pages.append(buildPageBlocks(from: currentPageLines, startingId: &blockIdCounter))
-                        currentPageLines.removeAll(keepingCapacity: true)
-                        currentPageHeight = 0
-                        maxHeightForCurrentPage = normalHeight
-                    }
-
-                    currentPageLines.append((lineInfo.text, lineInfo.isParagraphEnd, lineInfo.charStart, block.id))
-                    currentPageHeight += advance
-                }
-            }
-        }
-
-        guard !currentPageLines.isEmpty else {
-            return pages.isEmpty ? [[]] : pages
-        }
-        pages.append(buildPageBlocks(from: currentPageLines, startingId: &blockIdCounter))
-        return pages
-    }
 }
 
 // MARK: - Chapter Image Component with Anti-Hotlinking Headers & Cache
+/// 图片解密只允许完成一次；先到的结果（脚本返回值或 5 秒超时）赢。
+private final class ImageDecodeContinuation {
+    private let lock = NSLock()
+    private var finished = false
+    private let continuation: CheckedContinuation<Data?, Never>
+
+    init(_ continuation: CheckedContinuation<Data?, Never>) {
+        self.continuation = continuation
+    }
+
+    func finish(_ value: Data?) {
+        lock.lock()
+        defer { lock.unlock() }
+        guard !finished else { return }
+        finished = true
+        continuation.resume(returning: value)
+    }
+}
+
 public struct ChapterImageView: View {
     public let urlString: String
     public let referer: String?
+    /// `ContentRule.imageStyle`：只影响显示尺寸和对齐，不改 URL 与缓存 key。
+    public let imageStyle: ContentImageStyle
+    /// `ContentRule.imageDecode`：拿到图片 bytes 后按书源脚本解密，失败回退原图。
+    public let imageDecode: String?
+    public let source: BookSource?
+    public let baseUrl: String?
+    /// 翻页内联排版时由分页器算好的显示尺寸；nil 表示按图片原始尺寸自适应
+    public let forcedSize: CGSize?
 
     private enum Phase {
         case idle
@@ -9137,28 +10325,84 @@ public struct ChapterImageView: View {
     }
 
     @State private var phase: Phase = .idle
+    @State private var naturalSize: CGSize = .zero
+    @State private var containerWidth: CGFloat = 0
+    @State private var showViewer = false
 
-    public init(urlString: String, referer: String? = nil) {
+    public init(
+        urlString: String,
+        referer: String? = nil,
+        imageStyle: ContentImageStyle = .defaultStyle,
+        imageDecode: String? = nil,
+        source: BookSource? = nil,
+        baseUrl: String? = nil,
+        forcedSize: CGSize? = nil
+    ) {
         self.urlString = urlString
         self.referer = referer
+        self.imageStyle = imageStyle
+        self.imageDecode = imageDecode
+        self.source = source
+        self.baseUrl = baseUrl
+        self.forcedSize = forcedSize
     }
 
     public var body: some View {
         content
-            .frame(maxWidth: .infinity, alignment: .center)
-            .task(id: urlString) { await loadImage() }
+            .frame(maxWidth: .infinity, alignment: alignment)
+            .background(
+                GeometryReader { geo in
+                    Color.clear
+                        .onAppear { containerWidth = geo.size.width }
+                        .onChange(of: geo.size.width) { width in containerWidth = width }
+                }
+            )
+            .task(id: "\(urlString)|\(ReaderConfig.shared.comicTrimBorders)") { await loadImage() }
+    }
+
+    private var alignment: Alignment {
+        switch imageStyle.horizontalAlignment {
+        case .leading: return .leading
+        case .trailing: return .trailing
+        case .center: return .center
+        }
     }
 
     @ViewBuilder
     private var content: some View {
-        switch phase {
-        case .loaded(let data):
+        Group {
+            switch phase {
+            case .loaded(let data):
             if let picture = platformImage(from: data) {
-                picture
-                    .resizable()
-                    .scaledToFit()
-                    .cornerRadius(8)
-                    .padding(.vertical, 6)
+                styledImage(picture)
+                    .contentShape(Rectangle())
+                    .onTapGesture { showViewer = true }
+                    .contextMenu {
+                        Button {
+                            showViewer = true
+                        } label: {
+                            Label("查看大图", systemImage: "arrow.up.left.and.arrow.down.right")
+                        }
+                        #if canImport(UIKit)
+                        if let uiImage = UIImage(data: data) {
+                            Button {
+                                ImageExport.saveToPhotos(uiImage)
+                            } label: {
+                                Label("保存到相册", systemImage: "square.and.arrow.down")
+                            }
+                            Button {
+                                ImageExport.share(uiImage)
+                            } label: {
+                                Label("分享", systemImage: "square.and.arrow.up")
+                            }
+                        }
+                        #endif
+                    }
+                    #if os(iOS)
+                    .fullScreenCover(isPresented: $showViewer) {
+                        ImageViewerSheet(data: data)
+                    }
+                    #endif
             } else {
                 Color.clear.frame(height: 1)
             }
@@ -9169,6 +10413,83 @@ public struct ChapterImageView: View {
         case .idle:
             Color.clear.frame(height: 1)
         }
+        }
+        .onChange(of: naturalSize) { size in
+            ReaderImageMetrics.remember(urlString: urlString, size: size)
+        }
+    }
+
+    /// 供正文解析时同步查已加载过的图片尺寸（远程图第二次进章就能按真实比例分页）
+    static func cachedImageData(for urlString: String) -> Data? {
+        let normalized = ImageSourceNormalizer.normalize(urlString)
+        if let cached = MemoryCache.images.object(forKey: normalized as NSString) {
+            return cached as Data
+        }
+        return MemoryCache.images.object(forKey: urlString as NSString) as Data?
+    }
+
+    /// 安卓 `imageStyle` 的显示语义：FULL 铺满，默认不超过原尺寸并居中，
+    /// TEXT 按小图处理，SINGLE 等同于铺满（分页模式由外层整页承载），LEFT/RIGHT 改对齐。
+    /// 用户在设置里选的显示模式优先于书源给的 imageStyle。
+    @ViewBuilder
+    private func styledImage(_ picture: Image) -> some View {
+        let ratio = naturalSize.width > 0 && naturalSize.height > 0
+            ? naturalSize.width / naturalSize.height
+            : nil
+        // 安卓按像素比较图片宽度与屏幕宽度；iOS 的布局单位是 pt，
+        // 而 UIImage(data:) 的 scale 恒为 1，所以这里要除以屏幕倍率再比较。
+        let naturalWidth = naturalWidthInPoints
+        let config = ReaderConfig.shared
+        let baseMaxWidth: CGFloat? = {
+            switch config.imageDisplayMode {
+            case 1:
+                return naturalWidth > 0 ? naturalWidth : nil
+            case 2:
+                return .infinity
+            default:
+                switch imageStyle {
+                case .full, .single:
+                    return .infinity
+                case .text:
+                    return min(max(naturalWidth, 24), 80)
+                case .defaultStyle, .left, .right:
+                    return naturalWidth > 0 ? naturalWidth : nil
+                }
+            }
+        }()
+        let percent = max(0.3, min(1, config.imageMaxWidthPercent / 100))
+        let percentLimit: CGFloat? = percent < 0.999 && containerWidth > 0
+            ? containerWidth * percent
+            : nil
+        let maxWidth: CGFloat? = {
+            guard let percentLimit else { return baseMaxWidth }
+            guard let baseMaxWidth else { return percentLimit }
+            return min(baseMaxWidth, percentLimit)
+        }()
+
+        Group {
+            if let forced = forcedSize {
+                // 分页模式：分页器已经算好高度，这里只负责按框缩放，保证和分页一致
+                picture
+                    .resizable()
+                    .scaledToFit()
+                    .frame(width: max(1, forced.width), height: max(1, forced.height))
+                    .frame(maxWidth: .infinity, alignment: alignment)
+            } else if let ratio {
+                Color.clear
+                    .aspectRatio(ratio, contentMode: .fit)
+                    .frame(maxWidth: maxWidth, maxHeight: imageStyle == .text ? 80 : .infinity)
+                    .overlay(picture.resizable().scaledToFit())
+                    .frame(maxWidth: .infinity, alignment: alignment)
+            } else {
+                picture
+                    .resizable()
+                    .scaledToFit()
+                    .frame(maxWidth: .infinity, alignment: alignment)
+            }
+        }
+        .cornerRadius(8)
+        .padding(.vertical, 6)
     }
 
     private var loadingPlaceholder: some View {
@@ -9214,10 +10535,12 @@ public struct ChapterImageView: View {
         }
 
         if target.hasPrefix("data:image") {
-            if let bytes = inlineImageData(target) {
+            if let raw = inlineImageData(target) {
+                let bytes = await decodeIfNeeded(raw, src: target)
                 if platformImage(from: bytes) == nil {
                     AppLog.write("[插图] 解码失败 dataURI bytes=\(bytes.count)")
                 }
+                naturalSize = naturalImageSize(from: bytes)
                 phase = .loaded(bytes)
             } else {
                 AppLog.write("[插图] 失败 dataURI kind=\(target.prefix(32))")
@@ -9228,13 +10551,17 @@ public struct ChapterImageView: View {
         }
 
         if let cached = MemoryCache.images.object(forKey: target as NSString) {
-            phase = .loaded(cached as Data)
+            let bytes = cached as Data
+            naturalSize = naturalImageSize(from: bytes)
+            phase = .loaded(bytes)
             return
         }
 
         if target.hasPrefix("file://"), let fileURL = URL(string: target),
-           let bytes = try? Data(contentsOf: fileURL) {
+           let raw = try? Data(contentsOf: fileURL) {
+            let bytes = await decodeIfNeeded(raw, src: target)
             MemoryCache.images.setObject(bytes as NSData, forKey: target as NSString)
+            naturalSize = naturalImageSize(from: bytes)
             phase = .loaded(bytes)
             return
         }
@@ -9256,18 +10583,21 @@ public struct ChapterImageView: View {
         }
 
         do {
-            let (bytes, reply) = try await URLSession.shared.data(for: request)
+            let (rawBytes, reply) = try await URLSession.shared.data(for: request)
             let status = (reply as? HTTPURLResponse)?.statusCode ?? -1
-            if (status == 200 || status == 304), !bytes.isEmpty {
+            if (status == 200 || status == 304), !rawBytes.isEmpty {
+                let bytes = await decodeIfNeeded(rawBytes, src: target)
                 if platformImage(from: bytes) == nil {
                     AppLog.write("[插图] 解码失败 host=\(remote.host ?? "-") bytes=\(bytes.count)")
                 }
                 MemoryCache.images.setObject(bytes as NSData, forKey: target as NSString)
+                let size = naturalImageSize(from: bytes)
                 await MainActor.run {
+                    self.naturalSize = size
                     self.phase = .loaded(bytes)
                 }
             } else {
-                AppLog.write("[插图] 失败 host=\(remote.host ?? "-") status=\(status) bytes=\(bytes.count)")
+                AppLog.write("[插图] 失败 host=\(remote.host ?? "-") status=\(status) bytes=\(rawBytes.count)")
                 Self.dumpRaw(urlString)
                 await MainActor.run {
                     self.phase = .failed
@@ -9280,6 +10610,145 @@ public struct ChapterImageView: View {
                 self.phase = .failed
             }
         }
+    }
+
+    /// `imageDecode` 是字节级解密；JS 没有超时 API，放到后台任务里跑并用 5 秒兜底。
+    /// 脚本异常、空结果或超时都回退原图，绝不让插图失败影响正文。
+    /// 漫画/PDF 模式在这里顺手裁掉四周的白边，正文插图不受影响。
+    private func decodeIfNeeded(_ bytes: Data, src: String) async -> Data {
+        let result: Data
+        if let script = imageDecode?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+           !script.isEmpty {
+            let source = self.source
+            let base = self.baseUrl
+            let decoded: Data? = await withCheckedContinuation { continuation in
+                let once = ImageDecodeContinuation(continuation)
+                Task.detached(priority: .utility) {
+                    once.finish(
+                        ImageDecodeRule.decode(
+                            bytes,
+                            src: src,
+                            script: script,
+                            source: source,
+                            baseUrl: base
+                        )
+                    )
+                }
+                DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 5) {
+                    once.finish(nil)
+                }
+            }
+            if let decoded, !decoded.isEmpty {
+                result = decoded
+            } else {
+                AppLog.write("[插图] imageDecode 未返回可用数据，使用原图")
+                result = bytes
+            }
+        } else {
+            result = bytes
+        }
+        guard ReaderConfig.shared.comicTrimBorders else { return result }
+        return Self.trimWhiteBorders(result)
+    }
+
+    /// 扫描四周，把接近纯白的边裁掉。只用于整页扫描的漫画和 PDF。
+    private static func trimWhiteBorders(_ data: Data) -> Data {
+        #if canImport(UIKit)
+        guard let image = UIImage(data: data), let cg = image.cgImage else { return data }
+        let width = cg.width
+        let height = cg.height
+        guard width > 16, height > 16,
+              let raw = cg.dataProvider?.data,
+              let pointer = CFDataGetBytePtr(raw) else { return data }
+        let bytesPerPixel = max(1, cg.bitsPerPixel / 8)
+        let bytesPerRow = cg.bytesPerRow
+        let length = CFDataGetLength(raw)
+        let threshold: UInt8 = 242
+
+        func isPaper(_ x: Int, _ y: Int) -> Bool {
+            let offset = y * bytesPerRow + x * bytesPerPixel
+            guard offset >= 0, offset + bytesPerPixel <= length else { return true }
+            let pixel = pointer + offset
+            for channel in 0..<min(3, bytesPerPixel) where pixel[channel] < threshold {
+                return false
+            }
+            return true
+        }
+
+        let step = max(1, min(width, height) / 400)
+        var top = 0
+        var bottom = height - 1
+        var left = 0
+        var right = width - 1
+        var found = false
+
+        topLoop: for y in stride(from: 0, to: height / 2, by: step) {
+            for x in stride(from: 0, to: width, by: step) where !isPaper(x, y) {
+                top = y
+                found = true
+                break topLoop
+            }
+        }
+        guard found else { return data }
+        found = false
+        bottomLoop: for y in stride(from: height - 1, through: height / 2, by: -step) {
+            for x in stride(from: 0, to: width, by: step) where !isPaper(x, y) {
+                bottom = y
+                found = true
+                break bottomLoop
+            }
+        }
+        found = false
+        leftLoop: for x in stride(from: 0, to: width / 2, by: step) {
+            for y in stride(from: 0, to: height, by: step) where !isPaper(x, y) {
+                left = x
+                found = true
+                break leftLoop
+            }
+        }
+        found = false
+        rightLoop: for x in stride(from: width - 1, through: width / 2, by: -step) {
+            for y in stride(from: 0, to: height, by: step) where !isPaper(x, y) {
+                right = x
+                found = true
+                break rightLoop
+            }
+        }
+
+        let inset = 2
+        let cropLeft = max(0, left - inset)
+        let cropTop = max(0, top - inset)
+        let cropWidth = min(width - 1, right + inset) - cropLeft + 1
+        let cropHeight = min(height - 1, bottom + inset) - cropTop + 1
+        guard cropWidth >= 16, cropHeight >= 16,
+              cropWidth < width - 2 || cropHeight < height - 2 else { return data }
+        let rect = CGRect(x: cropLeft, y: cropTop, width: cropWidth, height: cropHeight)
+        guard let cropped = cg.cropping(to: rect) else { return data }
+        let trimmed = UIImage(cgImage: cropped, scale: image.scale, orientation: image.imageOrientation)
+        return trimmed.pngData() ?? data
+        #else
+        return data
+        #endif
+    }
+
+    private func naturalImageSize(from data: Data) -> CGSize {
+        #if canImport(UIKit)
+        return UIImage(data: data)?.size ?? .zero
+        #elseif canImport(AppKit)
+        return NSImage(data: data)?.size ?? .zero
+        #else
+        return .zero
+        #endif
+    }
+
+    private var naturalWidthInPoints: CGFloat {
+        #if canImport(UIKit)
+        let scale = UIScreen.main.scale
+        return scale > 0 ? naturalSize.width / scale : naturalSize.width
+        #else
+        return naturalSize.width
+        #endif
     }
 
     private func inlineImageData(_ value: String) -> Data? {
@@ -9343,6 +10812,214 @@ public struct ChapterImageView: View {
         #else
         return nil
         #endif
+    }
+}
+
+#if canImport(UIKit)
+enum ImageExport {
+    static func saveToPhotos(_ image: UIImage) {
+        UIImageWriteToSavedPhotosAlbum(image, nil, nil, nil)
+    }
+
+    static func share(_ image: UIImage) {
+        guard let controller = topViewController() else { return }
+        let activity = UIActivityViewController(activityItems: [image], applicationActivities: nil)
+        if let popover = activity.popoverPresentationController {
+            popover.sourceView = controller.view
+            popover.sourceRect = CGRect(
+                x: controller.view.bounds.midX,
+                y: controller.view.bounds.midY,
+                width: 0,
+                height: 0
+            )
+            popover.permittedArrowDirections = []
+        }
+        controller.present(activity, animated: true)
+    }
+
+    static func topViewController() -> UIViewController? {
+        let scene = UIApplication.shared.connectedScenes
+            .compactMap { $0 as? UIWindowScene }
+            .first
+        var top = scene?.windows.first(where: { $0.isKeyWindow })?.rootViewController
+        while let presented = top?.presentedViewController {
+            top = presented
+        }
+        return top
+    }
+}
+#endif
+
+/// 全屏看插图：双指缩放、放大后拖动、双击归位，下拉或点叉关闭。
+struct ImageViewerSheet: View {
+    let data: Data
+    let caption: String?
+    @Environment(\.dismiss) private var dismiss
+
+    @State private var scale: CGFloat = 1
+    @State private var lastScale: CGFloat = 1
+    @State private var offset: CGSize = .zero
+    @State private var lastOffset: CGSize = .zero
+    @State private var dragY: CGFloat = 0
+
+    init(data: Data, caption: String? = nil) {
+        self.data = data
+        self.caption = caption
+    }
+
+    var body: some View {
+        ZStack {
+            Color.black.ignoresSafeArea()
+
+            if let picture = platformImage {
+                picture
+                    .resizable()
+                    .scaledToFit()
+                    .scaleEffect(scale)
+                    .offset(x: offset.width, y: offset.height + dragY)
+                    .gesture(magnification)
+                    .simultaneousGesture(panGesture)
+                    .onTapGesture(count: 2) { toggleZoom() }
+                    .contextMenu { exportMenu }
+            } else {
+                Text("图片无法显示")
+                    .font(.system(size: 13))
+                    .foregroundColor(.white.opacity(0.7))
+            }
+
+            VStack {
+                HStack(spacing: 12) {
+                    Spacer()
+                    exportButtons
+                    Button {
+                        dismiss()
+                    } label: {
+                        Image(systemName: "xmark")
+                            .font(.system(size: 15, weight: .semibold))
+                            .foregroundColor(.white)
+                            .frame(width: 36, height: 36)
+                            .background(Circle().fill(Color.black.opacity(0.45)))
+                    }
+                    .buttonStyle(.plain)
+                }
+                .padding(.horizontal, 16)
+                .padding(.top, 8)
+
+                Spacer()
+
+                if let caption, !caption.trimmingCharacters(in: .whitespaces).isEmpty {
+                    Text(caption)
+                        .font(.system(size: 13))
+                        .foregroundColor(.white.opacity(0.72))
+                        .multilineTextAlignment(.center)
+                        .padding(.horizontal, 24)
+                        .padding(.bottom, 18)
+                }
+            }
+        }
+    }
+
+    private var platformImage: Image? {
+        #if canImport(UIKit)
+        return UIImage(data: data).map { Image(uiImage: $0) }
+        #elseif canImport(AppKit)
+        return NSImage(data: data).map { Image(nsImage: $0) }
+        #else
+        return nil
+        #endif
+    }
+
+    @ViewBuilder
+    private var exportButtons: some View {
+        #if canImport(UIKit)
+        if let image = UIImage(data: data) {
+            Button {
+                ImageExport.share(image)
+            } label: {
+                Image(systemName: "square.and.arrow.up")
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundColor(.white)
+                    .frame(width: 36, height: 36)
+                    .background(Circle().fill(Color.black.opacity(0.45)))
+            }
+            .buttonStyle(.plain)
+        }
+        #endif
+    }
+
+    @ViewBuilder
+    private var exportMenu: some View {
+        #if canImport(UIKit)
+        if let image = UIImage(data: data) {
+            Button {
+                ImageExport.saveToPhotos(image)
+            } label: {
+                Label("保存到相册", systemImage: "square.and.arrow.down")
+            }
+            Button {
+                ImageExport.share(image)
+            } label: {
+                Label("分享", systemImage: "square.and.arrow.up")
+            }
+        }
+        #endif
+    }
+
+    private var magnification: some Gesture {
+        MagnificationGesture()
+            .onChanged { value in
+                scale = min(max(lastScale * value, 1), 4)
+            }
+            .onEnded { _ in
+                if scale <= 1.01 {
+                    withAnimation(.easeOut(duration: 0.2)) {
+                        scale = 1
+                        lastScale = 1
+                        offset = .zero
+                        lastOffset = .zero
+                    }
+                } else {
+                    lastScale = scale
+                }
+            }
+    }
+
+    private var panGesture: some Gesture {
+        DragGesture()
+            .onChanged { value in
+                if scale > 1 {
+                    offset = CGSize(
+                        width: lastOffset.width + value.translation.width,
+                        height: lastOffset.height + value.translation.height
+                    )
+                } else {
+                    dragY = max(0, value.translation.height)
+                }
+            }
+            .onEnded { value in
+                if scale > 1 {
+                    lastOffset = offset
+                } else {
+                    if value.translation.height > 120 {
+                        dismiss()
+                    }
+                    withAnimation(.easeOut(duration: 0.2)) { dragY = 0 }
+                }
+            }
+    }
+
+    private func toggleZoom() {
+        withAnimation(.easeInOut(duration: 0.2)) {
+            if scale > 1 {
+                scale = 1
+                lastScale = 1
+                offset = .zero
+                lastOffset = .zero
+            } else {
+                scale = 2.2
+                lastScale = 2.2
+            }
+        }
     }
 }
 
@@ -9425,6 +11102,7 @@ public struct ReaderSearchSheet: View {
             .searchable(text: $searchText, prompt: searchScope == 0 ? "搜索当前章节内容..." : "搜索章节名称...")
             .toolbar { cancelToolbar }
         }
+            .stackNavigationStyle()
     }
 
     private var scopePicker: some View {
@@ -9517,13 +11195,17 @@ private func renderedLineText(
     _ text: String,
     index: Int,
     paragraphEnds: [Bool],
+    charStarts: [Int],
     conversion: ChineseConversion,
-    indent: CGFloat
+    indent: CGFloat,
+    suppressIndent: Bool = false
 ) -> String {
+    // 页顶那行常是上一页延续下来的残段，charStart > 0 说明不是段首，不能再缩进
     let startsParagraph = index == 0
-        || (index - 1 < paragraphEnds.count && paragraphEnds[index - 1])
+        ? (index >= charStarts.count || charStarts[index] == 0)
+        : (index - 1 < paragraphEnds.count && paragraphEnds[index - 1])
     let converted = conversion.apply(text)
-    guard startsParagraph else { return converted }
+    guard startsParagraph, !suppressIndent else { return converted }
     return String(repeating: "　", count: Int(indent.rounded())) + converted
 }
 
@@ -9640,6 +11322,7 @@ public struct CoreTextPageView: NSViewRepresentable {
 
         view.lines = lines
         view.isParagraphEnd = isParagraphEnd
+        view.lineCharStarts = lineCharStarts
         // 内容指纹一致就不重绘，翻页拖动时每帧重绘会跟手变差。
         view.renderSignature = view.currentSignature()
     }
@@ -9648,6 +11331,7 @@ public struct CoreTextPageView: NSViewRepresentable {
 public class CoreTextNSView: NSView {
     public var lines: [String] = []
     public var isParagraphEnd: [Bool] = []
+    public var lineCharStarts: [Int] = []
     public var fontSize: CGFloat = 18
     public var lineSpacing: CGFloat = 6
     public var letterSpacing: CGFloat = 0
@@ -9709,6 +11393,7 @@ public class CoreTextNSView: NSView {
                 lineText,
                 index: index,
                 paragraphEnds: isParagraphEnd,
+                charStarts: lineCharStarts,
                 conversion: chineseConversion,
                 indent: firstLineIndent
             )
@@ -9849,6 +11534,7 @@ struct ReplaceRulesView: View {
                 }
             }
         }
+            .stackNavigationStyle()
     }
 
     private func ruleRow(_ rule: ReplaceRule) -> some View {
@@ -9948,6 +11634,7 @@ struct ReplaceRuleEditor: View {
                 }
             }
         }
+            .stackNavigationStyle()
     }
 }
 
@@ -10537,8 +12224,10 @@ public class CoreTextUIView: UIView {
                 lineText,
                 index: index,
                 paragraphEnds: isParagraphEnd,
+                charStarts: lineCharStarts,
                 conversion: chineseConversion,
-                indent: firstLineIndent
+                indent: firstLineIndent,
+                suppressIndent: isReviewLine
             )
             var attrs: [CFString: Any] = [
                 kCTFontAttributeName: lineFont,

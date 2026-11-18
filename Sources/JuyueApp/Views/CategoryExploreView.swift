@@ -26,6 +26,7 @@ public struct CategoryExploreView: View {
     @ViewBuilder
     public var body: some View {
         NavigationView { screenContent }
+            .stackNavigationStyle()
     }
 
     private var screenContent: some View {
@@ -298,6 +299,7 @@ private struct AllSourcesSheet: View {
             #endif
             .toolbar(content: { sourcesToolbar })
         }
+            .stackNavigationStyle()
     }
 
     @ToolbarContentBuilder
@@ -538,6 +540,8 @@ private struct ExploreContent: View {
         #if os(iOS)
         .listStyle(.plain)
         #endif
+        .frame(maxWidth: 900)
+        .frame(maxWidth: .infinity)
         .refreshable { await engine.refresh() }
     }
 }
@@ -680,6 +684,7 @@ private struct AllCategoriesSheet: View {
 
     var body: some View {
         NavigationView { categoryPanels }
+            .stackNavigationStyle()
     }
 
     private var categoryPanels: some View {

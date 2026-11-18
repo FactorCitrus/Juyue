@@ -38,6 +38,6 @@ let package = Package(
             ]),
         .testTarget(
             name: "JuyueCoreTests",
-            dependencies: ["JuyueCore"]),
+            dependencies: ["JuyueCore", "ZIPFoundation"]),
     ]
 )

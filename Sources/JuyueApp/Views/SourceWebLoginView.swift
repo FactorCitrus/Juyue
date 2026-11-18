@@ -531,6 +531,7 @@ private struct LoginNavigationContainer<Content: View>: View {
 
     var body: some View {
         NavigationView { content }
+            .stackNavigationStyle()
     }
 }
 

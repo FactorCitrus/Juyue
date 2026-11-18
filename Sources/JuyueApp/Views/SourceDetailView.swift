@@ -89,7 +89,8 @@ public struct SourceDetailView: View {
         .toolbar { toolbarMenu }
         .sheet(isPresented: $editingSource) { EditSourceSheet(source: source) }
         .sheet(isPresented: $presentingLogin) { SourceLoginSheet(source: source) }
-        .sheet(isPresented: $searchingThisSource) { NavigationView { SearchBookView() } }
+        .sheet(isPresented: $searchingThisSource) { NavigationView { SearchBookView() }
+            .stackNavigationStyle() }
         .sheet(isPresented: $inspectingCookies) { CookieInspectorSheet(source: source) }
         .alert("清空书源变量？", isPresented: $confirmingVariableReset) {
             Button("取消", role: .cancel) {}
@@ -371,7 +372,7 @@ private struct SourceCompatibilitySection: View {
                     Text("这个源自带自定义按钮，橘阅暂时不显示。")
                 }
                 if source.eventListener == true {
-                    Text("这个源用到了事件监听，橘阅暂时不支持。")
+                    Text("这个源用到了事件监听；橘阅目前只在开始 / 结束阅读时触发回调。")
                 }
             }
             .font(.caption2)
@@ -537,6 +538,7 @@ private struct CookieInspectorSheet: View {
                 }
             }
         }
+            .stackNavigationStyle()
     }
 
     private func copyToPasteboard(_ text: String) {
