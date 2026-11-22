@@ -165,9 +165,9 @@ public final class RuleAnalyzer {
     // MARK: - JS 规则拆解
 
     /// 每次求值前把 `src` 绑成当前被分析的源码，目录地址规则要靠它取 mid。
-    private func evalRule(script: String, result: Any?) -> Any? {
+    private func evalRule(script: String, result: Any?, rawText: String? = nil) -> Any? {
         jsEngine.setSourceText((content as? String) ?? "")
-        return jsEngine.evalRule(script: script, result: result)
+        return jsEngine.evalRule(script: script, result: result, rawText: rawText)
     }
 
     /// `<js>…</js>` 或 `@js:…` 的三段式拆法：标记前的规则、脚本本身、标记后的残留规则。
@@ -257,13 +257,19 @@ public final class RuleAnalyzer {
 
         if let javascript = javascriptRule(in: raw) {
             let target: Any
+            var rawText: String?
             if javascript.prefix.isEmpty {
-                target = content
+                // 上游 Rhino 拿到的 `result` 是解析后的对象（content 进 AnalyzeRule 前先转成
+                // LinkedTreeMap），脚本里 `result.source` 才有值；绑字符串只会得到 undefined。
+                target = jsonRoot ?? content
+                // 但有的脚本（番茄聚合）会对 result 做 String()/hexDecode/JSON.parse，
+                // 拿到的必须是原始响应文本，所以同时把原文交给 JS 侧兜住对象转字符串。
+                if jsonRoot != nil { rawText = content as? String }
             } else {
                 let prefixed = getString(javascript.prefix)
                 target = prefixed.isEmpty ? content : prefixed
             }
-            let evaluated = evalRule(script: javascript.script, result: target)
+            let evaluated = evalRule(script: javascript.script, result: target, rawText: rawText)
 
             if let suffix = javascript.suffix, suffix.isEmpty == false {
                 let nested = RuleAnalyzer(content: evaluated ?? "", baseUrl: baseUrl, jsEngine: jsEngine)
@@ -352,7 +358,12 @@ public final class RuleAnalyzer {
             script = String(rule[start..<end])
         }
 
-        let evaluated = evalRule(script: script, result: content)
+        let target = jsonRoot ?? content
+        let evaluated = evalRule(
+            script: script,
+            result: target,
+            rawText: jsonRoot != nil ? content as? String : nil
+        )
         if let array = evaluated as? [Any] {
             return array.map { isUrl ? resolveUrl("\($0)") : "\($0)" }
         }

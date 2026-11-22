@@ -53,7 +53,7 @@ final class BaiduOfflineTTS: NSObject, ObservableObject {
         var list: [Voice] = []
         list.append(Voice(id: "duxiaomei", name: "度小美", note: "SDK 自带 · 女声",
                           textPath: text, speechPath: bundlePath("duxiaomei") ?? ""))
-        list.append(Voice(id: "duxiaoyu", name: "度小宇", note: "SDK 自带 · 男声",
+        list.append(Voice(id: "duxiaoyu", name: "燃燃", note: "SDK 自带 · 男声",
                           textPath: text, speechPath: bundlePath("duxiaoyu") ?? ""))
         // 包里多放的声学模型也算音色：往 Resources/BaiduTTS 里丢 .dat 就行
         let known = Set(["duxiaomei", "duxiaoyu"])
@@ -296,7 +296,7 @@ final class BaiduOfflineTTS: NSObject, ObservableObject {
     /// 音色 ID → 显示名。没登记的按 ID 原样显示。
     static func displayName(for id: String) -> String {
         let table = [
-            "duxiaomei": "度小美", "duxiaoyu": "度小宇",
+            "duxiaomei": "度小美", "duxiaoyu": "燃燃",
             "duxiaolu": "度小鹿", "duxiaowen": "度小雯",
             "duxiaoqiao": "度小乔", "duxiaojiao": "度小娇",
             "dumiduo": "度米朵", "duxiaotai": "度小台",

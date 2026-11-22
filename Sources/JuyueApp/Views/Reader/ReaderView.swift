@@ -11,6 +11,9 @@ import JuyueCore
 #if os(iOS)
 import MediaPlayer
 #endif
+#if canImport(AppKit)
+import AppKit
+#endif
 
 #if os(iOS)
 /// 实验：iOS 的音量键不产生按键事件，只能挂一个隐藏的 MPVolumeView 并 KVO 系统音量。
@@ -1489,6 +1492,7 @@ struct ReaderCommentsSheet: View {
     let chapterTitle: String
     let items: [ReaderCommentItem]
     let chapterURL: String?
+    var bookUrl: String? = nil
 
     @Environment(\.dismiss) private var dismiss
     @Environment(\.colorScheme) private var colorScheme
@@ -1595,7 +1599,7 @@ struct ReaderCommentsSheet: View {
             }
         }
         .sheet(item: $target) { target in
-            NativeCommentListSheet(target: target)
+            NativeCommentListSheet(target: target, bookUrl: bookUrl)
         }
     }
 }
@@ -1606,14 +1610,9 @@ private struct ReviewTarget: Identifiable {
     let title: String
 }
 
-private struct GodReviewMarker {
-    let text: String
-    let imageURL: String?
-    let url: String
-}
-
 private struct NativeCommentListSheet: View {
     let target: ReviewTarget
+    var bookUrl: String? = nil
 
     @Environment(\.dismiss) private var dismiss
     @Environment(\.colorScheme) private var colorScheme
@@ -1666,6 +1665,21 @@ private struct NativeCommentListSheet: View {
                             )
                     }
                     .buttonStyle(.plain)
+                    Button {
+                        Task { await load(reset: true) }
+                    } label: {
+                        Text("刷新")
+                            .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                            .foregroundColor(palette.muted)
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 4)
+                            .overlay(
+                                Rectangle()
+                                    .stroke(palette.muted.opacity(0.5), lineWidth: 0.6)
+                            )
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(isLoading)
                 }
                 .padding(.horizontal, 16)
                 .padding(.bottom, 8)
@@ -1820,9 +1834,12 @@ private struct NativeCommentListSheet: View {
                     VStack(alignment: .leading, spacing: 8) {
                         ForEach(replies[comment.id] ?? []) { reply in
                             VStack(alignment: .leading, spacing: 3) {
-                                Text(reply.user?.user_name ?? "匿名")
-                                    .font(.system(size: 9, weight: .semibold, design: .monospaced))
-                                    .foregroundColor(palette.muted)
+                                HStack(spacing: 4) {
+                                    avatarView(reply.user, size: 16)
+                                    Text(reply.user?.user_name ?? "匿名")
+                                        .font(.system(size: 9, weight: .semibold, design: .monospaced))
+                                        .foregroundColor(palette.muted)
+                                }
                                 Text(commentText(reply.content))
                                     .font(.system(size: 12))
                                     .foregroundColor(palette.ink.opacity(0.9))
@@ -1861,21 +1878,39 @@ private struct NativeCommentListSheet: View {
     @ViewBuilder
     private func avatarView(_ user: ReviewUser?, size: CGFloat = 24) -> some View {
         if let raw = user?.user_avatar, let url = resolvedImageURL(raw) {
-            AsyncImage(url: url) { phase in
-                if let image = phase.image {
-                    image.resizable().scaledToFill()
-                } else {
-                    Color.secondary.opacity(0.12)
+            if let bookUrl, let data = AvatarCache.load(for: url, bookUrl: bookUrl),
+               let image = platformImage(data) {
+                image
+                    .resizable()
+                    .scaledToFill()
+                    .frame(width: size, height: size)
+                    .clipShape(Circle())
+            } else {
+                AsyncImage(url: url) { phase in
+                    if let image = phase.image {
+                        image.resizable().scaledToFill()
+                    } else {
+                        Color.secondary.opacity(0.12)
+                    }
                 }
+                .frame(width: size, height: size)
+                .clipShape(Circle())
             }
-            .frame(width: size, height: size)
-            .clipShape(Circle())
         } else {
             Image(systemName: "person.crop.circle.fill")
                 .font(.system(size: size))
                 .foregroundColor(.secondary.opacity(0.55))
                 .frame(width: size, height: size)
         }
+    }
+
+    private func platformImage(_ data: Data) -> Image? {
+        #if canImport(UIKit)
+        if let image = UIImage(data: data) { return Image(uiImage: image) }
+        #elseif canImport(AppKit)
+        if let image = NSImage(data: data) { return Image(nsImage: image) }
+        #endif
+        return nil
     }
 
     private func resolvedImageURL(_ raw: String?) -> URL? {
@@ -1909,7 +1944,7 @@ private struct NativeCommentListSheet: View {
         }
         do {
             // 缓存优先：书源没登录或断网时，之前抓过的评论还能看
-            if reset, let cachedData = ReviewCache.load(for: api),
+            if reset, let cachedData = ReviewCache.load(for: api, bookUrl: bookUrl),
                let cachedEnvelope = try? JSONDecoder().decode(ReviewEnvelope.self, from: cachedData) {
                 comments = cachedEnvelope.data?.comments ?? []
                 total = cachedEnvelope.data?.total ?? comments.count
@@ -1925,7 +1960,7 @@ private struct NativeCommentListSheet: View {
             total = envelope.data?.total ?? comments.count
             cursor = envelope.data?.next_cursor ?? ""
             hasMore = envelope.data?.has_more == true && cursor != ""
-            ReviewCache.store(data, for: api)
+            ReviewCache.store(data, for: api, bookUrl: bookUrl)
             AppLog.write("[评论] 加载完成 title=\(target.title) 当前 \(comments.count) 条 / 总数 \(total)")
         } catch {
             // 有缓存就留在缓存上，别拿一条报错把内容顶掉
@@ -1974,6 +2009,18 @@ private struct NativeCommentListSheet: View {
     }
 
     private func loadReplies(commentID: String, reset: Bool) async {
+        if reset, let cached = ReviewCache.loadReply(commentID: commentID, bookUrl: bookUrl),
+           let envelope = try? JSONDecoder().decode(ReviewEnvelope.self, from: cached) {
+            let page = envelope.data?.replies ?? []
+            if !page.isEmpty {
+                replies[commentID] = page
+                replyCursor[commentID] = envelope.data?.next_cursor ?? ""
+                if envelope.data?.has_more == true, envelope.data?.next_cursor != nil {
+                    replyHasMore.insert(commentID)
+                }
+            }
+            AppLog.write("[评论] 回复先给缓存 comment=\(commentID) \(page.count) 条")
+        }
         guard let api = replyAPIURL(commentID: commentID, cursor: reset ? "" : (replyCursor[commentID] ?? "")) else { return }
         do {
             let (data, _) = try await URLSession.shared.data(from: api)
@@ -1989,6 +2036,9 @@ private struct NativeCommentListSheet: View {
                 replyHasMore.insert(commentID)
             } else {
                 replyHasMore.remove(commentID)
+            }
+            if reset, !page.isEmpty {
+                ReviewCache.storeReply(data, commentID: commentID, bookUrl: bookUrl)
             }
         } catch {
             // 回复失败保留原列表，不打断主评论
@@ -2462,6 +2512,7 @@ public struct ReaderView: View {
     @State private var showReplaceRules = false
     /// 下载缓存这类「做完了」的提示，别用 errorMessage（那是错误页的开关）
     @State private var downloadHint: String? = nil
+    @State private var downloadSetup: DownloadSetupRequest? = nil
 
     public var onDismiss: (() -> Void)? = nil
 
@@ -2865,9 +2916,9 @@ public struct ReaderView: View {
                         Label("清除本书缓存", systemImage: "trash")
                     }
                     Button {
-                        downloadCachedChapters()
+                        presentDownloadSetup(.nextN)
                     } label: {
-                        Label("下载缓存（\(defaultCacheLabel)）", systemImage: "arrow.down.circle")
+                        Label("下载缓存…", systemImage: "arrow.down.circle")
                     }
                     Button {
                         showReplaceRules = true
@@ -2947,11 +2998,12 @@ public struct ReaderView: View {
             ReaderCommentsSheet(
                 chapterTitle: currentLoadedChapter?.chapter.title ?? "",
                 items: chapterCommentItems,
-                chapterURL: chapterCommentURL
+                chapterURL: chapterCommentURL,
+                bookUrl: activeBook.bookUrl
             )
         }
         .sheet(item: $directCommentTarget) { target in
-            NativeCommentListSheet(target: target)
+            NativeCommentListSheet(target: target, bookUrl: activeBook.bookUrl)
         }
         .sheet(isPresented: $showSourceSwitch) {
             SourceSwitchSheet(
@@ -2971,6 +3023,21 @@ public struct ReaderView: View {
         }
         .sheet(isPresented: $showReplaceRules) {
             ReplaceRulesView(bookUrl: activeBook.bookUrl, bookName: activeBook.name)
+        }
+        .sheet(item: $downloadSetup) { request in
+            DownloadSetupSheet(
+                bookTitle: activeBook.name,
+                bookUrl: activeBook.bookUrl,
+                chapterCount: chapters.count,
+                currentIndex: request.currentIndex,
+                preferredScope: request.scope,
+                readerBackground: readerConfig.pageBackgroundColor,
+                readerInk: readerConfig.pageTextColor,
+                readerAccent: readerConfig.theme.accentColor,
+                readerOnAccent: readerConfig.theme.onAccentColor
+            ) { scope, indices, options in
+                beginDownload(scope: scope, indices: indices, options: options)
+            }
         }
         .sheet(isPresented: $showAggregateSearch) {
             NavigationView {
@@ -3031,6 +3098,10 @@ public struct ReaderView: View {
         readingTickStart = Date()
         guard seconds > 0 else { return }
         ReadingStatsStore.shared.addReading(seconds: seconds)
+        DailyBookLog.shared.record(
+            book: activeBook,
+            chapterTitle: currentLoadedChapter?.chapter.title ?? activeBook.durChapterTitle ?? ""
+        )
     }
 
     /// 自动夜间：22:00–07:00 切暗黑，白天回到原来那套主题
@@ -4629,16 +4700,10 @@ public struct ReaderView: View {
                 } label: {
                     Label("清除本书缓存", systemImage: "trash")
                 }
-                Menu {
-                    Button("全书（共 \(chapters.count) 章）") { downloadCachedChapters(all: true) }
-                    Divider()
-                    ForEach([10, 20, 30, 50, 100], id: \.self) { n in
-                        Button("往后 \(n) 章") { downloadCachedChapters(span: n) }
-                    }
-                    Divider()
-                    Button("用设置里的默认（\(defaultCacheLabel)）") { downloadCachedChapters() }
+                Button {
+                    presentDownloadSetup(.nextN)
                 } label: {
-                    Label("下载缓存（当前 \(defaultCacheLabel)）", systemImage: "arrow.down.circle")
+                    Label("下载缓存…", systemImage: "arrow.down.circle")
                 }
                 Button {
                     showReplaceRules = true
@@ -7922,35 +7987,31 @@ public struct ReaderView: View {
         return tocDisplayChapters.filter { $0.title.localizedCaseInsensitiveContains(query) }
     }
 
-    private var defaultCacheLabel: String {
-        readerConfig.cachedAllChapters ? "全书" : "\(readerConfig.cachedChapterCount) 章"
+    /// 下载缓存：弹选项面板，范围默认从当前章往后 N 章
+    private func presentDownloadSetup(_ scope: DownloadScope) {
+        guard effectiveSource != nil, !chapters.isEmpty else { return }
+        let current = min(max(0, currentChapterIndex), chapters.count - 1)
+        downloadSetup = DownloadSetupRequest(scope: scope, currentIndex: current)
     }
 
-    /// 下载缓存：从当前章往后缓存 N 章或整本，N 在设置里调
-    private func downloadCachedChapters(span chosen: Int? = nil, all: Bool = false) {
-        guard let source = effectiveSource, !chapters.isEmpty else { return }
-        let start = max(0, currentChapterIndex)
-        // 当前选择记为默认值，与设置页显示一致
-        if all {
-            readerConfig.cachedAllChapters = true
-        } else if let chosen {
-            readerConfig.cachedAllChapters = false
-            readerConfig.cachedChapterCount = chosen
-        }
-        let useAll = all || (chosen == nil && readerConfig.cachedAllChapters)
-        let span = max(1, chosen ?? readerConfig.cachedChapterCount)
-        let end = useAll ? chapters.count - 1 : min(chapters.count - 1, start + span - 1)
-        guard start <= end else { return }
-        let indices = Array(start...end)
-        _ = ChapterDownloadManager.shared.start(
+    private func beginDownload(scope: DownloadScope, indices: [Int], options: DownloadOptions) {
+        guard let source = effectiveSource, !indices.isEmpty else { return }
+        guard let result = ChapterDownloadManager.shared.start(
             book: activeBook,
             chapters: chapters,
             source: source,
-            indices: indices
-        )
-        downloadHint = useAll
-            ? "已加入下载队列：第 \(start + 1)–\(end + 1) 章（全书共 \(indices.count) 章）"
-            : "已加入下载队列：第 \(start + 1)–\(end + 1) 章（共 \(indices.count) 章）"
+            indices: indices,
+            options: options
+        ) else { return }
+        if result.merged {
+            downloadHint = "已并入正在进行的任务（共 \(result.totalChapters) 章）"
+        } else if scope == .all {
+            downloadHint = "已加入下载队列：全书 \(result.addedChapters) 章"
+        } else {
+            let first = (indices.first ?? 0) + 1
+            let last = (indices.last ?? 0) + 1
+            downloadHint = "已加入下载队列：第 \(first)–\(last) 章（共 \(indices.count) 章）"
+        }
         Task {
             try? await Task.sleep(nanoseconds: 2_500_000_000)
             await MainActor.run { downloadHint = nil }
@@ -9925,6 +9986,8 @@ public struct ReaderView: View {
     /// 章节标题、图片、评论标记不能并进正文段落
     private func isStandaloneLine(_ line: String) -> Bool {
         if line.contains("[image:") || line.contains("__IMG") { return true }
+        // 带段评标记的行必须独立：并段后标记会跑到别的段落末尾，甚至被当成普通文本接走
+        if line.contains("\u{E000}") { return true }
         if line.hasPrefix("[") && line.hasSuffix("]") { return true }
         guard line.count <= 30 else { return false }
         let chapterMarks = ["章", "节", "卷", "回", "部", "篇", "集"]
@@ -10032,7 +10095,11 @@ public struct ReaderView: View {
     }
 
     private func parseContentBlocks(from raw: String) -> [ContentBlock] {
-        let text = sanitizedChapterBody(ReplaceRuleStore.shared.apply(to: raw, bookUrl: activeBook.bookUrl))
+        // 段评/本章说/神评标记里的分隔符和 URL 不能被替换净化规则碰到，否则气泡只剩正文。
+        let applied = ReviewMarkerParser.applyingOutsideMarkers(raw) {
+            ReplaceRuleStore.shared.apply(to: $0, bookUrl: activeBook.bookUrl)
+        }
+        let text = sanitizedChapterBody(applied)
         let imagePattern = try? NSRegularExpression(pattern: "\\[image:(.*?)\\]")
         var blocks: [ContentBlock] = []
         var nextId = 0
@@ -10047,51 +10114,53 @@ public struct ReaderView: View {
         }
 
         for line in lines {
-            let marked = extractReviewMarkers(from: line)
-            var trimmed = marked.line.trimmingCharacters(in: .whitespacesAndNewlines)
-            if trimmed.isEmpty {
-                attachReviewMarker(marked, from: blocks.count, blocks: &blocks)
-                nextId = (blocks.last?.id ?? nextId) + 1
-                continue
-            }
-            if isJunkBodyLine(trimmed) {
-                attachReviewMarker(marked, from: blocks.count, blocks: &blocks)
-                nextId = (blocks.last?.id ?? nextId) + 1
-                continue
-            }
-            trimmed = normalizedQuotes(trimmed)
+            for marked in extractReviewMarkers(from: line) {
+                var trimmed = marked.text.trimmingCharacters(in: .whitespacesAndNewlines)
+                if trimmed.isEmpty {
+                    // 标记前没有正文（一行连着多条标记）：挂到前一个非图片块
+                    attachReviewMarker(marked, from: 0, blocks: &blocks)
+                    nextId = (blocks.last?.id ?? nextId) + 1
+                    continue
+                }
+                if isJunkBodyLine(trimmed) {
+                    attachReviewMarker(marked, from: 0, blocks: &blocks)
+                    nextId = (blocks.last?.id ?? nextId) + 1
+                    continue
+                }
+                trimmed = normalizedQuotes(trimmed)
 
-            let startIndex = blocks.count
-            if let caption = captionText(from: trimmed) {
-                blocks.append(
-                    ContentBlock(id: nextId, isImage: false, text: caption, imageUrl: nil, isCaption: true)
-                )
-                nextId += 1
+                let startIndex = blocks.count
+                if let caption = captionText(from: trimmed) {
+                    blocks.append(
+                        ContentBlock(id: nextId, isImage: false, text: caption, imageUrl: nil, isCaption: true)
+                    )
+                    nextId += 1
+                    attachReviewMarker(marked, from: startIndex, blocks: &blocks)
+                    nextId = (blocks.last?.id ?? nextId) + 1
+                    continue
+                }
+                let consumedImages: Bool
+                if let imagePattern {
+                    consumedImages = appendImageAwareParagraph(
+                        trimmed,
+                        pattern: imagePattern,
+                        nextId: &nextId,
+                        blocks: &blocks
+                    )
+                } else {
+                    consumedImages = false
+                }
+
+                if !consumedImages {
+                    let paragraphs = readerConfig.smartParagraphs ? smartParagraphSplit(trimmed) : [trimmed]
+                    for paragraph in paragraphs {
+                        appendTextBlock(paragraph, id: &nextId, into: &blocks)
+                    }
+                }
+
                 attachReviewMarker(marked, from: startIndex, blocks: &blocks)
                 nextId = (blocks.last?.id ?? nextId) + 1
-                continue
             }
-            let consumedImages: Bool
-            if let imagePattern {
-                consumedImages = appendImageAwareParagraph(
-                    trimmed,
-                    pattern: imagePattern,
-                    nextId: &nextId,
-                    blocks: &blocks
-                )
-            } else {
-                consumedImages = false
-            }
-
-            if !consumedImages {
-                let paragraphs = readerConfig.smartParagraphs ? smartParagraphSplit(trimmed) : [trimmed]
-                for paragraph in paragraphs {
-                    appendTextBlock(paragraph, id: &nextId, into: &blocks)
-                }
-            }
-
-            attachReviewMarker(marked, from: startIndex, blocks: &blocks)
-            nextId = (blocks.last?.id ?? nextId) + 1
         }
         return blocks
     }
@@ -10157,63 +10226,24 @@ public struct ReaderView: View {
 
 
     /// 从一行里拆出段评 / 本章说哨兵，剩下才是正文。
-    private func extractReviewMarkers(from line: String)
-        -> (line: String, count: Int, url: String?, chapterURL: String?, godReviews: [GodReviewMarker]) {
+    /// 一行可能挤着多条标记（HTML 段落边界丢失时整章并成一行），交给解析层按标记位置切段。
+    private func extractReviewMarkers(from line: String) -> [ReviewMarkerParser.Segment] {
         guard !AppEdition.isAppStoreClean else {
-            return (line, 0, nil, nil, [])
+            return [ReviewMarkerParser.Segment(text: line)]
         }
-        var text = line
-        var count = 0
-        var url: String?
-        var chapterURL: String?
-        var godReviews: [GodReviewMarker] = []
-
-        if let regex = try? NSRegularExpression(pattern: "\u{E000}C\u{1F}(\\d+)\u{1F}([^\u{E001}]*)\u{E001}") {
-            let nsText = text as NSString
-            if let match = regex.firstMatch(in: text, range: NSRange(location: 0, length: nsText.length)) {
-                count = Int(nsText.substring(with: match.range(at: 1))) ?? 0
-                url = nsText.substring(with: match.range(at: 2))
-                text = (text as NSString).replacingCharacters(in: match.range, with: "")
-            }
-        }
-        if let regex = try? NSRegularExpression(pattern: "\u{E000}H\u{1F}([^\u{E001}]*)\u{E001}") {
-            let nsText = text as NSString
-            if let match = regex.firstMatch(in: text, range: NSRange(location: 0, length: nsText.length)) {
-                chapterURL = nsText.substring(with: match.range(at: 1))
-                text = (text as NSString).replacingCharacters(in: match.range, with: "")
-            }
-        }
-        if let regex = try? NSRegularExpression(pattern: "\u{E000}G\u{1F}([^\u{E001}]*)\u{E001}") {
-            let nsText = text as NSString
-            let matches = regex.matches(in: text, range: NSRange(location: 0, length: nsText.length))
-            for match in matches.reversed() {
-                let body = nsText.substring(with: match.range(at: 1))
-                let parts = body.components(separatedBy: "\u{1F}")
-                let reviewText = decodeMarkerBase64(parts.first ?? "") ?? ""
-                let reviewURL = parts.count > 1 ? parts[1] : ""
-                let imageURL = parts.count > 2 ? decodeMarkerBase64(parts[2]) : nil
-                if !reviewText.isEmpty || imageURL != nil {
-                    godReviews.insert(
-                        GodReviewMarker(text: reviewText, imageURL: imageURL, url: reviewURL),
-                        at: 0
-                    )
-                }
-                text = (text as NSString).replacingCharacters(in: match.range, with: "")
-            }
-        }
-        return (text, count, url, chapterURL, godReviews)
+        return ReviewMarkerParser.segments(in: line)
     }
 
-    /// 段评挂在段落最后一块上；本章说单独生成一条入口。
-    private func attachReviewMarker(_ marker: (line: String, count: Int, url: String?, chapterURL: String?, godReviews: [GodReviewMarker]),
+    /// 段评挂在段落最后一块上；本章说、神评各自单独生成入口。
+    private func attachReviewMarker(_ marker: ReviewMarkerParser.Segment,
                                     from firstBlockIndex: Int,
                                     blocks: inout [ContentBlock]) {
-        if marker.count > 0, let url = marker.url,
+        if marker.commentCount > 0, let url = marker.commentURL,
            let index = blocks.indices.last(where: { $0 >= firstBlockIndex && !blocks[$0].isImage }) {
-            blocks[index].commentCount = marker.count
+            blocks[index].commentCount = marker.commentCount
             blocks[index].commentURL = url
         }
-        if let chapterURL = marker.chapterURL {
+        for chapterURL in marker.chapterURLs {
             let id = (blocks.last?.id ?? 0) + 1
             blocks.append(ContentBlock(id: id, isImage: false, text: "本章说 · 查看全部评论", imageUrl: nil,
                                        commentCount: -1, commentURL: chapterURL))
@@ -10230,11 +10260,6 @@ public struct ReaderView: View {
                 commentURL: review.url.isEmpty ? nil : review.url
             ))
         }
-    }
-
-    private func decodeMarkerBase64(_ value: String) -> String? {
-        guard !value.isEmpty, let data = Data(base64Encoded: value) else { return nil }
-        return String(data: data, encoding: .utf8)
     }
 
     private func currentChapterCharOffset() -> Int {

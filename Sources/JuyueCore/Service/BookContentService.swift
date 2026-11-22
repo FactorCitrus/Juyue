@@ -249,7 +249,64 @@ public class BookContentService {
         return collected
     }
 
+    /// 同一章并发请求只发一次：自动预取、下载任务、分享补全共用同一个 Task
     public func fetchChapterContent(
+        chapter: BookChapter,
+        source: BookSource? = nil,
+        book: Book? = nil,
+        diagnostics: ((SourceRequestDiagnostic) -> Void)? = nil
+    ) async throws -> String {
+        if diagnostics != nil {
+            return try await performFetchChapterContent(
+                chapter: chapter,
+                source: source,
+                book: book,
+                diagnostics: diagnostics
+            )
+        }
+
+        let key = "\(chapter.bookUrl)#\(chapter.index)"
+        let (task, owner) = claimInFlight(key) {
+            Task { [self] in
+                try await performFetchChapterContent(
+                    chapter: chapter,
+                    source: source,
+                    book: book,
+                    diagnostics: nil
+                )
+            }
+        }
+        if owner {
+            defer { releaseInFlight(key) }
+            return try await task.value
+        }
+        return try await task.value
+    }
+
+    private let inFlightLock = NSLock()
+    private var inFlightFetches: [String: Task<String, Error>] = [:]
+
+    private func claimInFlight(
+        _ key: String,
+        make: () -> Task<String, Error>
+    ) -> (Task<String, Error>, Bool) {
+        inFlightLock.lock()
+        defer { inFlightLock.unlock() }
+        if let existing = inFlightFetches[key] {
+            return (existing, false)
+        }
+        let task = make()
+        inFlightFetches[key] = task
+        return (task, true)
+    }
+
+    private func releaseInFlight(_ key: String) {
+        inFlightLock.lock()
+        defer { inFlightLock.unlock() }
+        inFlightFetches[key] = nil
+    }
+
+    private func performFetchChapterContent(
         chapter: BookChapter,
         source: BookSource? = nil,
         book: Book? = nil,
@@ -365,13 +422,13 @@ public class BookContentService {
         text = Self.preserveReviewMarkers(text)
 
         if let replaceRegex = contentRule.replaceRegex, !replaceRegex.isEmpty {
-            text = RegexReplacement.apply(replaceRegex, to: text)
+            text = ReviewMarkerParser.applyingOutsideMarkers(text) { RegexReplacement.apply(replaceRegex, to: $0) }
         }
 
         text = Self.cleanHtml(text, baseUrl: baseURL)
 
         if book?.useReplaceRule != false {
-            text = TextPurifier.shared.apply(text)
+            text = ReviewMarkerParser.applyingOutsideMarkers(text) { TextPurifier.shared.apply($0) }
         }
         return text
     }
@@ -467,7 +524,7 @@ public class BookContentService {
 
         var text = segments.joined(separator: "\n\n")
         if book?.useReplaceRule != false {
-            text = TextPurifier.shared.apply(text)
+            text = ReviewMarkerParser.applyingOutsideMarkers(text) { TextPurifier.shared.apply($0) }
         }
         return text
     }
@@ -618,11 +675,13 @@ public class BookContentService {
         )
     }
 
+    /// 只清正文；书评与头像留给离线书库继续用
     public func clearCache(for bookUrl: String) {
-        try? FileManager.default.removeItem(at: chapterCacheDirectory(bookUrl: bookUrl))
+        try? FileManager.default.removeItem(at: OfflineBookPaths.chaptersDirectory(forBookUrl: bookUrl))
     }
 
     public func clearAllChapterCaches() {
+        try? FileManager.default.removeItem(at: OfflineBookPaths.root)
         try? FileManager.default.removeItem(at: ChapterCache.allRoot)
     }
 
@@ -635,8 +694,8 @@ public class BookContentService {
     /// 只扫本地缓存统计字数，不发网络请求；没缓存的章节不返回。
     /// 不建目录、不碰章节模型，适合丢到后台队列跑。
     public static func cachedChapterWordCounts(bookUrl: String, indices: [Int]) -> [Int: Int] {
-        let folder = ChapterCache.root
-            .appendingPathComponent(CryptoUtils.md5(bookUrl), isDirectory: true)
+        let folder = OfflineBookPaths.directory(forBookUrl: bookUrl)
+            .appendingPathComponent("chapters", isDirectory: true)
         var counts: [Int: Int] = [:]
         for index in indices {
             let file = folder.appendingPathComponent("\(index).txt")
@@ -697,7 +756,7 @@ public class BookContentService {
             return 0
         }
         return folders.reduce(0) { total, folder in
-            total + ChapterCache.count(in: folder)
+            total + ChapterCache.count(in: folder.appendingPathComponent("chapters", isDirectory: true))
         }
     }
 
@@ -718,6 +777,22 @@ private enum DetailPage {
         let tocContent: Any
     }
 
+    /// `<js>…</js>$.data` 的尾巴得落地：脚本吐出整包响应后按 JSONPath 取子对象。
+    /// 丢掉尾巴时后续规则拿到的是 `{code, data}` 外层，简介脚本里的 `result.source/tab` 全是 undefined。
+    static func applyingSuffix(of rule: String, to text: String) -> String {
+        guard let close = rule.range(of: "</js>", options: .backwards) else { return text }
+        let suffix = String(rule[close.upperBound...]).trimmingCharacters(in: .whitespacesAndNewlines)
+        guard suffix.hasPrefix("$") else { return text }
+        guard let json = try? JSONSerialization.jsonObject(with: Data(text.utf8)),
+              let value = JSONPath.evaluate(path: suffix, json: json) else { return text }
+        if let string = value as? String { return string }
+        if let number = value as? NSNumber { return RuleAnalyzer.scalarText(number) }
+        guard JSONSerialization.isValidJSONObject(value),
+              let data = try? JSONSerialization.data(withJSONObject: value),
+              let serialized = String(data: data, encoding: .utf8) else { return text }
+        return serialized
+    }
+
     static func make(
         target: String,
         book: Book,
@@ -732,6 +807,7 @@ private enum DetailPage {
             if let initRule = source.ruleBookInfo?.initRule, !initRule.isEmpty,
                let result = engine.eval(script: JSEngine.unwrapJsScript(initRule), result: packed) {
                 detail = RuleAnalyzer.scalarText(result)
+                detail = applyingSuffix(of: initRule, to: detail)
             }
             if let error = engine.lastError {
                 JuyueLog.log("[BookDetail] ⚠️ [\(source.bookSourceName)] 详情 init 脚本报错：\(error)")
@@ -1345,28 +1421,79 @@ enum ContentPagination {
     }
 }
 
+// MARK: - 离线书库目录
+
+/// 离线书的磁盘布局，「下载管理 → 离线书库」与缓存读写共用这一份定义：
+///   Documents/OfflineBooks/&lt;md5(bookUrl)&gt;/meta.json
+///   Documents/OfflineBooks/&lt;md5(bookUrl)&gt;/chapters/&lt;index&gt;.txt
+///   Documents/OfflineBooks/&lt;md5(bookUrl)&gt;/reviews/&lt;md5(apiURL)&gt;.json
+public enum OfflineBookPaths {
+    public static var root: URL {
+        let base = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+        let folder = base.appendingPathComponent("OfflineBooks", isDirectory: true)
+        if !FileManager.default.fileExists(atPath: folder.path) {
+            try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+            // 正文体积大，别占 iCloud 备份
+            var values = URLResourceValues()
+            values.isExcludedFromBackup = true
+            var target = folder
+            try? target.setResourceValues(values)
+        }
+        return folder
+    }
+
+    public static func directory(forBookUrl bookUrl: String) -> URL {
+        root.appendingPathComponent(CryptoUtils.md5(bookUrl), isDirectory: true)
+    }
+
+    public static func chaptersDirectory(forBookUrl bookUrl: String) -> URL {
+        ensure(directory(forBookUrl: bookUrl).appendingPathComponent("chapters", isDirectory: true))
+    }
+
+    public static func reviewsDirectory(forBookUrl bookUrl: String) -> URL {
+        ensure(directory(forBookUrl: bookUrl).appendingPathComponent("reviews", isDirectory: true))
+    }
+
+    public static func avatarsDirectory(forBookUrl bookUrl: String) -> URL {
+        ensure(directory(forBookUrl: bookUrl).appendingPathComponent("avatars", isDirectory: true))
+    }
+
+    public static func metaFile(forBookUrl bookUrl: String) -> URL {
+        directory(forBookUrl: bookUrl).appendingPathComponent("meta.json")
+    }
+
+    /// 旧版正文缓存位置，首次启动时迁移
+    public static var legacyChapterRoot: URL {
+        FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("ChapterCache", isDirectory: true)
+            .appendingPathComponent("v2", isDirectory: true)
+    }
+
+    public static var legacyReviewRoot: URL {
+        FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("ReviewCache", isDirectory: true)
+    }
+
+    private static func ensure(_ folder: URL) -> URL {
+        if !FileManager.default.fileExists(atPath: folder.path) {
+            try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        }
+        return folder
+    }
+}
+
 // MARK: - 章节缓存
 
 private enum ChapterCache {
-    /// 正文清洗规则变了就换命名空间：老版本缓存下来的脏正文否则会一直被读出来。
-    static let namespace = "v2"
-
     static var allRoot: URL {
         FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("ChapterCache", isDirectory: true)
     }
 
-    static var root: URL {
-        allRoot.appendingPathComponent(namespace, isDirectory: true)
-    }
+    static var root: URL { OfflineBookPaths.root }
 
     static func directory(for bookUrl: String) -> URL {
-        let folder = root
-            .appendingPathComponent(CryptoUtils.md5(bookUrl), isDirectory: true)
-        if !FileManager.default.fileExists(atPath: folder.path) {
-            try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
-        }
-        return folder
+        OfflineBookPaths.chaptersDirectory(forBookUrl: bookUrl)
     }
 
     static func file(bookUrl: String, index: Int) -> URL {
@@ -1542,6 +1669,257 @@ private enum ReviewMarkerCodec {
     }
 }
 
+// MARK: - 评论标记解析
+
+/// 段评/本章说标记里的字段分隔符（U+001F）会被部分用户替换规则当控制字符清掉，
+/// 所以解析按宽松格式来：有没有分隔符都认，宁可少标记也不能让标记漏进正文。
+public enum ReviewMarkerParser {
+    public struct CommentMarker {
+        public let count: Int
+        public let url: String
+        public let range: NSRange
+    }
+
+    public struct ChapterMarker {
+        public let url: String
+        public let range: NSRange
+    }
+
+    public struct GodReview {
+        public let text: String
+        public let imageURL: String?
+        public let url: String
+
+        public init(text: String, imageURL: String?, url: String) {
+            self.text = text
+            self.imageURL = imageURL
+            self.url = url
+        }
+    }
+
+    /// 一行正文按段评标记切开后的一段：标记归属于它前面的正文。
+    public struct Segment {
+        public let text: String
+        public let commentCount: Int
+        public let commentURL: String?
+        public let chapterURLs: [String]
+        public let godReviews: [GodReview]
+
+        public init(
+            text: String,
+            commentCount: Int = 0,
+            commentURL: String? = nil,
+            chapterURLs: [String] = [],
+            godReviews: [GodReview] = []
+        ) {
+            self.text = text
+            self.commentCount = commentCount
+            self.commentURL = commentURL
+            self.chapterURLs = chapterURLs
+            self.godReviews = godReviews
+        }
+    }
+
+    private struct MarkerHit {
+        let range: NSRange
+        let commentCount: Int?
+        let commentURL: String?
+        let chapterURL: String?
+        let godReview: GodReview?
+
+        init(
+            range: NSRange,
+            commentCount: Int? = nil,
+            commentURL: String? = nil,
+            chapterURL: String? = nil,
+            godReview: GodReview? = nil
+        ) {
+            self.range = range
+            self.commentCount = commentCount
+            self.commentURL = commentURL
+            self.chapterURL = chapterURL
+            self.godReview = godReview
+        }
+    }
+
+    private static let commentPattern = "\u{E000}C(?:\u{1F})?(\\d+)(?:\u{1F})?([^\u{E001}]*)\u{E001}"
+    private static let chapterPattern = "\u{E000}H(?:\u{1F})?([^\u{E001}]*)\u{E001}"
+    private static let godPattern = "\u{E000}G\u{1F}([^\u{E001}]*)\u{E001}"
+    // 成对标记：不限长度，但不跨行，免得一条缺结尾符的标记顺走整章。
+    private static let spanPattern = "\u{E000}[^\u{E001}\n]*\u{E001}"
+    // 缺结尾符的残段：清到行尾。
+    private static let orphanPattern = "\u{E000}[^\n]*"
+
+    private static let commentRegex = try? NSRegularExpression(pattern: commentPattern)
+    private static let chapterRegex = try? NSRegularExpression(pattern: chapterPattern)
+    private static let godRegex = try? NSRegularExpression(pattern: godPattern)
+    private static let spanRegex = try? NSRegularExpression(pattern: spanPattern)
+
+    public static func comments(in text: String) -> [CommentMarker] {
+        guard let regex = commentRegex else { return [] }
+        let source = text as NSString
+        return regex.matches(in: text, range: NSRange(location: 0, length: source.length)).compactMap { match in
+            guard let count = Int(source.substring(with: match.range(at: 1))) else { return nil }
+            return CommentMarker(
+                count: count,
+                url: decodedURL(source.substring(with: match.range(at: 2))),
+                range: match.range
+            )
+        }
+    }
+
+    public static func chapters(in text: String) -> [ChapterMarker] {
+        guard let regex = chapterRegex else { return [] }
+        let source = text as NSString
+        return regex.matches(in: text, range: NSRange(location: 0, length: source.length)).map { match in
+            ChapterMarker(
+                url: decodedURL(source.substring(with: match.range(at: 1))),
+                range: match.range
+            )
+        }
+    }
+
+    /// 一行里可能挤着多条段评 / 本章说 / 神评标记（HTML 段落边界丢失时整章并成一行）。
+    /// 按标记位置把行切成多段，标记归属它前面的正文；标记前没有正文时单独成段，
+    /// 由调用方挂到前一个正文块上。
+    public static func segments(in line: String) -> [Segment] {
+        let source = line as NSString
+        let full = NSRange(location: 0, length: source.length)
+        var hits: [MarkerHit] = []
+
+        if let regex = commentRegex {
+            for match in regex.matches(in: line, range: full) {
+                guard let count = Int(source.substring(with: match.range(at: 1))) else { continue }
+                hits.append(MarkerHit(
+                    range: match.range,
+                    commentCount: count,
+                    commentURL: decodedURL(source.substring(with: match.range(at: 2)))
+                ))
+            }
+        }
+        if let regex = chapterRegex {
+            for match in regex.matches(in: line, range: full) {
+                hits.append(MarkerHit(
+                    range: match.range,
+                    chapterURL: decodedURL(source.substring(with: match.range(at: 1)))
+                ))
+            }
+        }
+        if let regex = godRegex {
+            for match in regex.matches(in: line, range: full) {
+                guard let review = godReview(from: source.substring(with: match.range(at: 1))) else { continue }
+                hits.append(MarkerHit(range: match.range, godReview: review))
+            }
+        }
+        guard !hits.isEmpty else { return [Segment(text: line)] }
+        hits.sort { $0.range.location < $1.range.location }
+
+        var segments: [Segment] = []
+        var currentText = ""
+        var commentCount = 0
+        var commentURL: String?
+        var chapterURLs: [String] = []
+        var godReviews: [GodReview] = []
+        var hasPending = false
+
+        func appendSegment() {
+            guard !currentText.isEmpty || hasPending else { return }
+            segments.append(Segment(
+                text: removingResidualMarkers(currentText),
+                commentCount: commentCount,
+                commentURL: commentURL,
+                chapterURLs: chapterURLs,
+                godReviews: godReviews
+            ))
+            currentText = ""
+            commentCount = 0
+            commentURL = nil
+            chapterURLs = []
+            godReviews = []
+            hasPending = false
+        }
+
+        var cursor = 0
+        for hit in hits {
+            let start = hit.range.location
+            guard start >= cursor else { continue }
+            if start > cursor {
+                if hasPending { appendSegment() }
+                currentText += source.substring(with: NSRange(location: cursor, length: start - cursor))
+            }
+            if let count = hit.commentCount {
+                commentCount = max(commentCount, count)
+                if commentURL == nil { commentURL = hit.commentURL }
+            }
+            if let url = hit.chapterURL { chapterURLs.append(url) }
+            if let review = hit.godReview { godReviews.append(review) }
+            hasPending = true
+            cursor = start + hit.range.length
+        }
+        if cursor < source.length {
+            let tail = source.substring(from: cursor)
+            if !tail.isEmpty {
+                if hasPending { appendSegment() }
+                currentText += tail
+            }
+        }
+        appendSegment()
+        return segments.isEmpty ? [Segment(text: line)] : segments
+    }
+
+    private static func godReview(from body: String) -> GodReview? {
+        let parts = body.components(separatedBy: "\u{1F}")
+        let text = decodeBase64(parts.first ?? "") ?? ""
+        let url = parts.count > 1 ? parts[1] : ""
+        let imageURL = parts.count > 2 ? decodeBase64(parts[2]) : nil
+        guard !text.isEmpty || imageURL != nil else { return nil }
+        return GodReview(text: text, imageURL: imageURL, url: url)
+    }
+
+    private static func decodeBase64(_ value: String) -> String? {
+        guard !value.isEmpty, let data = Data(base64Encoded: value) else { return nil }
+        return String(data: data, encoding: .utf8)
+    }
+
+    /// 只对标记之外的正文片段跑替换，标记原样保留。
+    /// 净化规则里的「去掉网址」「去掉不可见字符」会把标记内部的 URL 和分隔符一起啃掉，
+    /// 分段执行后标记不受任何用户规则影响。
+    public static func applyingOutsideMarkers(_ text: String, _ transform: (String) -> String) -> String {
+        guard text.contains("\u{E000}"), let regex = spanRegex else { return transform(text) }
+        let source = text as NSString
+        var output = ""
+        var cursor = 0
+        for match in regex.matches(in: text, range: NSRange(location: 0, length: source.length)) {
+            let range = match.range
+            if range.location > cursor {
+                output += transform(source.substring(with: NSRange(location: cursor, length: range.location - cursor)))
+            }
+            output += source.substring(with: range)
+            cursor = range.location + range.length
+        }
+        if cursor < source.length {
+            output += transform(source.substring(from: cursor))
+        }
+        return output
+    }
+
+    /// 认不出的标记整段清掉，别让私有区字符和 URL 一起露在正文里。
+    /// 成对标记不论多长都清；没有结尾符的残段清到行尾。
+    public static func removingResidualMarkers(_ text: String) -> String {
+        guard text.contains("\u{E000}") else { return text }
+        var result = text.replacingOccurrences(of: spanPattern, with: "", options: .regularExpression)
+        if result.contains("\u{E000}") {
+            result = result.replacingOccurrences(of: orphanPattern, with: "", options: .regularExpression)
+        }
+        return result
+    }
+
+    private static func decodedURL(_ url: String) -> String {
+        url.replacingOccurrences(of: "&amp;", with: "&")
+            .replacingOccurrences(of: "&#38;", with: "&")
+    }
+}
+
 // MARK: - HTML 清洗
 
 private final class HTMLCleaner {
@@ -1587,6 +1965,13 @@ private final class HTMLCleaner {
         text = text.replacingOccurrences(of: "(?i)<br\\s*/?>", with: "\n", options: .regularExpression)
         text = text.replacingOccurrences(of: "(?i)</p>", with: "\n\n", options: .regularExpression)
         text = text.replacingOccurrences(of: "(?i)<p[^>]*>", with: "", options: .regularExpression)
+        // 块级标签的闭合处就是段落边界。大灰狼等书源的 paraForiOS 用 <div rs-native> 包段落，
+        // 直接剥标签会把整章拼成一行，段评标记也跟着挤在一起。
+        text = text.replacingOccurrences(
+            of: "(?i)</(?:div|section|article|header|footer|main|aside|nav|blockquote|pre|li|ul|ol|dl|dt|dd|h[1-6]|tr|table|figure|figcaption)>",
+            with: "\n\n",
+            options: .regularExpression
+        )
         text = text.replacingOccurrences(of: "<[^>]+>", with: "", options: .regularExpression)
 
         let entities: [(String, String)] = [

@@ -5,6 +5,12 @@ import ZIPFoundation
 #if canImport(PDFKit)
 import PDFKit
 #endif
+#if canImport(UIKit)
+import UIKit
+#endif
+#if canImport(BackgroundTasks)
+import BackgroundTasks
+#endif
 #if canImport(JuyueCore)
 import JuyueCore
 #endif
@@ -32,7 +38,7 @@ public class BookStore: ObservableObject {
     private let shelfWriter = DebouncedPersistenceWriter<[Book]>(
         queue: DispatchQueue(label: "juyue.bookshelf.persist", qos: .utility),
         encode: { books in try? JSONEncoder().encode(books) },
-        sink: { data in UserDefaults.standard.set(data, forKey: Keys.books) }
+        sink: { data in Persisted.writeData(data, key: Keys.books) }
     )
 
     public init() {
@@ -45,23 +51,56 @@ public class BookStore: ObservableObject {
     // MARK: - 启动
 
     private func reloadPersistedState() {
-        if let stored = Persisted.read([BookSource].self, key: Keys.sources) {
+        if let stored = loadWithRescue([BookSource].self, key: Keys.sources) {
             sources = stored
         }
         // 内置源每次都参与同步：本地为空整批灌入，非空只刷新规则，登录态由合并函数保住。
         loadBundledSources()
-        if let stored = Persisted.read([Book].self, key: Keys.books) {
+        if let stored = loadWithRescue([Book].self, key: Keys.books) {
             bookshelf = stored
         }
-        if let stored = Persisted.read([BookBookmark].self, key: Keys.bookmarks) {
+        if let stored = loadWithRescue([BookBookmark].self, key: Keys.bookmarks) {
             bookmarks = stored
         }
-        if let stored = Persisted.read([BookGroup].self, key: Keys.groups) {
+        if let stored = loadWithRescue([BookGroup].self, key: Keys.groups) {
             groups = stored
         }
-        if let stored = Persisted.read([String: [TextReplaceRule]].self, key: Keys.replaceRules) {
+        if let stored = loadWithRescue([String: [TextReplaceRule]].self, key: Keys.replaceRules) {
             textReplaceRulesMap = stored
         }
+    }
+
+    /// Legado / Juyue 两套构建线的键名前缀不同。覆盖安装换了线，本线键名是空的，
+    /// 数据其实还在另一套键名下面，这里按镜像键名再找一遍并写回本线。
+    fileprivate static func mirroredKey(_ key: String) -> String? {
+        for prefix in ["juyue_", "legado_"] where key.hasPrefix(prefix) {
+            let other = prefix == "juyue_" ? "legado_" : "juyue_"
+            return other + key.dropFirst(prefix.count)
+        }
+        return nil
+    }
+
+    private func loadWithRescue<T: Codable & Collection>(_ type: T.Type, key: String) -> T? {
+        // 本键名解不出来但又确实有字节：先原样留一份，别让后面的写入把旧数据冲掉。
+        if let raw = UserDefaults.standard.data(forKey: key),
+           Persisted.read(type, key: key) == nil {
+            let backupKey = key + ".unreadable"
+            if UserDefaults.standard.data(forKey: backupKey) == nil {
+                UserDefaults.standard.set(raw, forKey: backupKey)
+                AppLog.write("[存储] \(key) 无法解析，已备份到 \(backupKey)")
+            }
+        }
+        if let direct = Persisted.read(type, key: key), !direct.isEmpty {
+            return direct
+        }
+        if let mirror = Self.mirroredKey(key),
+           let rescued = Persisted.read(type, key: mirror),
+           !rescued.isEmpty {
+            Persisted.write(rescued, key: key)
+            AppLog.write("[存储] 本线键名 \(key) 为空，已从 \(mirror) 恢复")
+            return rescued
+        }
+        return Persisted.read(type, key: key)
     }
 
     private func installJSEngineSinks() {
@@ -772,6 +811,9 @@ public class BookStore: ObservableObject {
             if let final = chapters.last {
                 refreshed.latestChapterTitle = final.title
             }
+            if !chapters.isEmpty {
+                saveChapters(chapters, for: book.bookUrl)
+            }
             return refreshed
         } catch {
             let tag = String(CryptoUtils.md5(book.name).prefix(8))
@@ -1068,6 +1110,11 @@ public class BookStore: ObservableObject {
         if resolved?.isEmpty ?? true {
             resolved = cookieBackupHeader(for: source.bookSourceUrl)
         }
+        // 已有登录态时脚本只 toast 一句「当前已登录」就返回，既不写 cookie 也不回传 header；
+        // 宿主清空了「最近写入」记录，于是把好端端的登录判成失败。回问脚本它眼中的服务器 cookie。
+        if resolved?.isEmpty ?? true {
+            resolved = scriptCookieHeader(engine: engine)
+        }
 
         guard let finalHeader = resolved, !finalHeader.isEmpty else {
             if !credentialsRequired {
@@ -1104,6 +1151,25 @@ public class BookStore: ObservableObject {
         guard let host = CookieJar.shared.lastWrittenHostKey else { return nil }
         let byHost = CookieJar.shared.cookieString(for: host)
         return byHost.isEmpty ? nil : "Cookie: \(byHost)"
+    }
+
+    /// 脚本判断登录态用的是 `getArgument('server') || host[0]` 的 cookie，
+    /// 宿主不知道这个地址，只能在同一份 JS 环境里按脚本的算法取。
+    private func scriptCookieHeader(engine: JSEngine) -> String? {
+        let probe = """
+        (function(){
+          try {
+            var base = (typeof getArgument === 'function' ? getArgument('server') : '') || '';
+            if (!base && typeof host !== 'undefined' && host && host.length) base = host[0];
+            if (!base) return '';
+            return String(cookie.getCookie(base) || '');
+          } catch (e) { return ''; }
+        })()
+        """
+        guard let cookie = engine.eval(script: probe) as? String, !cookie.isEmpty else {
+            return nil
+        }
+        return "Cookie: \(cookie)"
     }
 
     static func loginButtonActions(from loginUi: String?) -> [String] {
@@ -1348,7 +1414,15 @@ private enum Persisted {
 
     static func write<T: Encodable>(_ value: T, key: String) {
         guard let data = try? JSONEncoder().encode(value) else { return }
+        writeData(data, key: key)
+    }
+
+    /// 两套构建线的键名互为镜像：写一份也写另一份，换线安装时才不会读到旧数据
+    static func writeData(_ data: Data, key: String) {
         UserDefaults.standard.set(data, forKey: key)
+        if let mirror = BookStore.mirroredKey(key) {
+            UserDefaults.standard.set(data, forKey: mirror)
+        }
     }
 }
 
@@ -1467,33 +1541,168 @@ public struct BookGroup: Codable, Identifiable, Equatable {
 
 // MARK: - 批量下载
 
+/// 一次下载要做什么：书评要不要抓、抓多少、几路并发
+public struct DownloadOptions: Codable, Equatable {
+    /// nil 不抓书评；0 全部；其余是每章条数
+    public var reviewLimit: Int?
+    public var refetchReviews: Bool
+    public var concurrency: Int
+    public var background: Bool
+
+    public init(reviewLimit: Int? = 3, refetchReviews: Bool = false, concurrency: Int = 4, background: Bool = true) {
+        self.reviewLimit = reviewLimit
+        self.refetchReviews = refetchReviews
+        self.concurrency = concurrency
+        self.background = background
+    }
+
+    public static let `default` = DownloadOptions()
+}
+
 public struct DownloadJob: Identifiable, Equatable {
+    /// 先把正文缓存完，再统一补书评
+    public enum Phase: String {
+        case chapters
+        case reviews
+    }
+
+    public enum Status: String {
+        case running
+        case paused
+        case cancelling
+        case cancelled
+        case finished
+    }
+
     public let id: UUID
     public var bookUrl: String
     public var bookName: String
     public var total: Int
     public var finished: Int
     public var failed: Int
-    public var isPaused: Bool
-    public var isCancelled: Bool
-    public var isRunning: Bool
+    /// 正文早已缓存、直接跳过的章数
+    public var skipped: Int
+    public var status: Status
     public var currentChapter: String
+    public var phase: Phase
+    /// 这本书当前已缓存的章数／书评条数（含下载前已有的），离线书库按它实时显示
+    public var cachedChapters: Int
+    public var cachedReviews: Int
+    /// 预计剩余时间用：本阶段开始时刻与本阶段已处理条数
+    public var phaseStartedAt: Date
+    public var reviewTotal: Int
+    public var reviewsDone: Int
+    public var reviewChapterTotal: Int
+    public var reviewChapterDone: Int
+    public var concurrency: Int
+    public var options: DownloadOptions
+    /// 还没抓的章号，升序；worker 从这里出队
+    var remaining: [Int]
+    /// 本次范围的全部章号，书评阶段按它扫
+    var plannedIndices: [Int]
+
+    public var isRunning: Bool { status == .running }
+    public var isPaused: Bool { status == .paused }
+    public var isCancelled: Bool { status == .cancelled }
 
     public var progress: Double {
-        total > 0 ? Double(finished + failed) / Double(total) : 0
+        if phase == .reviews {
+            return reviewTotal > 0 ? Double(reviewsDone) / Double(reviewTotal) : 0
+        }
+        return total > 0 ? Double(finished + failed) / Double(total) : 0
     }
 
-    public init(bookUrl: String, bookName: String, total: Int) {
+    public init(bookUrl: String, bookName: String, indices: [Int], options: DownloadOptions) {
         self.id = UUID()
         self.bookUrl = bookUrl
         self.bookName = bookName
-        self.total = total
+        self.total = indices.count
         self.finished = 0
         self.failed = 0
-        self.isPaused = false
-        self.isCancelled = false
-        self.isRunning = true
+        self.skipped = 0
+        self.status = .running
         self.currentChapter = ""
+        self.phase = .chapters
+        self.cachedChapters = 0
+        self.cachedReviews = 0
+        self.phaseStartedAt = Date()
+        self.reviewTotal = 0
+        self.reviewsDone = 0
+        self.reviewChapterTotal = 0
+        self.reviewChapterDone = 0
+        self.concurrency = options.concurrency
+        self.options = options
+        self.remaining = indices
+        self.plannedIndices = indices
+    }
+}
+
+public struct DownloadStartResult {
+    public let jobID: UUID
+    public let merged: Bool
+    public let addedChapters: Int
+    public let totalChapters: Int
+}
+
+/// 跨任务共享的并发闸门，几本书同时下也不会把书源打挂
+actor DownloadLimiter {
+    static let shared = DownloadLimiter(limit: 8)
+
+    private let limit: Int
+    private var active = 0
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    init(limit: Int) {
+        self.limit = limit
+    }
+
+    func acquire() async {
+        if active < limit {
+            active += 1
+            return
+        }
+        await withCheckedContinuation { waiters.append($0) }
+        active += 1
+    }
+
+    func release() {
+        active = max(0, active - 1)
+        if !waiters.isEmpty {
+            let next = waiters.removeFirst()
+            next.resume()
+        }
+    }
+}
+
+/// 下载范围换算成章号，下载面板与断点恢复共用
+public enum DownloadScope: String, Codable, CaseIterable, Identifiable {
+    case all
+    case unread
+    case nextN
+
+    public var id: String { rawValue }
+
+    public var title: String {
+        switch self {
+        case .all: return "全书"
+        case .unread: return "未读章节"
+        case .nextN: return "往后 N 章"
+        }
+    }
+
+    public func indices(chapterCount: Int, start: Int, count: Int) -> [Int] {
+        guard chapterCount > 0 else { return [] }
+        switch self {
+        case .all:
+            return Array(0..<chapterCount)
+        case .unread:
+            let begin = min(max(0, start), chapterCount - 1)
+            return Array(begin..<chapterCount)
+        case .nextN:
+            let begin = min(max(0, start), chapterCount - 1)
+            let end = min(chapterCount - 1, begin + max(1, count) - 1)
+            return Array(begin...end)
+        }
     }
 }
 
@@ -1502,96 +1711,287 @@ public final class ChapterDownloadManager: ObservableObject {
 
     @Published public private(set) var jobs: [DownloadJob] = []
 
+    /// 本书实时已缓存章数／书评条数，离线书库行优先读它
+    @Published public private(set) var liveCounts: [String: LiveCounts] = [:]
+
+    public struct LiveCounts: Equatable {
+        public var chapters: Int
+        public var reviews: Int
+    }
+
     private var workers: [UUID: Task<Void, Never>] = [:]
+
+    /// 任务要用的书与目录：合并迟到、结束后又被追加章节时靠它重启 worker
+    private struct JobContext {
+        let book: Book
+        let chapters: [BookChapter]
+        let source: BookSource?
+    }
+
+    private var contexts: [UUID: JobContext] = [:]
 
     public init() {}
 
     @discardableResult
-    public func start(book: Book, chapters: [BookChapter], source: BookSource?, indices: [Int]) -> UUID? {
-        guard !indices.isEmpty else { return nil }
+    public func start(
+        book: Book,
+        chapters: [BookChapter],
+        source: BookSource?,
+        indices: [Int],
+        options: DownloadOptions = .default,
+        remainingOverride: [Int]? = nil
+    ) -> DownloadStartResult? {
+        let requested = Array(Set(indices.filter { $0 >= 0 && $0 < chapters.count })).sorted()
+        guard !requested.isEmpty else { return nil }
 
-        let job = DownloadJob(bookUrl: book.bookUrl, bookName: book.name, total: indices.count)
+        // 已结束、已取消的旧条目不能并入（worker 已经退出），直接丢掉重来
+        jobs.removeAll {
+            $0.bookUrl == book.bookUrl && ($0.status == .finished || $0.status == .cancelled)
+        }
+
+        if let position = jobs.firstIndex(where: { $0.bookUrl == book.bookUrl }) {
+            let jobID = jobs[position].id
+            let newOnes = requested.filter { !jobs[position].plannedIndices.contains($0) }
+            var mergedRemaining = Set(jobs[position].remaining)
+            mergedRemaining.formUnion(newOnes)
+            jobs[position].plannedIndices = Array(Set(jobs[position].plannedIndices).union(requested)).sorted()
+            jobs[position].total = jobs[position].plannedIndices.count
+            jobs[position].remaining = mergedRemaining.sorted()
+            jobs[position].options.reviewLimit = Self.mergedReviewLimit(
+                jobs[position].options.reviewLimit,
+                options.reviewLimit
+            )
+            jobs[position].options.refetchReviews = jobs[position].options.refetchReviews || options.refetchReviews
+            jobs[position].concurrency = max(jobs[position].concurrency, options.concurrency)
+            jobs[position].options.concurrency = jobs[position].concurrency
+            jobs[position].options.background = jobs[position].options.background || options.background
+            if jobs[position].status == .paused {
+                jobs[position].status = .running
+            }
+            if !newOnes.isEmpty && jobs[position].phase == .reviews {
+                jobs[position].phase = .chapters
+            }
+            let context = JobContext(book: book, chapters: chapters, source: source)
+            contexts[jobID] = context
+            // worker 可能刚好在收尾：它退出了但还有新章，就重新拉起来
+            if !jobs[position].remaining.isEmpty && workers[jobID] == nil {
+                startWorker(jobID: jobID, context: context)
+            }
+            AppLog.write("[下载] 《\(book.name)》并入现有任务 \(newOnes.count) 章，共 \(jobs[position].total) 章")
+            persistPending(book: book, chapters: chapters, source: source, job: jobs[position])
+            DownloadBackground.shared.beginIfNeeded()
+            return DownloadStartResult(
+                jobID: jobID,
+                merged: true,
+                addedChapters: newOnes.count,
+                totalChapters: jobs[position].total
+            )
+        }
+
+        var job = DownloadJob(bookUrl: book.bookUrl, bookName: book.name, indices: requested, options: options)
+        if let remainingOverride {
+            job.remaining = Array(Set(remainingOverride.filter { requested.contains($0) })).sorted()
+        }
+        job.cachedChapters = OfflineBookStore.shared.cachedIndices(for: book.bookUrl).count
+        job.cachedReviews = ReviewCache.count(for: book.bookUrl)
         let jobID = job.id
         jobs.insert(job, at: 0)
+        publishLiveCounts()
+        persistPending(book: book, chapters: chapters, source: source, job: job)
+        DownloadBackground.shared.beginIfNeeded()
 
-        workers[jobID] = Task { [weak self] in
-            // 一轮抓完把失败的再试一次；已缓存的章节自然跳过，所以重开任务就是断点续下
-            var queue = indices
-            var round = 0
-            while !queue.isEmpty && round < 2 {
-                var retry: [Int] = []
-                for index in queue {
-                    guard let self else { return }
-
-                    while true {
-                        guard let current = await self.state(of: jobID) else { return }
-                        switch current {
-                        case .cancelled:
-                            return
-                        case .paused:
-                            try? await Task.sleep(nanoseconds: 300_000_000)
-                            continue
-                        case .running:
-                            break
-                        }
-                        break
-                    }
-
-                    guard index >= 0, index < chapters.count else { continue }
-                    let chapter = chapters[index]
-
-                    if BookContentService.shared.hasCachedChapter(bookUrl: book.bookUrl, chapterIndex: chapter.index) {
-                        if ReviewCache.enabled,
-                           let cached = BookContentService.shared.getCachedChapterContent(
-                               bookUrl: book.bookUrl,
-                               chapterIndex: chapter.index
-                           ) {
-                            await ReviewCache.prefetchComments(inContent: cached)
-                        }
-                        await self.increment(jobID, finished: 1)
-                    } else {
-                        await self.setChapter(jobID, chapter.title)
-                        do {
-                            let content = try await BookContentService.shared.fetchChapterContent(
-                                chapter: chapter,
-                                source: source,
-                                book: book
-                            )
-                            if ReviewCache.enabled, !content.isEmpty {
-                                await ReviewCache.prefetchComments(inContent: content)
-                            }
-                            await self.increment(jobID, finished: 1)
-                        } catch {
-                            retry.append(index)
-                        }
-                    }
-
-                    try? await Task.sleep(nanoseconds: 120_000_000)
-                }
-
-                // 还有下一轮就先把这些留在队列里重试，最后一轮仍失败才计入失败数
-                if !retry.isEmpty && round == 0 {
-                    queue = retry
-                    round += 1
-                    try? await Task.sleep(nanoseconds: 500_000_000)
-                    continue
-                }
-                for _ in retry {
-                    await self?.increment(jobID, failed: 1)
-                }
-                queue = []
-            }
-            await self?.complete(jobID)
-        }
-        return jobID
+        startWorker(jobID: jobID, context: JobContext(book: book, chapters: chapters, source: source))
+        return DownloadStartResult(
+            jobID: jobID,
+            merged: false,
+            addedChapters: requested.count,
+            totalChapters: requested.count
+        )
     }
 
-    enum JobState { case running, paused, cancelled }
+    private func startWorker(jobID: UUID, context: JobContext) {
+        contexts[jobID] = context
+        workers[jobID] = Task { [weak self] in
+            await self?.runJob(
+                jobID: jobID,
+                book: context.book,
+                chapters: context.chapters,
+                source: context.source
+            )
+        }
+    }
 
-    @MainActor private func state(of id: UUID) -> JobState? {
-        guard let job = jobs.first(where: { $0.id == id }) else { return nil }
-        if job.isCancelled { return .cancelled }
-        return job.isPaused ? .paused : .running
+    /// 合并两次请求的书评上限：任一侧要「全部」就按全部，否则取大的；都不抓才是 nil
+    private static func mergedReviewLimit(_ current: Int?, _ incoming: Int?) -> Int? {
+        switch (current, incoming) {
+        case (nil, nil):
+            return nil
+        case let (value?, nil):
+            return value
+        case let (nil, value?):
+            return value
+        case let (left?, right?):
+            if left == 0 || right == 0 { return 0 }
+            return max(left, right)
+        }
+    }
+
+    // MARK: 任务主循环
+
+    private func runJob(jobID: UUID, book: Book, chapters: [BookChapter], source: BookSource?) async {
+        while true {
+            guard let snapshot = await jobSnapshot(jobID) else { return }
+            if snapshot.status == .cancelled || snapshot.status == .cancelling { return }
+
+            if snapshot.phase == .chapters {
+                await runChapterStage(
+                    jobID: jobID,
+                    book: book,
+                    chapters: chapters,
+                    source: source,
+                    width: snapshot.concurrency
+                )
+                guard let after = await jobSnapshot(jobID) else { return }
+                if after.status == .cancelled || after.status == .cancelling { return }
+                if !after.remaining.isEmpty { continue }
+                if after.options.reviewLimit == nil { break }
+                await beginReviews(jobID)
+                continue
+            }
+
+            await runReviewStage(jobID: jobID, book: book, chapters: chapters, source: source)
+            guard let after = await jobSnapshot(jobID) else { return }
+            if after.status == .cancelled || after.status == .cancelling { return }
+            if !after.remaining.isEmpty {
+                await setPhaseChapters(jobID)
+                continue
+            }
+            break
+        }
+
+        await complete(jobID)
+        persistOfflineMeta(book: book, chapters: chapters)
+        clearPending(bookUrl: book.bookUrl)
+        DownloadBackground.shared.endIfIdle()
+    }
+
+    private func runChapterStage(
+        jobID: UUID,
+        book: Book,
+        chapters: [BookChapter],
+        source: BookSource?,
+        width: Int
+    ) async {
+        let workers = max(1, min(width, 8))
+        await withTaskGroup(of: Void.self) { group in
+            for _ in 0..<workers {
+                group.addTask { [weak self] in
+                    guard let self else { return }
+                    await self.chapterLoop(jobID: jobID, book: book, chapters: chapters, source: source)
+                }
+            }
+        }
+    }
+
+    private enum TakeResult {
+        case item(Int)
+        case paused
+        case empty
+        case cancelled
+    }
+
+    private func chapterLoop(jobID: UUID, book: Book, chapters: [BookChapter], source: BookSource?) async {
+        while true {
+            switch await takeChapter(jobID) {
+            case .cancelled, .empty:
+                return
+            case .paused:
+                try? await Task.sleep(nanoseconds: 250_000_000)
+            case .item(let index):
+                await processChapter(jobID: jobID, index: index, book: book, chapters: chapters, source: source)
+            }
+        }
+    }
+
+    private func processChapter(
+        jobID: UUID,
+        index: Int,
+        book: Book,
+        chapters: [BookChapter],
+        source: BookSource?
+    ) async {
+        guard index >= 0, index < chapters.count else { return }
+        let chapter = chapters[index]
+
+        if BookContentService.shared.hasCachedChapter(bookUrl: book.bookUrl, chapterIndex: chapter.index) {
+            await increment(jobID, finished: 1, skipped: 1)
+            return
+        }
+
+        await setChapter(jobID, chapter.title)
+        await DownloadLimiter.shared.acquire()
+        var stored = false
+        for attempt in 0..<2 {
+            do {
+                let content = try await BookContentService.shared.fetchChapterContent(
+                    chapter: chapter,
+                    source: source,
+                    book: book
+                )
+                stored = !content.isEmpty
+                break
+            } catch {
+                if attempt == 0 {
+                    try? await Task.sleep(nanoseconds: 400_000_000)
+                } else {
+                    AppLog.write("[下载] 第 \(chapter.index + 1) 章失败：\(error.localizedDescription)")
+                }
+            }
+        }
+        await DownloadLimiter.shared.release()
+
+        if stored {
+            await increment(jobID, finished: 1, cachedChapters: 1)
+        } else if BookContentService.shared.hasCachedChapter(bookUrl: book.bookUrl, chapterIndex: chapter.index) {
+            await increment(jobID, finished: 1, skipped: 1)
+        } else {
+            await increment(jobID, failed: 1)
+        }
+    }
+
+    @MainActor
+    private func takeChapter(_ id: UUID) -> TakeResult {
+        guard let position = jobs.firstIndex(where: { $0.id == id }) else { return .cancelled }
+        switch jobs[position].status {
+        case .cancelled, .cancelling, .finished:
+            return .cancelled
+        case .paused:
+            return .paused
+        case .running:
+            break
+        }
+        guard !jobs[position].remaining.isEmpty else { return .empty }
+        return .item(jobs[position].remaining.removeFirst())
+    }
+
+    @MainActor
+    private func jobSnapshot(_ id: UUID) -> DownloadJob? {
+        jobs.first { $0.id == id }
+    }
+
+    /// 任务结束写一份清单，下载管理里的「离线书库」靠它显示书名与总章数
+    private func persistOfflineMeta(book: Book, chapters: [BookChapter]) {
+        let reviews = OfflineBookStore.shared.reviewFiles(for: book.bookUrl)
+        OfflineBookStore.shared.save(
+            meta: OfflineBookMeta(book: book, chapters: chapters, reviewFiles: reviews),
+            for: book.bookUrl
+        )
+        OfflineBookStore.shared.refresh()
+    }
+
+    /// 等任务结束（完成或被取消都算）
+    public func wait(_ id: UUID) async {
+        await workers[id]?.value
     }
 
     @MainActor private func setChapter(_ id: UUID, _ title: String) {
@@ -1599,43 +1999,308 @@ public final class ChapterDownloadManager: ObservableObject {
         jobs[index].currentChapter = title
     }
 
-    @MainActor private func increment(_ id: UUID, finished: Int = 0, failed: Int = 0) {
+    @MainActor private func increment(
+        _ id: UUID,
+        finished: Int = 0,
+        failed: Int = 0,
+        skipped: Int = 0,
+        cachedChapters: Int = 0
+    ) {
         guard let index = jobs.firstIndex(where: { $0.id == id }) else { return }
         jobs[index].finished += finished
         jobs[index].failed += failed
+        jobs[index].skipped += skipped
+        jobs[index].cachedChapters += cachedChapters
+        // 第一次落章后补一条离线书库记录，让这本书能立刻出现在列表里
+        if finished > 0 && jobs[index].finished == 1 {
+            OfflineBookStore.shared.refresh()
+        }
+        publishLiveCounts()
     }
 
+    @MainActor private func beginReviews(_ id: UUID) {
+        guard let index = jobs.firstIndex(where: { $0.id == id }) else { return }
+        jobs[index].phase = .reviews
+        jobs[index].currentChapter = ""
+        jobs[index].phaseStartedAt = Date()
+        jobs[index].reviewTotal = 0
+        jobs[index].reviewsDone = 0
+        jobs[index].reviewChapterTotal = 0
+        jobs[index].reviewChapterDone = 0
+        AppLog.write("[下载] 正文完成，开始补书评")
+    }
+
+    @MainActor private func beginReviewProgress(_ id: UUID, chapterTotal: Int, anchorTotal: Int) {
+        guard let index = jobs.firstIndex(where: { $0.id == id }) else { return }
+        jobs[index].reviewChapterTotal = chapterTotal
+        jobs[index].reviewTotal = anchorTotal
+        jobs[index].phaseStartedAt = Date()
+    }
+
+    @MainActor private func markReviewChapterDone(_ id: UUID) {
+        guard let index = jobs.firstIndex(where: { $0.id == id }) else { return }
+        jobs[index].reviewChapterDone += 1
+    }
+
+    @MainActor private func setPhaseChapters(_ id: UUID) {
+        guard let index = jobs.firstIndex(where: { $0.id == id }) else { return }
+        jobs[index].phase = .chapters
+        jobs[index].currentChapter = ""
+        jobs[index].phaseStartedAt = Date()
+    }
+
+    @MainActor private func incrementReviews(_ id: UUID) {
+        guard let index = jobs.firstIndex(where: { $0.id == id }) else { return }
+        jobs[index].cachedReviews += 1
+        jobs[index].reviewsDone += 1
+        publishLiveCounts()
+    }
+
+    private func publishLiveCounts() {
+        var counts: [String: LiveCounts] = [:]
+        for job in jobs {
+            counts[job.bookUrl] = LiveCounts(chapters: job.cachedChapters, reviews: job.cachedReviews)
+        }
+        liveCounts = counts
+    }
+
+    /// 书评阶段：先数一遍范围内所有锚点，再按章抓，缺失的才算失败
+    private func runReviewStage(jobID: UUID, book: Book, chapters: [BookChapter], source: BookSource?) async {
+        guard let snapshot = await jobSnapshot(jobID), let limit = snapshot.options.reviewLimit else { return }
+        let refetch = snapshot.options.refetchReviews
+        let header = source.map { SourceRequestSupport.headerDictionary(for: $0) } ?? [:]
+
+        var perChapter: [(index: Int, anchors: Int)] = []
+        var anchorTotal = 0
+        for index in snapshot.plannedIndices {
+            guard index >= 0, index < chapters.count else { continue }
+            guard let content = BookContentService.shared.getCachedChapterContent(
+                bookUrl: book.bookUrl,
+                chapterIndex: chapters[index].index
+            ), !content.isEmpty else { continue }
+            let count = ReviewCache.commentTargets(
+                inContent: content,
+                limit: limit == 0 ? Int.max : limit
+            ).count
+            guard count > 0 else { continue }
+            perChapter.append((index, count))
+            anchorTotal += count
+        }
+        await beginReviewProgress(jobID, chapterTotal: perChapter.count, anchorTotal: anchorTotal)
+        guard anchorTotal > 0 else { return }
+
+        var failed = 0
+        for item in perChapter {
+            while true {
+                guard let current = await jobSnapshot(jobID) else { return }
+                if current.status == .cancelled || current.status == .cancelling { return }
+                if current.status == .paused {
+                    try? await Task.sleep(nanoseconds: 250_000_000)
+                    continue
+                }
+                break
+            }
+            guard let content = BookContentService.shared.getCachedChapterContent(
+                bookUrl: book.bookUrl,
+                chapterIndex: chapters[item.index].index
+            ), !content.isEmpty else { continue }
+
+            await DownloadLimiter.shared.acquire()
+            let stored = await ReviewCache.prefetchComments(
+                inContent: content,
+                limit: limit,
+                bookUrl: book.bookUrl,
+                header: header,
+                force: true,
+                refetch: refetch
+            ) { [weak self] in
+                Task { @MainActor in self?.incrementReviews(jobID) }
+            }
+            await DownloadLimiter.shared.release()
+
+            if stored < item.anchors {
+                failed += item.anchors - stored
+            }
+            await markReviewChapterDone(jobID)
+        }
+        if failed > 0 {
+            AppLog.write("[下载] 书评阶段有 \(failed) 个锚点没抓到")
+        }
+        AppLog.write("[下载] 书评阶段结束，扫过 \(perChapter.count) 章")
+    }
+
+    /// 任务收尾：置完成、刷新离线书库，停留半秒让界面看到 100% 再移除
     @MainActor private func complete(_ id: UUID) {
         guard let index = jobs.firstIndex(where: { $0.id == id }) else { return }
-        jobs[index].isRunning = false
+        // 收尾瞬间又被并入新章：接着跑，别把任务结掉
+        if !jobs[index].remaining.isEmpty, let context = contexts[id] {
+            jobs[index].status = .running
+            jobs[index].phase = .chapters
+            workers[id] = nil
+            startWorker(jobID: id, context: context)
+            return
+        }
+        jobs[index].status = .finished
         jobs[index].currentChapter = ""
+        OfflineBookStore.shared.refresh()
+        workers[id] = nil
+        contexts[id] = nil
+        publishLiveCounts()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [weak self] in
+            guard let self else { return }
+            self.jobs.removeAll { $0.id == id }
+            self.publishLiveCounts()
+        }
     }
 
     public func pause(_ id: UUID) {
-        guard let index = jobs.firstIndex(where: { $0.id == id }) else { return }
-        jobs[index].isPaused = true
+        guard let index = jobs.firstIndex(where: { $0.id == id }), jobs[index].status == .running else { return }
+        jobs[index].status = .paused
+        persistPending(for: jobs[index])
+        DownloadBackground.shared.endIfIdle()
     }
 
     public func resume(_ id: UUID) {
-        guard let index = jobs.firstIndex(where: { $0.id == id }) else { return }
-        jobs[index].isPaused = false
+        guard let index = jobs.firstIndex(where: { $0.id == id }), jobs[index].status == .paused else { return }
+        jobs[index].status = .running
+        DownloadBackground.shared.beginIfNeeded()
     }
 
     public func cancel(_ id: UUID) {
         guard let index = jobs.firstIndex(where: { $0.id == id }) else { return }
-        jobs[index].isCancelled = true
-        jobs[index].isRunning = false
+        let bookUrl = jobs[index].bookUrl
+        jobs[index].status = .cancelling
         workers[id]?.cancel()
         workers[id] = nil
+        contexts[id] = nil
+        jobs.removeAll { $0.id == id }
+        clearPending(bookUrl: bookUrl)
+        publishLiveCounts()
+        DownloadBackground.shared.endIfIdle()
     }
 
     /// 对齐安卓：暂停的任务也算已结束，清理时一并移除，并停掉还在睡眠的 worker。
     public func clearFinished() {
-        for job in jobs where !job.isRunning || job.isPaused {
-            workers[job.id]?.cancel()
-            workers[job.id] = nil
+        let ended = jobs.filter { $0.status == .cancelled || $0.status == .finished }
+        guard !ended.isEmpty else { return }
+        for job in ended {
+            clearPending(bookUrl: job.bookUrl)
         }
-        jobs.removeAll { !$0.isRunning || $0.isPaused }
+        jobs.removeAll { $0.status == .cancelled || $0.status == .finished }
+        publishLiveCounts()
+    }
+
+    public var hasRunningJobs: Bool {
+        jobs.contains { $0.status == .running || $0.status == .cancelling }
+    }
+
+    public func pauseAll() {
+        for index in jobs.indices where jobs[index].status == .running {
+            jobs[index].status = .paused
+            persistPending(for: jobs[index])
+        }
+        DownloadBackground.shared.endIfIdle()
+    }
+
+    /// 冷启动、回到前台或后台任务唤醒时，接着下没下完的书
+    public func resumePendingDownloads() {
+        for item in loadPending() {
+            if let existing = jobs.first(where: { $0.bookUrl == item.book.bookUrl }),
+               existing.status == .running || existing.status == .paused {
+                continue
+            }
+            start(
+                book: item.book,
+                chapters: item.chapters,
+                source: item.source,
+                indices: item.plannedIndices ?? item.remaining,
+                options: item.options,
+                remainingOverride: item.remaining
+            )
+        }
+    }
+
+    // MARK: 断点续传
+
+    private static let pendingKey = "offline_download_pending_v2"
+    private static let legacyPendingKey = "offline_download_pending_v1"
+
+    private struct PendingDownload: Codable {
+        var book: Book
+        var chapters: [BookChapter]
+        var source: BookSource?
+        var remaining: [Int]
+        var options: DownloadOptions
+        /// 上次任务范围；老数据没有就按 remaining 处理
+        var plannedIndices: [Int]?
+    }
+
+    private struct LegacyPendingDownload: Codable {
+        var book: Book
+        var chapters: [BookChapter]
+        var source: BookSource?
+        var indices: [Int]
+    }
+
+    private func persistPending(book: Book, chapters: [BookChapter], source: BookSource?, job: DownloadJob) {
+        var list = loadPending()
+        list.removeAll { $0.book.bookUrl == job.bookUrl }
+        list.append(PendingDownload(
+            book: book,
+            chapters: chapters,
+            source: source,
+            remaining: job.remaining,
+            options: job.options,
+            plannedIndices: job.plannedIndices
+        ))
+        savePending(list)
+    }
+
+    private func persistPending(for job: DownloadJob) {
+        var list = loadPending()
+        guard let position = list.firstIndex(where: { $0.book.bookUrl == job.bookUrl }) else { return }
+        list[position].remaining = job.remaining
+        list[position].options = job.options
+        list[position].plannedIndices = job.plannedIndices
+        savePending(list)
+    }
+
+    private func savePending(_ list: [PendingDownload]) {
+        if list.isEmpty {
+            UserDefaults.standard.removeObject(forKey: Self.pendingKey)
+        } else if let data = try? JSONEncoder().encode(list) {
+            UserDefaults.standard.set(data, forKey: Self.pendingKey)
+        }
+    }
+
+    private func clearPending(bookUrl: String) {
+        var list = loadPending()
+        list.removeAll { $0.book.bookUrl == bookUrl }
+        savePending(list)
+    }
+
+    private func loadPending() -> [PendingDownload] {
+        if let data = UserDefaults.standard.data(forKey: Self.pendingKey),
+           let list = try? JSONDecoder().decode([PendingDownload].self, from: data) {
+            return list
+        }
+        guard let data = UserDefaults.standard.data(forKey: Self.legacyPendingKey),
+              let old = try? JSONDecoder().decode([LegacyPendingDownload].self, from: data) else {
+            return []
+        }
+        let migrated = old.map {
+            PendingDownload(
+                book: $0.book,
+                chapters: $0.chapters,
+                source: $0.source,
+                remaining: $0.indices,
+                options: .default,
+                plannedIndices: $0.indices
+            )
+        }
+        savePending(migrated)
+        UserDefaults.standard.removeObject(forKey: Self.legacyPendingKey)
+        return migrated
     }
 }
 
@@ -1648,13 +2313,22 @@ public struct OfflineBookManifest: Codable {
     public var chapters: [BookChapter]
     public var reviewFiles: [String]
     public var coverFile: String?
+    public var avatarFiles: [String]?
 
-    public init(version: Int, book: Book, chapters: [BookChapter], reviewFiles: [String], coverFile: String?) {
+    public init(
+        version: Int,
+        book: Book,
+        chapters: [BookChapter],
+        reviewFiles: [String],
+        coverFile: String?,
+        avatarFiles: [String]? = nil
+    ) {
         self.version = version
         self.book = book
         self.chapters = chapters
         self.reviewFiles = reviewFiles
         self.coverFile = coverFile
+        self.avatarFiles = avatarFiles
     }
 }
 
@@ -1694,13 +2368,33 @@ public enum OfflineBookShare {
                 encoding: .utf8
             )
 
-            guard ReviewCache.enabled else { continue }
             for target in ReviewCache.commentTargets(inContent: content, limit: 80) {
                 guard let api = ReviewCache.apiURL(fromRaw: target.raw, mode: target.mode),
-                      let data = ReviewCache.load(for: api) else { continue }
+                      let data = ReviewCache.load(for: api, bookUrl: book.bookUrl) else { continue }
                 let name = CryptoUtils.md5(api.absoluteString) + ".json"
                 guard reviewNames.insert(name).inserted else { continue }
                 try? data.write(to: reviewsDir.appendingPathComponent(name), options: .atomic)
+            }
+        }
+
+        // 书目录里已经存下的评论一并带上，不依赖正文哨兵还能不能匹配到
+        for name in OfflineBookStore.shared.reviewFiles(for: book.bookUrl) where reviewNames.insert(name).inserted {
+            let source = OfflineBookPaths.reviewsDirectory(forBookUrl: book.bookUrl).appendingPathComponent(name)
+            guard let data = try? Data(contentsOf: source) else { continue }
+            try? data.write(to: reviewsDir.appendingPathComponent(name), options: .atomic)
+        }
+
+        // 评论/回复作者头像，离线打开书评时用
+        var avatarNames: [String] = []
+        let sourceAvatars = OfflineBookPaths.directory(forBookUrl: book.bookUrl)
+            .appendingPathComponent("avatars", isDirectory: true)
+        if let files = try? fm.contentsOfDirectory(at: sourceAvatars, includingPropertiesForKeys: nil), !files.isEmpty {
+            let avatarsDir = staging.appendingPathComponent("avatars", isDirectory: true)
+            try? fm.createDirectory(at: avatarsDir, withIntermediateDirectories: true)
+            for file in files where !file.hasDirectoryPath {
+                let target = avatarsDir.appendingPathComponent(file.lastPathComponent)
+                guard (try? fm.copyItem(at: file, to: target)) != nil else { continue }
+                avatarNames.append(file.lastPathComponent)
             }
         }
 
@@ -1716,11 +2410,18 @@ public enum OfflineBookShare {
             book: book,
             chapters: chapters,
             reviewFiles: reviewNames.sorted(),
-            coverFile: coverFile
+            coverFile: coverFile,
+            avatarFiles: avatarNames.sorted()
         )
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         try encoder.encode(manifest).write(to: staging.appendingPathComponent("manifest.json"), options: .atomic)
+
+        OfflineBookStore.shared.save(
+            meta: OfflineBookMeta(book: book, chapters: chapters, reviewFiles: reviewNames.sorted()),
+            for: book.bookUrl
+        )
+        OfflineBookStore.shared.refresh()
 
         let safeName = book.name.replacingOccurrences(of: "/", with: "_")
         let target = fm.temporaryDirectory.appendingPathComponent("\(safeName).\(fileExtension)")
@@ -1765,8 +2466,27 @@ public enum OfflineBookShare {
         let reviewsDir = work.appendingPathComponent("reviews", isDirectory: true)
         for name in manifest.reviewFiles {
             guard let review = try? Data(contentsOf: reviewsDir.appendingPathComponent(name)) else { continue }
-            ReviewCache.restoreFile(named: name, data: review)
+            ReviewCache.restoreFile(named: name, data: review, bookUrl: manifest.book.bookUrl)
         }
+
+        if let avatarFiles = manifest.avatarFiles, !avatarFiles.isEmpty {
+            let avatarsDir = work.appendingPathComponent("avatars", isDirectory: true)
+            let target = OfflineBookPaths.avatarsDirectory(forBookUrl: manifest.book.bookUrl)
+            for name in avatarFiles {
+                guard let avatar = try? Data(contentsOf: avatarsDir.appendingPathComponent(name)) else { continue }
+                try? avatar.write(to: target.appendingPathComponent(name), options: .atomic)
+            }
+        }
+
+        OfflineBookStore.shared.save(
+            meta: OfflineBookMeta(
+                book: manifest.book,
+                chapters: manifest.chapters,
+                reviewFiles: manifest.reviewFiles
+            ),
+            for: manifest.book.bookUrl
+        )
+        OfflineBookStore.shared.refresh()
 
         if let coverFile = manifest.coverFile,
            let cover = manifest.book.coverUrl,
@@ -1785,7 +2505,8 @@ public enum OfflineBookShare {
             book: imported,
             chapters: manifest.chapters,
             reviewFiles: manifest.reviewFiles,
-            coverFile: manifest.coverFile
+            coverFile: manifest.coverFile,
+            avatarFiles: manifest.avatarFiles
         )
     }
 
@@ -2004,50 +2725,143 @@ private extension BookStore {
 
 public enum ReviewCache {
     public static let enabledKey = "reader_cache_reviews"
+    public static let prefetchLimitKey = "reader_review_prefetch_limit"
+    public static let refetchKey = "reader_review_refetch_cached"
+
+    /// 每个锚点给前多少条评论抓回复
+    public static let replyFetchLimit = 10
+    /// 每条评论只留前多少条回复
+    public static let replyKeepLimit = 10
 
     public static var enabled: Bool {
         UserDefaults.standard.object(forKey: enabledKey) as? Bool ?? false
     }
 
-    private static var root: URL {
-        let base = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
-        let folder = base.appendingPathComponent("ReviewCache", isDirectory: true)
+    /// 每章抓多少条评论：0 表示全部
+    public static var prefetchLimit: Int {
+        UserDefaults.standard.object(forKey: prefetchLimitKey) as? Int ?? 3
+    }
+
+    /// 已有缓存要不要重新拉：默认沿用本地快照，由用户手动打开重拉
+    public static var refetchCached: Bool {
+        UserDefaults.standard.object(forKey: refetchKey) as? Bool ?? false
+    }
+
+    private static var legacyRoot: URL {
+        let folder = OfflineBookPaths.legacyReviewRoot
         if !FileManager.default.fileExists(atPath: folder.path) {
             try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         }
         return folder
     }
 
-    private static func file(for url: URL) -> URL {
-        root.appendingPathComponent(CryptoUtils.md5(url.absoluteString) + ".json")
+    private static func legacyFile(for url: URL) -> URL {
+        legacyRoot.appendingPathComponent(CryptoUtils.md5(url.absoluteString) + ".json")
     }
 
-    public static func store(_ data: Data, for url: URL) {
-        guard enabled, !data.isEmpty else { return }
-        try? data.write(to: file(for: url), options: .atomic)
+    /// 书目录里的评论文件；不建目录，读的时候别为了查缓存把空目录建出来
+    private static func bookFile(for url: URL, bookUrl: String) -> URL {
+        OfflineBookPaths.directory(forBookUrl: bookUrl)
+            .appendingPathComponent("reviews", isDirectory: true)
+            .appendingPathComponent(CryptoUtils.md5(url.absoluteString) + ".json")
     }
 
-    public static func load(for url: URL) -> Data? {
-        let path = file(for: url)
+    private static func bookFileForWriting(for url: URL, bookUrl: String) -> URL {
+        OfflineBookPaths.reviewsDirectory(forBookUrl: bookUrl)
+            .appendingPathComponent(CryptoUtils.md5(url.absoluteString) + ".json")
+    }
+
+    public static func store(_ data: Data, for url: URL, bookUrl: String? = nil, force: Bool = false) {
+        guard force || enabled, !data.isEmpty else { return }
+        let target = bookUrl.map { bookFileForWriting(for: url, bookUrl: $0) } ?? legacyFile(for: url)
+        try? data.write(to: target, options: .atomic)
+    }
+
+    public static func load(for url: URL, bookUrl: String? = nil) -> Data? {
+        if let bookUrl {
+            let bookPath = bookFile(for: url, bookUrl: bookUrl)
+            if FileManager.default.fileExists(atPath: bookPath.path) {
+                return try? Data(contentsOf: bookPath)
+            }
+        }
+        let path = legacyFile(for: url)
         guard FileManager.default.fileExists(atPath: path.path) else { return nil }
         return try? Data(contentsOf: path)
     }
 
-    public static func hasCache(for url: URL) -> Bool {
-        FileManager.default.fileExists(atPath: file(for: url).path)
+    public static func hasCache(for url: URL, bookUrl: String? = nil) -> Bool {
+        if let bookUrl, FileManager.default.fileExists(atPath: bookFile(for: url, bookUrl: bookUrl).path) {
+            return true
+        }
+        return FileManager.default.fileExists(atPath: legacyFile(for: url).path)
     }
 
-    public static func count() -> Int {
-        (try? FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: nil).count) ?? 0
+    /// 回复文件只按 comment_id 命名：评论 URL 的拼接顺序在下载端和阅读端不一定一致
+    public static func replyFileName(commentID: String) -> String {
+        CryptoUtils.md5(commentID) + ".reply.json"
+    }
+
+    public static func storeReply(_ data: Data, commentID: String, bookUrl: String?, force: Bool = false) {
+        guard force || enabled, !data.isEmpty, let bookUrl else { return }
+        let target = OfflineBookPaths.reviewsDirectory(forBookUrl: bookUrl)
+            .appendingPathComponent(replyFileName(commentID: commentID))
+        try? data.write(to: target, options: .atomic)
+    }
+
+    public static func loadReply(commentID: String, bookUrl: String?) -> Data? {
+        guard let bookUrl else { return nil }
+        let path = OfflineBookPaths.directory(forBookUrl: bookUrl)
+            .appendingPathComponent("reviews", isDirectory: true)
+            .appendingPathComponent(replyFileName(commentID: commentID))
+        guard FileManager.default.fileExists(atPath: path.path) else { return nil }
+        return try? Data(contentsOf: path)
+    }
+
+    public static func hasReply(commentID: String, bookUrl: String?) -> Bool {
+        loadReply(commentID: commentID, bookUrl: bookUrl) != nil
+    }
+
+    public static func count(for bookUrl: String? = nil) -> Int {
+        let fm = FileManager.default
+        if let bookUrl {
+            let folder = OfflineBookPaths.directory(forBookUrl: bookUrl)
+                .appendingPathComponent("reviews", isDirectory: true)
+            return (try? fm.contentsOfDirectory(atPath: folder.path))?.filter { $0.hasSuffix(".json") && !$0.hasSuffix(".reply.json") }.count ?? 0
+        }
+        var total = (try? fm.contentsOfDirectory(atPath: legacyRoot.path))?.count ?? 0
+        if let books = try? fm.contentsOfDirectory(atPath: OfflineBookPaths.root.path) {
+            for key in books {
+                let folder = OfflineBookPaths.root
+                    .appendingPathComponent(key, isDirectory: true)
+                    .appendingPathComponent("reviews", isDirectory: true)
+                total += (try? fm.contentsOfDirectory(atPath: folder.path))?.filter { $0.hasSuffix(".json") && !$0.hasSuffix(".reply.json") }.count ?? 0
+            }
+        }
+        return total
     }
 
     public static func clearAll() {
-        try? FileManager.default.removeItem(at: root)
+        try? FileManager.default.removeItem(at: legacyRoot)
+        let fm = FileManager.default
+        if let books = try? fm.contentsOfDirectory(atPath: OfflineBookPaths.root.path) {
+            for key in books {
+                let folder = OfflineBookPaths.root
+                    .appendingPathComponent(key, isDirectory: true)
+                    .appendingPathComponent("reviews", isDirectory: true)
+                try? fm.removeItem(at: folder)
+            }
+        }
     }
 
     /// 离线包导入：文件名就是 md5(apiURL)，直接写回缓存目录
-    public static func restoreFile(named name: String, data: Data) {
-        try? data.write(to: root.appendingPathComponent(name), options: .atomic)
+    public static func restoreFile(named name: String, data: Data, bookUrl: String? = nil) {
+        let target: URL
+        if let bookUrl {
+            target = OfflineBookPaths.reviewsDirectory(forBookUrl: bookUrl).appendingPathComponent(name)
+        } else {
+            target = legacyRoot.appendingPathComponent(name)
+        }
+        try? data.write(to: target, options: .atomic)
     }
 
     public static func apiURL(fromRaw raw: String, mode: String = "chapter") -> URL? {
@@ -2078,20 +2892,12 @@ public enum ReviewCache {
 
     public static func commentTargets(inContent content: String, limit: Int) -> [(raw: String, mode: String)] {
         var found: [(String, String)] = []
-        let text = content as NSString
-        let fullRange = NSRange(location: 0, length: text.length)
 
-        if let regex = try? NSRegularExpression(pattern: "\u{E000}C\u{1F}\\d+\u{1F}([^\u{E001}]*)\u{E001}") {
-            for match in regex.matches(in: content, range: fullRange) {
-                let raw = text.substring(with: match.range(at: 1))
-                if !raw.isEmpty { found.append((raw, "paragraph")) }
-            }
+        for marker in ReviewMarkerParser.comments(in: content) where !marker.url.isEmpty {
+            found.append((marker.url, "paragraph"))
         }
-        if let regex = try? NSRegularExpression(pattern: "\u{E000}H\u{1F}([^\u{E001}]*)\u{E001}") {
-            for match in regex.matches(in: content, range: fullRange) {
-                let raw = text.substring(with: match.range(at: 1))
-                if !raw.isEmpty { found.append((raw, "chapter")) }
-            }
+        for marker in ReviewMarkerParser.chapters(in: content) where !marker.url.isEmpty {
+            found.append((marker.url, "chapter"))
         }
 
         var seen = Set<String>()
@@ -2103,26 +2909,235 @@ public enum ReviewCache {
         return targets
     }
 
-    public static func prefetchComments(inContent content: String, limit: Int = 3) async {
-        guard enabled, !content.isEmpty else { return }
-        let targets = commentTargets(inContent: content, limit: limit)
-        guard !targets.isEmpty else { return }
+    /// 抓正文里所有书评锚点；返回成功落盘的条数，供下载进度和失败统计用
+    @discardableResult
+    public static func prefetchComments(
+        inContent content: String,
+        limit: Int? = nil,
+        bookUrl: String? = nil,
+        header: [String: String] = [:],
+        force: Bool = false,
+        refetch: Bool? = nil,
+        onStored: (() -> Void)? = nil
+    ) async -> Int {
+        guard force || enabled, !content.isEmpty else { return 0 }
+        let cap = limit ?? prefetchLimit
+        let targets = commentTargets(inContent: content, limit: cap == 0 ? Int.max : cap)
+        guard !targets.isEmpty else { return 0 }
+        let shouldRefetch = refetch ?? refetchCached
 
         var stored = 0
+        var avatars: [URL] = []
         for target in targets {
             guard let api = apiURL(fromRaw: target.raw, mode: target.mode) else { continue }
-            if hasCache(for: api) { continue }
+            if hasCache(for: api, bookUrl: bookUrl), !shouldRefetch { continue }
 
             do {
-                let (data, _) = try await URLSession.shared.data(from: api)
+                let (data, _) = try await URLSession.shared.data(for: request(api, header: header))
                 guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                       object["data"] != nil else { continue }
-                try? data.write(to: file(for: api), options: .atomic)
+                let destination = bookUrl.map { bookFileForWriting(for: api, bookUrl: $0) } ?? legacyFile(for: api)
+                try? data.write(to: destination, options: .atomic)
                 stored += 1
+                onStored?()
+
+                guard let bookUrl else { continue }
+                let comments = parseComments(data)
+                avatars.append(contentsOf: comments.compactMap(\.avatar))
+                for comment in comments.prefix(replyFetchLimit) where comment.replyCount > 0 {
+                    if hasReply(commentID: comment.id, bookUrl: bookUrl), !shouldRefetch { continue }
+                    guard let replyURL = replyAPIURL(from: api, commentID: comment.id) else { continue }
+                    avatars.append(contentsOf: await fetchReplies(
+                        url: replyURL,
+                        commentID: comment.id,
+                        bookUrl: bookUrl,
+                        header: header,
+                        force: force
+                    ))
+                }
             } catch {
                 continue
             }
         }
-        AppLog.write("[书评] 缓存评论 \(stored)/\(targets.count) 条 · 抓取上限 \(limit)")
+        if let bookUrl, !avatars.isEmpty {
+            await prefetchAvatars(avatars, bookUrl: bookUrl, header: header)
+        }
+        AppLog.write("[书评] 缓存评论 \(stored)/\(targets.count) 条 · 抓取上限 \(cap == 0 ? "全部" : "\(cap)") · 重拉 \(shouldRefetch ? "开" : "关")")
+        return stored
     }
+
+    private static func request(_ url: URL, header: [String: String]) -> URLRequest {
+        var request = URLRequest(url: url)
+        for (key, value) in header {
+            request.setValue(value, forHTTPHeaderField: key)
+        }
+        return request
+    }
+
+    private struct CommentSummary {
+        let id: String
+        let replyCount: Int
+        let avatar: URL?
+    }
+
+    private static func parseComments(_ data: Data) -> [CommentSummary] {
+        guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let payload = object["data"] as? [String: Any],
+              let comments = payload["comments"] as? [[String: Any]] else { return [] }
+        return comments.compactMap { item in
+            guard let id = item["comment_id"] as? String else { return nil }
+            return CommentSummary(
+                id: id,
+                replyCount: item["reply_count"] as? Int ?? 0,
+                avatar: userAvatarURL(from: item)
+            )
+        }
+    }
+
+    private static func userAvatarURL(from item: [String: Any]) -> URL? {
+        guard let user = item["user"] as? [String: Any],
+              let raw = user["user_avatar"] as? String else { return nil }
+        return absoluteURL(raw)
+    }
+
+    private static func absoluteURL(_ raw: String) -> URL? {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        if trimmed.hasPrefix("//") { return URL(string: "https:" + trimmed) }
+        return URL(string: trimmed)
+    }
+
+    private static func replyAPIURL(from api: URL, commentID: String) -> URL? {
+        guard var components = URLComponents(url: api, resolvingAgainstBaseURL: false) else { return nil }
+        var items = (components.queryItems ?? []).filter { $0.name != "comment_id" && $0.name != "cursor" }
+        items.append(URLQueryItem(name: "comment_id", value: commentID))
+        components.queryItems = items
+        return components.url
+    }
+
+    /// 抓一条评论的回复并截断到 replyKeepLimit 条，返回本次遇到的作者头像
+    private static func fetchReplies(
+        url: URL,
+        commentID: String,
+        bookUrl: String,
+        header: [String: String],
+        force: Bool
+    ) async -> [URL] {
+        try? await Task.sleep(nanoseconds: 200_000_000)
+        guard let (data, _) = try? await URLSession.shared.data(for: request(url, header: header)),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              var payload = object["data"] as? [String: Any],
+              let replies = payload["replies"] as? [[String: Any]] else { return [] }
+        payload["replies"] = Array(replies.prefix(replyKeepLimit))
+        let envelope: [String: Any] = ["code": object["code"] ?? 0, "data": payload]
+        guard let out = try? JSONSerialization.data(withJSONObject: envelope) else { return [] }
+        storeReply(out, commentID: commentID, bookUrl: bookUrl, force: force)
+        return replies.compactMap { userAvatarURL(from: $0) }
+    }
+
+    private static func prefetchAvatars(_ urls: [URL], bookUrl: String, header: [String: String]) async {
+        var seen = Set<String>()
+        for url in urls where seen.insert(url.absoluteString).inserted {
+            guard !AvatarCache.hasCache(for: url, bookUrl: bookUrl) else { continue }
+            try? await Task.sleep(nanoseconds: 150_000_000)
+            guard let (data, response) = try? await URLSession.shared.data(for: request(url, header: header)) else { continue }
+            if let http = response as? HTTPURLResponse, http.statusCode >= 400 { continue }
+            AvatarCache.store(data, for: url, bookUrl: bookUrl)
+        }
+    }
+}
+
+// MARK: - 头像缓存
+
+/// 评论/回复作者头像，离线也能显示；按 URL 哈希存在书目录下。
+public enum AvatarCache {
+    public static func fileURL(for url: URL, bookUrl: String) -> URL {
+        OfflineBookPaths.directory(forBookUrl: bookUrl)
+            .appendingPathComponent("avatars", isDirectory: true)
+            .appendingPathComponent(CryptoUtils.md5(url.absoluteString))
+    }
+
+    public static func hasCache(for url: URL, bookUrl: String) -> Bool {
+        FileManager.default.fileExists(atPath: fileURL(for: url, bookUrl: bookUrl).path)
+    }
+
+    public static func store(_ data: Data, for url: URL, bookUrl: String) {
+        guard !data.isEmpty, data.count <= 512 * 1024 else { return }
+        let target = OfflineBookPaths.avatarsDirectory(forBookUrl: bookUrl)
+            .appendingPathComponent(CryptoUtils.md5(url.absoluteString))
+        try? data.write(to: target, options: .atomic)
+    }
+
+    public static func load(for url: URL, bookUrl: String) -> Data? {
+        let path = fileURL(for: url, bookUrl: bookUrl)
+        guard FileManager.default.fileExists(atPath: path.path) else { return nil }
+        return try? Data(contentsOf: path)
+    }
+}
+
+// MARK: - 后台下载
+
+/// 退到后台后继续下载：先申请一段后台时间，系统收走前结束；
+/// 同时注册 BGProcessingTask，系统空闲时唤醒接着下未完成的队列。
+public final class DownloadBackground {
+    public static let shared = DownloadBackground()
+    public static let taskIdentifier = "com.factorcitrus.juyue.download"
+
+    #if canImport(UIKit)
+    private var backgroundTask: UIBackgroundTaskIdentifier = .invalid
+    #endif
+    private var registered = false
+
+    /// 必须在启动完成前调用（JuyueApp.init），否则 BGTaskScheduler 注册不生效
+    public func register() {
+        guard !registered else { return }
+        registered = true
+        #if canImport(BackgroundTasks)
+        BGTaskScheduler.shared.register(forTaskWithIdentifier: Self.taskIdentifier, using: nil) { task in
+            task.expirationHandler = {
+                DispatchQueue.main.async {
+                    ChapterDownloadManager.shared.pauseAll()
+                }
+            }
+            DispatchQueue.main.async {
+                ChapterDownloadManager.shared.resumePendingDownloads()
+            }
+            task.setTaskCompleted(success: true)
+        }
+        #endif
+    }
+
+    public func beginIfNeeded() {
+        #if canImport(UIKit)
+        guard backgroundTask == .invalid else { return }
+        backgroundTask = UIApplication.shared.beginBackgroundTask(withName: "ChapterDownload") { [weak self] in
+            self?.endBackgroundTask()
+        }
+        #endif
+    }
+
+    public func endIfIdle() {
+        guard !ChapterDownloadManager.shared.hasRunningJobs else { return }
+        #if canImport(UIKit)
+        endBackgroundTask()
+        #endif
+    }
+
+    public func scheduleIfNeeded() {
+        guard ChapterDownloadManager.shared.hasRunningJobs else { return }
+        #if canImport(BackgroundTasks)
+        let request = BGProcessingTaskRequest(identifier: Self.taskIdentifier)
+        request.requiresNetworkConnectivity = true
+        request.requiresExternalPower = false
+        try? BGTaskScheduler.shared.submit(request)
+        #endif
+    }
+
+    #if canImport(UIKit)
+    private func endBackgroundTask() {
+        guard backgroundTask != .invalid else { return }
+        UIApplication.shared.endBackgroundTask(backgroundTask)
+        backgroundTask = .invalid
+    }
+    #endif
 }

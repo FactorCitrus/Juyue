@@ -1246,13 +1246,16 @@ public class JSEngine {
 
     // MARK: - 求值
 
-    public func evalRule(script: String, result: Any? = nil) -> Any? {
-        eval(script: "{ \(script)\n}", result: result)
+    public func evalRule(script: String, result: Any? = nil, rawText: String? = nil) -> Any? {
+        eval(script: "{ \(script)\n}", result: result, rawText: rawText)
     }
 
-    public func eval(script: String, result: Any? = nil) -> Any? {
+    public func eval(script: String, result: Any? = nil, rawText: String? = nil) -> Any? {
         if let result {
             context.setObject(Self.jsSafeValue(result), forKeyedSubscript: "result" as NSString)
+        }
+        if let rawText {
+            Self.attachRawText(rawText, to: "result", context: context)
         }
 
         let value = context.evaluateScript(script)
@@ -1276,6 +1279,30 @@ public class JSEngine {
             return value.toDictionary()
         }
         return value.toObject()
+    }
+
+    /// 让对象在转字符串时还原原始响应文本。
+    ///
+    /// 规则引擎把 JSON 响应解析成对象绑定给 `result`（脚本要 `result.title` 这类字段），
+    /// 但聚合源正文会对 `result` 做 `String()` / `hexDecodeToString()` / `JSON.parse()`，
+    /// 对象默认会被转成 `[object Object]`。这里给对象挂一个不可枚举的 `toString`，
+    /// 两种用法都能拿到原文，`for…in` 也不会多出一个键。
+    private static func attachRawText(_ raw: String, to variable: String, context: JSContext) {
+        let block: @convention(block) () -> String = { raw }
+        guard let function = JSValue(object: block, in: context) else { return }
+        context.setObject(function, forKeyedSubscript: "__juyueRawToString" as NSString)
+        context.evaluateScript("""
+        if (typeof \(variable) === 'object' && \(variable) !== null) {
+            Object.defineProperty(\(variable), 'toString', {
+                value: __juyueRawToString,
+                enumerable: false,
+                configurable: true,
+                writable: true
+            });
+        }
+        delete __juyueRawToString;
+        """)
+        context.exception = nil
     }
 
     /// 只有 toString / valueOf、没有可枚举字段的对象，按「Java 字符串」还原。

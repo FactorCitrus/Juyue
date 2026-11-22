@@ -9,9 +9,20 @@ public struct SourceWebLoginView: View {
     @StateObject private var session: SourceLoginSession
     @Environment(\.dismiss) private var dismiss
     @Environment(\.appTheme) private var theme
+    private let onRequestFormLogin: (() -> Void)?
 
-    public init(source: BookSource, onLoginCompleted: ((BookSource) -> Void)? = nil) {
-        _session = StateObject(wrappedValue: SourceLoginSession(source: source, onLoginCompleted: onLoginCompleted))
+    public init(
+        source: BookSource,
+        initialURL: URL? = nil,
+        onLoginCompleted: ((BookSource) -> Void)? = nil,
+        onRequestFormLogin: (() -> Void)? = nil
+    ) {
+        _session = StateObject(wrappedValue: SourceLoginSession(
+            source: source,
+            initialURL: initialURL,
+            onLoginCompleted: onLoginCompleted
+        ))
+        self.onRequestFormLogin = onRequestFormLogin
     }
 
     public var body: some View {
@@ -31,13 +42,16 @@ public struct SourceWebLoginView: View {
             .toolbar { toolbarItems }
             .sheet(isPresented: $session.showingManualSheet) { manualCookieEditor }
             .alert(session.alertText ?? "", isPresented: alertBinding) {
-                Button("确定", role: .cancel) { session.alertText = nil }
+                Button("确定", role: .cancel) {
+                    session.alertText = nil
+                    // 保存成功时明确告知，用户点掉提示再关面板
+                    if session.isFinished { dismiss() }
+                }
             }
             .onAppear {
                 session.loadStartPage()
                 session.refreshCookies()
             }
-            .onReceive(session.$isFinished.filter { $0 }) { _ in dismiss() }
         }
     }
 
@@ -127,7 +141,7 @@ public struct SourceWebLoginView: View {
                 .foregroundColor(theme.palette.secondaryInk)
             Text("这个书源没有可直接打开的网页登录地址")
                 .font(.subheadline.weight(.medium))
-            Text("它的 loginUrl 是一段脚本，bookSourceUrl 也不是网址。\n上面地址栏里填的是从脚本里扒出来的主机名。把真正的登录页地址补上，点「打开」；也可以直接「手动粘贴 Cookie」，或者退回去走「表单脚本登录」。")
+            Text("它的 loginUrl 是一段脚本，bookSourceUrl 也不是网址，脚本里也没有可用的登录站点。\n上面地址栏里填的是从脚本里扒出来的主机名。把真正的登录页地址补上，点「打开」；也可以直接「手动粘贴 Cookie」，或者点右上角「表单登录」。")
                 .font(.caption)
                 .foregroundColor(theme.palette.secondaryInk)
                 .multilineTextAlignment(.center)
@@ -140,6 +154,11 @@ public struct SourceWebLoginView: View {
     @ToolbarContentBuilder
     private var toolbarItems: some ToolbarContent {
         CancelToolbar { dismiss() }
+        ToolbarItem(placement: .primaryAction) {
+            if let onRequestFormLogin {
+                Button("表单登录") { onRequestFormLogin() }
+            }
+        }
         ToolbarItem(placement: .confirmationAction) {
             Button("保存并完成") { session.finish() }
                 .font(.body.bold())
@@ -203,7 +222,7 @@ final class SourceLoginSession: ObservableObject {
 
     private let onLoginCompleted: ((BookSource) -> Void)?
 
-    init(source: BookSource, onLoginCompleted: ((BookSource) -> Void)?) {
+    init(source: BookSource, initialURL: URL? = nil, onLoginCompleted: ((BookSource) -> Void)?) {
         self.source = source
         self.onLoginCompleted = onLoginCompleted
 
@@ -215,8 +234,8 @@ final class SourceLoginSession: ObservableObject {
 
         let start = LoginPageResolver.startPage(for: source)
         self.candidates = LoginPageResolver.hosts(in: source)
-        self.address = start.address
-        self.currentURL = start.url
+        self.address = initialURL?.absoluteString ?? start.address
+        self.currentURL = initialURL ?? start.url
     }
 
     func loadStartPage() {
@@ -292,11 +311,29 @@ final class SourceLoginSession: ObservableObject {
 
         BookStore.shared.updateSource(updated)
         onLoginCompleted?(updated)
+        let count = cookies.isEmpty
+            ? cookieHeader.split(separator: ";").count
+            : cookies.count
+        alertText = "登录成功：已保存 \(count) 个 Cookie 到书源，书源脚本已同步登录状态。"
         isFinished = true
     }
 }
 
 // MARK: - 登录地址解析
+
+struct WebLoginEntry: Identifiable, Hashable {
+    enum Kind: Hashable {
+        case fanqie
+        case server
+    }
+
+    let kind: Kind
+    let title: String
+    let detail: String
+    let url: URL
+
+    var id: String { url.absoluteString }
+}
 
 enum LoginPageResolver {
     struct StartPage {
@@ -307,16 +344,55 @@ enum LoginPageResolver {
     static func startPage(for source: BookSource) -> StartPage {
         let seeds = [source.loginUrl ?? "", source.bookSourceUrl]
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-        let usable = seeds.first(where: isWebAddress)
-        let fallback = usable ?? hosts(in: source).first ?? ""
-        return StartPage(address: fallback, url: usable.flatMap { URL(string: $0) })
+        if let usable = seeds.first(where: isWebAddress) {
+            return StartPage(address: usable, url: URL(string: usable))
+        }
+        if let site = loginSite(in: source) {
+            return StartPage(address: site, url: URL(string: site))
+        }
+        let fallback = hosts(in: source).first ?? ""
+        return StartPage(address: fallback, url: nil)
+    }
+
+    /// `loginUrl` 是整段脚本的聚合源，登录页地址是运行时拼的：
+    /// `base_url = getArgument('server') || host[0]`，账号提交打到 `${base_url}/login_api`。
+    /// 照着脚本自己的算法取它声明的服务器，拼出登录页，而不是让用户对着空白页猜。
+    static func loginSite(in source: BookSource) -> String? {
+        let script = [source.loginUrl ?? "", source.jsLib ?? ""].joined(separator: "\n")
+        guard script.contains("/login_api"),
+              let server = declaredServers(in: source).first else { return nil }
+        let trimmed = server.hasSuffix("/") ? String(server.dropLast()) : server
+        return trimmed + "/login"
+    }
+
+    /// 脚本里 `var host = ['https://v5.langge.uk', ...]` 这类服务器列表，按声明顺序返回。
+    static func declaredServers(in source: BookSource) -> [String] {
+        for text in [source.jsLib ?? "", source.loginUrl ?? ""] {
+            guard let arrayPattern = try? NSRegularExpression(
+                pattern: #"(?:var|let|const)\s+hosts?\s*=\s*\[([^\]]*)\]"#
+            ) else { continue }
+            let ns = text as NSString
+            for match in arrayPattern.matches(in: text, options: [], range: NSRange(location: 0, length: ns.length)) {
+                guard match.numberOfRanges > 1 else { continue }
+                let body = ns.substring(with: match.range(at: 1))
+                guard let urlPattern = try? NSRegularExpression(
+                    pattern: #"https?://[A-Za-z0-9.\-]+(?::\d+)?"#
+                ) else { continue }
+                let bodyNS = body as NSString
+                let servers = urlPattern
+                    .matches(in: body, options: [], range: NSRange(location: 0, length: bodyNS.length))
+                    .map { bodyNS.substring(with: $0.range) }
+                if !servers.isEmpty { return servers }
+            }
+        }
+        return []
     }
 
     static func hosts(in source: BookSource) -> [String] {
         let haystack = [source.loginUrl ?? "", source.jsLib ?? "", source.bookSourceUrl].joined(separator: "\n")
-        guard let pattern = try? NSRegularExpression(pattern: #"https?://[A-Za-z0-9.\-]+"#) else { return [] }
+        guard let pattern = try? NSRegularExpression(pattern: #"https?://[A-Za-z0-9.\-]+(?::\d+)?"#) else { return [] }
         let range = NSRange(location: 0, length: (haystack as NSString).length)
-        var ordered: [String] = []
+        var ordered = Array(declaredServers(in: source).prefix(6))
         for match in pattern.matches(in: haystack, options: [], range: range) {
             guard ordered.count < 6,
                   let found = Range(match.range, in: haystack) else { break }
@@ -342,6 +418,51 @@ enum LoginPageResolver {
               scheme == "http" || scheme == "https",
               let host = parts.host, !host.isEmpty else { return false }
         return true
+    }
+
+    /// 脚本里直写的网页登录页，例如大灰狼 `fq_login()` 的 fanqienovel.com。
+    static func scriptBrowserURLs(in source: BookSource) -> [String] {
+        let haystack = [source.loginUrl ?? "", source.jsLib ?? ""].joined(separator: "\n")
+        guard let pattern = try? NSRegularExpression(
+            pattern: #"startBrowser\w*\s*\(\s*["'](https?://[^"']+)["']"#
+        ) else { return [] }
+        let ns = haystack as NSString
+        var urls: [String] = []
+        for match in pattern.matches(in: haystack, options: [], range: NSRange(location: 0, length: ns.length)) {
+            guard match.numberOfRanges > 1 else { continue }
+            let url = ns.substring(with: match.range(at: 1))
+            if isWebAddress(url), !urls.contains(url) {
+                urls.append(url)
+            }
+        }
+        return urls
+    }
+
+    static func webLoginEntries(in source: BookSource) -> [WebLoginEntry] {
+        var entries: [WebLoginEntry] = []
+        let scripted = scriptBrowserURLs(in: source)
+        let novelAddress = scripted.first { $0.lowercased().contains("fanqienovel") }
+            ?? hosts(in: source).first { $0.lowercased().contains("fanqienovel") }
+        if let address = novelAddress, let url = URL(string: address) {
+            entries.append(WebLoginEntry(
+                kind: .fanqie,
+                title: "番茄小说网页登录",
+                detail: url.host ?? address,
+                url: url
+            ))
+        }
+        if let site = loginSite(in: source), let url = URL(string: site) {
+            if !entries.contains(where: { $0.url == url }) {
+                let isLangge = (url.host ?? "").lowercased().contains("langge")
+                entries.append(WebLoginEntry(
+                    kind: .server,
+                    title: isLangge ? "大灰狼服务器登录" : "书源服务器登录",
+                    detail: url.host ?? site,
+                    url: url
+                ))
+            }
+        }
+        return entries
     }
 }
 
@@ -371,6 +492,11 @@ enum LoginCookieScope {
         let targetHost = URL(string: sourceURL)?.host
         for cookie in cookies {
             storage.setCookie(cookie)
+            let scriptHost = cookie.domain
+                .trimmingCharacters(in: CharacterSet(charactersIn: "."))
+            if !scriptHost.isEmpty {
+                CookieJar.shared.setCookies("\(cookie.name)=\(cookie.value)", for: scriptHost)
+            }
             guard let targetHost, targetHost != cookie.domain else { continue }
             var properties = cookie.properties ?? [:]
             properties[.domain] = targetHost

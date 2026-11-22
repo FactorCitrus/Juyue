@@ -49,6 +49,8 @@ public struct JuyueApp: App {
     public init() {
         JuyueStorageMigration.runIfNeeded()
         AppLog.install()
+        // 后台下载任务要在启动完成前注册，晚了系统不认
+        DownloadBackground.shared.register()
         // 书源里的 webView / webJs 走无声 WKWebView，Core 只认这个运行时注入的实现。
         HeadlessWebViewFetcher.install()
         // 启动这一条带齐环境：出问题先把这份头几行发过来，机型、系统、剩余空间、
@@ -257,6 +259,11 @@ public struct JuyueApp: App {
                     // 进后台 / 退出前把防抖中的阅读进度写盘，别等系统把进程收走
                     if phase != .active {
                         BookStore.shared.flushShelf()
+                        DownloadBackground.shared.scheduleIfNeeded()
+                    } else {
+                        // 回前台接着下没完成的书，并把后台时间重新握在手里
+                        ChapterDownloadManager.shared.resumePendingDownloads()
+                        DownloadBackground.shared.beginIfNeeded()
                     }
                 }
         }
@@ -275,6 +282,8 @@ public struct JuyueApp: App {
                     // 放到主题环境外面就拿不到主题了。
                     .modifier(DebugTTSLauncher())
                     .task {
+                        // 旧版缓存搬到 Documents/OfflineBooks，顺便刷新离线书库列表
+                        OfflineBookStore.shared.bootstrap()
                         #if !NO_BAIDU_TTS
                         BaiduOfflineTTS.probeIfNeeded()
                         #endif
@@ -524,22 +533,47 @@ final class ScriptBrowserPresenter: ObservableObject {
         }
         // 抓不到就按空 HTML 放行，不阻塞脚本线程
         DispatchQueue.main.asyncAfter(deadline: .now() + 2) { deliver("") }
-        // 顺手把页面自己的 location.href 带回去：书源设置中心把结果写进地址
-        // （`#config=` / `?source_settings_result=`），而 WKWebView 里这一步是
-        // loadHTMLString，webView.url 只会是 about:blank，拿不到页面改过的地址。
-        webView.evaluateJavaScript("JSON.stringify({ h: document.documentElement.outerHTML, u: String(location.href) })") { value, _ in
-            guard let json = value as? String,
-                  let data = json.data(using: .utf8),
-                  let obj = try? JSONSerialization.jsonObject(with: data) as? [String: String]
-            else {
-                deliver("")
-                return
+        // 先同步 cookie 再取页面：脚本线程一放行就会去读 CookieJar
+        // （番茄登录 `fq_login` 关页后直接取 `fanqienovel.com` 的 sessionid），
+        // 而脚本浏览器里的登录态只存在 WKWebView，不先写回去就还是「未登录」。
+        webView.configuration.websiteDataStore.httpCookieStore.getAllCookies { cookies in
+            Self.syncCookies(cookies, pageURL: pageUrl)
+            // 顺手把页面自己的 location.href 带回去：书源设置中心把结果写进地址
+            // （`#config=` / `?source_settings_result=`），而 WKWebView 里这一步是
+            // loadHTMLString，webView.url 只会是 about:blank，拿不到页面改过的地址。
+            webView.evaluateJavaScript("JSON.stringify({ h: document.documentElement.outerHTML, u: String(location.href) })") { value, _ in
+                guard let json = value as? String,
+                      let data = json.data(using: .utf8),
+                      let obj = try? JSONSerialization.jsonObject(with: data) as? [String: String]
+                else {
+                    deliver("")
+                    return
+                }
+                if let href = obj["u"], !href.isEmpty, href != "about:blank" {
+                    finalPageUrl = href
+                }
+                deliver(obj["h"] ?? "")
             }
-            if let href = obj["u"], !href.isEmpty, href != "about:blank" {
-                finalPageUrl = href
-            }
-            deliver(obj["h"] ?? "")
         }
+    }
+
+    /// 脚本浏览器关页时把 WKWebView 的 cookie 写进 HTTPCookieStorage 和脚本可见的 CookieJar。
+    private static func syncCookies(_ cookies: [HTTPCookie], pageURL: String) {
+        guard !cookies.isEmpty else { return }
+        let url = URL(string: pageURL)
+        if let scheme = url?.scheme?.lowercased(), scheme == "http" || scheme == "https" {
+            LoginCookieScope.mirror(cookies, for: pageURL)
+        } else {
+            let storage = HTTPCookieStorage.shared
+            for cookie in cookies {
+                storage.setCookie(cookie)
+                let host = cookie.domain.trimmingCharacters(in: CharacterSet(charactersIn: "."))
+                if !host.isEmpty {
+                    CookieJar.shared.setCookies("\(cookie.name)=\(cookie.value)", for: host)
+                }
+            }
+        }
+        AppLog.write("[网页] 同步 Cookie \(cookies.count) 个 \(url?.host ?? pageURL)")
     }
 }
 
@@ -767,11 +801,29 @@ final class InboundImportCenter: ObservableObject {
     private init() {}
 
     func handle(_ url: URL) {
+        if url.pathExtension.lowercased() == OfflineBookShare.fileExtension {
+            importOfflineBook(at: url)
+            return
+        }
         guard SourceDeepLinkParser.parse(url) != nil else {
             message = "暂不支持这个导入链接：\(url.absoluteString)"
             return
         }
         pendingLink = url
+    }
+
+    private func importOfflineBook(at url: URL) {
+        let scoped = url.startAccessingSecurityScopedResource()
+        defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+        do {
+            let manifest = try OfflineBookShare.unpack(at: url)
+            _ = BookStore.shared.importOfflineBook(manifest.book, chapters: manifest.chapters)
+            AppLog.write("[导入] 打开离线书成功《\(manifest.book.name)》\(manifest.chapters.count) 章")
+            message = "已导入《\(manifest.book.name)》，共 \(manifest.chapters.count) 章"
+        } catch {
+            AppLog.write("[导入] 打开离线书失败 error=\(error.localizedDescription)")
+            message = "导入失败：\(error.localizedDescription)"
+        }
     }
 
     func confirm() {
@@ -918,16 +970,20 @@ public struct MainTabView: View {
     public init() {}
 
     public var body: some View {
-        TabView(selection: $selection) {
-            tab("书架", icon: "books.vertical.fill", tag: 0) {
-                BookshelfView()
+        ZStack {
+            TabView(selection: $selection) {
+                tab("书架", icon: "books.vertical.fill", tag: 0) {
+                    BookshelfView()
+                }
+                tab("分类", icon: "square.grid.2x2.fill", tag: 1) {
+                    CategoryExploreView(isActive: selection == 1)
+                }
+                tab("设置", icon: "gearshape.fill", tag: 2) {
+                    SettingsView()
+                }
             }
-            tab("分类", icon: "square.grid.2x2.fill", tag: 1) {
-                CategoryExploreView(isActive: selection == 1)
-            }
-            tab("设置", icon: "gearshape.fill", tag: 2) {
-                SettingsView()
-            }
+            TodayReadingHost()
+            ArchiveDrawerHost()
         }
     }
 

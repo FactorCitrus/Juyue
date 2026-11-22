@@ -1031,6 +1031,8 @@ public struct SourceLoginSheet: View {
     @State private var errorText: String?
     @State private var successText: String?
     @State private var runningAction: String?
+    @State private var webStartURL: URL?
+    @State private var webEntries: [WebLoginEntry] = []
 
     enum LoginMode: String, Hashable {
         case form
@@ -1045,14 +1047,21 @@ public struct SourceLoginSheet: View {
     public var body: some View { panel }
 
     private var usesWebLogin: Bool {
-        LoginBlueprint.prefersWeb(for: source) || mode == .web
+        mode == .web
     }
 
     @ViewBuilder
     private var panel: some View {
         switch usesWebLogin {
         case true:
-            SourceWebLoginView(source: source)
+            SourceWebLoginView(
+                source: source,
+                initialURL: webStartURL,
+                onRequestFormLogin: {
+                    mode = .form
+                    webStartURL = nil
+                }
+            )
         case false:
             formBody
         }
@@ -1081,13 +1090,54 @@ public struct SourceLoginSheet: View {
                 .appThemedRows()
 
                 Section("登录模式切换") {
-                    Picker("登录模式", selection: $mode) {
+                    Picker("登录模式", selection: Binding(
+                        get: { mode },
+                        set: { newMode in
+                            if newMode == .web { webStartURL = nil }
+                            mode = newMode
+                        }
+                    )) {
                         Text("表单脚本登录").tag(LoginMode.form)
                         Text("网页/Cookie 登录").tag(LoginMode.web)
                     }
                     .pickerStyle(.segmented)
                 }
                 .appThemedRows()
+
+                if !webEntries.isEmpty {
+                    Section("网页登录入口") {
+                        ForEach(webEntries) { entry in
+                            Button {
+                                webStartURL = entry.url
+                                mode = .web
+                            } label: {
+                                HStack(spacing: 10) {
+                                    if entry.kind == .fanqie {
+                                        Text("🍅").font(.title3)
+                                    } else {
+                                        Image(systemName: "server.rack")
+                                            .foregroundColor(theme.palette.secondaryInk)
+                                    }
+                                    VStack(alignment: .leading, spacing: 2) {
+                                        Text(entry.title)
+                                            .font(.subheadline.weight(.semibold))
+                                        Text(entry.detail)
+                                            .font(.caption2)
+                                            .foregroundColor(theme.palette.secondaryInk)
+                                    }
+                                    Spacer()
+                                    Image(systemName: "chevron.right")
+                                        .font(.caption)
+                                        .foregroundColor(theme.palette.secondaryInk)
+                                }
+                            }
+                        }
+                        Text("登录后回到本页点「保存并完成」，Cookie 会写回书源。")
+                            .font(.caption2)
+                            .foregroundColor(theme.palette.secondaryInk)
+                    }
+                    .appThemedRows()
+                }
 
                 Section("账号登录表单") {
                     if blueprint.fields.isEmpty {
@@ -1203,6 +1253,7 @@ public struct SourceLoginSheet: View {
         let parsed = LoginBlueprint.parse(source: source)
         blueprint = parsed.blueprint
         values = parsed.values
+        webEntries = LoginPageResolver.webLoginEntries(in: source)
     }
 
     private func run(_ action: LoginBlueprint.Action) {
@@ -1269,9 +1320,14 @@ struct LoginBlueprint {
         guard let raw = source.loginUrl?.trimmingCharacters(in: .whitespacesAndNewlines), !raw.isEmpty else {
             return false
         }
-        return (raw.hasPrefix("http://") || raw.hasPrefix("https://"))
+        if (raw.hasPrefix("http://") || raw.hasPrefix("https://"))
             && !raw.contains("<js>")
-            && !raw.contains("@js:")
+            && !raw.contains("@js:") {
+            return true
+        }
+        // 脚本型聚合源（大灰狼这类）自己声明了服务器、账号走 ${base_url}/login_api，
+        // 点「登录」直接落在登录网站上，比先给一张表单更接近原站点体验。
+        return LoginPageResolver.loginSite(in: source) != nil
     }
 
     static func parse(source: BookSource) -> (blueprint: LoginBlueprint, values: [String: String]) {

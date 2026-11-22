@@ -533,6 +533,24 @@
 			<key>isa</key>
 			<string>PBXBuildFile</string>
 		</dict>
+		<key>FD00B000000000000000A002</key>
+		<dict>
+			<key>fileRef</key>
+			<string>FD00B000000000000000A001</string>
+			<key>isa</key>
+			<string>PBXBuildFile</string>
+		</dict>
+		<key>FD00B000000000000000A001</key>
+		<dict>
+			<key>isa</key>
+			<string>PBXFileReference</string>
+			<key>lastKnownFileType</key>
+			<string>sourcecode.swift</string>
+			<key>path</key>
+			<string>Sources/JuyueApp/Services/OfflineBookStore.swift</string>
+			<key>sourceTree</key>
+			<string>&lt;group&gt;</string>
+		</dict>
 		<key>0AF3F85E66BCB613C400DE93</key>
 		<dict>
 			<key>isa</key>
@@ -660,6 +678,13 @@
 			<key>isa</key>
 			<string>PBXBuildFile</string>
 		</dict>
+		<key>CC02BB1020261119000000A2</key>
+		<dict>
+			<key>fileRef</key>
+			<string>CC02BB1020261119000000A1</string>
+			<key>isa</key>
+			<string>PBXBuildFile</string>
+		</dict>
 		<key>27B065D2EA4C624A3CA9B5FD</key>
 		<dict>
 			<key>fileRef</key>
@@ -756,7 +781,7 @@
 				<key>CODE_SIGN_STYLE</key>
 				<string>Automatic</string>
 				<key>CURRENT_PROJECT_VERSION</key>
-				<string>5.1.12</string>
+				<string>5.1.22</string>
 				<key>DEVELOPMENT_TEAM</key>
 				<string></string>
 				<key>ENABLE_PREVIEWS</key>
@@ -778,7 +803,7 @@
 				<key>LD_RUNPATH_SEARCH_PATHS</key>
 				<string>$(inherited) @executable_path/Frameworks</string>
 				<key>MARKETING_VERSION</key>
-				<string>5.1.12</string>
+				<string>5.1.22</string>
 				<key>PRODUCT_BUNDLE_IDENTIFIER</key>
 				<string>com.factorcitrus.juyue</string>
 				<key>PRODUCT_NAME</key>
@@ -1029,10 +1054,12 @@
 				<string>7560F3034B738FD64AA2D8E9</string>
 				<string>8F780BEA163A75FC49EE6F25</string>
 				<string>0AF3F85E66BCB613C400DE93</string>
+				<string>FD00B000000000000000A001</string>
 				<string>88C1A2852C4735F17F92A6F8</string>
 				<string>EB0F3FE57FE776EF138175EF</string>
 				<string>ED9780F1CD8143155E343AEE</string>
 				<string>FD79CAFF75361C2DD5831AE4</string>
+				<string>CC02BB1020261119000000A1</string>
 				<string>B7361373ACF23E848F46DA32</string>
 				<string>AEC7B0DEF96CD8B2DA9DC656</string>
 				<string>E7CB117E09164CBF86B15102</string>
@@ -1228,6 +1255,7 @@
 				<string>27B065D2EA4C624A3CA9B5FD</string>
 				<string>8B61983D6CE362549689E48B</string>
 				<string>097938BE8F3F29D44C51C7A0</string>
+				<string>FD00B000000000000000A002</string>
 				<string>B3BA9AA8BD13590949338459</string>
 				<string>EE5FE05FD56E5FA64995B411</string>
 				<string>59FDF86580A1A156671F3F45</string>
@@ -1238,6 +1266,7 @@
 				<string>113D5D3AC3E027DF15EFB6AE</string>
 				<string>735D106F7B7660A6C34F373B</string>
 				<string>25DFDF57F819E3607C9573B9</string>
+				<string>CC02BB1020261119000000A2</string>
 				<string>80A3F1EF9D28186077378CDA</string>
 				<string>B40C9798457DF5AC871DEAC9</string>
 				<string>C0EAEEF5B1D649AD9FADFD30</string>
@@ -1888,7 +1917,7 @@
 				<key>CODE_SIGN_STYLE</key>
 				<string>Automatic</string>
 				<key>CURRENT_PROJECT_VERSION</key>
-				<string>5.1.12</string>
+				<string>5.1.22</string>
 				<key>DEVELOPMENT_TEAM</key>
 				<string></string>
 				<key>ENABLE_PREVIEWS</key>
@@ -1910,7 +1939,7 @@
 				<key>LD_RUNPATH_SEARCH_PATHS</key>
 				<string>$(inherited) @executable_path/Frameworks</string>
 				<key>MARKETING_VERSION</key>
-				<string>5.1.12</string>
+				<string>5.1.22</string>
 				<key>PRODUCT_BUNDLE_IDENTIFIER</key>
 				<string>com.factorcitrus.juyue</string>
 				<key>PRODUCT_NAME</key>
@@ -1969,7 +1998,7 @@
 				<key>CODE_SIGN_STYLE</key>
 				<string>Automatic</string>
 				<key>CURRENT_PROJECT_VERSION</key>
-				<string>5.1.12</string>
+				<string>5.1.22</string>
 				<key>DEVELOPMENT_TEAM</key>
 				<string></string>
 				<key>ENABLE_PREVIEWS</key>
@@ -1993,7 +2022,7 @@
 				<key>LD_RUNPATH_SEARCH_PATHS</key>
 				<string>$(inherited) @executable_path/Frameworks</string>
 				<key>MARKETING_VERSION</key>
-				<string>5.1.12</string>
+				<string>5.1.22</string>
 				<key>PRODUCT_BUNDLE_IDENTIFIER</key>
 				<string>com.factorcitrus.juyue.reader</string>
 				<key>PRODUCT_NAME</key>
@@ -2131,6 +2160,17 @@
 			<string>sourcecode.swift</string>
 			<key>path</key>
 			<string>Sources/JuyueApp/Views/BookshelfView.swift</string>
+			<key>sourceTree</key>
+			<string>&lt;group&gt;</string>
+		</dict>
+		<key>CC02BB1020261119000000A1</key>
+		<dict>
+			<key>isa</key>
+			<string>PBXFileReference</string>
+			<key>lastKnownFileType</key>
+			<string>sourcecode.swift</string>
+			<key>path</key>
+			<string>Sources/JuyueApp/Views/PlayfulUI.swift</string>
 			<key>sourceTree</key>
 			<string>&lt;group&gt;</string>
 		</dict>

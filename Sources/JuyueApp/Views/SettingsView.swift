@@ -220,11 +220,16 @@ public struct SettingsView: View {
     @StateObject private var shelfLogo = ShelfLogoStore.shared
     @StateObject private var appIcon = AppIconManager.shared
     @ObservedObject private var themeManager = AppThemeManager.shared
+    @ObservedObject private var readingStats = ReadingStatsStore.shared
+    @ObservedObject private var archiveStyle = ArchiveStyleStore.shared
+    @ObservedObject private var archiveBadges = BadgeStore.shared
     @Environment(\.appTheme) private var theme
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @AppStorage(PlayfulEffects.storageKey) private var playfulEffects: Bool = true
 
     @AppStorage("juyue_app_theme") private var appTheme: String = "system"
-    /// 缓存章节时顺手抓书评（段评 / 本章说）首页
+    /// 阅读时随着正文抓书评（段评 / 本章说）首页
     @AppStorage("reader_cache_reviews") private var cacheReviews: Bool = false
 
     @State private var alerts = SettingsAlerts()
@@ -237,6 +242,9 @@ public struct SettingsView: View {
     @State private var titleGroupExpanded = true
     @State private var presentedBoard: SettingsBoard? = nil
     @State private var boardContentVisible = false
+    @State private var heroSweep: CGFloat = 1.4
+    @State private var livingPulse = false
+    @State private var livingGear: Double = 0
 
     public init() {}
 
@@ -306,6 +314,7 @@ public struct SettingsView: View {
                 } else {
                     webDAVStatusText = cfg.lastSyncTime != nil ? "已同步" : "已配置"
                 }
+                startLivingAnimations()
             }
             .onChange(of: appTheme) { newValue in
                 AppLog.write("[设置] 外观模式 → \(newValue)")
@@ -343,8 +352,8 @@ public struct SettingsView: View {
             .stackNavigationStyle()
     }
 
-    @ViewBuilder
     private var settingsHero: some View {
+        Group {
         if theme.isClassTrial {
             VStack(alignment: .leading, spacing: 8) {
                 HStack {
@@ -446,10 +455,38 @@ public struct SettingsView: View {
                     .stroke(theme.palette.divider, lineWidth: theme.metrics.borderWidth)
             )
         }
+        }
+        .contentShape(Rectangle())
+        .overlay(alignment: .leading) {
+            GeometryReader { geo in
+                Rectangle()
+                    .fill(theme.palette.accent.opacity(0.5))
+                    .frame(width: 2)
+                    .offset(x: heroSweep * geo.size.width)
+                    .opacity(heroSweep > 1.2 ? 0 : 1)
+            }
+            .allowsHitTesting(false)
+        }
+        .onTapGesture {
+            guard PlayfulEffects.allowed(reduceMotion: reduceMotion) else { return }
+            heroSweep = -0.02
+            withAnimation(.easeOut(duration: 0.7)) { heroSweep = 1.1 }
+            Haptics.tap(.medium)
+        }
     }
 
     private var shortVersion: String {
         Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "?"
+    }
+
+    private func startLivingAnimations() {
+        guard PlayfulEffects.allowed(reduceMotion: reduceMotion) else { return }
+        withAnimation(.easeInOut(duration: 1.3).repeatForever(autoreverses: true)) {
+            livingPulse = true
+        }
+        withAnimation(.linear(duration: 10).repeatForever(autoreverses: false)) {
+            livingGear = 360
+        }
     }
 
     /// 宫格之后的终端页脚：模块结束标记 + 当前包与库的状态。
@@ -519,9 +556,7 @@ public struct SettingsView: View {
                         .font(theme.typography.mono)
                         .foregroundColor(theme.palette.secondaryInk)
                     Spacer()
-                    Image(systemName: boardSymbol(board))
-                        .font(theme.typography.symbol)
-                        .foregroundColor(theme.palette.secondaryInk)
+                    boardLiveIcon(board)
                 }
                 Spacer(minLength: 0)
                 Text(board.title)
@@ -549,7 +584,56 @@ public struct SettingsView: View {
                     .padding(8)
             }
         }
-        .buttonStyle(.plain)
+        .buttonStyle(PlayfulPressStyle(scale: 0.97))
+    }
+
+    /// 宫格右上角的小图标不是装饰：阅读环看今日时长，系统齿轮持续转动，
+    /// 让设置首页一眼有活气。关掉趣味动效或系统减弱动态效果时保持静止。
+    @ViewBuilder
+    private func boardLiveIcon(_ board: SettingsBoard) -> some View {
+        let animate = PlayfulEffects.allowed(reduceMotion: reduceMotion)
+
+        switch board {
+        case .read:
+            let progress = min(1.0, max(0.02, Double(readingStats.todaySeconds) / 3600.0))
+            ZStack {
+                Circle()
+                    .stroke(theme.palette.divider.opacity(0.7), lineWidth: 2)
+                Circle()
+                    .trim(from: 0, to: progress)
+                    .stroke(theme.palette.accent, style: StrokeStyle(lineWidth: 2, lineCap: .round))
+                    .rotationEffect(.degrees(-90))
+            }
+            .frame(width: 16, height: 16)
+
+        case .display:
+            HStack(spacing: 2) {
+                Rectangle().fill(theme.palette.accent).frame(width: 5, height: 5)
+                Rectangle().fill(theme.palette.ink.opacity(0.65)).frame(width: 5, height: 5)
+                Rectangle().fill(theme.palette.divider).frame(width: 5, height: 5)
+            }
+
+        case .sources:
+            Image(systemName: boardSymbol(board))
+                .font(theme.typography.symbol)
+                .foregroundColor(theme.palette.secondaryInk)
+
+        case .data:
+            HStack(alignment: .bottom, spacing: 2) {
+                ForEach(0..<3, id: \.self) { index in
+                    Capsule()
+                        .fill(theme.palette.secondaryInk.opacity(0.7))
+                        .frame(width: 3, height: animate && livingPulse ? CGFloat(6 + index * 3) : CGFloat(5 + (2 - index) * 2))
+                }
+            }
+            .frame(height: 13, alignment: .bottom)
+
+        case .system:
+            Image(systemName: "gearshape")
+                .font(theme.typography.symbol)
+                .foregroundColor(theme.palette.secondaryInk)
+                .rotationEffect(.degrees(animate ? livingGear : 0))
+        }
     }
 
     private func boardSymbol(_ board: SettingsBoard) -> String {
@@ -1091,6 +1175,14 @@ public struct SettingsView: View {
             ) {
                 ReadingStatsView()
             }
+            cardDivider
+            settingLink(
+                "徽章墙",
+                icon: "rosette",
+                value: "\(archiveBadges.unlockedCount) / \(BadgeStore.catalogue.count) 已解锁"
+            ) {
+                BadgeWallView()
+            }
         }
     }
 
@@ -1370,6 +1462,23 @@ public struct SettingsView: View {
                     .font(.system(size: 13))
                     .foregroundColor(theme.palette.accent)
                 }
+            }
+        }
+
+        sectionCard("档案样式", tag: "ARCHIVE") {
+            settingBlock("长按图标 / 今日阅读", icon: "doc.text.magnifyingglass") {
+                chipPicker(
+                    selection: $archiveStyle.style,
+                    options: ArchiveStyle.allCases.map { ($0, $0.title) },
+                    columns: 3
+                )
+            }
+            cardDivider
+            settingBlock {
+                Text("长按书架图标会盖一枚章，并打开档案抽屉：体检 / 徽章 / 胶囊 / 主题。单击仍看今日阅读。")
+                    .font(.system(size: 11))
+                    .foregroundColor(theme.palette.secondaryInk)
+                    .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
 
@@ -1700,29 +1809,6 @@ public struct SettingsView: View {
         sectionCard("存储", tag: "LOCAL") {
             settingRow("书架藏书", icon: "books.vertical", value: "\(bookStore.bookshelf.count) 本")
             cardDivider
-            cacheChapterControl
-            cardDivider
-            Toggle(isOn: $cacheReviews) {
-                HStack(spacing: 12) {
-                    rowIcon("text.bubble")
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("缓存时一起抓书评")
-                            .font(theme.typography.body)
-                            .foregroundColor(theme.palette.ink)
-                        Text("段评和本章说只抓首页，没登录、断了网也翻得动。")
-                            .font(.system(size: 11))
-                            .foregroundColor(theme.palette.secondaryInk)
-                    }
-                    Spacer(minLength: 0)
-                }
-                .padding(.horizontal, 14)
-                .padding(.vertical, 9)
-            }
-            .toggleStyle(SwitchToggleStyle(tint: theme.palette.accent))
-            .onChange(of: cacheReviews) { newValue in
-                AppLog.write("[设置] 缓存书评 \(newValue ? "开" : "关")")
-            }
-            cardDivider
             Button {
                 alerts.clearCachePresented = true
             } label: {
@@ -1747,6 +1833,32 @@ public struct SettingsView: View {
             .buttonStyle(.plain)
         }
 
+        sectionCard("缓存", tag: "CACHE") {
+            cacheChapterControl
+            cardDivider
+            Toggle(isOn: $cacheReviews) {
+                HStack(spacing: 12) {
+                    rowIcon("text.bubble")
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("阅读时预取书评")
+                            .font(theme.typography.body)
+                            .foregroundColor(theme.palette.ink)
+                        Text("段评和本章说随正文一起抓首页；下载时的书评范围在下载面板里选。")
+                            .font(.system(size: 11))
+                            .foregroundColor(theme.palette.secondaryInk)
+                    }
+                    Spacer(minLength: 0)
+                }
+                .padding(.horizontal, 14)
+                .padding(.vertical, 9)
+            }
+            .toggleStyle(SwitchToggleStyle(tint: theme.palette.accent))
+            .padding(.trailing, 14)
+            .onChange(of: cacheReviews) { newValue in
+                AppLog.write("[设置] 缓存书评 \(newValue ? "开" : "关")")
+            }
+        }
+
         sectionCard("下载", tag: "QUEUE") {
             settingLink(
                 "下载管理",
@@ -1764,12 +1876,12 @@ public struct SettingsView: View {
             HStack(spacing: 12) {
                 rowIcon("internaldrive")
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("缓存范围")
+                    Text("默认缓存章节")
                         .font(theme.typography.body)
                         .foregroundColor(theme.palette.ink)
                     Text(readerConfig.cachedAllChapters
-                         ? "按目录总章数一次下完"
-                         : "每次缓存 \(readerConfig.cachedChapterCount) 章")
+                         ? "下载面板默认选「全书」"
+                         : "下载面板默认往后 \(readerConfig.cachedChapterCount) 章")
                         .font(.system(size: 11))
                         .foregroundColor(theme.palette.secondaryInk)
                 }
@@ -1848,6 +1960,30 @@ public struct SettingsView: View {
 
     @ViewBuilder
     private var systemBoard: some View {
+        sectionCard("体验", tag: "MOTION") {
+            Toggle(isOn: $playfulEffects) {
+                HStack(spacing: 12) {
+                    rowIcon("sparkles")
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("趣味动效")
+                            .font(theme.typography.body)
+                            .foregroundColor(theme.palette.ink)
+                        Text("按压回弹、触觉反馈、数字滚动与图标小动效；关掉后界面保持安静。")
+                            .font(.system(size: 11))
+                            .foregroundColor(theme.palette.secondaryInk)
+                    }
+                    Spacer(minLength: 0)
+                }
+                .padding(.horizontal, 14)
+                .padding(.vertical, 9)
+            }
+            .toggleStyle(SwitchToggleStyle(tint: theme.palette.accent))
+            .padding(.trailing, 14)
+            .onChange(of: playfulEffects) { newValue in
+                AppLog.write("[设置] 趣味动效 \(newValue ? "开" : "关")")
+            }
+        }
+
         sectionCard("朗读", tag: "TTS") {
             settingLink(
                 "朗读引擎",
@@ -2462,25 +2598,168 @@ struct ReadingStatsView: View {
 // MARK: - 下载管理
 struct DownloadManagerView: View {
     @ObservedObject private var manager = ChapterDownloadManager.shared
+    @ObservedObject private var library = OfflineBookStore.shared
     @Environment(\.appTheme) private var theme
+    @State private var alertText = ""
+    @State private var alertVisible = false
+    @State private var isEditing = false
+    @State private var selection = Set<String>()
 
     var body: some View {
         List {
             Section {
-                TerminalPageHeader(code: "DATA / DOWNLOAD", title: "下载管理", detail: "缓存队列与失败重试")
+                TerminalPageHeader(code: "DATA / DOWNLOAD", title: "下载管理", detail: "缓存队列与离线书库")
                     .listRowInsets(EdgeInsets(top: 8, leading: 12, bottom: 8, trailing: 12))
                     .listRowBackground(Color.clear)
             }
             .appThemedRows()
 
-            if manager.jobs.isEmpty {
+            summaryStrip
+
+            librarySection
+
+            if !manager.jobs.isEmpty {
+                Section {
+                    ForEach(manager.jobs) { job in
+                        jobRow(job)
+                    }
+                } header: {
+                    HStack(spacing: 7) {
+                        Rectangle()
+                            .fill(theme.palette.accent)
+                            .frame(width: 3, height: 11)
+                        Text("进行中的任务")
+                            .font(theme.typography.mono)
+                            .foregroundColor(theme.palette.ink)
+                        Spacer(minLength: 0)
+                        Text("\(manager.jobs.count) 个")
+                            .font(.system(size: 11, design: .monospaced))
+                            .foregroundColor(theme.palette.secondaryInk)
+                    }
+                    .padding(.horizontal, 4)
+                    .padding(.top, 2)
+                }
+            }
+        }
+        .appThemedList()
+        .navigationTitle("下载管理")
+        .onAppear { library.refresh() }
+        .onChange(of: manager.jobs.count) { _ in library.refresh() }
+        .safeAreaInset(edge: .bottom) {
+            if isEditing && !library.entries.isEmpty {
+                HStack(spacing: 16) {
+                    Button(allSelected ? "取消全选" : "全选") {
+                        selection = allSelected ? [] : Set(library.entries.map(\.bookUrl))
+                    }
+                    .font(.system(size: 13))
+                    Spacer()
+                    Button("删除所选（\(selection.count)）") { deleteSelected() }
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundColor(selection.isEmpty ? theme.palette.secondaryInk : theme.palette.danger)
+                        .disabled(selection.isEmpty)
+                }
+                .padding(.horizontal, 16)
+                .padding(.vertical, 10)
+                .background(theme.palette.surface)
+            }
+        }
+        .alert(isPresented: $alertVisible) {
+            Alert(title: Text(alertText))
+        }
+        .toolbar {
+            if !library.entries.isEmpty {
+                Button(isEditing ? "完成" : "选择") {
+                    isEditing.toggle()
+                    if !isEditing { selection.removeAll() }
+                }
+            }
+            Button {
+                importOfflineBook()
+            } label: {
+                Image(systemName: "square.and.arrow.down")
+            }
+            .accessibilityLabel("导入离线书")
+        }
+    }
+
+    private var summaryStrip: some View {
+        Section {
+            HStack(spacing: 0) {
+                summaryCell("离线书", value: "\(library.entries.count)", unit: "本")
+                summaryDivider
+                summaryCell("占用", value: byteText(library.totalBytes), unit: "")
+                summaryDivider
+                summaryCell("进行中", value: "\(manager.jobs.filter(\.isRunning).count)", unit: "个")
+            }
+            .padding(.vertical, 11)
+            .background(theme.palette.surface)
+            .overlay(
+                RoundedRectangle(cornerRadius: theme.metrics.cornerRadius, style: .continuous)
+                    .stroke(theme.palette.divider, lineWidth: theme.metrics.borderWidth)
+            )
+            .clipShape(RoundedRectangle(cornerRadius: theme.metrics.cornerRadius, style: .continuous))
+            .appThemedRows()
+            .listRowInsets(EdgeInsets(top: 0, leading: 12, bottom: 6, trailing: 12))
+        }
+    }
+
+    private func summaryCell(_ title: String, value: String, unit: String) -> some View {
+        VStack(spacing: 3) {
+            HStack(alignment: .firstTextBaseline, spacing: 2) {
+                Text(value)
+                    .font(.system(size: 19, weight: .semibold, design: .monospaced))
+                    .foregroundColor(theme.palette.ink)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.7)
+                if !unit.isEmpty {
+                    Text(unit)
+                        .font(.system(size: 10))
+                        .foregroundColor(theme.palette.secondaryInk)
+                }
+            }
+            Text(title)
+                .font(.system(size: 10))
+                .foregroundColor(theme.palette.secondaryInk)
+        }
+        .frame(maxWidth: .infinity)
+    }
+
+    private var summaryDivider: some View {
+        Rectangle()
+            .fill(theme.palette.divider)
+            .frame(width: theme.metrics.borderWidth, height: 26)
+    }
+
+    private func sectionLabel(_ title: String, trailing: String? = nil) -> some View {
+        HStack(spacing: 7) {
+            Rectangle()
+                .fill(theme.palette.accent)
+                .frame(width: 3, height: 11)
+            Text(title)
+                .font(theme.typography.mono)
+                .foregroundColor(theme.palette.ink)
+            Spacer(minLength: 0)
+            if let trailing {
+                Text(trailing)
+                    .font(.system(size: 11, design: .monospaced))
+                    .foregroundColor(theme.palette.secondaryInk)
+            }
+        }
+        .padding(.horizontal, 4)
+        .padding(.top, 2)
+    }
+
+    private var librarySection: some View {
+        Section {
+            if library.entries.isEmpty {
                 VStack(spacing: 9) {
                     Image(systemName: "arrow.down.circle")
                         .font(.system(size: 30))
                         .foregroundColor(theme.palette.secondaryInk)
-                    Text("没有下载任务")
+                    Text("离线书库还是空的")
                         .font(theme.typography.body.weight(.semibold))
-                    Text("缓存全本或者未读章节，在书籍详情页右上角「⋯」里。")
+                        .foregroundColor(theme.palette.ink)
+                    Text("缓存全本，或者在书架上长按书籍「分享离线书」，都会收进这里。")
                         .font(theme.typography.mono)
                         .foregroundColor(theme.palette.secondaryInk)
                         .multilineTextAlignment(.center)
@@ -2488,65 +2767,308 @@ struct DownloadManagerView: View {
                 .frame(maxWidth: .infinity)
                 .padding(.vertical, 18)
                 .appThemedRows()
-            }
-            ForEach(manager.jobs) { job in
-                VStack(alignment: .leading, spacing: 6) {
-                    HStack {
-                        Text(job.bookName)
-                            .font(.system(size: 15, weight: .medium))
-                            .lineLimit(1)
-                        Spacer()
-                        TerminalStatusPill(
-                            text: job.isCancelled ? "已取消" : (job.isPaused ? "已暂停" : (job.isRunning ? "下载中" : "已完成")),
-                            color: job.isCancelled ? theme.palette.danger : theme.palette.accent
-                        )
-                    }
-                    ProgressView(value: job.progress)
-                    HStack(spacing: 8) {
-                        Text("\(job.finished)/\(job.total)" + (job.failed > 0 ? "，失败 \(job.failed)" : ""))
-                            .font(.system(size: 11))
-                            .foregroundColor(theme.palette.secondaryInk)
-                        if !job.currentChapter.isEmpty {
-                            Text(job.currentChapter)
+            } else {
+                ForEach(library.entries) { entry in
+                    VStack(alignment: .leading, spacing: 6) {
+                        HStack {
+                            if isEditing {
+                                Image(systemName: selection.contains(entry.bookUrl) ? "checkmark.circle.fill" : "circle")
+                                    .font(.system(size: 16))
+                                    .foregroundColor(selection.contains(entry.bookUrl) ? theme.palette.accent : theme.palette.secondaryInk)
+                            }
+                            Text(entry.name)
+                                .font(.system(size: 15, weight: .medium))
+                                .foregroundColor(theme.palette.ink)
+                                .lineLimit(1)
+                            if !entry.author.isEmpty {
+                                Text(entry.author)
+                                    .font(.system(size: 11))
+                                    .foregroundColor(theme.palette.secondaryInk)
+                                    .lineLimit(1)
+                            }
+                            Spacer()
+                            Text(byteText(entry.bytes))
                                 .font(.system(size: 11))
                                 .foregroundColor(theme.palette.secondaryInk)
-                                .lineLimit(1)
                         }
-                        Spacer()
-                        if job.isRunning {
-                            Button(job.isPaused ? "继续" : "暂停") {
-                                AppLog.write("[下载] \(job.isPaused ? "继续" : "暂停")任务 \(job.finished)/\(job.total)")
-                                job.isPaused ? manager.resume(job.id) : manager.pause(job.id)
+                        let cached = liveChapters(entry)
+                        let ratio = entry.totalChapters > 0
+                            ? min(1, Double(cached) / Double(entry.totalChapters))
+                            : 0
+                        HStack(spacing: 8) {
+                            Text("已缓存 \(cached)/\(entry.totalChapters) 章 · 书评 \(liveReviews(entry)) 条")
+                                .font(.system(size: 11))
+                                .foregroundColor(theme.palette.secondaryInk)
+                            Spacer(minLength: 8)
+                            Capsule()
+                                .fill(theme.palette.divider)
+                                .overlay(alignment: .leading) {
+                                    Capsule()
+                                        .fill(theme.palette.accent)
+                                        .scaleEffect(x: ratio, anchor: .leading)
+                                }
+                                .frame(width: 64, height: 3)
+                        }
+                        HStack(spacing: 12) {
+                            Text(shortDate(entry.updatedAt))
+                                .font(.system(size: 11))
+                                .foregroundColor(theme.palette.secondaryInk)
+                            Spacer()
+                            if !isEditing {
+                                Button("分享") { share(entry) }
+                                    .font(.system(size: 12))
                             }
-                            .font(.system(size: 12))
-                            Button("取消") {
-                                AppLog.write("[下载] 取消任务 \(job.finished)/\(job.total)")
-                                manager.cancel(job.id)
+                        }
+                    }
+                    .padding(10)
+                    .background(theme.palette.surface)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: theme.metrics.cornerRadius, style: .continuous)
+                            .stroke(theme.palette.divider, lineWidth: theme.metrics.borderWidth)
+                    )
+                    .clipShape(RoundedRectangle(cornerRadius: theme.metrics.cornerRadius, style: .continuous))
+                    .padding(.vertical, 3)
+                    .appThemedRows()
+                    .contentShape(Rectangle())
+                    .onTapGesture {
+                        if isEditing { toggleSelection(entry.bookUrl) }
+                    }
+                    .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+                        if !isEditing {
+                            Button(role: .destructive) { deleteCache([entry]) } label: {
+                                Label("删除", systemImage: "trash")
                             }
-                                .font(.system(size: 12))
-                                .foregroundColor(theme.palette.danger)
+                        }
+                    }
+                    .swipeActions(edge: .leading) {
+                        if !isEditing {
+                            Button { share(entry) } label: {
+                                Label("分享", systemImage: "square.and.arrow.up")
+                            }
+                            .tint(theme.palette.accent)
                         }
                     }
                 }
-                .padding(10)
-                .background(theme.palette.surface)
-                .overlay(
-                    RoundedRectangle(cornerRadius: theme.metrics.cornerRadius, style: .continuous)
-                        .stroke(theme.palette.divider, lineWidth: theme.metrics.borderWidth)
+            }
+
+            // 页脚在 List 里不吃 listRowBackground，会露出系统白底，这里当成普通行铺主题色
+            HStack(alignment: .top, spacing: 7) {
+                Image(systemName: "info.circle")
+                    .font(.system(size: 11))
+                Text("离线包存在 Documents/OfflineBooks 下，书架长按书籍可以「分享离线书」。")
+                    .font(.system(size: 11))
+                    .fixedSize(horizontal: false, vertical: true)
+                Spacer(minLength: 0)
+            }
+            .foregroundColor(theme.palette.secondaryInk)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+            .appThemedRows()
+            .listRowSeparator(.hidden)
+        } header: {
+            sectionLabel("离线书库", trailing: library.entries.isEmpty ? nil : "\(library.entries.count) 本 · \(byteText(library.totalBytes))")
+        }
+    }
+
+    private func jobRow(_ job: DownloadJob) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Text(job.bookName)
+                    .font(.system(size: 15, weight: .medium))
+                    .foregroundColor(theme.palette.ink)
+                    .lineLimit(1)
+                Spacer()
+                TerminalStatusPill(
+                    text: statusText(job),
+                    color: job.isCancelled ? theme.palette.danger : theme.palette.accent
                 )
-                .clipShape(RoundedRectangle(cornerRadius: theme.metrics.cornerRadius, style: .continuous))
-                .padding(.vertical, 3)
-                .appThemedRows()
+            }
+            if job.phase == .reviews && job.isRunning {
+                ProgressView()
+            } else {
+                ProgressView(value: job.progress)
+            }
+            HStack(spacing: 8) {
+                if job.phase == .reviews {
+                    Text(job.reviewTotal > 0
+                         ? "书评 \(job.reviewsDone)/\(job.reviewTotal) 条 · \(job.reviewChapterDone)/\(job.reviewChapterTotal) 章"
+                         : "书评已缓存 \(job.cachedReviews) 条")
+                        .font(.system(size: 11))
+                        .foregroundColor(theme.palette.secondaryInk)
+                } else {
+                    Text("\(job.finished)/\(job.total)"
+                         + (job.skipped > 0 ? "，跳过 \(job.skipped)" : "")
+                         + (job.failed > 0 ? "，失败 \(job.failed)" : ""))
+                        .font(.system(size: 11))
+                        .foregroundColor(theme.palette.secondaryInk)
+                }
+                if job.phase == .chapters && !job.currentChapter.isEmpty {
+                    Text(job.currentChapter)
+                        .font(.system(size: 11))
+                        .foregroundColor(theme.palette.secondaryInk)
+                        .lineLimit(1)
+                }
+                if let eta = etaText(job) {
+                    Text(eta)
+                        .font(.system(size: 11))
+                        .foregroundColor(theme.palette.secondaryInk)
+                }
+                Text("\(job.concurrency) 路")
+                    .font(.system(size: 11))
+                    .foregroundColor(theme.palette.secondaryInk)
+                Spacer()
+                if job.isRunning || job.isPaused {
+                    Button(job.isPaused ? "继续" : "暂停") {
+                        AppLog.write("[下载] \(job.isPaused ? "继续" : "暂停")任务 \(job.finished)/\(job.total)")
+                        job.isPaused ? manager.resume(job.id) : manager.pause(job.id)
+                    }
+                    .font(.system(size: 12))
+                    Button("取消") {
+                        AppLog.write("[下载] 取消任务 \(job.finished)/\(job.total)")
+                        manager.cancel(job.id)
+                    }
+                        .font(.system(size: 12))
+                        .foregroundColor(theme.palette.danger)
+                }
             }
         }
-        .appThemedList()
-        .navigationTitle("下载管理")
-        .toolbar {
-            Button("清理已完成") {
-                AppLog.write("[下载] 清理已完成任务 \(manager.jobs.count) 个")
-                manager.clearFinished()
+        .padding(10)
+        .background(theme.palette.surface)
+        .overlay(
+            RoundedRectangle(cornerRadius: theme.metrics.cornerRadius, style: .continuous)
+                .stroke(theme.palette.divider, lineWidth: theme.metrics.borderWidth)
+        )
+        .clipShape(RoundedRectangle(cornerRadius: theme.metrics.cornerRadius, style: .continuous))
+        .padding(.vertical, 3)
+        .appThemedRows()
+        .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+            if job.isRunning || job.isPaused {
+                Button(role: .destructive) {
+                    AppLog.write("[下载] 左滑取消任务 \(job.finished)/\(job.total)")
+                    manager.cancel(job.id)
+                } label: {
+                    Label("取消", systemImage: "xmark.circle")
+                }
             }
         }
+    }
+
+    private func statusText(_ job: DownloadJob) -> String {
+        switch job.status {
+        case .running: return job.phase == .reviews ? "缓存书评" : "下载中"
+        case .paused: return "已暂停"
+        case .cancelling: return "正在取消"
+        case .cancelled: return "已取消"
+        case .finished: return "已完成"
+        }
+    }
+
+    private func etaText(_ job: DownloadJob) -> String? {
+        guard job.isRunning, !job.isPaused else { return nil }
+        let total = job.phase == .reviews ? job.reviewTotal : job.total
+        let done = job.phase == .reviews ? job.reviewsDone : job.finished + job.failed
+        let remaining = total - done
+        guard remaining > 0, done > 0 else { return nil }
+        let elapsed = Date().timeIntervalSince(job.phaseStartedAt)
+        guard elapsed > 1 else { return nil }
+        let eta = elapsed / Double(done) * Double(remaining)
+        guard eta.isFinite else { return nil }
+        if eta < 60 { return "预计剩余 <1 分钟" }
+        let minutes = Int((eta / 60).rounded())
+        if minutes < 60 { return "预计剩余约 \(minutes) 分钟" }
+        let hours = minutes / 60
+        let rest = minutes % 60
+        return rest == 0 ? "预计剩余约 \(hours) 小时" : "预计剩余约 \(hours) 小时 \(rest) 分"
+    }
+
+    private func liveChapters(_ entry: OfflineBookEntry) -> Int {
+        max(entry.cachedChapters, manager.liveCounts[entry.bookUrl]?.chapters ?? 0)
+    }
+
+    private func liveReviews(_ entry: OfflineBookEntry) -> Int {
+        max(entry.reviewCount, manager.liveCounts[entry.bookUrl]?.reviews ?? 0)
+    }
+
+    private var allSelected: Bool {
+        !library.entries.isEmpty && selection.count == library.entries.count
+    }
+
+    private func toggleSelection(_ bookUrl: String) {
+        if selection.contains(bookUrl) {
+            selection.remove(bookUrl)
+        } else {
+            selection.insert(bookUrl)
+        }
+    }
+
+    private func deleteCache(_ entries: [OfflineBookEntry]) {
+        guard !entries.isEmpty else { return }
+        for entry in entries {
+            AppLog.write("[离线书库] 删除缓存 \(entry.name)")
+            library.removeCache(for: entry.bookUrl)
+        }
+        let text = entries.count == 1
+            ? "已删除《\(entries[0].name)》的缓存"
+            : "已删除 \(entries.count) 本的离线缓存"
+        ScriptToastWindow.shared.show(text)
+    }
+
+    private func deleteSelected() {
+        let targets = library.entries.filter { selection.contains($0.bookUrl) }
+        guard !targets.isEmpty else { return }
+        AppLog.write("[离线书库] 批量删除缓存 \(targets.count) 本：\(targets.map(\.name).joined(separator: "、"))")
+        deleteCache(targets)
+        selection.removeAll()
+        isEditing = false
+    }
+
+    private func importOfflineBook() {
+        let type = UTType(filenameExtension: OfflineBookShare.fileExtension) ?? .data
+        SystemDocumentPicker.present(contentTypes: [type]) { urls in
+            guard let url = urls.first else { return }
+            let scoped = url.startAccessingSecurityScopedResource()
+            defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+            do {
+                let manifest = try OfflineBookShare.unpack(at: url)
+                _ = BookStore.shared.importOfflineBook(manifest.book, chapters: manifest.chapters)
+                library.refresh()
+                AppLog.write("[导入] 下载管理页导入离线书《\(manifest.book.name)》\(manifest.chapters.count) 章")
+            } catch {
+                alertText = "导入失败：\(error.localizedDescription)"
+                alertVisible = true
+            }
+        }
+    }
+
+    private func share(_ entry: OfflineBookEntry) {
+        let meta = library.meta(for: entry.bookUrl)
+        let book = meta?.book ?? BookStore.shared.bookshelf.first { $0.bookUrl == entry.bookUrl }
+        let chapters = meta?.chapters ?? BookStore.shared.getChapters(for: entry.bookUrl)
+        guard let book, !chapters.isEmpty else {
+            alertText = "这本书缺少目录，去书架上重新分享一次就能补上"
+            alertVisible = true
+            return
+        }
+        do {
+            let url = try OfflineBookShare.export(book: book, chapters: chapters)
+            presentShareSheet(url: url)
+        } catch {
+            alertText = "导出失败：\(error.localizedDescription)"
+            alertVisible = true
+        }
+    }
+
+    private func byteText(_ bytes: Int64) -> String {
+        let formatter = ByteCountFormatter()
+        formatter.countStyle = .file
+        return formatter.string(fromByteCount: bytes)
+    }
+
+    private func shortDate(_ date: Date) -> String {
+        guard date != .distantPast else { return "" }
+        let formatter = DateFormatter()
+        formatter.dateFormat = "MM-dd HH:mm"
+        return formatter.string(from: date)
     }
 }
 

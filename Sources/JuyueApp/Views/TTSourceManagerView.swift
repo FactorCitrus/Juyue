@@ -490,7 +490,7 @@ enum TTSBaiduVoices {
     static let all: [TTSVoiceOption] = {
         let base: [(String, String, String)] = [
             ("0", "度小美", "基础女声"),
-            ("1", "度小宇", "基础男声"),
+            ("1", "燃燃", "基础男声"),
             ("3", "度逍遥", "基础男声"),
             ("4", "度丫丫", "基础童声"),
         ]
@@ -589,7 +589,7 @@ struct TTSOnlinePreset: Identifiable {
         // 百度的发音人就是 per，一个 per 一条源。aue=3 是 mp3，别的格式这里播不了。
         let baiduVoices: [(String, String, String)] = [
             ("度小美", "0", "基础女声"),
-            ("度小宇", "1", "基础男声"),
+            ("燃燃", "1", "基础男声"),
             ("度逍遥", "3", "基础男声 · 语气偏稳"),
             ("度丫丫", "4", "童声"),
             ("度小鹿", "5118", "精品女声"),

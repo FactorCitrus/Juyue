@@ -385,10 +385,12 @@ private enum ShelfOrdering {
 public struct BookshelfView: View {
     @ObservedObject var bookStore = BookStore.shared
     @ObservedObject private var shelfConfig = BookshelfConfig.shared
+    @ObservedObject private var downloadManager = ChapterDownloadManager.shared
     @ObservedObject private var readingStats = ReadingStatsStore.shared
     @StateObject private var shelfLogo = ShelfLogoStore.shared
     @Environment(\.appTheme) private var theme
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var selectedBook: Book? = nil
     @State private var readerInitialChapter: Int? = nil
     @State private var showingBookmarks = false
@@ -404,6 +406,13 @@ public struct BookshelfView: View {
     @State private var selectedBookIDs: Set<String> = []
     @State private var showDeleteSelectedAlert = false
     @State private var showShelfSizeSheet = false
+    @State private var shareBook: Book? = nil
+    @State private var shareCached = 0
+    @State private var shareTotal = 0
+    @State private var shareJobID: UUID? = nil
+    @State private var shareCancelled = false
+    @State private var shareAlertText = ""
+    @State private var shareAlertVisible = false
     @State private var draggingBook: Book? = nil
     @State private var dragLocation: CGPoint = .zero
     @State private var dragCover: Image? = nil
@@ -413,6 +422,15 @@ public struct BookshelfView: View {
     @State private var cardFrames: [String: CGRect] = [:]
     /// 书架实际可用的窗口宽度（分屏、Slide Over 会变），不读 UIScreen。
     @State private var shelfAvailableWidth: CGFloat = 0
+    @State private var logoPressed = false
+    @State private var logoShake: Double = 0
+    @State private var logoCombo = 0
+    @State private var logoComboToken = 0
+    @State private var logoBursts: [LogoBurstRequest] = []
+    @State private var logoBurstCounter = 0
+    @State private var lastLogoTapAt: Date = .distantPast
+    @State private var lastLogoHoldAt: Date = .distantPast
+    @State private var flippedBooks: Set<String> = []
 
     public init() {}
 
@@ -1052,6 +1070,35 @@ public struct BookshelfView: View {
                 }
                 .frame(height: shelfConfig.logoHeight)
                 .offset(x: shelfConfig.logoOffsetX, y: shelfConfig.logoOffsetY)
+                .scaleEffect(logoPressed ? 0.9 : 1)
+                .modifier(LogoWobble(shake: logoShake))
+                .animation(.spring(response: 0.3, dampingFraction: 0.55), value: logoPressed)
+                .overlay {
+                    ForEach(logoBursts) { burst in
+                        PaperScrapBurst(
+                            seed: burst.id,
+                            intensity: burst.intensity,
+                            accent: theme.palette.accent,
+                            ink: theme.palette.secondaryInk
+                        )
+                        .id(burst.id)
+                        .allowsHitTesting(false)
+                    }
+                }
+                .onLongPressGesture(minimumDuration: 0.4, maximumDistance: 30, pressing: { pressing in
+                    logoPressed = pressing
+                }, perform: {})
+                .simultaneousGesture(
+                    LongPressGesture(minimumDuration: 0.65).onEnded { _ in
+                        logoEasterEgg()
+                    }
+                )
+                .onTapGesture(count: 2) {
+                    logoOpenToday()
+                }
+                .onTapGesture {
+                    logoTapFeedback()
+                }
                 .accessibilityHidden(true)
 
                 if shelfConfig.titleVisible {
@@ -1129,6 +1176,65 @@ public struct BookshelfView: View {
     private var shelfDisplayTitle: String {
         let text = shelfConfig.titleText.trimmingCharacters(in: .whitespacesAndNewlines)
         return text.isEmpty ? "我的书架" : text
+    }
+
+    private func logoEasterEgg() {
+        lastLogoHoldAt = Date()
+        BadgeStore.shared.stampNow()
+        Haptics.success()
+        ArchiveDrawerCenter.shared.isPresented = true
+        AppLog.write("[书架] 长按图标，盖章并打开档案抽屉")
+    }
+
+    private func logoOpenToday() {
+        guard Date().timeIntervalSince(lastLogoHoldAt) > 0.55 else { return }
+        Haptics.tap(.medium)
+        // 卡片挂在 TabView 之上（TodayReadingHost），
+        // 往书架页里插视图会让 TabView 重建、多出重复页签。
+        TodayReadingCenter.shared.isPresented = true
+        AppLog.write("[书架] 双击图标，打开今日阅读")
+    }
+
+    private func logoTapFeedback() {
+        // 长按松手也会被识别成 tap，这里用时间窗挡掉
+        guard Date().timeIntervalSince(lastLogoHoldAt) > 0.55 else { return }
+        Haptics.tap(logoCombo >= 4 ? .rigid : .medium)
+        // 连击叠一记轻震，手感像扣了两下
+        if !reduceMotion, logoCombo >= 2 {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.06) { Haptics.tap(.light) }
+        }
+        let now = Date()
+        logoCombo = now.timeIntervalSince(lastLogoTapAt) < 1.2 ? min(logoCombo + 1, 9) : 1
+        lastLogoTapAt = now
+        logoComboToken += 1
+        let token = logoComboToken
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
+            guard token == logoComboToken else { return }
+            logoCombo = 0
+        }
+
+        if reduceMotion {
+            // 关掉动效时不做抖动，只留触觉
+        } else {
+            // 冲量甩出去，欠阻尼 spring 自己把它拖回来，衰减成来回摆
+            logoShake = logoCombo % 2 == 0 ? 22 : -22
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.02) {
+                withAnimation(.spring(response: 0.26, dampingFraction: 0.14)) {
+                    logoShake = 0
+                }
+            }
+
+            logoBurstCounter += 1
+            let burst = LogoBurstRequest(id: logoBurstCounter, intensity: logoCombo)
+            logoBursts.append(burst)
+            if logoBursts.count > 4 {
+                logoBursts.removeFirst(logoBursts.count - 4)
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+                logoBursts.removeAll { $0.id == burst.id }
+            }
+        }
+        AppLog.write("[书架] 单击图标 连击 \(logoCombo)")
     }
 
     private var readingBookCount: Int {
@@ -1467,21 +1573,15 @@ public struct BookshelfView: View {
 
     private func bookshelfCard(_ book: Book, index: Int) -> some View {
         let isSelected = selectedBookIDs.contains(book.bookUrl)
-        let card = Button {
-            if isOrganizing {
-                if isSelected {
-                    selectedBookIDs.remove(book.bookUrl)
-                } else {
-                    selectedBookIDs.insert(book.bookUrl)
-                }
-            } else {
-                selectedBook = book
-            }
-        } label: {
-            gridCardContent(book, index: index, isSelected: isSelected)
-                .frame(height: gridCoverHeight + 126, alignment: .topLeading)
-        }
-        .buttonStyle(.plain)
+        let flipped = flippedBooks.contains(book.bookUrl)
+        let card = gridCardContent(book, index: index, isSelected: isSelected, flipped: flipped)
+            .frame(height: gridCoverHeight + 126, alignment: .topLeading)
+            .contentShape(Rectangle())
+            .gesture(cardTapGesture(book))
+            .playfulJiggle(isOrganizing)
+            .accessibilityElement(children: .combine)
+            .accessibilityAddTraits(.isButton)
+            .accessibilityAction { handleCardTap(book) }
         .background(
             GeometryReader { proxy in
                 Color.clear.preference(
@@ -1509,38 +1609,127 @@ public struct BookshelfView: View {
         }
     }
 
+    /// 双击翻面看简介；单击保留原来的打开/多选。exclusively 会让单击等双击落空才触发，
+    /// 这是 SwiftUI 里同时支持两种点按的可靠写法。
+    private func cardTapGesture(_ book: Book) -> some Gesture {
+        TapGesture(count: 2)
+            .onEnded { _ in toggleFlip(book) }
+            .exclusively(
+                before: TapGesture(count: 1).onEnded { _ in handleCardTap(book) }
+            )
+    }
+
+    private func handleCardTap(_ book: Book) {
+        if isOrganizing {
+            if selectedBookIDs.contains(book.bookUrl) {
+                selectedBookIDs.remove(book.bookUrl)
+            } else {
+                selectedBookIDs.insert(book.bookUrl)
+            }
+        } else {
+            selectedBook = book
+        }
+    }
+
+    private func toggleFlip(_ book: Book) {
+        guard !isOrganizing else { return }
+        withAnimation(.spring(response: 0.5, dampingFraction: 0.82)) {
+            if flippedBooks.contains(book.bookUrl) {
+                flippedBooks.remove(book.bookUrl)
+            } else {
+                flippedBooks.insert(book.bookUrl)
+            }
+        }
+        Haptics.tap(.medium)
+    }
+
+    private func progressText(for book: Book) -> String {
+        if book.totalChapterNum > 0 {
+            let current = min(book.durChapterIndex + 1, book.totalChapterNum)
+            return "进度 \(current) / \(book.totalChapterNum) 章"
+        }
+        if let title = book.durChapterTitle, !title.isEmpty { return title }
+        return "尚未开始"
+    }
+
+    private func flipFace(_ book: Book) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(book.name)
+                .font(.system(size: 13, weight: .bold))
+                .foregroundColor(theme.palette.ink)
+                .lineLimit(2)
+            Text(book.author)
+                .font(.system(size: 10))
+                .foregroundColor(theme.palette.secondaryInk)
+                .lineLimit(1)
+            if let intro = book.intro?.trimmingCharacters(in: .whitespacesAndNewlines), !intro.isEmpty {
+                Text(intro)
+                    .font(.system(size: 10))
+                    .foregroundColor(theme.palette.secondaryInk)
+                    .lineLimit(6)
+            }
+            Spacer(minLength: 0)
+            Text(progressText(for: book))
+                .font(.system(size: 9, design: .monospaced))
+                .foregroundColor(theme.palette.accent)
+                .lineLimit(1)
+        }
+        .padding(10)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .background(theme.palette.elevated)
+        .overlay(
+            Rectangle().stroke(theme.palette.divider, lineWidth: theme.metrics.borderWidth)
+        )
+    }
+
     private func gridCardContent(
         _ book: Book,
         index: Int,
         isSelected: Bool,
-        coverOverride: Image? = nil
+        coverOverride: Image? = nil,
+        flipped: Bool = false
     ) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             ZStack(alignment: .topLeading) {
-                ShelfCoverArtwork(book: book, coverOverride: coverOverride)
-                    // 宽度必须定死：只给 maxWidth 时，图片会按自身比例把整张卡撑开
-                    .frame(width: max(0, gridCardWidth - 18))
-                    .frame(height: gridCoverHeight)
-                    .clipped()
-                    .overlay(
-                        LinearGradient(
-                            colors: [
-                                theme.palette.background.opacity(0.08),
-                                .clear,
-                                theme.palette.background.opacity(0.10)
-                            ],
-                            startPoint: .top,
-                            endPoint: .bottom
+                ZStack {
+                    ShelfCoverArtwork(book: book, coverOverride: coverOverride)
+                        // 宽度必须定死：只给 maxWidth 时，图片会按自身比例把整张卡撑开
+                        .frame(width: max(0, gridCardWidth - 18))
+                        .frame(height: gridCoverHeight)
+                        .clipped()
+                        .overlay(
+                            LinearGradient(
+                                colors: [
+                                    theme.palette.background.opacity(0.08),
+                                    .clear,
+                                    theme.palette.background.opacity(0.10)
+                                ],
+                                startPoint: .top,
+                                endPoint: .bottom
+                            )
                         )
-                    )
-                    .overlay(alignment: .bottom) {
-                        LinearGradient(
-                            colors: [.clear, theme.palette.surface.opacity(0.88)],
-                            startPoint: .top,
-                            endPoint: .bottom
-                        )
-                        .frame(height: 24)
+                        .overlay(alignment: .bottom) {
+                            LinearGradient(
+                                colors: [.clear, theme.palette.surface.opacity(0.88)],
+                                startPoint: .top,
+                                endPoint: .bottom
+                            )
+                            .frame(height: 24)
+                        }
+                        .opacity(flipped && !isOrganizing ? 0 : 1)
+
+                    if flipped && !isOrganizing {
+                        flipFace(book)
+                            .frame(width: max(0, gridCardWidth - 18), height: gridCoverHeight)
+                            .rotation3DEffect(.degrees(180), axis: (x: 0, y: 1, z: 0))
                     }
+                }
+                .rotation3DEffect(
+                    .degrees(flipped && !isOrganizing ? 180 : 0),
+                    axis: (x: 0, y: 1, z: 0),
+                    perspective: 0.55
+                )
+                .animation(.spring(response: 0.5, dampingFraction: 0.82), value: flipped)
 
                 if isOrganizing {
                     Image(systemName: isSelected ? "checkmark.square.fill" : "square")
@@ -1581,6 +1770,11 @@ public struct BookshelfView: View {
             navigateToDetailBook = book
         } label: {
             Label("书籍详情", systemImage: "info.circle")
+        }
+        Button {
+            presentShareChoice(book)
+        } label: {
+            Label("分享离线书", systemImage: "square.and.arrow.up")
         }
         Menu("移动到分组") {
             Button("未分组") { bookStore.assign(book, toGroup: nil) }
@@ -1630,7 +1824,8 @@ public struct BookshelfView: View {
         } label: {
             rowContent(book, index: index, isSelected: isSelected, coverWidth: coverWidth, coverHeight: coverHeight)
         }
-        .buttonStyle(.plain)
+        .buttonStyle(PlayfulPressStyle(scale: 0.97))
+        .playfulJiggle(isOrganizing)
         .background(
             GeometryReader { proxy in
                 Color.clear.preference(
@@ -1970,6 +2165,12 @@ public struct BookshelfView: View {
                 importDebugBookIfRequested()
                 openDebugBookIfRequested()
             }
+            .onReceive(ShelfReaderRequestCenter.shared.$pendingBook) { book in
+                guard let book = book else { return }
+                ShelfReaderRequestCenter.shared.pendingBook = nil
+                readerInitialChapter = book.durChapterIndex
+                selectedBook = book
+            }
             .alert("删除选中的书籍", isPresented: $showDeleteSelectedAlert) {
                 Button("取消", role: .cancel) {}
                 Button("删除", role: .destructive) {
@@ -2005,6 +2206,25 @@ public struct BookshelfView: View {
                 readerDestination(for: book)
             }
             #endif
+            shareProgressOverlay
+        }
+        .confirmationDialog(
+            "分享《\(shareBook?.name ?? "")》",
+            isPresented: Binding(
+                get: { shareBook != nil },
+                set: { if !$0 { shareBook = nil } }
+            ),
+            titleVisibility: .visible
+        ) {
+            if let book = shareBook {
+                shareDialogActions(book)
+            }
+            Button("取消", role: .cancel) { shareBook = nil }
+        } message: {
+            Text("离线包带上正文、书评和封面，对方导入后断网也能读。")
+        }
+        .alert(shareAlertText, isPresented: $shareAlertVisible) {
+            Button("确定", role: .cancel) {}
         }
         // iPad 上不让 NavigationView 自行变双栏，否则书架被塞进左栏、右侧一片空白
         .stackNavigationStyle()
@@ -2019,6 +2239,136 @@ public struct BookshelfView: View {
         #endif
         }
         .background(AppThemeBackdrop())
+    }
+
+    // MARK: - 分享离线书
+
+    private var activeShareJob: DownloadJob? {
+        guard let id = shareJobID else { return nil }
+        return downloadManager.jobs.first { $0.id == id }
+    }
+
+    @ViewBuilder
+    private var shareProgressOverlay: some View {
+        if let job = activeShareJob {
+            ZStack {
+                Color.black.opacity(0.35).ignoresSafeArea()
+                VStack(spacing: 12) {
+                    Text("正在补全《\(job.bookName)》")
+                        .font(theme.typography.body.weight(.semibold))
+                        .foregroundColor(theme.palette.ink)
+                    ProgressView(value: job.progress)
+                        .tint(theme.palette.accent)
+                    Text("\(job.finished)/\(job.total) 章" + (job.currentChapter.isEmpty ? "" : " · \(job.currentChapter)"))
+                        .font(.system(size: 11))
+                        .foregroundColor(theme.palette.secondaryInk)
+                        .lineLimit(1)
+                    Button("取消补全") {
+                        shareCancelled = true
+                        downloadManager.cancel(job.id)
+                        shareJobID = nil
+                    }
+                    .font(.system(size: 13))
+                    .foregroundColor(theme.palette.danger)
+                }
+                .padding(18)
+                .frame(maxWidth: 300)
+                .background(theme.palette.surface)
+                .clipShape(RoundedRectangle(cornerRadius: theme.metrics.cornerRadius, style: .continuous))
+            }
+        }
+    }
+
+    private func presentShareChoice(_ book: Book) {
+        shareCached = OfflineBookStore.shared.cachedIndices(for: book.bookUrl).count
+        shareTotal = bookStore.getChapters(for: book.bookUrl).count
+        shareBook = book
+    }
+
+    @ViewBuilder
+    private func shareDialogActions(_ book: Book) -> some View {
+        Button("只分享已缓存（\(shareCached) 章）") {
+            beginOfflineShare(book, wholeBook: false)
+        }
+        if shareTotal > 0 {
+            let missing = max(0, shareTotal - shareCached)
+            Button(missing > 0 ? "补全全书后分享（缺 \(missing) 章）" : "分享全书（已全部缓存）") {
+                beginOfflineShare(book, wholeBook: true)
+            }
+        } else {
+            Button("补全全书后分享") {
+                beginOfflineShare(book, wholeBook: true)
+            }
+        }
+    }
+
+    private func beginOfflineShare(_ book: Book, wholeBook: Bool) {
+        shareBook = nil
+        let source = bookStore.sources.first { $0.bookSourceUrl == book.origin }
+        Task {
+            var toc = bookStore.getChapters(for: book.bookUrl)
+            if toc.isEmpty, let source {
+                do {
+                    let (detail, chapters) = try await BookContentService.shared.fetchBookDetail(
+                        book: book,
+                        source: source
+                    )
+                    toc = chapters
+                    if !chapters.isEmpty {
+                        bookStore.saveChapters(chapters, for: detail.bookUrl)
+                    }
+                } catch {
+                    presentShareAlert("目录抓取失败：\(error.localizedDescription)")
+                    return
+                }
+            }
+            guard !toc.isEmpty else {
+                presentShareAlert("这本书没有目录，先在书籍详情里刷新一下")
+                return
+            }
+
+            if wholeBook {
+                let cached = Set(OfflineBookStore.shared.cachedIndices(for: book.bookUrl))
+                let missing = toc.indices.filter { !cached.contains($0) }
+                if !missing.isEmpty {
+                    guard let source else {
+                        presentShareAlert("本地导入的书没有书源，只能分享已缓存的内容")
+                        return
+                    }
+                    guard let result = downloadManager.start(
+                        book: book,
+                        chapters: toc,
+                        source: source,
+                        indices: Array(toc.indices),
+                        options: DownloadOptions(reviewLimit: nil, refetchReviews: false, concurrency: 4, background: true)
+                    ) else {
+                        presentShareAlert("目录为空，没有可下载的章节")
+                        return
+                    }
+                    shareJobID = result.jobID
+                    shareCancelled = false
+                    await downloadManager.wait(result.jobID)
+                    shareJobID = nil
+                    if shareCancelled { return }
+                    let after = OfflineBookStore.shared.cachedIndices(for: book.bookUrl).count
+                    if after < toc.count {
+                        presentShareAlert("只补全了 \(after)/\(toc.count) 章，先分享已缓存的部分")
+                    }
+                }
+            }
+
+            do {
+                let url = try OfflineBookShare.export(book: book, chapters: toc)
+                presentShareSheet(url: url)
+            } catch {
+                presentShareAlert("导出失败：\(error.localizedDescription)")
+            }
+        }
+    }
+
+    private func presentShareAlert(_ text: String) {
+        shareAlertText = text
+        shareAlertVisible = true
     }
 
     private func presentImportPicker() {
@@ -2108,12 +2458,27 @@ private struct ShelfSizeSheetChrome: ViewModifier {
 private struct ShelfEmptyState: View {
     let onSearch: () -> Void
     @Environment(\.appTheme) private var theme
+    @State private var symbolIndex = 0
+
+    private let emptySymbols = [
+        "books.vertical",
+        "book.closed",
+        "text.book.closed",
+        "book"
+    ]
 
     var body: some View {
         VStack(alignment: .center, spacing: 16) {
-            Image(systemName: "books.vertical")
+            Image(systemName: emptySymbols[symbolIndex % emptySymbols.count])
                 .font(.system(size: 64))
-                .foregroundColor(.secondary.opacity(0.6))
+                .foregroundColor(theme.palette.secondaryInk.opacity(0.6))
+                .contentShape(Rectangle())
+                .onTapGesture {
+                    withAnimation(.spring(response: 0.35, dampingFraction: 0.55)) {
+                        symbolIndex = (symbolIndex + 1) % emptySymbols.count
+                    }
+                    Haptics.tap(.medium)
+                }
             Text(verbatim: "书架空空如也")
                 .font(.headline)
             Text(verbatim: "可点击右上角放大镜搜索网络小说，或点击“+”导入本地书籍")
@@ -2405,5 +2770,123 @@ struct ClassTrialBearMark: View {
             .frame(width: side, height: side)
             .rotationEffect(.degrees(-4))
         }
+    }
+}
+
+// MARK: - 纸页碎屑
+
+private struct LogoBurstRequest: Identifiable, Equatable {
+    let id: Int
+    let intensity: Int
+}
+
+private struct PaperScrapBurst: View {
+    let seed: Int
+    let intensity: Int
+    let accent: Color
+    let ink: Color
+
+    @State private var stage = 0
+
+    private var pieces: [PaperScrap] {
+        var rng = PaperScrapRandom(seed: UInt64(bitPattern: Int64(seed)) &* 7919 &+ 17)
+        let count = min(18, 6 + intensity * 2)
+        let radius = min(92, 34 + CGFloat(intensity) * 8)
+        return (0..<count).map { _ in
+            let angle = rng.next() * Double.pi * 2
+            let distance = radius * CGFloat(0.55 + 0.45 * rng.next())
+            return PaperScrap(
+                dx: CGFloat(cos(angle)) * distance,
+                dy: CGFloat(sin(angle)) * distance * 0.72 - 6,
+                fall: 8 + CGFloat(rng.next()) * 14,
+                drift: CGFloat(rng.next() - 0.5) * 22,
+                width: 3 + CGFloat(rng.next()) * 3.5,
+                rotation: (rng.next() - 0.5) * 220,
+                delay: rng.next() * 0.06,
+                color: rng.next() > 0.42 ? accent : ink,
+                opacity: 0.35 + rng.next() * 0.55
+            )
+        }
+    }
+
+    var body: some View {
+        GeometryReader { geo in
+            ZStack {
+                ForEach(Array(pieces.enumerated()), id: \.offset) { _, piece in
+                    RoundedRectangle(cornerRadius: 1, style: .continuous)
+                        .fill(piece.color.opacity(piece.opacity))
+                        .frame(width: piece.width * 1.5, height: piece.width)
+                        .rotationEffect(.degrees(stage == 0 ? 0 : piece.rotation))
+                        .scaleEffect(stage == 0 ? 0.3 : (stage == 1 ? 1 : 0.82))
+                        .position(
+                            x: geo.size.width / 2 + (stage == 0 ? 0 : piece.dx + piece.drift),
+                            y: geo.size.height / 2 + (stage == 0 ? 0 : piece.dy + (stage == 2 ? piece.fall : 0))
+                        )
+                        .opacity(stage == 0 ? 0 : (stage == 1 ? 1 : 0))
+                        .animation(
+                            stage == 2
+                                ? .easeIn(duration: 0.42).delay(piece.delay)
+                                : .easeOut(duration: 0.34).delay(piece.delay),
+                            value: stage
+                        )
+                }
+            }
+        }
+        .allowsHitTesting(false)
+        .onAppear {
+            withAnimation { stage = 1 }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.36) {
+                stage = 2
+            }
+        }
+    }
+}
+
+private struct PaperScrap {
+    let dx: CGFloat
+    let dy: CGFloat
+    let fall: CGFloat
+    let drift: CGFloat
+    let width: CGFloat
+    let rotation: Double
+    let delay: Double
+    let color: Color
+    let opacity: Double
+}
+
+private struct PaperScrapRandom {
+    var state: UInt64
+
+    init(seed: UInt64) {
+        state = seed == 0 ? 0x9E37_79B9 : seed
+    }
+
+    mutating func next() -> Double {
+        state = state &* 6_364_136_223_846_793_005 &+ 1_442_695_040_888_963_407
+        return Double((state >> 33) & 0x7FFF_FFFF) / Double(0x7FFF_FFFF)
+    }
+}
+
+/// 图标抖动：shake 是被欠阻尼 spring 拖回来的角度，
+/// 按摆幅同步压扁、上跳、提亮和投影，甩起来像一枚被弹了一下的印章。
+private struct LogoWobble: AnimatableModifier {
+    var shake: Double
+
+    var animatableData: Double {
+        get { shake }
+        set { shake = newValue }
+    }
+
+    func body(content: Content) -> some View {
+        let amp = min(1, abs(shake) / 22)   // 0 归位，1 满摆
+        return content
+            .scaleEffect(x: 1 + 0.22 * amp, y: 1 - 0.18 * amp)
+            .offset(y: -7 * shake / 22)
+            .brightness(0.26 * amp)
+            .rotationEffect(.degrees(shake))
+            .shadow(color: .black.opacity(0.06 + 0.20 * amp),
+                    radius: 2 + 9 * amp,
+                    x: 0,
+                    y: 1 + 6 * amp)
     }
 }

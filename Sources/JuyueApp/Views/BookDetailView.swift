@@ -11,6 +11,7 @@ import PhotosUI
 
 public struct BookDetailView: View {
     @ObservedObject private var store = BookStore.shared
+    @ObservedObject private var downloadManager = ChapterDownloadManager.shared
 
     @State private var sourceOverride: BookSource?
     @State private var snapshot: Book
@@ -29,6 +30,10 @@ public struct BookDetailView: View {
     @State private var draftName = ""
     @State private var draftAuthor = ""
     @State private var draftCover = ""
+    @State private var shareChoiceVisible = false
+    @State private var shareJobID: UUID? = nil
+    @State private var shareCancelled = false
+    @State private var setupRequest: DownloadSetupRequest? = nil
 
     public init(
         book: Book,
@@ -135,6 +140,29 @@ public struct BookDetailView: View {
         .sheet(isPresented: $coverPicker) { coverSheet }
         .sheet(isPresented: $sourcePicker) { sourceSheet }
         .sheet(isPresented: $editing) { editSheet }
+        .sheet(item: $setupRequest) { request in
+            DownloadSetupSheet(
+                bookTitle: snapshot.name,
+                bookUrl: snapshot.bookUrl,
+                chapterCount: toc.count,
+                currentIndex: request.currentIndex,
+                preferredScope: request.scope
+            ) { scope, indices, options in
+                startDownload(scope: scope, indices: indices, options: options)
+            }
+        }
+        .confirmationDialog("分享离线包", isPresented: $shareChoiceVisible, titleVisibility: .visible) {
+            Button(shareCachedLabel) { shareOfflinePackage(wholeBook: false) }
+            Button(shareWholeLabel) { shareOfflinePackage(wholeBook: true) }
+            Button("取消", role: .cancel) {}
+        } message: {
+            Text("离线包带上正文、书评和封面，对方导入后断网也能读。")
+        }
+        .overlay {
+            if let job = activeShareJob {
+                shareProgressCard(job)
+            }
+        }
         .background(tocDestination)
         #if os(iOS)
         .fullScreenCover(isPresented: $reading) { readerLayer }
@@ -204,7 +232,7 @@ public struct BookDetailView: View {
                 Button { enqueueRemaining() } label: {
                     Label("缓存未读章节", systemImage: "arrow.down.to.line")
                 }
-                Button { exportOfflinePackage() } label: {
+                Button { shareChoiceVisible = true } label: {
                     Label("导出离线包", systemImage: "square.and.arrow.up")
                 }
                 Button { beginEditing() } label: {
@@ -326,51 +354,128 @@ public struct BookDetailView: View {
         presentAlert("目录与详情已刷新")
     }
 
-    /// 把已缓存的正文、书评与封面打成一个离线包，走系统分享
-    private func exportOfflinePackage() {
-        guard !toc.isEmpty else {
-            presentAlert("目录还没加载，先刷新目录再导出")
-            return
-        }
-        do {
-            let url = try OfflineBookShare.export(book: snapshot, chapters: toc)
-            #if canImport(UIKit)
-            let controller = UIActivityViewController(activityItems: [url], applicationActivities: nil)
-            if let scene = UIApplication.shared.connectedScenes
-                .compactMap({ $0 as? UIWindowScene })
-                .first(where: { $0.activationState == .foregroundActive }),
-               let root = scene.windows.first(where: { $0.isKeyWindow })?.rootViewController {
-                root.present(controller, animated: true)
+    private var offlineCachedCount: Int {
+        OfflineBookStore.shared.cachedIndices(for: snapshot.bookUrl).count
+    }
+
+    private var shareCachedLabel: String {
+        "只分享已缓存（\(offlineCachedCount) 章）"
+    }
+
+    private var shareWholeLabel: String {
+        guard !toc.isEmpty else { return "补全全书后分享" }
+        let missing = max(0, toc.count - offlineCachedCount)
+        return missing > 0 ? "补全全书后分享（缺 \(missing) 章）" : "分享全书（已全部缓存）"
+    }
+
+    private var activeShareJob: DownloadJob? {
+        guard let id = shareJobID else { return nil }
+        return downloadManager.jobs.first { $0.id == id }
+    }
+
+    private func shareProgressCard(_ job: DownloadJob) -> some View {
+        ZStack {
+            Color.black.opacity(0.35).ignoresSafeArea()
+            VStack(spacing: 12) {
+                Text("正在补全《\(job.bookName)》")
+                    .font(.system(size: 15, weight: .semibold))
+                ProgressView(value: job.progress)
+                Text("\(job.finished)/\(job.total) 章" + (job.currentChapter.isEmpty ? "" : " · \(job.currentChapter)"))
+                    .font(.system(size: 11))
+                    .foregroundColor(.secondary)
+                    .lineLimit(1)
+                Button("取消补全") {
+                    shareCancelled = true
+                    downloadManager.cancel(job.id)
+                    shareJobID = nil
+                }
+                .font(.system(size: 13))
+                .foregroundColor(.red)
             }
-            #elseif canImport(AppKit)
-            NSWorkspace.shared.open(url)
-            #endif
-        } catch {
-            presentAlert("导出失败：\(error.localizedDescription)")
+            .padding(18)
+            .frame(maxWidth: 300)
+            .background(.regularMaterial)
+            .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+        }
+    }
+
+    /// 把正文、书评与封面打成一个离线包，走系统分享
+    private func shareOfflinePackage(wholeBook: Bool) {
+        Task {
+            if toc.isEmpty { await loadDetailIfNeeded() }
+            guard !toc.isEmpty else {
+                presentAlert("目录还没加载，先刷新目录再导出")
+                return
+            }
+            if wholeBook {
+                let cached = Set(OfflineBookStore.shared.cachedIndices(for: snapshot.bookUrl))
+                let missing = toc.indices.filter { !cached.contains($0) }
+                if !missing.isEmpty {
+                    guard let source = activeSource else {
+                        presentAlert("本地导入的书没有书源，只能分享已缓存的内容")
+                        return
+                    }
+                    // 传全书章号：正文已有缓存会直接跳过，书评缺失的章顺带补齐
+                    guard let result = downloadManager.start(
+                        book: snapshot,
+                        chapters: toc,
+                        source: source,
+                        indices: Array(toc.indices),
+                        options: DownloadOptions(reviewLimit: nil, refetchReviews: false, concurrency: 4, background: true)
+                    ) else {
+                        presentAlert("目录为空，没有可下载的章节")
+                        return
+                    }
+                    shareJobID = result.jobID
+                    shareCancelled = false
+                    await downloadManager.wait(result.jobID)
+                    shareJobID = nil
+                    if shareCancelled { return }
+                }
+            }
+            do {
+                let url = try OfflineBookShare.export(book: snapshot, chapters: toc)
+                presentShareSheet(url: url)
+            } catch {
+                presentAlert("导出失败：\(error.localizedDescription)")
+            }
         }
     }
 
     private func enqueueAll() {
-        let all = Array(toc.indices)
-        ChapterDownloadManager.shared.start(
-            book: snapshot,
-            chapters: toc,
-            source: activeSource,
-            indices: all
-        )
-        presentAlert("已加入下载队列（全本 \(toc.count) 章）")
+        guard !toc.isEmpty else {
+            presentAlert("目录还没加载，先刷新目录再下载")
+            return
+        }
+        setupRequest = DownloadSetupRequest(scope: .all, currentIndex: 0)
     }
 
     private func enqueueRemaining() {
-        let start = min(snapshot.durChapterIndex, max(0, toc.count - 1))
-        let rest = Array(start..<toc.count)
-        ChapterDownloadManager.shared.start(
+        guard !toc.isEmpty else {
+            presentAlert("目录还没加载，先刷新目录再下载")
+            return
+        }
+        let current = min(max(0, snapshot.durChapterIndex), toc.count - 1)
+        setupRequest = DownloadSetupRequest(scope: .unread, currentIndex: current)
+    }
+
+    private func startDownload(scope: DownloadScope, indices: [Int], options: DownloadOptions) {
+        guard !indices.isEmpty else { return }
+        guard let result = downloadManager.start(
             book: snapshot,
             chapters: toc,
             source: activeSource,
-            indices: rest
-        )
-        presentAlert("已加入下载队列（未读 \(rest.count) 章）")
+            indices: indices,
+            options: options
+        ) else {
+            presentAlert("加入下载队列失败，请稍后再试")
+            return
+        }
+        if result.merged {
+            presentAlert("已并入正在进行的任务（共 \(result.totalChapters) 章）")
+        } else {
+            presentAlert("已加入下载队列（\(result.addedChapters) 章）")
+        }
     }
 
     private func switchSource(to newSource: BookSource, candidate: SearchBook) {
@@ -392,6 +497,10 @@ public struct BookDetailView: View {
             store.removeBook(bookUrl: snapshot.bookUrl)
         } else {
             _ = store.saveOrUpdateBook(snapshot)
+            // 目录跟着入库，否则从书架进阅读器会找不到章节
+            if !toc.isEmpty {
+                store.saveChapters(toc, for: snapshot.bookUrl)
+            }
         }
     }
 
@@ -438,6 +547,9 @@ public struct BookDetailView: View {
                 loadingDetail = false
                 if onShelf {
                     _ = store.saveOrUpdateBook(detailed)
+                    if !chapters.isEmpty {
+                        store.saveChapters(chapters, for: detailed.bookUrl)
+                    }
                 }
             }
         } catch {
@@ -450,6 +562,27 @@ public struct BookDetailView: View {
 }
 
 // MARK: - 主界面区块
+
+/// 系统分享面板，详情页 / 书架 / 离线书库共用
+@MainActor
+func presentShareSheet(url: URL) {
+    #if canImport(UIKit)
+    let controller = UIActivityViewController(activityItems: [url], applicationActivities: nil)
+    if let scene = UIApplication.shared.connectedScenes
+        .compactMap({ $0 as? UIWindowScene })
+        .first(where: { $0.activationState == .foregroundActive }),
+       let root = scene.windows.first(where: { $0.isKeyWindow })?.rootViewController {
+        if let pop = controller.popoverPresentationController {
+            pop.sourceView = root.view
+            pop.sourceRect = CGRect(x: root.view.bounds.midX, y: root.view.bounds.midY, width: 1, height: 1)
+            pop.permittedArrowDirections = []
+        }
+        root.present(controller, animated: true)
+    }
+    #elseif canImport(AppKit)
+    NSWorkspace.shared.open(url)
+    #endif
+}
 
 private struct BookDetailHeader: View {
     let book: Book
@@ -1541,5 +1674,494 @@ struct BookInfoEditSheet: View {
             findingCovers = false
             finderNote = found.isEmpty ? "没在书源里搜到封面。" : "点一张就换上。"
         }
+    }
+}
+
+struct DownloadSetupRequest: Identifiable {
+    let id = UUID()
+    let scope: DownloadScope
+    let currentIndex: Int
+}
+
+/// 下载前的一次性选项面板：范围、书评、并发、后台。
+/// 从阅读器打开时传入阅读主题颜色，在非覆盖主题下跟随正文底色，其余场景跟随 App 主题。
+struct DownloadSetupSheet: View {
+    let bookTitle: String
+    let bookUrl: String
+    let chapterCount: Int
+    let currentIndex: Int
+    let preferredScope: DownloadScope
+    let readerBackground: Color?
+    let readerInk: Color?
+    let readerAccent: Color?
+    let readerOnAccent: Color?
+    let onStart: (DownloadScope, [Int], DownloadOptions) -> Void
+
+    @Environment(\.dismiss) private var dismiss
+    @Environment(\.appTheme) private var theme
+
+    @State private var scope: DownloadScope
+    @State private var count: Int
+    @State private var reviewLimit: Int?
+    @State private var refetch: Bool
+    @State private var concurrency: Int
+    @State private var background: Bool
+    @State private var cachedIndices: Set<Int> = []
+
+    private enum Keys {
+        static let count = "download_options_count"
+        static let review = "download_options_review"
+        static let refetch = "download_options_refetch"
+        static let concurrency = "download_options_concurrency"
+        static let background = "download_options_background"
+    }
+
+    init(bookTitle: String, bookUrl: String, chapterCount: Int, currentIndex: Int,
+         preferredScope: DownloadScope,
+         readerBackground: Color? = nil, readerInk: Color? = nil,
+         readerAccent: Color? = nil, readerOnAccent: Color? = nil,
+         onStart: @escaping (DownloadScope, [Int], DownloadOptions) -> Void) {
+        self.bookTitle = bookTitle
+        self.bookUrl = bookUrl
+        self.chapterCount = chapterCount
+        self.currentIndex = currentIndex
+        self.preferredScope = preferredScope
+        self.readerBackground = readerBackground
+        self.readerInk = readerInk
+        self.readerAccent = readerAccent
+        self.readerOnAccent = readerOnAccent
+        self.onStart = onStart
+        let d = UserDefaults.standard
+        _scope = State(initialValue: preferredScope)
+        _count = State(initialValue: d.object(forKey: Keys.count) as? Int ?? ReaderConfig.shared.cachedChapterCount)
+        if let raw = d.object(forKey: Keys.review) as? Int {
+            _reviewLimit = State(initialValue: raw < 0 ? nil : raw)
+        } else {
+            _reviewLimit = State(initialValue: 3)
+        }
+        _refetch = State(initialValue: d.bool(forKey: Keys.refetch))
+        _concurrency = State(initialValue: d.object(forKey: Keys.concurrency) as? Int ?? 4)
+        _background = State(initialValue: (d.object(forKey: Keys.background) as? Bool) ?? true)
+    }
+
+    private var startIndex: Int {
+        max(0, min(currentIndex, max(0, chapterCount - 1)))
+    }
+
+    private var indices: [Int] {
+        let start = scope == .unread ? startIndex + 1 : startIndex
+        return scope.indices(chapterCount: chapterCount, start: start, count: count)
+    }
+
+    private var cachedInScope: Int {
+        indices.reduce(0) { $0 + (cachedIndices.contains($1) ? 1 : 0) }
+    }
+
+    private var nothingToDo: Bool {
+        indices.count == cachedInScope && reviewLimit == nil
+    }
+
+    // MARK: 主题色
+
+    /// 阅读器传入阅读底色时，未开启主题覆盖就跟随正文，避免白底抽屉砸在黑底阅读页上。
+    private var usesReaderColors: Bool {
+        !theme.overridesReaderAppearance && readerBackground != nil
+    }
+    private var pageBackground: Color {
+        usesReaderColors ? (readerBackground ?? theme.palette.background) : theme.palette.background
+    }
+    private var surface: Color {
+        usesReaderColors ? (readerInk ?? theme.palette.ink).opacity(0.055) : theme.palette.surface
+    }
+    private var ink: Color {
+        usesReaderColors ? (readerInk ?? theme.palette.ink) : theme.palette.ink
+    }
+    private var secondaryInk: Color {
+        usesReaderColors ? (readerInk ?? theme.palette.ink).opacity(0.6) : theme.palette.secondaryInk
+    }
+    private var divider: Color {
+        usesReaderColors ? (readerInk ?? theme.palette.ink).opacity(0.14) : theme.palette.divider
+    }
+    private var accent: Color {
+        usesReaderColors ? (readerAccent ?? theme.palette.accent) : theme.palette.accent
+    }
+    private var accentInk: Color {
+        usesReaderColors ? (readerOnAccent ?? theme.palette.onAccent) : theme.palette.onAccent
+    }
+    private var danger: Color { theme.palette.danger }
+    private var radius: CGFloat { usesReaderColors ? 18 : max(2, theme.metrics.cornerRadius) }
+    private var borderWidth: CGFloat { usesReaderColors ? 1 : theme.metrics.borderWidth }
+    private var remaining: Int { max(0, chapterCount - startIndex) }
+    private var progress: Double {
+        guard chapterCount > 0 else { return 0 }
+        return min(1, Double(cachedIndices.count) / Double(chapterCount))
+    }
+
+    var body: some View {
+        ZStack {
+            pageBackground.ignoresSafeArea()
+            ScrollView {
+                VStack(alignment: .leading, spacing: 16) {
+                    header
+                    statusCard
+                    sectionLabel("缓存范围")
+                    scopeCards
+                    if scope == .nextN {
+                        presetGrid
+                        customCountRow
+                    }
+                    sectionLabel("下载选项")
+                    optionsCard
+                    primaryButton
+                    footnote
+                }
+                .padding(.horizontal, 20)
+                .padding(.top, 18)
+                .padding(.bottom, 28)
+            }
+        }
+        .modifier(DownloadSetupPresentation())
+        .onAppear {
+            if cachedIndices.isEmpty {
+                cachedIndices = Set(OfflineBookStore.shared.cachedIndices(for: bookUrl))
+            }
+        }
+    }
+
+    private var header: some View {
+        HStack(alignment: .top, spacing: 12) {
+            VStack(alignment: .leading, spacing: 5) {
+                Text("CACHE / OFFLINE")
+                    .font(theme.typography.label)
+                    .foregroundColor(accent)
+                Text("下载缓存")
+                    .font(theme.typography.title)
+                    .foregroundColor(ink)
+                Text("《\(bookTitle)》共 \(chapterCount) 章")
+                    .font(theme.typography.body)
+                    .foregroundColor(secondaryInk)
+                    .lineLimit(2)
+            }
+            Spacer(minLength: 8)
+            Button {
+                dismiss()
+            } label: {
+                Image(systemName: "xmark")
+                    .font(.system(size: 12, weight: .bold))
+                    .foregroundColor(secondaryInk)
+                    .frame(width: 30, height: 30)
+                    .background(Circle().fill(surface))
+                    .overlay(Circle().stroke(divider, lineWidth: 0.5))
+            }
+            .buttonStyle(.plain)
+        }
+    }
+
+    private var statusCard: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                Text("已缓存")
+                    .font(theme.typography.label)
+                    .foregroundColor(secondaryInk)
+                Text("\(cachedIndices.count)")
+                    .font(.system(size: 26, weight: .semibold, design: .monospaced))
+                    .foregroundColor(accent)
+                Text("/ \(chapterCount) 章")
+                    .font(theme.typography.mono)
+                    .foregroundColor(secondaryInk)
+                Spacer(minLength: 8)
+                if cachedInScope > 0 {
+                    Text("本次命中 \(cachedInScope) 章")
+                        .font(theme.typography.mono)
+                        .foregroundColor(secondaryInk)
+                }
+            }
+            GeometryReader { geo in
+                ZStack(alignment: .leading) {
+                    Capsule().fill(divider.opacity(0.45))
+                    Capsule()
+                        .fill(accent)
+                        .frame(width: geo.size.width * progress)
+                }
+            }
+            .frame(height: 5)
+            HStack(spacing: 6) {
+                Image(systemName: "bookmark")
+                Text("当前第 \(startIndex + 1) 章 · 往后还有 \(remaining) 章")
+                Spacer(minLength: 0)
+            }
+            .font(theme.typography.mono)
+            .foregroundColor(secondaryInk)
+        }
+        .padding(14)
+        .background(RoundedRectangle(cornerRadius: radius, style: .continuous).fill(surface))
+        .overlay(
+            RoundedRectangle(cornerRadius: radius, style: .continuous)
+                .stroke(divider.opacity(0.7), lineWidth: borderWidth)
+        )
+    }
+
+    private var scopeCards: some View {
+        VStack(spacing: 8) {
+            ForEach(DownloadScope.allCases) { option in
+                scopeCard(option)
+            }
+        }
+    }
+
+    private func scopeCard(_ option: DownloadScope) -> some View {
+        let selected = scope == option
+        return Button {
+            scope = option
+        } label: {
+            HStack(spacing: 10) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(option.title)
+                        .font(theme.typography.body)
+                        .foregroundColor(selected ? accent : ink)
+                    Text(detail(for: option))
+                        .font(theme.typography.mono)
+                        .foregroundColor(secondaryInk)
+                }
+                Spacer(minLength: 8)
+                Image(systemName: selected ? "checkmark.circle.fill" : "circle")
+                    .font(theme.typography.symbol)
+                    .foregroundColor(selected ? accent : secondaryInk.opacity(0.5))
+            }
+            .padding(12)
+            .background(
+                RoundedRectangle(cornerRadius: radius, style: .continuous)
+                    .fill(selected ? accent.opacity(0.12) : surface)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: radius, style: .continuous)
+                    .stroke(selected ? accent : divider.opacity(0.7),
+                            lineWidth: selected ? 1.5 : borderWidth)
+            )
+        }
+        .buttonStyle(.plain)
+    }
+
+    private var presetGrid: some View {
+        LazyVGrid(
+            columns: Array(repeating: GridItem(.flexible(), spacing: 10), count: 5),
+            spacing: 10
+        ) {
+            ForEach([10, 20, 30, 50, 100], id: \.self) { n in
+                presetButton(n)
+            }
+        }
+    }
+
+    private func presetButton(_ n: Int) -> some View {
+        let selected = scope == .nextN && count == n
+        return Button {
+            scope = .nextN
+            count = n
+        } label: {
+            VStack(spacing: 2) {
+                Text("\(n)")
+                    .font(.system(size: 18, weight: .semibold, design: .monospaced))
+                    .foregroundColor(selected ? accent : ink)
+                Text("章")
+                    .font(theme.typography.label)
+                    .foregroundColor(secondaryInk)
+            }
+            .frame(maxWidth: .infinity, minHeight: 54)
+            .background(
+                RoundedRectangle(cornerRadius: radius, style: .continuous)
+                    .fill(selected ? accent.opacity(0.12) : surface)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: radius, style: .continuous)
+                    .stroke(selected ? accent : divider.opacity(0.7),
+                            lineWidth: selected ? 1.5 : borderWidth)
+            )
+        }
+        .buttonStyle(.plain)
+    }
+
+    private var customCountRow: some View {
+        Stepper(value: $count, in: 1...2000, step: 10) {
+            HStack {
+                Text("自定义")
+                    .font(theme.typography.body)
+                    .foregroundColor(ink)
+                Spacer(minLength: 8)
+                Text("往下 \(count) 章")
+                    .font(theme.typography.mono)
+                    .foregroundColor(secondaryInk)
+            }
+        }
+        .tint(accent)
+        .padding(12)
+        .background(RoundedRectangle(cornerRadius: radius, style: .continuous).fill(surface))
+        .overlay(
+            RoundedRectangle(cornerRadius: radius, style: .continuous)
+                .stroke(divider.opacity(0.7), lineWidth: borderWidth)
+        )
+    }
+
+    private var optionsCard: some View {
+        VStack(spacing: 0) {
+            HStack {
+                Text("每章书评")
+                    .font(theme.typography.body)
+                    .foregroundColor(ink)
+                Spacer(minLength: 8)
+                Picker("每章书评", selection: $reviewLimit) {
+                    Text("不抓").tag(Int?.none)
+                    Text("3 条").tag(Int?.some(3))
+                    Text("10 条").tag(Int?.some(10))
+                    Text("30 条").tag(Int?.some(30))
+                    Text("全部").tag(Int?.some(0))
+                }
+                .pickerStyle(.menu)
+                .tint(accent)
+            }
+            .padding(.vertical, 12)
+            if reviewLimit != nil {
+                cardDivider
+                Toggle("重新拉取已有书评", isOn: $refetch)
+                    .font(theme.typography.body)
+                    .foregroundColor(ink)
+                    .tint(accent)
+                    .padding(.vertical, 8)
+            }
+            cardDivider
+            VStack(alignment: .leading, spacing: 8) {
+                Text("并发")
+                    .font(theme.typography.label)
+                    .foregroundColor(secondaryInk)
+                Picker("并发", selection: $concurrency) {
+                    ForEach([1, 4, 8, 16], id: \.self) { value in
+                        Text("\(value)").tag(value)
+                    }
+                }
+                .pickerStyle(.segmented)
+            }
+            .padding(.vertical, 12)
+            cardDivider
+            Toggle("切到后台继续下载", isOn: $background)
+                .font(theme.typography.body)
+                .foregroundColor(ink)
+                .tint(accent)
+                .padding(.vertical, 8)
+        }
+        .padding(.horizontal, 14)
+        .background(RoundedRectangle(cornerRadius: radius, style: .continuous).fill(surface))
+        .overlay(
+            RoundedRectangle(cornerRadius: radius, style: .continuous)
+                .stroke(divider.opacity(0.7), lineWidth: borderWidth)
+        )
+    }
+
+    private var cardDivider: some View {
+        Rectangle()
+            .fill(divider.opacity(0.6))
+            .frame(height: 0.5)
+    }
+
+    private var primaryDisabled: Bool {
+        indices.isEmpty || nothingToDo
+    }
+
+    private var primaryButton: some View {
+        Button {
+            start()
+        } label: {
+            HStack(spacing: 12) {
+                Image(systemName: "arrow.down.circle.fill")
+                    .font(.system(size: 22, weight: .semibold))
+                    .foregroundColor(accentInk)
+                    .frame(width: 38, height: 38)
+                    .background(
+                        RoundedRectangle(cornerRadius: radius * 0.6, style: .continuous)
+                            .fill(accentInk.opacity(0.16))
+                    )
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(nothingToDo ? "已全部缓存" : "下载 \(indices.count) 章")
+                        .font(.system(size: 16, weight: .semibold))
+                        .foregroundColor(accentInk)
+                    Text(primarySubtitle)
+                        .font(theme.typography.mono)
+                        .foregroundColor(accentInk.opacity(0.78))
+                }
+                Spacer(minLength: 8)
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 12, weight: .bold))
+                    .foregroundColor(accentInk.opacity(0.7))
+            }
+            .padding(14)
+            .background(RoundedRectangle(cornerRadius: radius, style: .continuous).fill(accent))
+            .opacity(primaryDisabled ? 0.45 : 1)
+        }
+        .buttonStyle(.plain)
+        .disabled(primaryDisabled)
+    }
+
+    private var primarySubtitle: String {
+        var parts: [String] = [scope.title, "并发 \(concurrency)"]
+        if background { parts.append("后台继续") }
+        return parts.joined(separator: " · ")
+    }
+
+    private var footnote: some View {
+        Text("正文已缓存的章节会跳过，缺的书评照常补齐。下载在后台继续，进度可在「设置 → 下载管理」查看。")
+            .font(theme.typography.mono)
+            .foregroundColor(secondaryInk)
+            .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func sectionLabel(_ text: String) -> some View {
+        Text(text)
+            .font(theme.typography.label)
+            .foregroundColor(secondaryInk)
+            .padding(.top, 2)
+    }
+
+    private func detail(for option: DownloadScope) -> String {
+        switch option {
+        case .all:
+            return "第 1 章到第 \(chapterCount) 章"
+        case .unread:
+            let from = min(chapterCount, startIndex + 2)
+            return "从第 \(max(1, from)) 章到末尾，共 \(max(0, chapterCount - startIndex - 1)) 章"
+        case .nextN:
+            return "从第 \(startIndex + 1) 章起，往后 \(count) 章"
+        }
+    }
+
+    private func start() {
+        let d = UserDefaults.standard
+        d.set(count, forKey: Keys.count)
+        d.set(reviewLimit ?? -1, forKey: Keys.review)
+        d.set(refetch, forKey: Keys.refetch)
+        d.set(concurrency, forKey: Keys.concurrency)
+        d.set(background, forKey: Keys.background)
+        let options = DownloadOptions(reviewLimit: reviewLimit,
+                                      refetchReviews: refetch && reviewLimit != nil,
+                                      concurrency: concurrency,
+                                      background: background)
+        onStart(scope, indices, options)
+        dismiss()
+    }
+}
+
+/// iOS 16 起按整页弹出并显示拖拽条；老系统保持默认。
+private struct DownloadSetupPresentation: ViewModifier {
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        #if os(iOS)
+        if #available(iOS 16.0, *) {
+            content
+                .presentationDetents([.large])
+                .presentationDragIndicator(.visible)
+        } else {
+            content
+        }
+        #else
+        content
+        #endif
     }
 }
