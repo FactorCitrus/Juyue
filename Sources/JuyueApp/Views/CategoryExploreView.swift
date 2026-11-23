@@ -1106,7 +1106,7 @@ private struct HorizontalScroller<Content: View>: View {
     }
 }
 
-private extension View {
+extension View {
     @ViewBuilder
     func hideListRowSeparatorCompat() -> some View {
         if #available(iOS 15.0, macOS 13.0, *) {

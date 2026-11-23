@@ -1563,7 +1563,9 @@ struct BadgeWallView: View {
         }
         .background(theme.palette.background.ignoresSafeArea())
         .navigationTitle("徽章墙")
+        #if os(iOS)
         .navigationBarTitleDisplayMode(.inline)
+        #endif
     }
 
     private func badgeRow(_ badge: ArchiveBadge) -> some View {

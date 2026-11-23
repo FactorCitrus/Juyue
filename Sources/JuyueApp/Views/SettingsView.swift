@@ -2864,7 +2864,7 @@ struct DownloadManagerView: View {
             .padding(.horizontal, 12)
             .padding(.vertical, 8)
             .appThemedRows()
-            .listRowSeparator(.hidden)
+            .hideListRowSeparatorCompat()
         } header: {
             sectionLabel("离线书库", trailing: library.entries.isEmpty ? nil : "\(library.entries.count) 本 · \(byteText(library.totalBytes))")
         }

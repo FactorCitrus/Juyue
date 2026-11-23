@@ -3092,7 +3092,7 @@ public final class DownloadBackground {
     public func register() {
         guard !registered else { return }
         registered = true
-        #if canImport(BackgroundTasks)
+        #if canImport(UIKit)
         BGTaskScheduler.shared.register(forTaskWithIdentifier: Self.taskIdentifier, using: nil) { task in
             task.expirationHandler = {
                 DispatchQueue.main.async {
@@ -3125,7 +3125,7 @@ public final class DownloadBackground {
 
     public func scheduleIfNeeded() {
         guard ChapterDownloadManager.shared.hasRunningJobs else { return }
-        #if canImport(BackgroundTasks)
+        #if canImport(UIKit)
         let request = BGProcessingTaskRequest(identifier: Self.taskIdentifier)
         request.requiresNetworkConnectivity = true
         request.requiresExternalPower = false
