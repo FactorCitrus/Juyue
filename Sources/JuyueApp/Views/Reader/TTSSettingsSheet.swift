@@ -29,6 +29,8 @@ public struct TTSSettingsSheet: View {
     @State private var credBundle = ""
     @State private var credNote: String?
     @State private var importNote: String?
+    /// 导入/删除音色后推一下视图，静态的 allVoices 不会自己发通知
+    @State private var voiceRevision = 0
     @State private var showCloudPicker = false
     @State private var cloudPreset: TTSOnlinePreset?
     @State private var showCustomSetup = false
@@ -505,6 +507,9 @@ public struct TTSSettingsSheet: View {
                         selectBaiduVoice(voice)
                     }
                 }
+                .onDelete { indexSet in
+                    deleteBaiduVoices(at: indexSet)
+                }
             } else {
                 if modelStore.models.isEmpty {
                     Text("当前没有模型。点「导入音色模型…」选择含 .onnx 与 tokens.txt 的文件夹。")
@@ -692,6 +697,15 @@ public struct TTSSettingsSheet: View {
                     }
                 }
                 .accessibilityIdentifier("tts.baidu.authdetails")
+                Button {
+                    presentVoicePackPicker()
+                } label: {
+                    Label("导入音色包…", systemImage: "square.and.arrow.down")
+                }
+                .accessibilityIdentifier("tts.baidu.importpack")
+                Text("选 MultiTTS 的 bdetts_xxx.zip。导入的音色可左滑删除（整包删除），包内自带音色不能删。")
+                    .font(.caption2)
+                    .foregroundColor(theme.palette.secondaryInk)
             } else {
                 Button {
                     presentModelFolderPicker()
@@ -966,6 +980,49 @@ public struct TTSSettingsSheet: View {
             } catch {
                 importNote = "导入失败：\(error.localizedDescription)"
             }
+        }
+    }
+
+    /// 选 MultiTTS 的 bdetts_xxx.zip。解压几十 MB，放后台队列，别卡住设置页。
+    private func presentVoicePackPicker() {
+        SystemDocumentPicker.present(contentTypes: [.zip, .archive]) { urls in
+            guard let url = urls.first else { return }
+            DispatchQueue.global(qos: .userInitiated).async {
+                var note: String
+                do {
+                    let count = try BaiduOfflineTTS.importPackage(from: url)
+                    note = count > 0 ? "已导入 \(count) 个音色" : "包已解压，但没找到可用音色"
+                } catch {
+                    note = "导入失败：\(error.localizedDescription)"
+                }
+                DispatchQueue.main.async {
+                    voiceRevision &+= 1
+                    importNote = note
+                }
+            }
+        }
+    }
+
+    /// 百度音色左滑：导入的整包删除，包内自带的只提示不能删。
+    private func deleteBaiduVoices(at indexSet: IndexSet) {
+        let all = BaiduOfflineTTS.allVoices
+        let picked = indexSet.compactMap { all.indices.contains($0) ? all[$0] : nil }
+        let removable = picked.filter { $0.id.hasPrefix("user:") }
+        let builtinCount = picked.count - removable.count
+        if !removable.isEmpty {
+            let removedActive = removable.contains { $0.id == BaiduOfflineTTS.activeVoiceId }
+            _ = BaiduOfflineTTS.deleteVoices(removable)
+            if removedActive {
+                BaiduOfflineTTS.activeVoiceId = nil
+                BundledTTSEngine.shared.invalidate()
+                audio.applySettingsChangeRestart()
+            }
+            voiceRevision &+= 1
+        }
+        if builtinCount > 0 {
+            importNote = "包内自带音色删不掉；左滑只能删除导入的音色。"
+        } else if !removable.isEmpty {
+            importNote = "已删除 \(removable.count) 个音色（连同所在音色包）。"
         }
     }
 

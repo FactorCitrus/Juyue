@@ -66,3 +66,63 @@ public enum TTSTextChunker {
         }
     }
 }
+
+/// MultiTTS / BDeTTS 音色包的结构约定：
+/// `config.yaml` + `bdetts/<编号>/text.dat` + `bdetts/<编号>/acoustic/*.voc.dat`。
+public enum BaiduVoicePack {
+    /// 从声学模型所在目录向上逐级找文本模型，直到包根。
+    /// 优先同目录的 `text.dat`，其次名字带 text 的 `.dat`；`*.voc.dat` 不算文本模型。
+    public static func textModel(for voice: URL, in packRoot: URL) -> URL? {
+        let root = packRoot.standardizedFileURL
+        var dir = voice.deletingLastPathComponent().standardizedFileURL
+        while true {
+            if let found = textFile(in: dir) { return found }
+            if dir.path == root.path { return nil }
+            let parent = dir.deletingLastPathComponent().standardizedFileURL
+            guard parent.path != dir.path, parent.path.hasPrefix(root.path) else { return nil }
+            dir = parent
+        }
+    }
+
+    /// 读 `config.yaml` 里该编号对应的 `name`，例如 `wc10316` → `旁青女`。
+    public static func displayName(code: String, in packRoot: URL) -> String? {
+        let url = packRoot.appendingPathComponent("config.yaml")
+        guard let text = try? String(contentsOf: url, encoding: .utf8) else { return nil }
+        var currentCode: String?
+        for raw in text.split(separator: "\n", omittingEmptySubsequences: false) {
+            let line = raw.trimmingCharacters(in: .whitespaces)
+            if line.hasPrefix("code:") {
+                currentCode = scalar(line, droppingKey: "code")
+            } else if line.hasPrefix("name:"), currentCode == code {
+                guard let name = scalar(line, droppingKey: "name"), !name.isEmpty else { return nil }
+                return name
+            }
+        }
+        return nil
+    }
+
+    private static func textFile(in dir: URL) -> URL? {
+        guard let names = try? FileManager.default.contentsOfDirectory(atPath: dir.path) else { return nil }
+        let dats = names.filter {
+            let lower = $0.lowercased()
+            return lower.hasSuffix(".dat") && !lower.hasSuffix(".voc.dat")
+        }
+        if dats.contains("text.dat") {
+            return dir.appendingPathComponent("text.dat")
+        }
+        if let hit = dats.first(where: { $0.lowercased().contains("text") }) {
+            return dir.appendingPathComponent(hit)
+        }
+        return nil
+    }
+
+    private static func scalar(_ line: String, droppingKey key: String) -> String? {
+        var value = line.dropFirst(key.count + 1).trimmingCharacters(in: .whitespaces)
+        if value.count >= 2, value.hasPrefix("'"), value.hasSuffix("'") {
+            value = String(value.dropFirst().dropLast())
+        } else if value.count >= 2, value.hasPrefix("\""), value.hasSuffix("\"") {
+            value = String(value.dropFirst().dropLast())
+        }
+        return value.isEmpty ? nil : value
+    }
+}

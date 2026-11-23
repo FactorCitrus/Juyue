@@ -65,7 +65,10 @@ final class BaiduOfflineTTS: NSObject, ObservableObject {
     static private(set) var userVoices: [Voice] = []
 
     /// SDK 自带的 + 导入的
-    static var allVoices: [Voice] { builtinVoices + userVoices }
+    static var allVoices: [Voice] {
+        let builtinNames = Set(builtinVoices.map(\.name))
+        return builtinVoices + userVoices.filter { !builtinNames.contains($0.name) }
+    }
 
     static func voice(id: String?) -> Voice? {
         guard let id else { return nil }
@@ -358,6 +361,10 @@ final class BaiduOfflineTTS: NSObject, ObservableObject {
             options: [.skipsHiddenFiles]
         ) else {
             userVoices = []
+            if activeVoiceId != nil, voice(id: activeVoiceId) == nil,
+               let first = builtinVoices.first {
+                activeVoiceId = first.id
+            }
             return []
         }
 
@@ -367,18 +374,6 @@ final class BaiduOfflineTTS: NSObject, ObservableObject {
         for pack in packs {
             var isDir: ObjCBool = false
             guard fm.fileExists(atPath: pack.path, isDirectory: &isDir), isDir.boolValue else { continue }
-
-            // 找文本模型：包根目录的 text.dat / text_*.dat，找不到就用 SDK 的
-            var textPath = fallbackText
-            if let files = try? fm.contentsOfDirectory(at: pack, includingPropertiesForKeys: nil) {
-                if let own = files.first(where: {
-                    $0.pathExtension.lowercased() == "dat" &&
-                    $0.lastPathComponent.lowercased().contains("text")
-                }) {
-                    textPath = own.path
-                }
-            }
-            guard let text = textPath else { continue }
 
             // 递归捞 *.voc.dat
             var voiceFiles: [URL] = []
@@ -395,9 +390,14 @@ final class BaiduOfflineTTS: NSObject, ObservableObject {
                 let base = rawName.lowercased().hasSuffix(".voc.dat")
                     ? String(rawName.dropLast(".voc.dat".count))
                     : voiceFile.deletingPathExtension().lastPathComponent
+                // 文本模型跟声学模型成套放：bdetts/<编号>/text.dat 配 acoustic/*.voc.dat。
+                // 以前只在包根找，嵌套结构的包导入后全退回 text_v6，听起来就像「导进来了但配不上」。
+                let ownText = BaiduVoicePack.textModel(for: voiceFile, in: pack)
+                guard let text = ownText?.path ?? fallbackText else { continue }
+                let displayName = BaiduVoicePack.displayName(code: base, in: pack) ?? base
                 found.append(Voice(
                     id: "user:\(pack.lastPathComponent):\(base)",
-                    name: base,
+                    name: displayName,
                     note: "自备音库 · \(pack.lastPathComponent)",
                     textPath: text,
                     speechPath: voiceFile.path,
@@ -407,6 +407,12 @@ final class BaiduOfflineTTS: NSObject, ObservableObject {
         }
 
         userVoices = found
+        // 选中的音色这次被删掉了，悬空会让设置页显示成没选。
+        // 这里直接挪到第一条可用音色上。
+        if activeVoiceId != nil, voice(id: activeVoiceId) == nil,
+           let first = builtinVoices.first ?? found.first {
+            activeVoiceId = first.id
+        }
         return found
     }
 
@@ -422,32 +428,65 @@ final class BaiduOfflineTTS: NSObject, ObservableObject {
         let stem = zipURL.deletingPathExtension().lastPathComponent
         let safeStem = stem.replacingOccurrences(of: "/", with: "_")
         let destination = root.appendingPathComponent(safeStem, isDirectory: true)
-        if !fm.fileExists(atPath: destination.path) {
-            try fm.createDirectory(at: destination, withIntermediateDirectories: true)
+
+        // 先解到隐藏的暂存目录：同名包覆盖时，旧包在新包完整落盘之前不能被拆掉
+        let staging = root.appendingPathComponent(".import-\(UUID().uuidString)", isDirectory: true)
+        try fm.createDirectory(at: staging, withIntermediateDirectories: true)
+        do {
+            try fm.unzipItem(at: zipURL, to: staging)
+            var hasVoice = false
+            if let walker = fm.enumerator(at: staging, includingPropertiesForKeys: nil) {
+                for case let url as URL in walker where url.lastPathComponent.lowercased().hasSuffix(".voc.dat") {
+                    hasVoice = true
+                    break
+                }
+            }
+            guard hasVoice else {
+                try? fm.removeItem(at: staging)
+                throw NSError(domain: "BaiduTTS", code: -1, userInfo: [
+                    NSLocalizedDescriptionKey: "包里没有音色模型（*.voc.dat）"
+                ])
+            }
+
+            let backup = root.appendingPathComponent(".backup-\(UUID().uuidString)", isDirectory: true)
+            let hadOld = fm.fileExists(atPath: destination.path)
+            if hadOld { try fm.moveItem(at: destination, to: backup) }
+            do {
+                try fm.moveItem(at: staging, to: destination)
+            } catch {
+                if hadOld { try? fm.moveItem(at: backup, to: destination) }
+                throw error
+            }
+            if hadOld { try? fm.removeItem(at: backup) }
+        } catch {
+            if fm.fileExists(atPath: staging.path) { try? fm.removeItem(at: staging) }
+            throw error
         }
-        try fm.unzipItem(at: zipURL, to: destination)
-        return refreshUserVoices().count
+
+        let prefix = "user:\(safeStem):"
+        return refreshUserVoices().filter { $0.id.hasPrefix(prefix) }.count
     }
 
-    /// 删掉自己导进来的音色（连同它所在的包目录）。
+    /// 删掉自己导进来的音色所在的整个包目录。
+    /// 一个包的多个音色共用 text.dat / licence.dat，只删 voc 会留下半包垃圾。
     /// SDK 自带音色不能删，已打进包内。
     @discardableResult
     static func deleteVoices(_ voices: [Voice]) -> Int {
         let fm = FileManager.default
+        let root = libraryRoot().standardizedFileURL
         var removed = 0
+        var seenPacks = Set<String>()
         for voice in voices {
-            for path in [voice.speechPath, voice.textPath] where path.hasPrefix(libraryRoot().path) {
-                if fm.fileExists(atPath: path) {
-                    try? fm.removeItem(atPath: path)
-                    removed += 1
-                }
-            }
-            // 包目录空了就一起收掉
-            let packDir = URL(fileURLWithPath: voice.speechPath).deletingLastPathComponent()
-            for dir in [packDir, packDir.deletingLastPathComponent()] where dir.path.hasPrefix(libraryRoot().path) {
-                if let items = try? fm.contentsOfDirectory(atPath: dir.path), items.isEmpty {
-                    try? fm.removeItem(at: dir)
-                }
+            guard voice.id.hasPrefix("user:") else { continue }
+            let parts = voice.id.split(separator: ":", maxSplits: 2, omittingEmptySubsequences: false)
+            guard parts.count == 3 else { continue }
+            let packDir = root.appendingPathComponent(String(parts[1]), isDirectory: true).standardizedFileURL
+            guard packDir.path != root.path,
+                  packDir.path.hasPrefix(root.path + "/"),
+                  seenPacks.insert(packDir.path).inserted else { continue }
+            if fm.fileExists(atPath: packDir.path) {
+                try? fm.removeItem(at: packDir)
+                removed += 1
             }
         }
         refreshUserVoices()
